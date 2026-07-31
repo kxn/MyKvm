@@ -9,16 +9,13 @@ use ipkvm_headless::{
     rfb_ws::{RfbWebSocketConfig, RfbWebSocketService},
 };
 use ipkvm_video::{MonotonicTimestamp, PixelFormat, VideoFrame, mock::MockFrameSource};
-use support::{ClientWebSocket, TestRfbClient, TestWebSocketRfbClient};
+use support::{ClientWebSocket, TestRfbClient};
 use tokio::{
     net::TcpListener,
     sync::{mpsc, watch},
     task::JoinHandle,
 };
-use tokio_tungstenite::{
-    connect_async,
-    tungstenite::{Error as WebSocketError, Message},
-};
+use tokio_tungstenite::{connect_async, tungstenite::Error as WebSocketError};
 
 struct TestDualTransportSystem {
     tcp_address: SocketAddr,
@@ -99,16 +96,6 @@ impl TestDualTransportSystem {
         connect_async(format!("ws://{}/rfb", self.websocket_address))
             .await
             .map(|(socket, _)| socket)
-    }
-
-    async fn connect_websocket_and_finish_handshake(
-        &mut self,
-    ) -> (TestWebSocketRfbClient, RfbClientId) {
-        let socket = self.try_connect_websocket().await.unwrap();
-        let mut client = TestWebSocketRfbClient::new(socket);
-        client.handshake(true).await;
-        let client_id = self.expect_connected().await;
-        (client, client_id)
     }
 
     async fn expect_connected(&mut self) -> RfbClientId {
@@ -196,67 +183,5 @@ async fn active_tcp_rejects_websocket_upgrade() {
         system.expect_disconnected(tcp_id).await,
         RfbDisconnectReason::ClientClosed
     );
-    system.stop().await;
-}
-
-#[tokio::test]
-async fn active_websocket_keeps_tcp_waiting_until_disconnected_is_enqueued() {
-    let mut system = TestDualTransportSystem::start_with_event_capacity(1).await;
-    let (mut websocket, websocket_id) = system.connect_websocket_and_finish_handshake().await;
-
-    websocket.send_key(true, 0x41).await;
-    assert_eq!(
-        system.events.recv().await,
-        Some(RfbServerEvent::Key {
-            client_id: websocket_id,
-            down: true,
-            keysym: 0x41,
-        })
-    );
-
-    let mut tcp = system.connect_tcp().await;
-    let mut banner_byte = [0; 1];
-    assert!(matches!(
-        tcp.try_read(&mut banner_byte),
-        Err(error) if error.kind() == io::ErrorKind::WouldBlock
-    ));
-
-    websocket.send_key(false, 0x41).await;
-    websocket.close().await;
-    let close_result = websocket.read_message().await;
-    assert!(
-        matches!(
-            close_result,
-            Ok(Message::Close(_))
-                | Err(WebSocketError::ConnectionClosed)
-                | Err(WebSocketError::Protocol(
-                    tokio_tungstenite::tungstenite::error::ProtocolError::ResetWithoutClosingHandshake
-                ))
-        ),
-        "unexpected WebSocket close result: {close_result:?}"
-    );
-    assert!(matches!(
-        tcp.try_read(&mut banner_byte),
-        Err(error) if error.kind() == io::ErrorKind::WouldBlock
-    ));
-    assert_eq!(
-        system.events.recv().await,
-        Some(RfbServerEvent::Key {
-            client_id: websocket_id,
-            down: false,
-            keysym: 0x41,
-        })
-    );
-    assert_eq!(
-        system.expect_disconnected(websocket_id).await,
-        RfbDisconnectReason::ClientClosed
-    );
-
-    assert_eq!(tcp.read_banner().await.unwrap(), *b"RFB 003.008\n");
-    drop(websocket);
-    drop(tcp);
-    let (tcp_id, tcp_reason) = system.expect_any_disconnected().await;
-    assert_ne!(tcp_id, websocket_id);
-    assert_eq!(tcp_reason, RfbDisconnectReason::ClientClosed);
     system.stop().await;
 }

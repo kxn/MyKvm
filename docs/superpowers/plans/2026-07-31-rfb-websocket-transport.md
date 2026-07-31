@@ -1,7 +1,12 @@
 # 共享 RFB 连接驱动与 WebSocket 传输实施计划
 
-> **供自动化协作者使用：** 必须使用 `subagent-driven-development` 或
-> `executing-plans` 按任务实施；每个任务严格执行测试先行、独立提交和独立审查。
+> **状态：历史实施记录，不得再次直接执行。** 本计划中所有
+> `RfbConnectionPermit`、`drop(permit)` 以及把 permit 直接交给升级任务的步骤，已被
+> `2026-07-31-rfb-connection-cancellation-safety-design.md` 和
+> `2026-07-31-rfb-connection-cancellation-safety.md` 取代。当前权威流程是
+> `RfbConnectionReservation -> RfbConnectionLease -> run_managed_connection ->
+> finalize_connection`；异常 owner 必须把闸门置为 `Poisoned`。以下旧接口仅用于说明
+> 当时的实施过程，自动化协作者不得据此恢复旧模型。
 
 **目标：** 把现有 TCP 专属 RFB 连接循环抽成共享驱动，保留全部 TCP 行为，并增加
 兼容 noVNC 1.7.0 的 axum `/rfb` WebSocket 入口。

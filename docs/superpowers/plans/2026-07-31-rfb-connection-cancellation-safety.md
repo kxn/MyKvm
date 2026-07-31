@@ -15,7 +15,9 @@
 ## 全局约束
 
 - 所有说明文档使用中文。
-- 不增加公开 API，不改变 RFB、TCP 或 WebSocket 线级行为。
+- 除新增 `RfbConnectionGateError::Poisoned` 和
+  `RfbTcpServerError::ConnectionGatePoisoned` 两个可观察错误变体外，不增加其他公开
+  类型或入口；不改变 RFB、TCP 或 WebSocket 线级行为。
 - 不使用固定延时验证取消和反压。
 - 不依赖 Gitea runner，全部测试在本机运行。
 - 已激活连接的异常取消必须把闸门置为可观察的 `Poisoned`，禁止用 RAII 自动释放掩盖

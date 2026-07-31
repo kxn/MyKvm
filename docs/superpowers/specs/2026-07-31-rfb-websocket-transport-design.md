@@ -14,7 +14,7 @@
 
 错误分类保持类型化：TCP I/O 映射为 `RfbDisconnectReason::Io(ErrorKind)`，WebSocket 传输层故障在私有错误链中保留底层来源，对外映射为稳定的 `WebSocket`，Text 消息映射为 `UnexpectedTextMessage`；普通关闭、关闭信号、协议、编码和帧错误保留各自分类。`/rfb` 无子协议时返回不含 `Sec-WebSocket-Protocol` 的 `101`，请求 `binary` 时选择 `binary`；已有活动连接返回 `409`，关闭信号、事件接收端关闭、客户端标识耗尽和闸门中毒返回 `503`。单条 WebSocket 消息与帧的大小都使用 `max_buffered_input_bytes`，没有第二套重复上限。
 
-自动化测试按实际测试文件分组记录在第 14 节：`rfb_websocket.rs` 有 16 个 WebSocket 集成测试，`rfb_transport_exclusion.rs` 有 2 个跨传输层排他性测试，`rfb_tcp.rs` 有 8 个 TCP 回归测试，`rfb_input_pump.rs` 有 2 个 RFB 输入泵集成测试。依赖锁定为 `axum 0.8.9`、`tokio-tungstenite 0.29.0` 与 `futures-util 0.3.33`，均来自 crates.io，并由许可证与来源门禁审计。后两项是本 crate 的直接开发依赖，同时也通过 axum WebSocket 功能进入正常生产依赖树。noVNC 仅作为固定线级样本来源，不进入仓库或产物；完整网页、真实浏览器、真实视频采集、真实串口、鉴权、TLS 和可运行的无头二进制不属于本次已实施内容。
+自动化测试按实际测试文件分组记录在第 14 节：`rfb_websocket.rs` 有 16 个 WebSocket 集成测试，`rfb_transport_exclusion.rs` 保留 1 个 TCP 活动时拒绝 WebSocket 的集成测试，反方向由带 accept/gate 屏障的 TCP server 单元测试确定性覆盖；`rfb_tcp.rs` 有 8 个 TCP 回归测试，`rfb_input_pump.rs` 有 2 个 RFB 输入泵集成测试。依赖锁定为 `axum 0.8.9`、`tokio-tungstenite 0.29.0` 与 `futures-util 0.3.33`，均来自 crates.io，并由许可证与来源门禁审计。后两项是本 crate 的直接开发依赖；`tokio-tungstenite` 由 axum `ws` 功能进入正常生产依赖树，`futures-util` 是 axum 的正常依赖且还经 tower 进入。noVNC 仅作为固定线级样本来源，不进入仓库或产物；完整网页、真实浏览器、真实视频采集、真实串口、鉴权、TLS 和可运行的无头二进制不属于本次已实施内容。
 
 ## 2. 目标
 
@@ -437,8 +437,8 @@ TCP 驱动一致。
 - 普通连接错误只关闭当前连接并发送一次 `Disconnected`。
 - 接受连接失败、客户端标识耗尽、闸门中毒和事件接收端关闭仍是服务端级错误。
 - 关闭信号结束当前连接后停止接受连接。
-- `Disconnected` 成功入队后才释放连接闸门；输入泵因此总能在下一连接取得许可前处理完
-  前一连接的生命周期事件。
+- `Disconnected` 成功入队后才释放连接闸门；因此前一连接的断开事件保证先于下一连接的
+  生命周期事件进入同一个 FIFO 通道，输入泵按队列顺序处理。
 
 现有回环 TCP 集成测试是抽取重构的回归门禁。除公共类型重命名和配置嵌套外，
 不得修改测试所断言的线级行为。
@@ -599,6 +599,10 @@ H.264 的确定性分支；协议核心对未知编码的既有测试以及下�
   失败路径均保持无虚假事件并毒化闸门。
 - 真实 TCP owner 在完成握手并产生 `Connected` 后被中止，闸门确定性中毒；后续 TCP 服务
   返回类型化 `ConnectionGatePoisoned`。
+- TCP server 单元测试使用仅在 `cfg(test)` 下编译的等待屏障。屏障在 `accept()` 成功后、
+  `gate.acquire()` 前发出通知，不改变生产 API。测试先等待该通知，再直接 poll 客户端
+  banner future 并确认 `Pending`；只有前一连接的 `Disconnected` 已入队、共享收尾释放
+  闸门后，banner 才能完成。该测试禁止使用 sleep 或瞬时 `try_read` 推测调度状态。
 
 ### 14.2 共享连接驱动
 
@@ -637,10 +641,12 @@ H.264 的确定性分支；协议核心对未知编码的既有测试以及下�
 15. 超过输入上限的 WebSocket 消息以 `WebSocket` 原因断开。
 16. 无关子协议不会在响应中回显。
 
-### 14.5 跨传输层排他性：`crates/ipkvm-headless/tests/rfb_transport_exclusion.rs`
+### 14.5 跨传输层排他性
 
-当前文件有 2 个测试：TCP 活动时 WebSocket 升级返回 `409`；WebSocket 活动时 TCP
-客户端在 `Disconnected` 入队并释放共享连接闸门前不收到 RFB 握手横幅。
+`crates/ipkvm-headless/tests/rfb_transport_exclusion.rs` 保留 TCP 活动时 WebSocket 升级
+返回 `409` 的真实双传输集成测试。反方向由 TCP server 单元测试中的 gate-waiter 屏障
+确定性覆盖：WebSocket 活动时，测试先确认 TCP 已被应用层接受并正在等待共享闸门，再证明
+`Disconnected` 入队和闸门释放前 banner future 保持 `Pending`。
 
 ### 14.6 RFB 输入泵：`crates/ipkvm-headless/tests/rfb_input_pump.rs`
 

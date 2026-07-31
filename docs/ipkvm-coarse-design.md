@@ -17,7 +17,7 @@
 
 截至 2026-07-31，`ipkvm-headless` 已提供库级 RFB TCP 与 WebSocket 传输层：`RfbTcpServer` 服务原生 TCP，`RfbWebSocketService` 提供可组合的 axum `/rfb` 路由。两者共用 `rfb_connection` 连接驱动器、`RfbServerEvent` 事件模型和全局单活动 `RfbConnectionGate`；生产组装必须显式创建一个连接闸门，并把它的副本分别传给两个服务。WebSocket 输入和输出承载连续 RFB 二进制字节流，不赋予 WebSocket 消息边界 RFB 语义。
 
-`/rfb` 默认不要求子协议；请求包含 `binary` 时响应选择该子协议。单条 WebSocket 消息和帧都限制为 `RfbProtocolLimits::max_buffered_input_bytes`，现有活动连接返回 `409 Conflict`，关闭信号、事件接收端关闭或客户端标识耗尽返回 `503 Service Unavailable`。锁定 noVNC 1.7.0 提交 `63107bd06d9e1f6136ff21aeda8cd62cbf0d433e` 的线级初始化样本已验证 `Raw` 与 `DesktopSize` 兼容路径。
+`/rfb` 默认不要求子协议；请求包含 `binary` 时响应选择该子协议。单条 WebSocket 消息和帧都限制为 `RfbProtocolLimits::max_buffered_input_bytes`，现有活动连接返回 `409 Conflict`，关闭信号、事件接收端关闭、闸门中毒或客户端标识耗尽返回 `503 Service Unavailable`。锁定 noVNC 1.7.0 提交 `63107bd06d9e1f6136ff21aeda8cd62cbf0d433e` 的无子协议线级初始化样本验证初始与增量 `Raw` 更新；独立升级测试覆盖可选 `binary` 子协议，共享驱动测试覆盖 `DesktopSize`。
 
 上述实现不是完整网页产品：没有 noVNC 静态资源、真实浏览器闭环、真实视频采集、真实串口、鉴权、TLS 或可运行的 headless 二进制。以下无头网页和设备会话描述是目标形态，不能当作当前已交付能力。
 

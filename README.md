@@ -2,7 +2,7 @@
 
 my_ipkvm 是一个软件 IPKVM 项目：主控机通过 USB HDMI 采集卡读取目标机控制台画面，并通过 CH9329 + CH340 串口线向目标机注入 USB HID 键盘鼠标事件。
 
-当前工程已完成 CH9329 协议与输入核心、传输无关的 RFB 3.8 协议核心、en-US 键盘和绝对指针映射，以及单活动 RFB 控制者输入事件泵。RFB 已有 TCP 与 WebSocket 两个库级传输层：`RfbTcpServer` 和可组合的 axum `/rfb` `RfbWebSocketService`。两者共用连接驱动器、`RfbServerEvent` 事件模型和全局 `RfbConnectionGate`；生产组装必须向两个服务显式传入同一个连接闸门。WebSocket 传输层已通过锁定到 noVNC 1.7.0 提交 `63107bd06d9e1f6136ff21aeda8cd62cbf0d433e` 的线级初始化样本，包括无子协议和可选 `binary` 子协议路径。
+当前工程已完成 CH9329 协议与输入核心、传输无关的 RFB 3.8 协议核心、en-US 键盘和绝对指针映射，以及单活动 RFB 控制者输入事件泵。RFB 已有 TCP 与 WebSocket 两个库级传输层：`RfbTcpServer` 和可组合的 axum `/rfb` `RfbWebSocketService`。两者共用连接驱动器、`RfbServerEvent` 事件模型和全局 `RfbConnectionGate`；生产组装必须向两个服务显式传入同一个连接闸门。锁定到 noVNC 1.7.0 提交 `63107bd06d9e1f6136ff21aeda8cd62cbf0d433e` 的无子协议线级初始化样本验证了初始与增量 `Raw` 更新；独立升级测试覆盖无子协议和可选 `binary` 子协议，共享驱动测试覆盖 `DesktopSize`。
 
 当前 `ipkvm-headless` 二进制仍是脚手架，尚不能控制真实机器；上述能力目前是库级闭环。完整网页、真实浏览器闭环、noVNC 静态资源、真实视频采集、真实串口、鉴权、TLS 和可直接运行的无头进程均尚未实现。
 
