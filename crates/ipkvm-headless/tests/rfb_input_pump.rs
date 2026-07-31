@@ -9,7 +9,10 @@ use ipkvm_headless::rfb_input::{
     RfbInputLifecycleError, RfbInputNotice, RfbInputOperation, RfbInputPump, RfbInputRunError,
     RfbKeyboardRejection,
 };
-use ipkvm_headless::rfb_tcp::{RfbDisconnectReason, RfbTcpConfig, RfbTcpServer};
+use ipkvm_headless::{
+    rfb_connection::{RfbConnectionGate, RfbDisconnectReason},
+    rfb_tcp::{RfbTcpConfig, RfbTcpServer},
+};
 use ipkvm_video::{MonotonicTimestamp, PixelFormat, VideoFrame, mock::MockFrameSource};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -124,6 +127,7 @@ async fn real_tcp_client_drives_ch9329_input_and_disconnect_release() {
         Arc::clone(&source),
         event_tx,
         RfbTcpConfig::default(),
+        RfbConnectionGate::new(),
     )
     .unwrap();
     let server_task = tokio::spawn(server.run(shutdown_rx));

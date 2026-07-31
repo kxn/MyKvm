@@ -9,7 +9,7 @@ use super::{
     RfbKeyboardError, RfbKeyboardMapper, RfbKeyboardOutcome, RfbPointerError, RfbPointerMapper,
     RfbPointerOutcome,
 };
-use crate::rfb_tcp::{RfbClientId, RfbDisconnectReason, RfbTcpEvent};
+use crate::rfb_connection::{RfbClientId, RfbDisconnectReason, RfbServerEvent};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RfbControllerReleaseReason {
@@ -125,13 +125,13 @@ pub enum RfbInputError {
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 #[error("failed to process an RFB input event: {source}")]
 pub struct RfbInputEventError {
-    event: Box<RfbTcpEvent>,
+    event: Box<RfbServerEvent>,
     #[source]
     source: RfbInputError,
 }
 
 impl RfbInputEventError {
-    pub fn event(&self) -> &RfbTcpEvent {
+    pub fn event(&self) -> &RfbServerEvent {
         self.event.as_ref()
     }
 
@@ -139,7 +139,7 @@ impl RfbInputEventError {
         &self.source
     }
 
-    pub fn into_parts(self) -> (RfbTcpEvent, RfbInputError) {
+    pub fn into_parts(self) -> (RfbServerEvent, RfbInputError) {
         (*self.event, self.source)
     }
 }
@@ -186,7 +186,7 @@ impl<S: InputSink> RfbInputPump<S> {
 
     pub fn handle_event(
         &mut self,
-        event: RfbTcpEvent,
+        event: RfbServerEvent,
     ) -> Result<RfbInputNotice, RfbInputEventError> {
         match self.try_handle_event(&event) {
             Ok(notice) => Ok(notice),
@@ -203,7 +203,7 @@ impl<S: InputSink> RfbInputPump<S> {
 
     pub async fn run<F>(
         &mut self,
-        receiver: &mut mpsc::Receiver<RfbTcpEvent>,
+        receiver: &mut mpsc::Receiver<RfbServerEvent>,
         mut observe: F,
     ) -> Result<(), RfbInputRunError>
     where
@@ -222,19 +222,22 @@ impl<S: InputSink> RfbInputPump<S> {
         Ok(())
     }
 
-    fn try_handle_event(&mut self, event: &RfbTcpEvent) -> Result<RfbInputNotice, RfbInputError> {
+    fn try_handle_event(
+        &mut self,
+        event: &RfbServerEvent,
+    ) -> Result<RfbInputNotice, RfbInputError> {
         match event {
-            RfbTcpEvent::Connected {
+            RfbServerEvent::Connected {
                 client_id,
                 peer_addr,
                 shared,
             } => self.connect(*client_id, *peer_addr, *shared),
-            RfbTcpEvent::Key {
+            RfbServerEvent::Key {
                 client_id,
                 down,
                 keysym,
             } => self.handle_key(*client_id, *down, *keysym),
-            RfbTcpEvent::Pointer {
+            RfbServerEvent::Pointer {
                 client_id,
                 button_mask,
                 x,
@@ -250,14 +253,14 @@ impl<S: InputSink> RfbInputPump<S> {
                     height: u32::from(framebuffer_size.height()),
                 },
             ),
-            RfbTcpEvent::CutText { client_id, bytes } => {
+            RfbServerEvent::CutText { client_id, bytes } => {
                 self.require_active(*client_id, RfbInputEventKind::CutText)?;
                 Ok(RfbInputNotice::CutTextIgnored {
                     client_id: *client_id,
                     byte_count: bytes.len(),
                 })
             }
-            RfbTcpEvent::ContinuousUpdates {
+            RfbServerEvent::ContinuousUpdates {
                 client_id,
                 enable,
                 rectangle,
@@ -269,7 +272,7 @@ impl<S: InputSink> RfbInputPump<S> {
                     rectangle: *rectangle,
                 })
             }
-            RfbTcpEvent::Disconnected {
+            RfbServerEvent::Disconnected {
                 client_id,
                 peer_addr,
                 reason,
@@ -486,8 +489,8 @@ mod tests {
         SocketAddr::from(([127, 0, 0, 1], port))
     }
 
-    fn connected(client_id: RfbClientId, peer_addr: SocketAddr) -> RfbTcpEvent {
-        RfbTcpEvent::Connected {
+    fn connected(client_id: RfbClientId, peer_addr: SocketAddr) -> RfbServerEvent {
+        RfbServerEvent::Connected {
             client_id,
             peer_addr,
             shared: true,
@@ -511,7 +514,7 @@ mod tests {
         assert_eq!(pump.active_client(), Some(client_id));
 
         assert_eq!(
-            pump.handle_event(RfbTcpEvent::Key {
+            pump.handle_event(RfbServerEvent::Key {
                 client_id,
                 down: true,
                 keysym: 0x61,
@@ -525,7 +528,7 @@ mod tests {
         assert_eq!(pump.sink().key_batches[0].len(), 1);
 
         assert_eq!(
-            pump.handle_event(RfbTcpEvent::Pointer {
+            pump.handle_event(RfbServerEvent::Pointer {
                 client_id,
                 button_mask: 1,
                 x: 100,
@@ -564,7 +567,7 @@ mod tests {
         pump.handle_event(connected(client_id, peer_addr)).unwrap();
 
         assert_eq!(
-            pump.handle_event(RfbTcpEvent::Key {
+            pump.handle_event(RfbServerEvent::Key {
                 client_id,
                 down: true,
                 keysym: 0x0100_0100,
@@ -575,7 +578,7 @@ mod tests {
             })
         );
         assert_eq!(
-            pump.handle_event(RfbTcpEvent::Key {
+            pump.handle_event(RfbServerEvent::Key {
                 client_id,
                 down: true,
                 keysym: 0x41,
@@ -586,7 +589,7 @@ mod tests {
             })
         );
         assert_eq!(
-            pump.handle_event(RfbTcpEvent::Key {
+            pump.handle_event(RfbServerEvent::Key {
                 client_id,
                 down: true,
                 keysym: 0x61,
@@ -597,7 +600,7 @@ mod tests {
             })
         );
         assert_eq!(
-            pump.handle_event(RfbTcpEvent::CutText {
+            pump.handle_event(RfbServerEvent::CutText {
                 client_id,
                 bytes: b"abc".to_vec(),
             }),
@@ -613,7 +616,7 @@ mod tests {
             height: 4,
         };
         assert_eq!(
-            pump.handle_event(RfbTcpEvent::ContinuousUpdates {
+            pump.handle_event(RfbServerEvent::ContinuousUpdates {
                 client_id,
                 enable: true,
                 rectangle,
@@ -637,7 +640,7 @@ mod tests {
         });
         pump.handle_event(connected(client_id, peer_addr)).unwrap();
 
-        let key_event = RfbTcpEvent::Key {
+        let key_event = RfbServerEvent::Key {
             client_id,
             down: true,
             keysym: 0x61,
@@ -661,7 +664,7 @@ mod tests {
             })
         );
 
-        let pointer_event = RfbTcpEvent::Pointer {
+        let pointer_event = RfbServerEvent::Pointer {
             client_id,
             button_mask: 1,
             x: 10,
@@ -691,7 +694,7 @@ mod tests {
         let mut pump = RfbInputPump::new(RecordingSink::default());
 
         let no_controller = pump
-            .handle_event(RfbTcpEvent::Key {
+            .handle_event(RfbServerEvent::Key {
                 client_id: first,
                 down: true,
                 keysym: 0x61,
@@ -718,7 +721,7 @@ mod tests {
         );
 
         let wrong_key = pump
-            .handle_event(RfbTcpEvent::Key {
+            .handle_event(RfbServerEvent::Key {
                 client_id: second,
                 down: true,
                 keysym: 0x61,
@@ -734,7 +737,7 @@ mod tests {
         );
 
         let wrong_disconnect = pump
-            .handle_event(RfbTcpEvent::Disconnected {
+            .handle_event(RfbServerEvent::Disconnected {
                 client_id: second,
                 peer_addr: second_peer,
                 reason: RfbDisconnectReason::ClientClosed,
@@ -749,7 +752,7 @@ mod tests {
         ));
 
         let changed_peer = pump
-            .handle_event(RfbTcpEvent::Disconnected {
+            .handle_event(RfbServerEvent::Disconnected {
                 client_id: first,
                 peer_addr: second_peer,
                 reason: RfbDisconnectReason::ClientClosed,
@@ -774,7 +777,7 @@ mod tests {
         let mut pump = RfbInputPump::new(RecordingSink::default());
 
         assert_eq!(
-            pump.handle_event(RfbTcpEvent::Disconnected {
+            pump.handle_event(RfbServerEvent::Disconnected {
                 client_id,
                 peer_addr,
                 reason: RfbDisconnectReason::HandshakeTimeout,
@@ -798,13 +801,13 @@ mod tests {
         let mut pump = RfbInputPump::new(RecordingSink::default());
 
         pump.handle_event(connected(first, first_peer)).unwrap();
-        pump.handle_event(RfbTcpEvent::Key {
+        pump.handle_event(RfbServerEvent::Key {
             client_id: first,
             down: true,
             keysym: 0x61,
         })
         .unwrap();
-        pump.handle_event(RfbTcpEvent::Pointer {
+        pump.handle_event(RfbServerEvent::Pointer {
             client_id: first,
             button_mask: 1,
             x: 10,
@@ -814,7 +817,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            pump.handle_event(RfbTcpEvent::Disconnected {
+            pump.handle_event(RfbServerEvent::Disconnected {
                 client_id: first,
                 peer_addr: first_peer,
                 reason: RfbDisconnectReason::ClientClosed,
@@ -829,13 +832,13 @@ mod tests {
         assert_eq!(pump.sink().release_count, 1);
 
         pump.handle_event(connected(second, second_peer)).unwrap();
-        pump.handle_event(RfbTcpEvent::Key {
+        pump.handle_event(RfbServerEvent::Key {
             client_id: second,
             down: true,
             keysym: 0x61,
         })
         .unwrap();
-        pump.handle_event(RfbTcpEvent::Pointer {
+        pump.handle_event(RfbServerEvent::Pointer {
             client_id: second,
             button_mask: 1,
             x: 10,
@@ -857,13 +860,13 @@ mod tests {
             ..RecordingSink::default()
         });
         pump.handle_event(connected(client_id, peer_addr)).unwrap();
-        pump.handle_event(RfbTcpEvent::Key {
+        pump.handle_event(RfbServerEvent::Key {
             client_id,
             down: true,
             keysym: 0x61,
         })
         .unwrap();
-        let disconnect = RfbTcpEvent::Disconnected {
+        let disconnect = RfbServerEvent::Disconnected {
             client_id,
             peer_addr,
             reason: RfbDisconnectReason::ClientClosed,
@@ -893,7 +896,7 @@ mod tests {
         let peer_addr = peer(5909);
         let (tx, mut rx) = tokio::sync::mpsc::channel(2);
         tx.send(connected(client_id, peer_addr)).await.unwrap();
-        tx.send(RfbTcpEvent::Key {
+        tx.send(RfbServerEvent::Key {
             client_id,
             down: true,
             keysym: 0x61,
@@ -956,12 +959,12 @@ mod tests {
     async fn run_returns_the_failed_event_and_leaves_later_events_in_the_channel() {
         let client_id = client(12);
         let peer_addr = peer(5911);
-        let failed_key = RfbTcpEvent::Key {
+        let failed_key = RfbServerEvent::Key {
             client_id,
             down: true,
             keysym: 0x61,
         };
-        let later_pointer = RfbTcpEvent::Pointer {
+        let later_pointer = RfbServerEvent::Pointer {
             client_id,
             button_mask: 0,
             x: 10,
@@ -1023,13 +1026,13 @@ mod tests {
         let mut pump = RfbInputPump::new(sink);
 
         pump.handle_event(connected(client_id, peer_addr)).unwrap();
-        pump.handle_event(RfbTcpEvent::Key {
+        pump.handle_event(RfbServerEvent::Key {
             client_id,
             down: true,
             keysym: 0x61,
         })
         .unwrap();
-        pump.handle_event(RfbTcpEvent::Pointer {
+        pump.handle_event(RfbServerEvent::Pointer {
             client_id,
             button_mask: 1,
             x: 10,
@@ -1037,7 +1040,7 @@ mod tests {
             framebuffer_size: RfbSize::new(100, 100).unwrap(),
         })
         .unwrap();
-        pump.handle_event(RfbTcpEvent::Disconnected {
+        pump.handle_event(RfbServerEvent::Disconnected {
             client_id,
             peer_addr,
             reason: RfbDisconnectReason::ClientClosed,
@@ -1067,13 +1070,13 @@ mod tests {
         let sink = Ch9329InputSink::new(queue.clone(), 0, MouseMode::Absolute);
         let mut pump = RfbInputPump::new(sink);
         pump.handle_event(connected(client_id, peer_addr)).unwrap();
-        pump.handle_event(RfbTcpEvent::Key {
+        pump.handle_event(RfbServerEvent::Key {
             client_id,
             down: true,
             keysym: 0x61,
         })
         .unwrap();
-        pump.handle_event(RfbTcpEvent::Pointer {
+        pump.handle_event(RfbServerEvent::Pointer {
             client_id,
             button_mask: 1,
             x: 10,
@@ -1081,7 +1084,7 @@ mod tests {
             framebuffer_size: RfbSize::new(100, 100).unwrap(),
         })
         .unwrap();
-        let disconnect = RfbTcpEvent::Disconnected {
+        let disconnect = RfbServerEvent::Disconnected {
             client_id,
             peer_addr,
             reason: RfbDisconnectReason::ClientClosed,
@@ -1118,7 +1121,7 @@ mod tests {
         let mut pump = RfbInputPump::new(sink);
         pump.handle_event(connected(client_id, peer(5915))).unwrap();
 
-        pump.handle_event(RfbTcpEvent::Pointer {
+        pump.handle_event(RfbServerEvent::Pointer {
             client_id,
             button_mask: 0,
             x: 199,

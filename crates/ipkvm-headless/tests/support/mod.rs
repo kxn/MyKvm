@@ -1,8 +1,15 @@
+#![allow(dead_code)]
+
 use std::{io, net::SocketAddr};
 
+use futures_util::{SinkExt, StreamExt};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
+};
+use tokio_tungstenite::{
+    MaybeTlsStream, WebSocketStream,
+    tungstenite::{Error as WebSocketError, Message},
 };
 
 #[derive(Debug, Eq, PartialEq)]
@@ -24,6 +31,12 @@ pub struct FramebufferUpdate {
 
 pub struct TestRfbClient {
     stream: TcpStream,
+}
+
+pub type ClientWebSocket = WebSocketStream<MaybeTlsStream<TcpStream>>;
+
+pub struct TestWebSocketRfbClient {
+    socket: ClientWebSocket,
 }
 
 impl TestRfbClient {
@@ -130,5 +143,127 @@ impl TestRfbClient {
         let mut bytes = vec![0; length];
         self.stream.read_exact(&mut bytes).await.unwrap();
         bytes
+    }
+}
+
+impl TestWebSocketRfbClient {
+    pub fn new(socket: ClientWebSocket) -> Self {
+        Self { socket }
+    }
+
+    pub async fn read_banner(&mut self) -> [u8; 12] {
+        self.read_binary().await.try_into().unwrap()
+    }
+
+    pub async fn handshake(&mut self, shared: bool) -> ServerInit {
+        assert_eq!(self.read_banner().await, *b"RFB 003.008\n");
+        self.send_binary(b"RFB 003.008\n").await;
+        assert_eq!(self.read_binary().await, [1, 1]);
+        self.send_binary(&[1]).await;
+        assert_eq!(self.read_binary().await, [0, 0, 0, 0]);
+        self.send_binary(&[u8::from(shared)]).await;
+
+        let message = self.read_binary().await;
+        assert!(message.len() >= 24);
+        let width = u16::from_be_bytes([message[0], message[1]]);
+        let height = u16::from_be_bytes([message[2], message[3]]);
+        let name_length =
+            u32::from_be_bytes([message[20], message[21], message[22], message[23]]) as usize;
+        assert_eq!(message.len(), 24 + name_length);
+        let name = String::from_utf8(message[24..].to_vec()).unwrap();
+        ServerInit {
+            width,
+            height,
+            name,
+        }
+    }
+
+    pub async fn request_update(
+        &mut self,
+        incremental: bool,
+        x: u16,
+        y: u16,
+        width: u16,
+        height: u16,
+    ) {
+        let mut message = vec![3, u8::from(incremental)];
+        message.extend_from_slice(&x.to_be_bytes());
+        message.extend_from_slice(&y.to_be_bytes());
+        message.extend_from_slice(&width.to_be_bytes());
+        message.extend_from_slice(&height.to_be_bytes());
+        self.send_binary(&message).await;
+    }
+
+    pub async fn set_pixel_format(&mut self, message: &[u8; 20]) {
+        self.send_binary(message).await;
+    }
+
+    pub async fn set_encodings(&mut self, encodings: &[i32]) {
+        let count = u16::try_from(encodings.len()).unwrap();
+        let mut message = vec![2, 0];
+        message.extend_from_slice(&count.to_be_bytes());
+        for encoding in encodings {
+            message.extend_from_slice(&encoding.to_be_bytes());
+        }
+        self.send_binary(&message).await;
+    }
+
+    pub async fn send_key(&mut self, down: bool, keysym: u32) {
+        let mut message = vec![4, u8::from(down), 0, 0];
+        message.extend_from_slice(&keysym.to_be_bytes());
+        self.send_binary(&message).await;
+    }
+
+    pub async fn read_update(&mut self, pixel_bytes: usize) -> FramebufferUpdate {
+        let message = self.read_binary().await;
+        assert_eq!(message.len(), 16 + pixel_bytes);
+        assert_eq!(&message[..4], &[0, 0, 0, 1]);
+        FramebufferUpdate {
+            x: u16::from_be_bytes([message[4], message[5]]),
+            y: u16::from_be_bytes([message[6], message[7]]),
+            width: u16::from_be_bytes([message[8], message[9]]),
+            height: u16::from_be_bytes([message[10], message[11]]),
+            encoding: i32::from_be_bytes([message[12], message[13], message[14], message[15]]),
+            pixels: message[16..].to_vec(),
+        }
+    }
+
+    pub async fn send_binary(&mut self, bytes: &[u8]) {
+        self.socket
+            .send(Message::Binary(bytes.to_vec().into()))
+            .await
+            .unwrap();
+    }
+
+    pub async fn send_text(&mut self, text: &str) {
+        self.socket
+            .send(Message::Text(text.to_string().into()))
+            .await
+            .unwrap();
+    }
+
+    pub async fn send_ping(&mut self, bytes: &[u8]) {
+        self.socket
+            .send(Message::Ping(bytes.to_vec().into()))
+            .await
+            .unwrap();
+    }
+
+    pub async fn close(&mut self) {
+        self.socket.send(Message::Close(None)).await.unwrap();
+    }
+
+    pub async fn read_message(&mut self) -> Result<Message, WebSocketError> {
+        self.socket
+            .next()
+            .await
+            .unwrap_or(Err(WebSocketError::ConnectionClosed))
+    }
+
+    pub async fn read_binary(&mut self) -> Vec<u8> {
+        match self.read_message().await.unwrap() {
+            Message::Binary(bytes) => bytes.to_vec(),
+            message => panic!("expected binary WebSocket message, got {message:?}"),
+        }
     }
 }

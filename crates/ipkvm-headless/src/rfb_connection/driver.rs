@@ -1,4 +1,4 @@
-use std::{io, net::SocketAddr};
+use std::net::SocketAddr;
 
 use ipkvm_rfb::{
     FramebufferUpdateOutcome, FramebufferUpdateRequest, RfbConfigError, RfbConnectionConfig,
@@ -7,19 +7,18 @@ use ipkvm_rfb::{
 use ipkvm_video::{FrameReceiver, SharedVideoFrame};
 use thiserror::Error;
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::TcpStream,
     sync::{mpsc, watch},
     time,
 };
 
 use super::{
-    RfbClientId, RfbDisconnectReason, RfbTcpConfig, RfbTcpEvent, RfbTcpFrameError,
-    frame::frame_view, pending::PendingFramebufferRequest,
+    RfbClientId, RfbConnectionSettings, RfbDisconnectReason, RfbFrameError, RfbServerEvent,
+    RfbTransport, RfbTransportError, RfbTransportRead, frame::frame_view,
+    pending::PendingFramebufferRequest,
 };
 
 #[derive(Debug, Error)]
-pub(super) enum RfbTcpConnectionError {
+pub(crate) enum RfbConnectionError {
     #[error("RFB handshake timed out")]
     HandshakeTimeout,
     #[error("invalid RFB connection configuration: {0}")]
@@ -29,18 +28,18 @@ pub(super) enum RfbTcpConnectionError {
     #[error("RFB encoding error: {0}")]
     Encode(#[from] RfbEncodeError),
     #[error("video frame error: {0}")]
-    Frame(#[from] RfbTcpFrameError),
-    #[error("TCP I/O error: {0}")]
-    Io(#[from] io::Error),
+    Frame(#[from] RfbFrameError),
+    #[error("RFB transport error: {0}")]
+    Transport(#[from] RfbTransportError),
     #[error("RFB event receiver is closed")]
     EventChannelClosed,
 }
 
 #[derive(Debug)]
-pub(super) enum ConnectionEnd {
+pub(crate) enum ConnectionEnd {
     ClientClosed,
     ServerShutdown,
-    Failed(RfbTcpConnectionError),
+    Failed(RfbConnectionError),
 }
 
 struct ConnectionState {
@@ -54,51 +53,59 @@ struct ConnectionState {
 }
 
 impl ConnectionEnd {
-    pub(super) fn reason(&self) -> Option<RfbDisconnectReason> {
+    pub(crate) fn reason(&self) -> Option<RfbDisconnectReason> {
         Some(match self {
             Self::ClientClosed => RfbDisconnectReason::ClientClosed,
             Self::ServerShutdown => RfbDisconnectReason::ServerShutdown,
-            Self::Failed(RfbTcpConnectionError::HandshakeTimeout) => {
+            Self::Failed(RfbConnectionError::HandshakeTimeout) => {
                 RfbDisconnectReason::HandshakeTimeout
             }
-            Self::Failed(RfbTcpConnectionError::CoreConfig(error)) => {
+            Self::Failed(RfbConnectionError::CoreConfig(error)) => {
                 RfbDisconnectReason::CoreConfig(error.clone())
             }
-            Self::Failed(RfbTcpConnectionError::Protocol(error)) => {
+            Self::Failed(RfbConnectionError::Protocol(error)) => {
                 RfbDisconnectReason::Protocol(error.clone())
             }
-            Self::Failed(RfbTcpConnectionError::Encode(error)) => {
+            Self::Failed(RfbConnectionError::Encode(error)) => {
                 RfbDisconnectReason::Encode(error.clone())
             }
-            Self::Failed(RfbTcpConnectionError::Frame(error)) => {
+            Self::Failed(RfbConnectionError::Frame(error)) => {
                 RfbDisconnectReason::Frame(error.clone())
             }
-            Self::Failed(RfbTcpConnectionError::Io(error)) => RfbDisconnectReason::Io(error.kind()),
-            Self::Failed(RfbTcpConnectionError::EventChannelClosed) => return None,
+            Self::Failed(RfbConnectionError::Transport(RfbTransportError::Io(error))) => {
+                RfbDisconnectReason::Io(error.kind())
+            }
+            Self::Failed(RfbConnectionError::Transport(RfbTransportError::WebSocket {
+                ..
+            })) => RfbDisconnectReason::WebSocket,
+            Self::Failed(RfbConnectionError::Transport(
+                RfbTransportError::UnexpectedTextMessage,
+            )) => RfbDisconnectReason::UnexpectedTextMessage,
+            Self::Failed(RfbConnectionError::EventChannelClosed) => return None,
         })
     }
 }
 
-pub(super) async fn run_connection(
+pub(crate) async fn run_connection<T: RfbTransport>(
     client_id: RfbClientId,
     peer_addr: SocketAddr,
-    mut stream: TcpStream,
+    mut transport: T,
     frame_rx: FrameReceiver,
-    event_tx: mpsc::Sender<RfbTcpEvent>,
-    config: RfbTcpConfig,
+    event_tx: mpsc::Sender<RfbServerEvent>,
+    settings: RfbConnectionSettings,
     shutdown: watch::Receiver<bool>,
 ) -> ConnectionEnd {
     let result = drive_connection(
         client_id,
         peer_addr,
-        &mut stream,
+        &mut transport,
         frame_rx,
         event_tx,
-        config,
+        settings,
         shutdown,
     )
     .await;
-    let _ = stream.shutdown().await;
+    transport.close().await;
 
     match result {
         Ok(end) => end,
@@ -106,15 +113,15 @@ pub(super) async fn run_connection(
     }
 }
 
-async fn drive_connection(
+async fn drive_connection<T: RfbTransport>(
     client_id: RfbClientId,
     peer_addr: SocketAddr,
-    stream: &mut TcpStream,
+    transport: &mut T,
     frame_rx: FrameReceiver,
-    event_tx: mpsc::Sender<RfbTcpEvent>,
-    config: RfbTcpConfig,
+    event_tx: mpsc::Sender<RfbServerEvent>,
+    settings: RfbConnectionSettings,
     mut shutdown: watch::Receiver<bool>,
-) -> Result<ConnectionEnd, RfbTcpConnectionError> {
+) -> Result<ConnectionEnd, RfbConnectionError> {
     if shutdown_is_requested(&shutdown) {
         return Ok(ConnectionEnd::ServerShutdown);
     }
@@ -122,14 +129,14 @@ async fn drive_connection(
     let initial_frame = frame_rx
         .borrow()
         .clone()
-        .ok_or(RfbTcpFrameError::FrameUnavailable)?;
+        .ok_or(RfbFrameError::FrameUnavailable)?;
     let initial_view = frame_view(&initial_frame)?;
     let mut core = RfbConnectionCore::new(RfbConnectionConfig {
-        desktop_name: config.desktop_name.clone(),
+        desktop_name: settings.desktop_name.clone(),
         initial_size: initial_view.size(),
-        limits: config.protocol_limits,
+        limits: settings.protocol_limits,
     })?;
-    write_core_output(stream, &mut core).await?;
+    write_core_output(transport, &mut core).await?;
 
     let mut state = ConnectionState {
         client_id,
@@ -140,38 +147,45 @@ async fn drive_connection(
         last_observed_seq: initial_frame.seq,
         last_sent_seq: None,
     };
-    let handshake_deadline = time::sleep(config.handshake_timeout);
+    let handshake_deadline = time::sleep(settings.handshake_timeout);
     tokio::pin!(handshake_deadline);
-    let mut read_buffer = vec![0; config.read_buffer_bytes];
+    let mut input = Vec::new();
 
     loop {
         let awaiting_handshake = state.awaiting_handshake();
         tokio::select! {
-            read = stream.read(&mut read_buffer) => {
-                let count = read?;
-                if count == 0 {
-                    return Ok(ConnectionEnd::ClientClosed);
+            read = transport.receive_into(&mut input) => {
+                match read? {
+                    RfbTransportRead::Data => {
+                        debug_assert!(!input.is_empty());
+                        let events = state.core.push_input(&input);
+                        write_core_output(transport, &mut state.core).await?;
+                        if let Some(error) = state.handle_core_events(transport, &event_tx, events).await? {
+                            return Err(error.into());
+                        }
+                        write_core_output(transport, &mut state.core).await?;
+                    }
+                    RfbTransportRead::Continue => {
+                        debug_assert!(input.is_empty());
+                    }
+                    RfbTransportRead::Closed => {
+                        debug_assert!(input.is_empty());
+                        return Ok(ConnectionEnd::ClientClosed);
+                    }
                 }
-
-                let events = state.core.push_input(&read_buffer[..count]);
-                write_core_output(stream, &mut state.core).await?;
-                if let Some(error) = state.handle_core_events(stream, &event_tx, events).await? {
-                    return Err(error.into());
-                }
-                write_core_output(stream, &mut state.core).await?;
             }
             changed = state.frame_rx.changed(), if state.pending.get().is_some() => {
-                changed.map_err(|_| RfbTcpFrameError::FrameUnavailable)?;
-                state.handle_frame_change(stream).await?;
+                changed.map_err(|_| RfbFrameError::FrameUnavailable)?;
+                state.handle_frame_change(transport).await?;
             }
             _ = wait_for_shutdown(&mut shutdown) => {
                 return Ok(ConnectionEnd::ServerShutdown);
             }
             _ = event_tx.closed() => {
-                return Err(RfbTcpConnectionError::EventChannelClosed);
+                return Err(RfbConnectionError::EventChannelClosed);
             }
             _ = &mut handshake_deadline, if awaiting_handshake => {
-                return Err(RfbTcpConnectionError::HandshakeTimeout);
+                return Err(RfbConnectionError::HandshakeTimeout);
             }
         }
     }
@@ -184,26 +198,26 @@ impl ConnectionState {
 
     async fn handle_core_events(
         &mut self,
-        stream: &mut TcpStream,
-        event_tx: &mpsc::Sender<RfbTcpEvent>,
+        transport: &mut impl RfbTransport,
+        event_tx: &mpsc::Sender<RfbServerEvent>,
         events: Vec<Result<RfbEvent, RfbProtocolError>>,
-    ) -> Result<Option<RfbProtocolError>, RfbTcpConnectionError> {
+    ) -> Result<Option<RfbProtocolError>, RfbConnectionError> {
         for event in events {
             let event = match event {
                 Ok(event) => event,
                 Err(error) => return Ok(Some(error)),
             };
             let event = match event {
-                RfbEvent::HandshakeCompleted { shared } => RfbTcpEvent::Connected {
+                RfbEvent::HandshakeCompleted { shared } => RfbServerEvent::Connected {
                     client_id: self.client_id,
                     peer_addr: self.peer_addr,
                     shared,
                 },
                 RfbEvent::FramebufferUpdateRequested(request) => {
-                    self.handle_update_request(stream, request).await?;
+                    self.handle_update_request(transport, request).await?;
                     continue;
                 }
-                RfbEvent::Key { down, keysym } => RfbTcpEvent::Key {
+                RfbEvent::Key { down, keysym } => RfbServerEvent::Key {
                     client_id: self.client_id,
                     down,
                     keysym,
@@ -213,19 +227,19 @@ impl ConnectionState {
                     x,
                     y,
                     framebuffer_size,
-                } => RfbTcpEvent::Pointer {
+                } => RfbServerEvent::Pointer {
                     client_id: self.client_id,
                     button_mask,
                     x,
                     y,
                     framebuffer_size,
                 },
-                RfbEvent::CutText(bytes) => RfbTcpEvent::CutText {
+                RfbEvent::CutText(bytes) => RfbServerEvent::CutText {
                     client_id: self.client_id,
                     bytes,
                 },
                 RfbEvent::EnableContinuousUpdates { enable, rectangle } => {
-                    RfbTcpEvent::ContinuousUpdates {
+                    RfbServerEvent::ContinuousUpdates {
                         client_id: self.client_id,
                         enable,
                         rectangle,
@@ -239,9 +253,9 @@ impl ConnectionState {
 
     async fn handle_update_request(
         &mut self,
-        stream: &mut TcpStream,
+        transport: &mut impl RfbTransport,
         request: FramebufferUpdateRequest,
-    ) -> Result<(), RfbTcpConnectionError> {
+    ) -> Result<(), RfbConnectionError> {
         let frame = self.latest_frame()?;
         let size = frame_view(&frame)?.size();
         self.pending.merge(request, size);
@@ -251,7 +265,7 @@ impl ConnectionState {
             .get()
             .is_some_and(|merged| !merged.incremental || self.last_sent_seq != Some(frame.seq));
         if should_send && let Some(request) = self.pending.take() {
-            let outcome = queue_and_write_frame(stream, &mut self.core, &frame, request).await?;
+            let outcome = queue_and_write_frame(transport, &mut self.core, &frame, request).await?;
             update_last_sent_sequence(&mut self.last_sent_seq, frame.seq, outcome);
         }
         Ok(())
@@ -259,26 +273,26 @@ impl ConnectionState {
 
     async fn handle_frame_change(
         &mut self,
-        stream: &mut TcpStream,
-    ) -> Result<(), RfbTcpConnectionError> {
+        transport: &mut impl RfbTransport,
+    ) -> Result<(), RfbConnectionError> {
         let frame = self.latest_frame()?;
         if self.last_sent_seq != Some(frame.seq)
             && let Some(request) = self.pending.take()
         {
-            let outcome = queue_and_write_frame(stream, &mut self.core, &frame, request).await?;
+            let outcome = queue_and_write_frame(transport, &mut self.core, &frame, request).await?;
             update_last_sent_sequence(&mut self.last_sent_seq, frame.seq, outcome);
         }
         Ok(())
     }
 
-    fn latest_frame(&mut self) -> Result<SharedVideoFrame, RfbTcpFrameError> {
+    fn latest_frame(&mut self) -> Result<SharedVideoFrame, RfbFrameError> {
         let frame = self
             .frame_rx
             .borrow()
             .clone()
-            .ok_or(RfbTcpFrameError::FrameUnavailable)?;
+            .ok_or(RfbFrameError::FrameUnavailable)?;
         if frame.seq < self.last_observed_seq {
-            return Err(RfbTcpFrameError::FrameSequenceRegressed {
+            return Err(RfbFrameError::FrameSequenceRegressed {
                 previous: self.last_observed_seq,
                 actual: frame.seq,
             });
@@ -288,25 +302,25 @@ impl ConnectionState {
     }
 }
 
-async fn write_core_output(
-    stream: &mut TcpStream,
+async fn write_core_output<T: RfbTransport>(
+    transport: &mut T,
     core: &mut RfbConnectionCore,
-) -> Result<(), RfbTcpConnectionError> {
+) -> Result<(), RfbConnectionError> {
     let output = core.take_output();
     if !output.is_empty() {
-        stream.write_all(&output).await?;
+        transport.send_binary(output).await?;
     }
     Ok(())
 }
 
-async fn queue_and_write_frame(
-    stream: &mut TcpStream,
+async fn queue_and_write_frame<T: RfbTransport>(
+    transport: &mut T,
     core: &mut RfbConnectionCore,
     frame: &SharedVideoFrame,
     request: FramebufferUpdateRequest,
-) -> Result<FramebufferUpdateOutcome, RfbTcpConnectionError> {
+) -> Result<FramebufferUpdateOutcome, RfbConnectionError> {
     let outcome = core.queue_framebuffer_update(frame_view(frame)?, request)?;
-    write_core_output(stream, core).await?;
+    write_core_output(transport, core).await?;
     Ok(outcome)
 }
 
@@ -321,13 +335,13 @@ fn update_last_sent_sequence(
 }
 
 async fn send_event(
-    sender: &mpsc::Sender<RfbTcpEvent>,
-    event: RfbTcpEvent,
-) -> Result<(), RfbTcpConnectionError> {
+    sender: &mpsc::Sender<RfbServerEvent>,
+    event: RfbServerEvent,
+) -> Result<(), RfbConnectionError> {
     sender
         .send(event)
         .await
-        .map_err(|_| RfbTcpConnectionError::EventChannelClosed)
+        .map_err(|_| RfbConnectionError::EventChannelClosed)
 }
 
 fn shutdown_is_requested(shutdown: &watch::Receiver<bool>) -> bool {
@@ -347,7 +361,13 @@ async fn wait_for_shutdown(shutdown: &mut watch::Receiver<bool>) {
 
 #[cfg(test)]
 mod tests {
-    use std::{net::SocketAddr, sync::Arc, time::Duration};
+    use std::{
+        collections::VecDeque,
+        io,
+        net::SocketAddr,
+        sync::{Arc, Mutex},
+        time::Duration,
+    };
 
     use ipkvm_rfb::{RfbEncodeError, RfbProtocolError, RfbSize};
     use ipkvm_video::{
@@ -361,6 +381,167 @@ mod tests {
 
     use super::super::*;
     use super::*;
+
+    enum FakeRead {
+        Data(Vec<u8>),
+        Continue,
+        Closed,
+    }
+
+    struct FakeTransport {
+        reads: VecDeque<Result<FakeRead, RfbTransportError>>,
+        sent: Arc<Mutex<Vec<Vec<u8>>>>,
+        closed: Arc<Mutex<usize>>,
+    }
+
+    struct TestTransport {
+        stream: TcpStream,
+    }
+
+    impl TestTransport {
+        fn new(stream: TcpStream) -> Self {
+            Self { stream }
+        }
+    }
+
+    impl FakeTransport {
+        fn from_reads(reads: impl IntoIterator<Item = FakeRead>) -> Self {
+            Self {
+                reads: reads.into_iter().map(Ok).collect(),
+                sent: Arc::new(Mutex::new(Vec::new())),
+                closed: Arc::new(Mutex::new(0)),
+            }
+        }
+
+        fn from_error(error: RfbTransportError) -> Self {
+            Self {
+                reads: [Err(error)].into(),
+                sent: Arc::new(Mutex::new(Vec::new())),
+                closed: Arc::new(Mutex::new(0)),
+            }
+        }
+    }
+
+    impl RfbTransport for FakeTransport {
+        async fn receive_into(
+            &mut self,
+            buffer: &mut Vec<u8>,
+        ) -> Result<RfbTransportRead, RfbTransportError> {
+            buffer.clear();
+            match self
+                .reads
+                .pop_front()
+                .expect("fake transport ran out of reads")?
+            {
+                FakeRead::Data(bytes) => {
+                    buffer.extend(bytes);
+                    Ok(RfbTransportRead::Data)
+                }
+                FakeRead::Continue => Ok(RfbTransportRead::Continue),
+                FakeRead::Closed => Ok(RfbTransportRead::Closed),
+            }
+        }
+
+        async fn send_binary(&mut self, bytes: Vec<u8>) -> Result<(), RfbTransportError> {
+            self.sent.lock().unwrap().push(bytes);
+            Ok(())
+        }
+
+        async fn close(&mut self) {
+            *self.closed.lock().unwrap() += 1;
+        }
+    }
+
+    impl RfbTransport for TestTransport {
+        async fn receive_into(
+            &mut self,
+            buffer: &mut Vec<u8>,
+        ) -> Result<RfbTransportRead, RfbTransportError> {
+            buffer.clear();
+            buffer.resize(16 * 1024, 0);
+            let count = self.stream.read(buffer).await?;
+            buffer.truncate(count);
+            if count == 0 {
+                Ok(RfbTransportRead::Closed)
+            } else {
+                Ok(RfbTransportRead::Data)
+            }
+        }
+
+        async fn send_binary(&mut self, bytes: Vec<u8>) -> Result<(), RfbTransportError> {
+            self.stream.write_all(&bytes).await?;
+            Ok(())
+        }
+
+        async fn close(&mut self) {
+            let _ = self.stream.shutdown().await;
+        }
+    }
+
+    struct TestConnectionResult {
+        end: ConnectionEnd,
+        sent: Vec<Vec<u8>>,
+        close_count: usize,
+    }
+
+    async fn run_test_connection(transport: FakeTransport) -> TestConnectionResult {
+        let sent = Arc::clone(&transport.sent);
+        let closed = Arc::clone(&transport.closed);
+        let frame_source = MockFrameSource::new();
+        frame_source.publish_frame(shared_bgra_frame(1, 1, 1, &[0; 4]));
+        let (event_tx, _event_rx) = mpsc::channel(1);
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let end = run_connection(
+            RfbClientId::for_test(1),
+            "127.0.0.1:5900".parse().unwrap(),
+            transport,
+            frame_source.subscribe(),
+            event_tx,
+            RfbConnectionSettings::default(),
+            shutdown_rx,
+        )
+        .await;
+        let sent = sent.lock().unwrap().clone();
+        let close_count = *closed.lock().unwrap();
+        TestConnectionResult {
+            end,
+            sent,
+            close_count,
+        }
+    }
+
+    #[tokio::test]
+    async fn control_messages_do_not_enter_the_rfb_core() {
+        let transport = FakeTransport::from_reads([
+            FakeRead::Continue,
+            FakeRead::Data(b"RFB 003.008\n".to_vec()),
+            FakeRead::Closed,
+        ]);
+        let result = run_test_connection(transport).await;
+        assert!(result.sent.starts_with(&[b"RFB 003.008\n".to_vec()]));
+        assert!(matches!(result.end, ConnectionEnd::ClientClosed));
+        assert_eq!(result.close_count, 1);
+    }
+
+    #[tokio::test]
+    async fn transport_text_error_has_a_stable_disconnect_reason() {
+        let transport = FakeTransport::from_error(RfbTransportError::UnexpectedTextMessage);
+        let result = run_test_connection(transport).await;
+        assert_eq!(
+            result.end.reason(),
+            Some(RfbDisconnectReason::UnexpectedTextMessage)
+        );
+        assert_eq!(result.close_count, 1);
+    }
+
+    #[tokio::test]
+    async fn transport_websocket_error_has_a_stable_disconnect_reason() {
+        let transport = FakeTransport::from_error(RfbTransportError::websocket(io::Error::other(
+            "test WebSocket transport failure",
+        )));
+        let result = run_test_connection(transport).await;
+        assert_eq!(result.end.reason(), Some(RfbDisconnectReason::WebSocket));
+    }
 
     fn shared_bgra_frame(seq: u64, width: u32, height: u32, data: &[u8]) -> Arc<VideoFrame> {
         Arc::new(VideoFrame::new(
@@ -476,18 +657,18 @@ mod tests {
         peer_addr: SocketAddr,
         stream: TcpStream,
         frame_source: &MockFrameSource,
-        event_tx: mpsc::Sender<RfbTcpEvent>,
-        config: RfbTcpConfig,
+        event_tx: mpsc::Sender<RfbServerEvent>,
+        settings: RfbConnectionSettings,
         shutdown_rx: watch::Receiver<bool>,
     ) -> tokio::task::JoinHandle<ConnectionEnd> {
         let frame_rx = frame_source.subscribe();
         tokio::spawn(run_connection(
             client_id,
             peer_addr,
-            stream,
+            TestTransport::new(stream),
             frame_rx,
             event_tx,
-            config,
+            settings,
             shutdown_rx,
         ))
     }
@@ -495,11 +676,11 @@ mod tests {
     async fn completed_connection(
         client_id: RfbClientId,
         frame_source: &MockFrameSource,
-        config: RfbTcpConfig,
+        settings: RfbConnectionSettings,
     ) -> (
         tokio::task::JoinHandle<ConnectionEnd>,
         TcpStream,
-        mpsc::Receiver<RfbTcpEvent>,
+        mpsc::Receiver<RfbServerEvent>,
         watch::Sender<bool>,
     ) {
         let (server_stream, mut client_stream, peer_addr) = tcp_pair().await;
@@ -511,13 +692,13 @@ mod tests {
             server_stream,
             frame_source,
             event_tx,
-            config,
+            settings,
             shutdown_rx,
         );
         finish_handshake(&mut client_stream, true).await;
         assert!(matches!(
             event_rx.recv().await,
-            Some(RfbTcpEvent::Connected {
+            Some(RfbServerEvent::Connected {
                 client_id: actual,
                 ..
             }) if actual == client_id
@@ -538,7 +719,7 @@ mod tests {
             server_stream,
             &frame_source,
             event_tx,
-            RfbTcpConfig::default(),
+            RfbConnectionSettings::default(),
             shutdown_rx,
         );
 
@@ -549,7 +730,7 @@ mod tests {
         assert_eq!(handshake, (2, 1, "my_ipkvm".to_string()));
         assert!(matches!(
             event_rx.recv().await,
-            Some(RfbTcpEvent::Connected {
+            Some(RfbServerEvent::Connected {
                 client_id: RfbClientId(1),
                 peer_addr: actual_peer,
                 shared: true,
@@ -573,14 +754,14 @@ mod tests {
             server_stream,
             &frame_source,
             event_tx,
-            RfbTcpConfig::default(),
+            RfbConnectionSettings::default(),
             shutdown_rx,
         );
 
         finish_handshake(&mut client_stream, false).await;
         assert!(matches!(
             event_rx.recv().await,
-            Some(RfbTcpEvent::Connected { shared: false, .. })
+            Some(RfbServerEvent::Connected { shared: false, .. })
         ));
 
         let mut messages = vec![4, 1, 0, 0, 0, 0, 0, 0x41];
@@ -591,7 +772,7 @@ mod tests {
 
         assert_eq!(
             event_rx.recv().await,
-            Some(RfbTcpEvent::Key {
+            Some(RfbServerEvent::Key {
                 client_id: RfbClientId(7),
                 down: true,
                 keysym: 0x41,
@@ -599,7 +780,7 @@ mod tests {
         );
         assert_eq!(
             event_rx.recv().await,
-            Some(RfbTcpEvent::Pointer {
+            Some(RfbServerEvent::Pointer {
                 client_id: RfbClientId(7),
                 button_mask: 3,
                 x: 10,
@@ -609,14 +790,14 @@ mod tests {
         );
         assert_eq!(
             event_rx.recv().await,
-            Some(RfbTcpEvent::CutText {
+            Some(RfbServerEvent::CutText {
                 client_id: RfbClientId(7),
                 bytes: b"abc".to_vec(),
             })
         );
         assert!(matches!(
             event_rx.recv().await,
-            Some(RfbTcpEvent::ContinuousUpdates {
+            Some(RfbServerEvent::ContinuousUpdates {
                 client_id: RfbClientId(7),
                 enable: true,
                 rectangle,
@@ -643,7 +824,7 @@ mod tests {
             server_stream,
             &frame_source,
             event_tx,
-            RfbTcpConfig::default(),
+            RfbConnectionSettings::default(),
             shutdown_rx,
         );
 
@@ -656,7 +837,7 @@ mod tests {
 
         assert!(matches!(
             event_rx.recv().await,
-            Some(RfbTcpEvent::Key {
+            Some(RfbServerEvent::Key {
                 down: true,
                 keysym: 0x42,
                 ..
@@ -664,7 +845,7 @@ mod tests {
         ));
         assert!(matches!(
             task.await.unwrap(),
-            ConnectionEnd::Failed(RfbTcpConnectionError::Protocol(
+            ConnectionEnd::Failed(RfbConnectionError::Protocol(
                 RfbProtocolError::UnsupportedClientMessageType(0xff)
             ))
         ));
@@ -683,7 +864,7 @@ mod tests {
             server_stream,
             &frame_source,
             event_tx,
-            RfbTcpConfig::default(),
+            RfbConnectionSettings::default(),
             shutdown_rx,
         );
 
@@ -695,7 +876,7 @@ mod tests {
 
         assert!(matches!(
             task.await.unwrap(),
-            ConnectionEnd::Failed(RfbTcpConnectionError::HandshakeTimeout)
+            ConnectionEnd::Failed(RfbConnectionError::HandshakeTimeout)
         ));
     }
 
@@ -712,7 +893,7 @@ mod tests {
             server_stream,
             &frame_source,
             event_tx,
-            RfbTcpConfig::default(),
+            RfbConnectionSettings::default(),
             shutdown_rx,
         );
 
@@ -729,8 +910,12 @@ mod tests {
     async fn non_incremental_request_resends_same_frame() {
         let frame_source = MockFrameSource::new();
         frame_source.publish_frame(shared_bgra_frame(1, 2, 1, &[1, 2, 3, 9, 4, 5, 6, 9]));
-        let (task, mut client, _events, _shutdown) =
-            completed_connection(RfbClientId(10), &frame_source, RfbTcpConfig::default()).await;
+        let (task, mut client, _events, _shutdown) = completed_connection(
+            RfbClientId(10),
+            &frame_source,
+            RfbConnectionSettings::default(),
+        )
+        .await;
 
         send_update_request(&mut client, false, 0, 0, 2, 1).await;
         let first = read_update(&mut client, 8).await;
@@ -748,8 +933,12 @@ mod tests {
     async fn incremental_request_waits_for_new_sequence() {
         let frame_source = MockFrameSource::new();
         frame_source.publish_frame(shared_bgra_frame(1, 2, 1, &[0; 8]));
-        let (task, mut client, mut events, _shutdown) =
-            completed_connection(RfbClientId(11), &frame_source, RfbTcpConfig::default()).await;
+        let (task, mut client, mut events, _shutdown) = completed_connection(
+            RfbClientId(11),
+            &frame_source,
+            RfbConnectionSettings::default(),
+        )
+        .await;
         send_update_request(&mut client, false, 0, 0, 2, 1).await;
         read_update(&mut client, 8).await;
 
@@ -757,7 +946,7 @@ mod tests {
         send_key(&mut client, true, 0x41).await;
         assert!(matches!(
             events.recv().await,
-            Some(RfbTcpEvent::Key { keysym: 0x41, .. })
+            Some(RfbServerEvent::Key { keysym: 0x41, .. })
         ));
         let mut unexpected = [0; 1];
         assert!(matches!(
@@ -777,8 +966,12 @@ mod tests {
     async fn outstanding_incremental_requests_coalesce() {
         let frame_source = MockFrameSource::new();
         frame_source.publish_frame(shared_bgra_frame(1, 2, 1, &[0; 8]));
-        let (task, mut client, mut events, _shutdown) =
-            completed_connection(RfbClientId(12), &frame_source, RfbTcpConfig::default()).await;
+        let (task, mut client, mut events, _shutdown) = completed_connection(
+            RfbClientId(12),
+            &frame_source,
+            RfbConnectionSettings::default(),
+        )
+        .await;
         send_update_request(&mut client, false, 0, 0, 2, 1).await;
         read_update(&mut client, 8).await;
 
@@ -787,7 +980,7 @@ mod tests {
         send_key(&mut client, true, 0x42).await;
         assert!(matches!(
             events.recv().await,
-            Some(RfbTcpEvent::Key { keysym: 0x42, .. })
+            Some(RfbServerEvent::Key { keysym: 0x42, .. })
         ));
         frame_source.publish_frame(shared_bgra_frame(2, 2, 1, &[1, 2, 3, 0, 4, 5, 6, 0]));
 
@@ -806,8 +999,12 @@ mod tests {
     async fn desktop_size_is_sent_before_new_pixels() {
         let frame_source = MockFrameSource::new();
         frame_source.publish_frame(shared_bgra_frame(1, 2, 1, &[0; 8]));
-        let (task, mut client, _events, _shutdown) =
-            completed_connection(RfbClientId(13), &frame_source, RfbTcpConfig::default()).await;
+        let (task, mut client, _events, _shutdown) = completed_connection(
+            RfbClientId(13),
+            &frame_source,
+            RfbConnectionSettings::default(),
+        )
+        .await;
         send_set_encodings(&mut client, &[-223]).await;
         send_update_request(&mut client, false, 0, 0, 2, 1).await;
         read_update(&mut client, 8).await;
@@ -838,8 +1035,12 @@ mod tests {
     async fn pointer_events_keep_the_coordinate_size_from_their_input_epoch() {
         let frame_source = MockFrameSource::new();
         frame_source.publish_frame(shared_bgra_frame(1, 2, 1, &[0; 8]));
-        let (task, mut client, mut events, _shutdown) =
-            completed_connection(RfbClientId(17), &frame_source, RfbTcpConfig::default()).await;
+        let (task, mut client, mut events, _shutdown) = completed_connection(
+            RfbClientId(17),
+            &frame_source,
+            RfbConnectionSettings::default(),
+        )
+        .await;
         send_set_encodings(&mut client, &[-223]).await;
         frame_source.publish_frame(shared_bgra_frame(2, 3, 1, &[1; 12]));
 
@@ -849,7 +1050,7 @@ mod tests {
 
         assert_eq!(
             events.recv().await,
-            Some(RfbTcpEvent::Pointer {
+            Some(RfbServerEvent::Pointer {
                 client_id: RfbClientId(17),
                 button_mask: 0,
                 x: 1,
@@ -862,7 +1063,7 @@ mod tests {
         client.write_all(&[5, 0, 0, 2, 0, 0]).await.unwrap();
         assert_eq!(
             events.recv().await,
-            Some(RfbTcpEvent::Pointer {
+            Some(RfbServerEvent::Pointer {
                 client_id: RfbClientId(17),
                 button_mask: 0,
                 x: 2,
@@ -879,8 +1080,12 @@ mod tests {
     async fn resize_without_negotiation_ends_connection() {
         let frame_source = MockFrameSource::new();
         frame_source.publish_frame(shared_bgra_frame(1, 2, 1, &[0; 8]));
-        let (task, mut client, _events, _shutdown) =
-            completed_connection(RfbClientId(14), &frame_source, RfbTcpConfig::default()).await;
+        let (task, mut client, _events, _shutdown) = completed_connection(
+            RfbClientId(14),
+            &frame_source,
+            RfbConnectionSettings::default(),
+        )
+        .await;
         send_update_request(&mut client, false, 0, 0, 2, 1).await;
         read_update(&mut client, 8).await;
 
@@ -889,7 +1094,7 @@ mod tests {
 
         assert!(matches!(
             task.await.unwrap(),
-            ConnectionEnd::Failed(RfbTcpConnectionError::Encode(
+            ConnectionEnd::Failed(RfbConnectionError::Encode(
                 RfbEncodeError::DesktopSizeNotNegotiated { .. }
             ))
         ));
@@ -899,15 +1104,19 @@ mod tests {
     async fn regressed_frame_sequence_ends_connection() {
         let frame_source = MockFrameSource::new();
         frame_source.publish_frame(shared_bgra_frame(2, 1, 1, &[0; 4]));
-        let (task, mut client, _events, _shutdown) =
-            completed_connection(RfbClientId(15), &frame_source, RfbTcpConfig::default()).await;
+        let (task, mut client, _events, _shutdown) = completed_connection(
+            RfbClientId(15),
+            &frame_source,
+            RfbConnectionSettings::default(),
+        )
+        .await;
         frame_source.publish_frame(shared_bgra_frame(1, 1, 1, &[0; 4]));
         send_update_request(&mut client, false, 0, 0, 1, 1).await;
 
         assert!(matches!(
             task.await.unwrap(),
-            ConnectionEnd::Failed(RfbTcpConnectionError::Frame(
-                RfbTcpFrameError::FrameSequenceRegressed {
+            ConnectionEnd::Failed(RfbConnectionError::Frame(
+                RfbFrameError::FrameSequenceRegressed {
                     previous: 2,
                     actual: 1,
                 }
@@ -919,7 +1128,7 @@ mod tests {
     async fn framebuffer_limit_never_writes_partial_update() {
         let frame_source = MockFrameSource::new();
         frame_source.publish_frame(shared_bgra_frame(1, 1, 1, &[0; 4]));
-        let mut config = RfbTcpConfig::default();
+        let mut config = RfbConnectionSettings::default();
         config.protocol_limits.max_framebuffer_bytes = 4;
         config.protocol_limits.max_queued_output_bytes = 128;
         let (task, mut client, _events, _shutdown) =
@@ -931,7 +1140,7 @@ mod tests {
         send_update_request(&mut client, false, 0, 0, 2, 1).await;
         assert!(matches!(
             task.await.unwrap(),
-            ConnectionEnd::Failed(RfbTcpConnectionError::Encode(
+            ConnectionEnd::Failed(RfbConnectionError::Encode(
                 RfbEncodeError::FramebufferTooLarge {
                     actual: 8,
                     maximum: 4,

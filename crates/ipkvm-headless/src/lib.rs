@@ -1,7 +1,9 @@
 use ipkvm_rfb::RfbServerConfig;
 
+pub mod rfb_connection;
 pub mod rfb_input;
 pub mod rfb_tcp;
+pub mod rfb_ws;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HeadlessConfig {
