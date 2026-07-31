@@ -19,7 +19,7 @@ use super::{
 };
 
 #[derive(Debug, Error)]
-pub enum RfbTcpConnectionError {
+pub(super) enum RfbTcpConnectionError {
     #[error("RFB handshake timed out")]
     HandshakeTimeout,
     #[error("invalid RFB connection configuration: {0}")]
@@ -41,6 +41,16 @@ pub(super) enum ConnectionEnd {
     ClientClosed,
     ServerShutdown,
     Failed(RfbTcpConnectionError),
+}
+
+struct ConnectionState {
+    client_id: RfbClientId,
+    peer_addr: SocketAddr,
+    core: RfbConnectionCore,
+    frame_rx: FrameReceiver,
+    pending: PendingFramebufferRequest,
+    last_observed_seq: u64,
+    last_sent_seq: Option<u64>,
 }
 
 impl ConnectionEnd {
@@ -100,7 +110,7 @@ async fn drive_connection(
     client_id: RfbClientId,
     peer_addr: SocketAddr,
     stream: &mut TcpStream,
-    mut frame_rx: FrameReceiver,
+    frame_rx: FrameReceiver,
     event_tx: mpsc::Sender<RfbTcpEvent>,
     config: RfbTcpConfig,
     mut shutdown: watch::Receiver<bool>,
@@ -121,15 +131,21 @@ async fn drive_connection(
     })?;
     write_core_output(stream, &mut core).await?;
 
+    let mut state = ConnectionState {
+        client_id,
+        peer_addr,
+        core,
+        frame_rx,
+        pending: PendingFramebufferRequest::default(),
+        last_observed_seq: initial_frame.seq,
+        last_sent_seq: None,
+    };
     let handshake_deadline = time::sleep(config.handshake_timeout);
     tokio::pin!(handshake_deadline);
     let mut read_buffer = vec![0; config.read_buffer_bytes];
-    let mut pending = PendingFramebufferRequest::default();
-    let mut last_observed_seq = initial_frame.seq;
-    let mut last_sent_seq = None;
 
     loop {
-        let awaiting_handshake = core.state() != RfbConnectionState::Normal;
+        let awaiting_handshake = state.awaiting_handshake();
         tokio::select! {
             read = stream.read(&mut read_buffer) => {
                 let count = read?;
@@ -137,36 +153,16 @@ async fn drive_connection(
                     return Ok(ConnectionEnd::ClientClosed);
                 }
 
-                let events = core.push_input(&read_buffer[..count]);
-                write_core_output(stream, &mut core).await?;
-                if let Some(error) = handle_core_events(
-                    client_id,
-                    peer_addr,
-                    &event_tx,
-                    events,
-                    stream,
-                    &mut core,
-                    &frame_rx,
-                    &mut pending,
-                    &mut last_observed_seq,
-                    &mut last_sent_seq,
-                )
-                .await?
-                {
+                let events = state.core.push_input(&read_buffer[..count]);
+                write_core_output(stream, &mut state.core).await?;
+                if let Some(error) = state.handle_core_events(stream, &event_tx, events).await? {
                     return Err(error.into());
                 }
-                write_core_output(stream, &mut core).await?;
+                write_core_output(stream, &mut state.core).await?;
             }
-            changed = frame_rx.changed(), if pending.get().is_some() => {
+            changed = state.frame_rx.changed(), if state.pending.get().is_some() => {
                 changed.map_err(|_| RfbTcpFrameError::FrameUnavailable)?;
-                let frame = latest_frame(&frame_rx, &mut last_observed_seq)?;
-                if last_sent_seq != Some(frame.seq) {
-                    if let Some(request) = pending.take() {
-                        let outcome =
-                            queue_and_write_frame(stream, &mut core, &frame, request).await?;
-                        update_last_sent_sequence(&mut last_sent_seq, frame.seq, outcome);
-                    }
-                }
+                state.handle_frame_change(stream).await?;
             }
             _ = wait_for_shutdown(&mut shutdown) => {
                 return Ok(ConnectionEnd::ServerShutdown);
@@ -181,6 +177,111 @@ async fn drive_connection(
     }
 }
 
+impl ConnectionState {
+    fn awaiting_handshake(&self) -> bool {
+        self.core.state() != RfbConnectionState::Normal
+    }
+
+    async fn handle_core_events(
+        &mut self,
+        stream: &mut TcpStream,
+        event_tx: &mpsc::Sender<RfbTcpEvent>,
+        events: Vec<Result<RfbEvent, RfbProtocolError>>,
+    ) -> Result<Option<RfbProtocolError>, RfbTcpConnectionError> {
+        for event in events {
+            let event = match event {
+                Ok(event) => event,
+                Err(error) => return Ok(Some(error)),
+            };
+            let event = match event {
+                RfbEvent::HandshakeCompleted { shared } => RfbTcpEvent::Connected {
+                    client_id: self.client_id,
+                    peer_addr: self.peer_addr,
+                    shared,
+                },
+                RfbEvent::FramebufferUpdateRequested(request) => {
+                    self.handle_update_request(stream, request).await?;
+                    continue;
+                }
+                RfbEvent::Key { down, keysym } => RfbTcpEvent::Key {
+                    client_id: self.client_id,
+                    down,
+                    keysym,
+                },
+                RfbEvent::Pointer { button_mask, x, y } => RfbTcpEvent::Pointer {
+                    client_id: self.client_id,
+                    button_mask,
+                    x,
+                    y,
+                },
+                RfbEvent::CutText(bytes) => RfbTcpEvent::CutText {
+                    client_id: self.client_id,
+                    bytes,
+                },
+                RfbEvent::EnableContinuousUpdates { enable, rectangle } => {
+                    RfbTcpEvent::ContinuousUpdates {
+                        client_id: self.client_id,
+                        enable,
+                        rectangle,
+                    }
+                }
+            };
+            send_event(event_tx, event).await?;
+        }
+        Ok(None)
+    }
+
+    async fn handle_update_request(
+        &mut self,
+        stream: &mut TcpStream,
+        request: FramebufferUpdateRequest,
+    ) -> Result<(), RfbTcpConnectionError> {
+        let frame = self.latest_frame()?;
+        let size = frame_view(&frame)?.size();
+        self.pending.merge(request, size);
+
+        let should_send = self
+            .pending
+            .get()
+            .is_some_and(|merged| !merged.incremental || self.last_sent_seq != Some(frame.seq));
+        if should_send && let Some(request) = self.pending.take() {
+            let outcome = queue_and_write_frame(stream, &mut self.core, &frame, request).await?;
+            update_last_sent_sequence(&mut self.last_sent_seq, frame.seq, outcome);
+        }
+        Ok(())
+    }
+
+    async fn handle_frame_change(
+        &mut self,
+        stream: &mut TcpStream,
+    ) -> Result<(), RfbTcpConnectionError> {
+        let frame = self.latest_frame()?;
+        if self.last_sent_seq != Some(frame.seq)
+            && let Some(request) = self.pending.take()
+        {
+            let outcome = queue_and_write_frame(stream, &mut self.core, &frame, request).await?;
+            update_last_sent_sequence(&mut self.last_sent_seq, frame.seq, outcome);
+        }
+        Ok(())
+    }
+
+    fn latest_frame(&mut self) -> Result<SharedVideoFrame, RfbTcpFrameError> {
+        let frame = self
+            .frame_rx
+            .borrow()
+            .clone()
+            .ok_or(RfbTcpFrameError::FrameUnavailable)?;
+        if frame.seq < self.last_observed_seq {
+            return Err(RfbTcpFrameError::FrameSequenceRegressed {
+                previous: self.last_observed_seq,
+                actual: frame.seq,
+            });
+        }
+        self.last_observed_seq = frame.seq;
+        Ok(frame)
+    }
+}
+
 async fn write_core_output(
     stream: &mut TcpStream,
     core: &mut RfbConnectionCore,
@@ -190,110 +291,6 @@ async fn write_core_output(
         stream.write_all(&output).await?;
     }
     Ok(())
-}
-
-async fn handle_core_events(
-    client_id: RfbClientId,
-    peer_addr: SocketAddr,
-    event_tx: &mpsc::Sender<RfbTcpEvent>,
-    events: Vec<Result<RfbEvent, RfbProtocolError>>,
-    stream: &mut TcpStream,
-    core: &mut RfbConnectionCore,
-    frame_rx: &FrameReceiver,
-    pending: &mut PendingFramebufferRequest,
-    last_observed_seq: &mut u64,
-    last_sent_seq: &mut Option<u64>,
-) -> Result<Option<RfbProtocolError>, RfbTcpConnectionError> {
-    for event in events {
-        let event = match event {
-            Ok(event) => event,
-            Err(error) => return Ok(Some(error)),
-        };
-        let event = match event {
-            RfbEvent::HandshakeCompleted { shared } => RfbTcpEvent::Connected {
-                client_id,
-                peer_addr,
-                shared,
-            },
-            RfbEvent::FramebufferUpdateRequested(request) => {
-                handle_update_request(
-                    stream,
-                    core,
-                    frame_rx,
-                    pending,
-                    last_observed_seq,
-                    last_sent_seq,
-                    request,
-                )
-                .await?;
-                continue;
-            }
-            RfbEvent::Key { down, keysym } => RfbTcpEvent::Key {
-                client_id,
-                down,
-                keysym,
-            },
-            RfbEvent::Pointer { button_mask, x, y } => RfbTcpEvent::Pointer {
-                client_id,
-                button_mask,
-                x,
-                y,
-            },
-            RfbEvent::CutText(bytes) => RfbTcpEvent::CutText { client_id, bytes },
-            RfbEvent::EnableContinuousUpdates { enable, rectangle } => {
-                RfbTcpEvent::ContinuousUpdates {
-                    client_id,
-                    enable,
-                    rectangle,
-                }
-            }
-        };
-        send_event(event_tx, event).await?;
-    }
-    Ok(None)
-}
-
-async fn handle_update_request(
-    stream: &mut TcpStream,
-    core: &mut RfbConnectionCore,
-    frame_rx: &FrameReceiver,
-    pending: &mut PendingFramebufferRequest,
-    last_observed_seq: &mut u64,
-    last_sent_seq: &mut Option<u64>,
-    request: FramebufferUpdateRequest,
-) -> Result<(), RfbTcpConnectionError> {
-    let frame = latest_frame(frame_rx, last_observed_seq)?;
-    let size = frame_view(&frame)?.size();
-    pending.merge(request, size);
-
-    let Some(merged) = pending.get() else {
-        return Ok(());
-    };
-    if !merged.incremental || *last_sent_seq != Some(frame.seq) {
-        if let Some(request) = pending.take() {
-            let outcome = queue_and_write_frame(stream, core, &frame, request).await?;
-            update_last_sent_sequence(last_sent_seq, frame.seq, outcome);
-        }
-    }
-    Ok(())
-}
-
-fn latest_frame(
-    receiver: &FrameReceiver,
-    last_observed_seq: &mut u64,
-) -> Result<SharedVideoFrame, RfbTcpFrameError> {
-    let frame = receiver
-        .borrow()
-        .clone()
-        .ok_or(RfbTcpFrameError::FrameUnavailable)?;
-    if frame.seq < *last_observed_seq {
-        return Err(RfbTcpFrameError::FrameSequenceRegressed {
-            previous: *last_observed_seq,
-            actual: frame.seq,
-        });
-    }
-    *last_observed_seq = frame.seq;
-    Ok(frame)
 }
 
 async fn queue_and_write_frame(

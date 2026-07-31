@@ -910,7 +910,7 @@ git commit -m "feat: serve request-driven RFB frames (#5)"
 - 产出：`RfbTcpServer<S>::run`
 - 保证：单活动客户端、断线事件一次、断开后重连、关闭后无残留任务
 
-- [ ] **步骤 1：建立独立字节级测试客户端**
+- [x] **步骤 1：建立独立字节级测试客户端**
 
 `tests/support/mod.rs` 实现：
 
@@ -941,7 +941,7 @@ impl TestRfbClient {
 
 所有整数显式使用 RFB 大端序。测试客户端不得调用 `ipkvm-rfb` 的 server 编码函数，防止 server 和测试共享同一个错误。
 
-- [ ] **步骤 2：写入公共 server 失败测试**
+- [x] **步骤 2：写入公共 server 失败测试**
 
 `tests/rfb_tcp.rs` 覆盖：
 
@@ -985,7 +985,7 @@ async fn server_accepts_next_client_after_disconnect() {
 
 `ServerFixture::expect_connected()` 从实际 `Connected` 事件提取 client id；测试不增加只供测试构造编号的生产 API。
 
-- [ ] **步骤 3：运行测试并确认红灯**
+- [x] **步骤 3：运行测试并确认红灯**
 
 运行：
 
@@ -995,7 +995,7 @@ cargo test -p ipkvm-headless --test rfb_tcp
 
 预期：编译失败，指出 `RfbTcpServer` 尚不存在。
 
-- [ ] **步骤 4：实现 server 构造**
+- [x] **步骤 4：实现 server 构造**
 
 ```rust
 pub struct RfbTcpServer<S> {
@@ -1003,7 +1003,7 @@ pub struct RfbTcpServer<S> {
     frame_source: Arc<S>,
     event_tx: mpsc::Sender<RfbTcpEvent>,
     config: RfbTcpConfig,
-    next_client_id: u64,
+    next_client_id: Option<u64>,
 }
 
 impl<S: FrameSource + 'static> RfbTcpServer<S> {
@@ -1019,13 +1019,13 @@ impl<S: FrameSource + 'static> RfbTcpServer<S> {
             frame_source,
             event_tx,
             config,
-            next_client_id: 1,
+            next_client_id: Some(1),
         })
     }
 }
 ```
 
-- [ ] **步骤 5：实现顺序 accept 循环**
+- [x] **步骤 5：实现顺序 accept 循环**
 
 等待连接时同时处理 shutdown 和 event receiver 关闭：
 
@@ -1072,7 +1072,7 @@ loop {
 
 `send_disconnected` 是每个 accepted client 唯一发送断线事件的位置。`run_connection` 不自行发送 `Disconnected`，从结构上防止重复。
 
-- [ ] **步骤 6：运行公共集成测试并确认绿灯**
+- [x] **步骤 6：运行公共集成测试并确认绿灯**
 
 运行：
 
@@ -1083,7 +1083,7 @@ cargo test -p ipkvm-headless
 
 预期：全部通过，无挂起测试和后台残留任务。
 
-- [ ] **步骤 7：提交**
+- [x] **步骤 7：提交**
 
 ```powershell
 git add crates/ipkvm-headless

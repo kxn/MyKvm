@@ -1,9 +1,13 @@
 mod connection;
 mod frame;
 mod pending;
+mod server;
 
 use std::time::Duration;
-use std::{io::ErrorKind, net::SocketAddr};
+use std::{
+    io::{self, ErrorKind},
+    net::SocketAddr,
+};
 
 use ipkvm_rfb::{
     RfbConfigError, RfbEncodeError, RfbFramebufferError, RfbProtocolError, RfbProtocolLimits,
@@ -11,6 +15,8 @@ use ipkvm_rfb::{
 };
 use ipkvm_video::PixelFormat;
 use thiserror::Error;
+
+pub use server::RfbTcpServer;
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct RfbClientId(u64);
@@ -114,6 +120,18 @@ pub enum RfbTcpConfigError {
     ZeroHandshakeTimeout,
 }
 
+#[derive(Debug, Error)]
+pub enum RfbTcpServerError {
+    #[error("invalid RFB TCP configuration: {0}")]
+    Config(#[from] RfbTcpConfigError),
+    #[error("failed to accept RFB TCP client: {0}")]
+    Accept(#[source] io::Error),
+    #[error("RFB client identifier space is exhausted")]
+    ClientIdOverflow,
+    #[error("RFB event receiver is closed")]
+    EventChannelClosed,
+}
+
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum RfbTcpFrameError {
     #[error("no video frame is available")]
@@ -147,8 +165,10 @@ mod tests {
 
     #[test]
     fn tcp_config_rejects_invalid_read_buffers_and_timeout() {
-        let mut zero = RfbTcpConfig::default();
-        zero.read_buffer_bytes = 0;
+        let zero = RfbTcpConfig {
+            read_buffer_bytes: 0,
+            ..RfbTcpConfig::default()
+        };
         assert_eq!(zero.validate(), Err(RfbTcpConfigError::ZeroReadBuffer));
 
         let mut oversized = RfbTcpConfig::default();
@@ -158,8 +178,10 @@ mod tests {
             Err(RfbTcpConfigError::ReadBufferExceedsInputLimit { .. })
         ));
 
-        let mut no_timeout = RfbTcpConfig::default();
-        no_timeout.handshake_timeout = Duration::ZERO;
+        let no_timeout = RfbTcpConfig {
+            handshake_timeout: Duration::ZERO,
+            ..RfbTcpConfig::default()
+        };
         assert_eq!(
             no_timeout.validate(),
             Err(RfbTcpConfigError::ZeroHandshakeTimeout)
