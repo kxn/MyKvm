@@ -3,7 +3,7 @@ use thiserror::Error;
 use crate::ch9329::{Ch9329FrameError, Ch9329ReportError};
 use crate::serial::CommandQueueError;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct KeyboardUsage(u8);
 
 impl KeyboardUsage {
@@ -94,7 +94,12 @@ pub type InputResult<T> = Result<T, InputError>;
 
 pub trait InputSink {
     fn set_mouse_mode(&mut self, mode: MouseMode) -> InputResult<()>;
-    fn handle_key(&mut self, event: KeyEvent) -> InputResult<()>;
+
+    fn handle_key(&mut self, event: KeyEvent) -> InputResult<()> {
+        self.handle_key_batch(std::slice::from_ref(&event))
+    }
+
+    fn handle_key_batch(&mut self, events: &[KeyEvent]) -> InputResult<()>;
     fn handle_pointer(&mut self, event: PointerEvent) -> InputResult<()>;
     fn release_all(&mut self) -> InputResult<()>;
 }

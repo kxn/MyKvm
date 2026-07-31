@@ -53,7 +53,7 @@ crates/ipkvm-headless/src/rfb_input/keyboard.rs
 - 保留：`InputSink::handle_key(&mut self, event: KeyEvent)`
 - 保证：批次只发送最终 HID 报告；失败不提交内部状态
 
-- [ ] **步骤 1：写入 trait 和 CH9329 红灯测试**
+- [x] **步骤 1：写入 trait 和 CH9329 红灯测试**
 
 在 `crates/ipkvm-core/src/ch9329/input.rs` 增加：
 
@@ -122,7 +122,7 @@ fn empty_or_net_unchanged_key_batch_does_not_enqueue() {
 
 在 `crates/ipkvm-core/src/lib.rs` 的 `RecordingSink` 中暂时不实现新方法，让 trait 变更测试形成编译红灯。
 
-- [ ] **步骤 2：确认批次 API 红灯**
+- [x] **步骤 2：确认批次 API 红灯**
 
 运行：
 
@@ -132,7 +132,7 @@ cargo test -p ipkvm-core key_batch
 
 预期：编译失败，指出 `Ch9329InputSink` 没有 `handle_key_batch`。
 
-- [ ] **步骤 3：扩展 InputSink 契约**
+- [x] **步骤 3：扩展 InputSink 契约**
 
 把 `KeyboardUsage` 派生扩展为：
 
@@ -168,7 +168,7 @@ fn handle_key_batch(&mut self, events: &[KeyEvent]) -> InputResult<()> {
 
 移除其单独的 `handle_key` 实现，测试默认单事件方法确实委托到批次。
 
-- [ ] **步骤 4：实现 CH9329 原子批次**
+- [x] **步骤 4：实现 CH9329 原子批次**
 
 把 `KeyboardState::apply_key` 改为：
 
@@ -214,7 +214,7 @@ pub fn handle_key_batch(&mut self, events: &[KeyEvent]) -> InputResult<()> {
 
 `impl InputSink for Ch9329InputSink<Q>` 实现 `handle_key_batch`，单事件方法可继续显式委托固有方法。
 
-- [ ] **步骤 5：增加队列失败重试测试**
+- [x] **步骤 5：增加队列失败重试测试**
 
 ```rust
 #[test]
@@ -242,7 +242,7 @@ fn rejected_key_batch_can_be_retried_without_state_drift() {
 }
 ```
 
-- [ ] **步骤 6：运行 core 测试并确认绿灯**
+- [x] **步骤 6：运行 core 测试并确认绿灯**
 
 ```powershell
 cargo test -p ipkvm-core
@@ -251,7 +251,7 @@ cargo clippy -p ipkvm-core --all-targets --all-features -- -D warnings
 
 预期：全部通过。
 
-- [ ] **步骤 7：提交**
+- [x] **步骤 7：提交**
 
 ```powershell
 git add crates/ipkvm-core
