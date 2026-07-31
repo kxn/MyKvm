@@ -349,7 +349,7 @@ git commit -m "feat: map RFB pointer state atomically (#9)"
 
 ### 步骤
 
-- [ ] **步骤 1：建立公共 API 集成测试**
+- [x] **步骤 1：建立公共 API 集成测试**
 
 只使用：
 
@@ -362,17 +362,17 @@ git commit -m "feat: map RFB pointer state atomically (#9)"
 - 水平滚轮及侧键返回准确的忽略掩码。
 - 帧尺寸为零和坐标越界时返回 `RfbPointerError::Input`。
 
-- [ ] **步骤 2：使用真实 CH9329 sink 验证四角**
+- [x] **步骤 2：使用真实 CH9329 sink 验证四角**
 
 对 `1920x1080`：
 
 - `(0, 0)` 映射到 `(0, 0)`。
-- `(1919, 1079)` 映射到 `(4095, 4095)`。
+- `(1919, 1079)` 按厂家公式映射到 `(4093, 4092)`。
 - 每条 RFB 消息只产生一个 `CommandBatch`。
 
 检查 CH9329 绝对报告字节中的小端坐标。
 
-- [ ] **步骤 3：验证首次按钮消息和批次边界**
+- [x] **步骤 3：验证首次按钮消息和批次边界**
 
 第一条消息直接为左键按下：
 
@@ -380,7 +380,7 @@ git commit -m "feat: map RFB pointer state atomically (#9)"
 - 第二个报告携带按钮位 `0x01`。
 - 两个报告使用相同坐标。
 
-- [ ] **步骤 4：验证队列失败的双层回滚**
+- [x] **步骤 4：验证队列失败的双层回滚**
 
 使用 `FakeCommandQueue::fail_next(CommandQueueError::Closed)`：
 
@@ -389,7 +389,7 @@ git commit -m "feat: map RFB pointer state atomically (#9)"
 3. 重试同一消息时仍生成移动、左键按下和滚轮。
 4. 成功后再发相同掩码，不重复按钮和滚轮，只发送移动。
 
-- [ ] **步骤 5：验证越界后恢复**
+- [x] **步骤 5：验证越界后恢复**
 
 先发送 `x == width`：
 
@@ -402,7 +402,7 @@ git commit -m "feat: map RFB pointer state atomically (#9)"
 - 按钮按下仍会产生。
 - 队列和 sink 状态正常。
 
-- [ ] **步骤 6：运行 headless 全量验证并提交**
+- [x] **步骤 6：运行 headless 全量验证并提交**
 
 ```powershell
 cargo test -p ipkvm-headless
