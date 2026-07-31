@@ -922,7 +922,6 @@ pub struct TestRfbClient {
 impl TestRfbClient {
     pub async fn connect(address: SocketAddr) -> Self;
     pub async fn handshake(&mut self, shared: bool) -> ServerInit;
-    pub async fn set_encodings(&mut self, encodings: &[i32]);
     pub async fn set_rgb565(&mut self);
     pub async fn request_update(
         &mut self,
@@ -932,7 +931,7 @@ impl TestRfbClient {
         width: u16,
         height: u16,
     );
-    pub async fn read_update(&mut self) -> FramebufferUpdate;
+    pub async fn read_update(&mut self, pixel_bytes: usize) -> FramebufferUpdate;
     pub async fn send_key(&mut self, down: bool, keysym: u32);
     pub async fn send_pointer(&mut self, buttons: u8, x: u16, y: u16);
     pub async fn send_cut_text(&mut self, bytes: &[u8]);
@@ -947,7 +946,7 @@ impl TestRfbClient {
 
 ```rust
 #[tokio::test]
-async fn server_accepts_next_client_after_disconnect() {
+async fn server_queues_second_client_until_first_disconnects() {
     let fixture = ServerFixture::start().await;
 
     let mut first = TestRfbClient::connect(fixture.address()).await;
@@ -1109,7 +1108,7 @@ git commit -m "feat: add single-client RFB TCP server (#5)"
 - 消费：前六项全部实现
 - 产出：完整验收证据和准确阶段状态
 
-- [ ] **步骤 1：按设计验收表核对测试名称**
+- [x] **步骤 1：按设计验收表核对测试名称**
 
 运行：
 
@@ -1135,7 +1134,7 @@ cargo test -p ipkvm-headless -- --list
 
 缺少任一项时，先增加能失败的定向测试，再做最小实现修正。
 
-- [ ] **步骤 2：运行性质和错误路径检查**
+- [x] **步骤 2：运行性质和错误路径检查**
 
 运行：
 
@@ -1148,7 +1147,7 @@ cargo clippy -p ipkvm-headless --all-targets --all-features -- -D warnings
 
 预期：全部通过，且现有 RFB 协议性质测试没有回归。
 
-- [ ] **步骤 3：更新 README**
+- [x] **步骤 3：更新 README**
 
 把当前状态更新为：
 
@@ -1158,7 +1157,7 @@ cargo clippy -p ipkvm-headless --all-targets --all-features -- -D warnings
 
 明确说明当前 `ipkvm-headless` 二进制仍是脚手架，不能声称已经能控制真实机器。
 
-- [ ] **步骤 4：更新阶段设计**
+- [x] **步骤 4：更新阶段设计**
 
 在 `docs/ipkvm-coarse-design.md` 的阶段 0：
 
@@ -1166,14 +1165,14 @@ cargo clippy -p ipkvm-headless --all-targets --all-features -- -D warnings
 - 把“普通 VNC 客户端和 noVNC”拆开，保留第三方客户端/noVNC 兼容性为待完成。
 - 保留 RFB 输入映射和许可证自动审计为后续独立项。
 
-- [ ] **步骤 5：回写设计与计划状态**
+- [x] **步骤 5：回写设计与计划状态**
 
 - 设计文档状态改为“已实施”。
 - 计划复选框按实际完成状态更新为 `[x]`。
 - 若公共类型名与计划不同，回写最终名称，不保留两套说法。
 - 扫描并删除任何临时调试说明。
 
-- [ ] **步骤 6：运行完整本地验证**
+- [x] **步骤 6：运行完整本地验证**
 
 运行：
 
@@ -1190,14 +1189,14 @@ cargo clippy -p ipkvm-headless --all-targets --all-features -- -D warnings
 - Rust 文档 `-D warnings` 通过。
 - 工作区和暂存区 `git diff --check` 通过。
 
-- [ ] **步骤 7：提交**
+- [x] **步骤 7：提交**
 
 ```powershell
 git add README.md docs crates Cargo.toml Cargo.lock
 git commit -m "test: harden RFB TCP transport (#5)"
 ```
 
-- [ ] **步骤 8：最终自审**
+- [x] **步骤 8：最终自审**
 
 运行：
 

@@ -186,6 +186,30 @@ async fn bounded_event_channel_preserves_input_order() {
 }
 
 #[tokio::test]
+async fn missing_initial_frame_disconnects_then_valid_frame_reconnects() {
+    let mut fixture = ServerFixture::start(16, None).await;
+    let mut first = TestRfbClient::connect(fixture.address).await;
+    assert_eq!(
+        first.read_banner().await.unwrap_err().kind(),
+        io::ErrorKind::UnexpectedEof
+    );
+    let reason = match fixture.events.recv().await.unwrap() {
+        RfbTcpEvent::Disconnected { reason, .. } => reason,
+        event => panic!("expected disconnected event, got {event:?}"),
+    };
+    assert_eq!(
+        reason,
+        RfbDisconnectReason::Frame(ipkvm_headless::rfb_tcp::RfbTcpFrameError::FrameUnavailable)
+    );
+
+    fixture.source.publish_frame(default_frame());
+    let mut second = TestRfbClient::connect(fixture.address).await;
+    assert_eq!(second.handshake(true).await.width, 2);
+    fixture.expect_connected().await;
+    fixture.stop().await.unwrap();
+}
+
+#[tokio::test]
 async fn invalid_initial_frame_disconnects_then_valid_frame_reconnects() {
     let invalid = frame(1, 1, 1, PixelFormat::Mjpeg, &[0; 4]);
     let mut fixture = ServerFixture::start(16, Some(invalid)).await;

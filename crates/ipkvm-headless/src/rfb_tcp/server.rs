@@ -36,6 +36,10 @@ impl<S: FrameSource + 'static> RfbTcpServer<S> {
         })
     }
 
+    /// 顺序服务客户端，直到收到关闭信号或发生 server 级错误。
+    ///
+    /// 调用方在本方法返回前必须持续消费事件通道。事件交付采用无损反压；
+    /// 如果接收端停止消费且通道已满，连接关闭和 `Disconnected` 事件也会等待容量。
     pub async fn run(
         mut self,
         mut shutdown: watch::Receiver<bool>,
