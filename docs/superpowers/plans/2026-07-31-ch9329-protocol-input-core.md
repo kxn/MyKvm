@@ -56,7 +56,7 @@ crates/ipkvm-core/src/
 - 产出：`KeyboardReport`、`AbsoluteMouseReport`、`RelativeMouseReport`。
 - 产出：报告构造失败时使用的 `Ch9329ReportError`。
 
-- [ ] **步骤 1：加入性质测试开发依赖**
+- [x] **步骤 1：加入性质测试开发依赖**
 
 根工作区：
 
@@ -72,7 +72,7 @@ proptest = "1"
 proptest.workspace = true
 ```
 
-- [ ] **步骤 2：写帧上限和解析失败测试**
+- [x] **步骤 2：写帧上限和解析失败测试**
 
 在 `frame.rs` 的测试模块写入：
 
@@ -104,7 +104,7 @@ fn rejects_bad_checksum() {
 }
 ```
 
-- [ ] **步骤 3：运行测试确认按预期失败**
+- [x] **步骤 3：运行测试确认按预期失败**
 
 运行：
 
@@ -114,7 +114,7 @@ cargo test -p ipkvm-core ch9329::frame
 
 预期：编译失败，提示 `Ch9329FrameError` 或 `parse` 尚未定义。
 
-- [ ] **步骤 4：实现完整帧**
+- [x] **步骤 4：实现完整帧**
 
 实现以下公共签名：
 
@@ -142,7 +142,7 @@ impl Ch9329Frame {
 
 `parse` 要求输入恰好包含一帧，总长度等于 `6 + LEN`，并校验帧头、64 字节上限和累加和。
 
-- [ ] **步骤 5：写类型化报告金样测试**
+- [x] **步骤 5：写类型化报告金样测试**
 
 在 `report.rs` 写入 WCH 示例：
 
@@ -169,7 +169,7 @@ fn absolute_mouse_matches_vendor_example() {
 }
 ```
 
-- [ ] **步骤 6：运行报告测试确认失败**
+- [x] **步骤 6：运行报告测试确认失败**
 
 运行：
 
@@ -179,7 +179,7 @@ cargo test -p ipkvm-core ch9329::report
 
 预期：编译失败，提示报告和命令类型尚未定义。
 
-- [ ] **步骤 7：实现报告与命令**
+- [x] **步骤 7：实现报告与命令**
 
 实现：
 
@@ -236,7 +236,7 @@ impl RelativeMouseReport {
 
 `RelativeValueOutOfRange` 专门表示 CH9329 不接受的 `-128`；`field` 仅取 `dx`、`dy` 或 `wheel`。
 
-- [ ] **步骤 8：运行任务测试并提交**
+- [x] **步骤 8：运行任务测试并提交**
 
 运行：
 
@@ -264,7 +264,7 @@ git commit -m "feat: add CH9329 protocol frames (#1)"
 - 产出：`Ch9329Decoder::push`、`Ch9329Response::parse`、`Ch9329Info`、`CommandStatus`。
 - 产出：`Ch9329ResponseError`，区分未知应答命令与数据长度错误。
 
-- [ ] **步骤 1：写应答解析测试**
+- [x] **步骤 1：写应答解析测试**
 
 ```rust
 #[test]
@@ -298,7 +298,7 @@ fn preserves_unknown_status_code() {
 }
 ```
 
-- [ ] **步骤 2：运行应答测试确认失败**
+- [x] **步骤 2：运行应答测试确认失败**
 
 运行：
 
@@ -308,7 +308,7 @@ cargo test -p ipkvm-core response
 
 预期：编译失败，提示应答类型尚未定义。
 
-- [ ] **步骤 3：实现应答类型**
+- [x] **步骤 3：实现应答类型**
 
 实现 `CommandStatus` 的 `0x00` 和 `0xe1..=0xe6` 映射；正常 `0x81` 必须有 8 字节，`0x82`、`0x84`、`0x85` 必须有 1 字节；异常应答命令码按 `command & 0x3f` 恢复原命令。
 
@@ -351,7 +351,7 @@ impl Ch9329Response {
 
 `0x81` 解析为 `Info`；`0x82`、`0x84`、`0x85` 解析为 `Acknowledgement`；`0xc1`、`0xc2`、`0xc4`、`0xc5` 解析为 `Error`。其他命令返回 `UnexpectedCommand`，不猜测未来协议。
 
-- [ ] **步骤 4：写增量解帧测试**
+- [x] **步骤 4：写增量解帧测试**
 
 ```rust
 #[test]
@@ -388,7 +388,7 @@ fn decoded_frames(
 }
 ```
 
-- [ ] **步骤 5：运行解帧测试确认失败**
+- [x] **步骤 5：运行解帧测试确认失败**
 
 运行：
 
@@ -398,7 +398,7 @@ cargo test -p ipkvm-core decoder
 
 预期：编译失败，提示 `Ch9329Decoder` 尚未定义。
 
-- [ ] **步骤 6：实现增量解帧**
+- [x] **步骤 6：实现增量解帧**
 
 实现：
 
@@ -424,7 +424,7 @@ impl Ch9329Decoder {
 
 无帧头时最多保留尾部单个 `0x57`；非法长度或校验失败后至少丢弃一个字节再继续同步，不能因坏帧阻塞后续好帧。
 
-- [ ] **步骤 7：运行任务测试并提交**
+- [x] **步骤 7：运行任务测试并提交**
 
 ```powershell
 cargo test -p ipkvm-core ch9329
@@ -450,7 +450,7 @@ git commit -m "feat: decode CH9329 responses (#1)"
 - 产出：`CommandBatch::frames(&self) -> &[Ch9329Frame]`。
 - 产出：可克隆的 `FakeCommandQueue`，克隆值共享同一内部状态。
 
-- [ ] **步骤 1：写批次和失败注入测试**
+- [x] **步骤 1：写批次和失败注入测试**
 
 ```rust
 #[test]
@@ -477,7 +477,7 @@ fn fake_queue_rejects_configured_batch_without_recording_it() {
 }
 ```
 
-- [ ] **步骤 2：运行测试确认失败**
+- [x] **步骤 2：运行测试确认失败**
 
 ```powershell
 cargo test -p ipkvm-core fake_queue
@@ -485,7 +485,7 @@ cargo test -p ipkvm-core fake_queue
 
 预期：编译失败，提示新队列类型尚未定义。
 
-- [ ] **步骤 3：实现队列契约**
+- [x] **步骤 3：实现队列契约**
 
 ```rust
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
@@ -524,7 +524,7 @@ pub trait CommandQueue {
 
 `CommandBatch::new` 拒绝空批次。`FakeCommandQueue` 使用 `Arc<Mutex<_>>` 同时保护失败注入、批次记录和统计，保证所有克隆值观察同一状态，且批次整体接受或拒绝。
 
-- [ ] **步骤 4：删除旧接口并运行全 crate 测试**
+- [x] **步骤 4：删除旧接口并运行全 crate 测试**
 
 删除 `SerialWriter`、`SerialStats`、`FakeSerialWriter` 及其旧测试，更新公共导出。
 
@@ -553,7 +553,7 @@ git commit -m "refactor: add atomic command queue (#1)"
 - 产出：`Ch9329InputSink<Q: CommandQueue>`。
 - 产出：包含输入校验、队列拒绝和协议构造来源的 `InputError`。
 
-- [ ] **步骤 1：先写完整键盘行为测试**
+- [x] **步骤 1：先写完整键盘行为测试**
 
 ```rust
 #[test]
@@ -673,7 +673,7 @@ proptest! {
 
 同时删除 `RecordingSink::type_text`，使旧 trait 实现按预期编译失败。
 
-- [ ] **步骤 2：运行测试确认失败**
+- [x] **步骤 2：运行测试确认失败**
 
 ```powershell
 cargo test -p ipkvm-core keyboard
@@ -681,7 +681,7 @@ cargo test -p ipkvm-core keyboard
 
 预期：编译失败，提示 `KeyboardUsage` 或 `Ch9329InputSink` 尚未定义。
 
-- [ ] **步骤 3：实现键盘状态和事务提交**
+- [x] **步骤 3：实现键盘状态和事务提交**
 
 先把设备无关输入接口收紧为：
 
@@ -733,7 +733,7 @@ fn apply_key(
 
 `0xe0..=0xe7` 映射 modifier bit；普通键按下放入第一个空槽，释放后向左压紧。重复按下和幽灵释放返回 `Ok(None)`。
 
-- [ ] **步骤 4：运行键盘测试确认通过**
+- [x] **步骤 4：运行键盘测试确认通过**
 
 ```powershell
 cargo test -p ipkvm-core keyboard
@@ -741,7 +741,7 @@ cargo test -p ipkvm-core keyboard
 
 实现时先在副本上计算报告，创建单帧 `CommandBatch`，成功入队后再替换 `self.keyboard`。
 
-- [ ] **步骤 5：写强制释放测试并确认失败**
+- [x] **步骤 5：写强制释放测试并确认失败**
 
 ```rust
 #[test]
@@ -764,7 +764,7 @@ cargo test -p ipkvm-core release_all_enqueues_zero_keyboard_even_when_state_is_e
 
 预期：失败，因为 `release_all` 尚未生成键盘释放批次。
 
-- [ ] **步骤 6：实现键盘强制释放并提交**
+- [x] **步骤 6：实现键盘强制释放并提交**
 
 `release_all()` 即使本地为空也提交全零键盘报告；鼠标释放在任务 5 扩展到同一批次。
 
@@ -791,7 +791,7 @@ git commit -m "feat: add CH9329 keyboard state (#1)"
 - 产出：绝对坐标、按钮、滚轮、模式切换和释放行为。
 - 产出私有辅助：`split_relative(dx: i16, dy: i16, wheel: i16) -> Vec<(i8, i8, i8)>`。
 
-- [ ] **步骤 1：写厂家坐标公式测试**
+- [x] **步骤 1：写厂家坐标公式测试**
 
 ```rust
 #[test]
@@ -823,7 +823,7 @@ proptest! {
 }
 ```
 
-- [ ] **步骤 2：运行坐标测试确认失败并实现**
+- [x] **步骤 2：运行坐标测试确认失败并实现**
 
 ```powershell
 cargo test -p ipkvm-core pointer_mapping
@@ -831,7 +831,7 @@ cargo test -p ipkvm-core pointer_mapping
 
 实现 `floor(4096 * coordinate / extent)`，使用 `u64` 中间值避免溢出。删除旧的视图矩形映射，因为 DPI 和黑边换算属于桌面适配层。
 
-- [ ] **步骤 3：写鼠标按钮和位置测试**
+- [x] **步骤 3：写鼠标按钮和位置测试**
 
 覆盖：
 
@@ -901,7 +901,7 @@ fn releasing_one_button_preserves_other_buttons() {
 }
 ```
 
-- [ ] **步骤 4：运行测试确认失败并实现鼠标状态**
+- [x] **步骤 4：运行测试确认失败并实现鼠标状态**
 
 私有状态：
 
@@ -916,7 +916,7 @@ struct MouseState {
 
 绝对模式的按钮和滚轮使用最后坐标；相对模式使用零位移相对报告。重复按钮事件不产生命令。
 
-- [ ] **步骤 5：写大位移守恒测试**
+- [x] **步骤 5：写大位移守恒测试**
 
 ```rust
 #[test]
@@ -953,11 +953,11 @@ proptest! {
 }
 ```
 
-- [ ] **步骤 6：运行测试确认失败并实现拆包**
+- [x] **步骤 6：运行测试确认失败并实现拆包**
 
 每次从剩余值取 `clamp(-127, 127)`，直到 `dx`、`dy` 和 `wheel` 全为零。零位移事件不产生命令。
 
-- [ ] **步骤 7：写模式切换、失败回滚和强制释放测试**
+- [x] **步骤 7：写模式切换、失败回滚和强制释放测试**
 
 ```rust
 #[test]
@@ -1008,7 +1008,7 @@ fn release_all_always_contains_keyboard_and_mouse_release() {
 
 运行这些测试并确认：模式切换和强制释放测试因鼠标释放尚未加入批次而失败，失败回滚测试因鼠标状态过早提交而失败。
 
-- [ ] **步骤 8：实现并提交**
+- [x] **步骤 8：实现并提交**
 
 ```powershell
 cargo test -p ipkvm-core --all-features
@@ -1030,7 +1030,7 @@ git commit -m "feat: add CH9329 mouse state (#1)"
 
 - 产出：会话默认波特率 9600。
 
-- [ ] **步骤 1：先修改会话默认值测试**
+- [x] **步骤 1：先修改会话默认值测试**
 
 把默认配置断言从 115200 改为 9600，并重命名为：
 
@@ -1050,11 +1050,11 @@ cargo test -p ipkvm-session session_config_defaults_to_factory_serial_baud
 
 预期：失败，实际值仍为 115200。
 
-- [ ] **步骤 2：修改默认值并更新文档状态**
+- [x] **步骤 2：修改默认值并更新文档状态**
 
 将 `ConsoleSessionConfig::default_for_devices` 改为 9600。README 说明 CH9329 协议编解码和输入状态核心已完成，真实串口仍未实现；粗粒度设计的阶段 0 对应条目标记为已完成描述，不使用模糊占位符。
 
-- [ ] **步骤 3：完整验证并提交**
+- [x] **步骤 3：完整验证并提交**
 
 ```powershell
 cargo fmt --all --check
