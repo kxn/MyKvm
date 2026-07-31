@@ -133,6 +133,22 @@ mod tests {
     fn does_not_serve_unknown_or_internal_project_files() {
         assert!(find_asset("/vendor/novnc/missing.js").is_none());
         assert!(find_asset("/assets/README.md").is_none());
-        assert!(find_asset("/").is_none());
+    }
+
+    #[test]
+    fn serves_the_project_console_and_license_page() {
+        let index = find_asset("/").unwrap();
+        let index_text = std::str::from_utf8(index.bytes()).unwrap();
+        assert_eq!(index.content_type(), "text/html; charset=utf-8");
+        assert!(index_text.contains("lang=\"zh-CN\""));
+        assert!(index_text.contains("data-connection-state=\"connecting\""));
+
+        let script = std::str::from_utf8(find_asset("/assets/app.js").unwrap().bytes()).unwrap();
+        assert!(script.contains("from \"/vendor/novnc/core/rfb.js\""));
+        assert!(script.contains("next.scaleViewport = true"));
+        assert!(script.contains("next.resizeSession = false"));
+
+        let licenses = std::str::from_utf8(find_asset("/licenses/").unwrap().bytes()).unwrap();
+        assert!(licenses.contains("第三方组件与许可证"));
     }
 }

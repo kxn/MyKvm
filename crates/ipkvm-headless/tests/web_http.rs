@@ -115,6 +115,33 @@ async fn serves_fixed_novnc_modules_with_explicit_headers() {
 }
 
 #[tokio::test]
+async fn serves_the_console_and_chinese_license_page() {
+    let server = TestWebServer::start().await;
+
+    let console = server.request("GET", "/").await;
+    assert_eq!(console.status, 200);
+    assert_eq!(
+        console.headers.get("content-type").map(String::as_str),
+        Some("text/html; charset=utf-8")
+    );
+    assert!(
+        std::str::from_utf8(&console.body)
+            .unwrap()
+            .contains("my_ipkvm 控制台")
+    );
+
+    let licenses = server.request("GET", "/licenses/").await;
+    assert_eq!(licenses.status, 200);
+    assert!(
+        std::str::from_utf8(&licenses.body)
+            .unwrap()
+            .contains("第三方组件与许可证")
+    );
+
+    server.stop().await;
+}
+
+#[tokio::test]
 async fn missing_assets_and_wrong_methods_are_not_html_fallbacks() {
     let server = TestWebServer::start().await;
 

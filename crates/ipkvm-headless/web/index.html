@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>my_ipkvm 控制台</title>
+    <link
+      rel="icon"
+      href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+    >
+    <link rel="stylesheet" href="/assets/app.css">
+  </head>
+  <body>
+    <main id="console" data-connection-state="connecting">
+      <header class="status-bar">
+        <div class="identity">
+          <span class="status-indicator" aria-hidden="true"></span>
+          <strong>my_ipkvm</strong>
+          <span id="connection-status" role="status" aria-live="polite">
+            正在连接
+          </span>
+        </div>
+        <nav class="session-actions" aria-label="会话操作">
+          <button id="reconnect" type="button" disabled>重新连接</button>
+          <button id="disconnect" type="button" disabled>断开</button>
+          <a href="/licenses/" target="_blank" rel="noreferrer">许可证</a>
+        </nav>
+      </header>
+      <section id="screen" aria-label="远程控制台"></section>
+    </main>
+    <script type="module" src="/assets/app.js"></script>
+  </body>
+</html>
