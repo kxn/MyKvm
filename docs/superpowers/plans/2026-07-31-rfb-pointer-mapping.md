@@ -76,7 +76,7 @@ fn handle_pointer(&mut self, event: PointerEvent) -> InputResult<()> {
 
 ### 步骤
 
-- [ ] **步骤 1：写入 CH9329 指针批次红灯测试**
+- [x] **步骤 1：写入 CH9329 指针批次红灯测试**
 
 在 `crates/ipkvm-core/src/ch9329/input.rs` 增加：
 
@@ -121,7 +121,7 @@ fn pointer_batch_enqueues_all_reports_atomically() {
 - 按下再释放必须保留两个报告，不能按最终净状态折叠。
 - 空批次和全无变化批次不入队。
 
-- [ ] **步骤 2：确认红灯**
+- [x] **步骤 2：确认红灯**
 
 ```powershell
 cargo test -p ipkvm-core pointer_batch
@@ -129,7 +129,7 @@ cargo test -p ipkvm-core pointer_batch
 
 预期：编译失败，指出 `handle_pointer_batch` 尚不存在。
 
-- [ ] **步骤 3：扩展 InputSink 契约**
+- [x] **步骤 3：扩展 InputSink 契约**
 
 修改 trait，并更新所有测试 sink：
 
@@ -139,7 +139,7 @@ cargo test -p ipkvm-core pointer_batch
 
 记录型 sink 直接保存整个事件切片；不得用循环调用单事件方法冒充原子批次。
 
-- [ ] **步骤 4：把 MouseState 改成候选状态计算**
+- [x] **步骤 4：把 MouseState 改成候选状态计算**
 
 在 `MouseState` 上实现：
 
@@ -159,7 +159,7 @@ fn apply_events(
 
 任一后续事件失败时直接返回错误，尚未发生队列操作。
 
-- [ ] **步骤 5：实现 CH9329 原子提交**
+- [x] **步骤 5：实现 CH9329 原子提交**
 
 ```rust
 pub fn handle_pointer(&mut self, event: PointerEvent) -> InputResult<()> {
@@ -179,7 +179,7 @@ pub fn handle_pointer_batch(&mut self, events: &[PointerEvent]) -> InputResult<(
 
 更新 `impl InputSink for Ch9329InputSink<Q>`。
 
-- [ ] **步骤 6：运行 core 验证**
+- [x] **步骤 6：运行 core 验证**
 
 ```powershell
 cargo test -p ipkvm-core
@@ -188,7 +188,7 @@ cargo fmt --all -- --check
 git diff --check
 ```
 
-- [ ] **步骤 7：提交**
+- [x] **步骤 7：提交**
 
 ```powershell
 git add crates/ipkvm-core crates/ipkvm-headless
@@ -510,4 +510,3 @@ git log --oneline main..HEAD
 - 没有用最终净状态折叠点击或滚轮。
 - 每条 RFB 消息只调用一次 sink 批次接口。
 - 所有失败路径均有自动化测试。
-

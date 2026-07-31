@@ -161,7 +161,7 @@ mod tests {
             Ok(())
         }
 
-        fn handle_pointer(&mut self, _event: PointerEvent) -> InputResult<()> {
+        fn handle_pointer_batch(&mut self, _events: &[PointerEvent]) -> InputResult<()> {
             Ok(())
         }
 
