@@ -5,7 +5,7 @@ use std::{io, sync::Arc};
 use ipkvm_headless::rfb_tcp::{
     RfbClientId, RfbDisconnectReason, RfbTcpConfig, RfbTcpEvent, RfbTcpServer, RfbTcpServerError,
 };
-use ipkvm_rfb::RfbProtocolError;
+use ipkvm_rfb::{RfbProtocolError, RfbSize};
 use ipkvm_video::{MonotonicTimestamp, PixelFormat, VideoFrame, mock::MockFrameSource};
 use support::TestRfbClient;
 use tokio::{
@@ -172,7 +172,8 @@ async fn bounded_event_channel_preserves_input_order() {
             button_mask: 1,
             x: 20,
             y: 30,
-        }) if actual == client_id
+            framebuffer_size,
+        }) if actual == client_id && framebuffer_size == RfbSize::new(2, 1).unwrap()
     ));
     assert_eq!(
         fixture.events.recv().await,

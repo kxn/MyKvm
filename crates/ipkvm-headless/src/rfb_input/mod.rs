@@ -1,12 +1,18 @@
 mod keyboard;
 mod keymap;
 mod pointer;
+mod pump;
 
 use ipkvm_core::InputError;
 use thiserror::Error;
 
 pub use keyboard::RfbKeyboardMapper;
 pub use pointer::RfbPointerMapper;
+pub use pump::{
+    RfbControllerReleaseReason, RfbInputError, RfbInputEventError, RfbInputEventKind,
+    RfbInputLifecycleError, RfbInputNotice, RfbInputOperation, RfbInputPump, RfbInputRunError,
+    RfbKeyboardRejection,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RfbKeyboardOutcome {

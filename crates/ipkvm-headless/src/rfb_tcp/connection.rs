@@ -208,11 +208,17 @@ impl ConnectionState {
                     down,
                     keysym,
                 },
-                RfbEvent::Pointer { button_mask, x, y } => RfbTcpEvent::Pointer {
+                RfbEvent::Pointer {
+                    button_mask,
+                    x,
+                    y,
+                    framebuffer_size,
+                } => RfbTcpEvent::Pointer {
                     client_id: self.client_id,
                     button_mask,
                     x,
                     y,
+                    framebuffer_size,
                 },
                 RfbEvent::CutText(bytes) => RfbTcpEvent::CutText {
                     client_id: self.client_id,
@@ -343,7 +349,7 @@ async fn wait_for_shutdown(shutdown: &mut watch::Receiver<bool>) {
 mod tests {
     use std::{net::SocketAddr, sync::Arc, time::Duration};
 
-    use ipkvm_rfb::{RfbEncodeError, RfbProtocolError};
+    use ipkvm_rfb::{RfbEncodeError, RfbProtocolError, RfbSize};
     use ipkvm_video::{
         FrameSource, MonotonicTimestamp, PixelFormat, VideoFrame, mock::MockFrameSource,
     };
@@ -598,6 +604,7 @@ mod tests {
                 button_mask: 3,
                 x: 10,
                 y: 20,
+                framebuffer_size: RfbSize::new(2, 1).unwrap(),
             })
         );
         assert_eq!(
@@ -822,6 +829,47 @@ mod tests {
         send_update_request(&mut client, false, 0, 0, 3, 1).await;
         let pixels = read_update(&mut client, 12).await;
         assert_eq!((pixels.width, pixels.height, pixels.encoding), (3, 1, 0));
+
+        drop(client);
+        assert!(matches!(task.await.unwrap(), ConnectionEnd::ClientClosed));
+    }
+
+    #[tokio::test]
+    async fn pointer_events_keep_the_coordinate_size_from_their_input_epoch() {
+        let frame_source = MockFrameSource::new();
+        frame_source.publish_frame(shared_bgra_frame(1, 2, 1, &[0; 8]));
+        let (task, mut client, mut events, _shutdown) =
+            completed_connection(RfbClientId(17), &frame_source, RfbTcpConfig::default()).await;
+        send_set_encodings(&mut client, &[-223]).await;
+        frame_source.publish_frame(shared_bgra_frame(2, 3, 1, &[1; 12]));
+
+        let mut messages = vec![3, 1, 0, 0, 0, 0, 0, 2, 0, 1];
+        messages.extend_from_slice(&[5, 0, 0, 1, 0, 0]);
+        client.write_all(&messages).await.unwrap();
+
+        assert_eq!(
+            events.recv().await,
+            Some(RfbTcpEvent::Pointer {
+                client_id: RfbClientId(17),
+                button_mask: 0,
+                x: 1,
+                y: 0,
+                framebuffer_size: RfbSize::new(2, 1).unwrap(),
+            })
+        );
+        assert_eq!(read_update(&mut client, 0).await.encoding, -223);
+
+        client.write_all(&[5, 0, 0, 2, 0, 0]).await.unwrap();
+        assert_eq!(
+            events.recv().await,
+            Some(RfbTcpEvent::Pointer {
+                client_id: RfbClientId(17),
+                button_mask: 0,
+                x: 2,
+                y: 0,
+                framebuffer_size: RfbSize::new(3, 1).unwrap(),
+            })
+        );
 
         drop(client);
         assert!(matches!(task.await.unwrap(), ConnectionEnd::ClientClosed));

@@ -67,6 +67,10 @@ impl ClientMessageDecoder {
         }
     }
 
+    pub(crate) fn is_idle(&self) -> bool {
+        self.buffer.is_empty()
+    }
+
     #[cfg(test)]
     pub(crate) fn buffered_len(&self) -> usize {
         self.buffer.len()

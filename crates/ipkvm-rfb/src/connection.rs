@@ -39,6 +39,7 @@ pub enum RfbEvent {
         button_mask: u8,
         x: u16,
         y: u16,
+        framebuffer_size: RfbSize,
     },
     CutText(Vec<u8>),
     EnableContinuousUpdates {
@@ -78,6 +79,8 @@ pub struct RfbConnectionCore {
     pixel_format: RfbPixelFormat,
     encoding_preferences: Vec<i32>,
     announced_size: RfbSize,
+    input_coordinate_size: RfbSize,
+    pending_input_size: Option<RfbSize>,
 }
 
 impl RfbConnectionCore {
@@ -87,6 +90,7 @@ impl RfbConnectionCore {
         let server_init =
             encode_server_init(config.initial_size, pixel_format, &config.desktop_name)?;
         let announced_size = config.initial_size;
+        let input_coordinate_size = config.initial_size;
         Ok(Self {
             client_decoder: ClientMessageDecoder::new(config.limits),
             config,
@@ -97,6 +101,8 @@ impl RfbConnectionCore {
             pixel_format,
             encoding_preferences: Vec::new(),
             announced_size,
+            input_coordinate_size,
+            pending_input_size: None,
         })
     }
 
@@ -217,6 +223,12 @@ impl RfbConnectionCore {
             let size = frame.size();
             self.queue_output(encode_desktop_size_update(size))?;
             self.announced_size = size;
+            if self.client_decoder.is_idle() {
+                self.input_coordinate_size = size;
+                self.pending_input_size = None;
+            } else {
+                self.pending_input_size = Some(size);
+            }
             return Ok(FramebufferUpdateOutcome::ResizeAnnounced { size });
         }
 
@@ -230,7 +242,9 @@ impl RfbConnectionCore {
     }
 
     fn push_normal_input(&mut self, bytes: &[u8]) -> Vec<Result<RfbEvent, RfbProtocolError>> {
+        let input_coordinate_size = self.input_coordinate_size;
         let mut results = Vec::new();
+        let mut failed = false;
         for decoded in self.client_decoder.push(bytes) {
             match decoded {
                 Ok(ClientMessage::SetPixelFormat(format)) => self.pixel_format = format,
@@ -244,7 +258,12 @@ impl RfbConnectionCore {
                     results.push(Ok(RfbEvent::Key { down, keysym }));
                 }
                 Ok(ClientMessage::Pointer { button_mask, x, y }) => {
-                    results.push(Ok(RfbEvent::Pointer { button_mask, x, y }));
+                    results.push(Ok(RfbEvent::Pointer {
+                        button_mask,
+                        x,
+                        y,
+                        framebuffer_size: input_coordinate_size,
+                    }));
                 }
                 Ok(ClientMessage::CutText(bytes)) => {
                     results.push(Ok(RfbEvent::CutText(bytes)));
@@ -254,10 +273,17 @@ impl RfbConnectionCore {
                 }
                 Err(error) => {
                     self.state = RfbConnectionState::Failed;
+                    failed = true;
                     results.push(Err(error));
                     break;
                 }
             }
+        }
+        if !failed
+            && self.client_decoder.is_idle()
+            && let Some(size) = self.pending_input_size.take()
+        {
+            self.input_coordinate_size = size;
         }
         results
     }
@@ -654,6 +680,7 @@ mod tests {
                     button_mask: 3,
                     x: 10,
                     y: 20,
+                    framebuffer_size: RfbSize::new(640, 480).unwrap(),
                 }),
                 Ok(RfbEvent::CutText(vec![0x41, 0xff])),
                 Ok(RfbEvent::EnableContinuousUpdates {
@@ -809,6 +836,81 @@ mod tests {
     }
 
     #[test]
+    fn pointer_events_carry_the_current_input_coordinate_size() {
+        let mut connection = completed_connection_with_size(2, 2);
+
+        assert_eq!(
+            connection.push_input(&[5, 0, 0, 1, 0, 1]),
+            vec![Ok(RfbEvent::Pointer {
+                button_mask: 0,
+                x: 1,
+                y: 1,
+                framebuffer_size: RfbSize::new(2, 2).unwrap(),
+            })]
+        );
+
+        negotiate_desktop_size(&mut connection);
+        let pixels = [0_u8; 24];
+        let frame = BgraFrameView::new(RfbSize::new(3, 2).unwrap(), 12, &pixels).unwrap();
+        assert!(matches!(
+            queue_full_frame(&mut connection, frame),
+            Ok(FramebufferUpdateOutcome::ResizeAnnounced { .. })
+        ));
+
+        assert_eq!(
+            connection.push_input(&[5, 0, 0, 2, 0, 1]),
+            vec![Ok(RfbEvent::Pointer {
+                button_mask: 0,
+                x: 2,
+                y: 1,
+                framebuffer_size: RfbSize::new(3, 2).unwrap(),
+            })]
+        );
+    }
+
+    #[test]
+    fn pointer_coordinate_epoch_changes_only_after_a_buffered_message_finishes() {
+        let mut connection = completed_connection_with_size(2, 2);
+        negotiate_desktop_size(&mut connection);
+
+        assert!(connection.push_input(&[5, 0, 0]).is_empty());
+
+        let pixels = [0_u8; 24];
+        let frame = BgraFrameView::new(RfbSize::new(3, 2).unwrap(), 12, &pixels).unwrap();
+        assert!(matches!(
+            queue_full_frame(&mut connection, frame),
+            Ok(FramebufferUpdateOutcome::ResizeAnnounced { .. })
+        ));
+
+        assert_eq!(
+            connection.push_input(&[1, 0, 1, 5, 0, 0, 1, 0, 1]),
+            vec![
+                Ok(RfbEvent::Pointer {
+                    button_mask: 0,
+                    x: 1,
+                    y: 1,
+                    framebuffer_size: RfbSize::new(2, 2).unwrap(),
+                }),
+                Ok(RfbEvent::Pointer {
+                    button_mask: 0,
+                    x: 1,
+                    y: 1,
+                    framebuffer_size: RfbSize::new(2, 2).unwrap(),
+                }),
+            ]
+        );
+        assert_eq!(
+            connection.push_input(&[5, 0, 0, 2, 0, 1]),
+            vec![Ok(RfbEvent::Pointer {
+                button_mask: 0,
+                x: 2,
+                y: 1,
+                framebuffer_size: RfbSize::new(3, 2).unwrap(),
+            })]
+        );
+    }
+
+    #[test]
     fn oversized_frame_error_leaves_output_unchanged() {
         let mut config = config_with_size(2, 2);
         config.limits.max_framebuffer_bytes = 16;
@@ -902,12 +1004,30 @@ mod tests {
                 maximum: 50,
             })
         );
+        assert_eq!(
+            connection.push_input(&[5, 0, 0, 1, 0, 1]),
+            vec![Ok(RfbEvent::Pointer {
+                button_mask: 0,
+                x: 1,
+                y: 1,
+                framebuffer_size: RfbSize::new(2, 2).unwrap(),
+            })]
+        );
         assert_eq!(connection.take_output().len(), 36);
         assert!(matches!(
             queue_full_frame(&mut connection, new_frame),
             Ok(FramebufferUpdateOutcome::ResizeAnnounced { size })
                 if size == RfbSize::new(3, 2).unwrap()
         ));
+        assert_eq!(
+            connection.push_input(&[5, 0, 0, 2, 0, 1]),
+            vec![Ok(RfbEvent::Pointer {
+                button_mask: 0,
+                x: 2,
+                y: 1,
+                framebuffer_size: RfbSize::new(3, 2).unwrap(),
+            })]
+        );
     }
 
     #[test]
