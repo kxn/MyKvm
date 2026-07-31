@@ -155,7 +155,7 @@ impl Drop for RfbConnectionLease {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::Ordering;
+    use std::{sync::atomic::Ordering, task::Poll};
 
     use super::*;
 
@@ -206,14 +206,16 @@ mod tests {
         let gate = RfbConnectionGate::new();
         let lease = gate.try_acquire().unwrap().activate();
         let waiter_gate = gate.clone();
-        let waiter = tokio::spawn(async move { waiter_gate.acquire().await });
+        let mut waiter = Box::pin(waiter_gate.acquire());
+        std::future::poll_fn(|context| match waiter.as_mut().poll(context) {
+            Poll::Pending => Poll::Ready(()),
+            Poll::Ready(result) => panic!("active gate did not block waiter: {result:?}"),
+        })
+        .await;
 
         drop(lease);
 
-        assert_eq!(
-            waiter.await.unwrap().unwrap_err(),
-            RfbConnectionGateError::Poisoned
-        );
+        assert_eq!(waiter.await.unwrap_err(), RfbConnectionGateError::Poisoned);
         assert_eq!(
             gate.try_acquire().unwrap_err(),
             RfbConnectionGateError::Poisoned

@@ -188,6 +188,35 @@ mod tests {
             gate.try_acquire().unwrap_err(),
             RfbConnectionGateError::Poisoned
         );
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let poisoned_address = listener.local_addr().unwrap();
+        let frame_source = Arc::new(MockFrameSource::new());
+        frame_source.publish_frame(Arc::new(VideoFrame::new(
+            1,
+            MonotonicTimestamp::from_nanos(1),
+            1,
+            1,
+            4,
+            PixelFormat::Bgra8888,
+            Arc::from([0_u8, 0, 0, 0]),
+        )));
+        let (event_tx, _event_rx) = mpsc::channel(1);
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let poisoned_server = RfbTcpServer::new(
+            listener,
+            frame_source,
+            event_tx,
+            RfbTcpConfig::default(),
+            gate,
+        )
+        .unwrap();
+        let poisoned_task = tokio::spawn(poisoned_server.run(shutdown_rx));
+        let _stream = TcpStream::connect(poisoned_address).await.unwrap();
+        assert!(matches!(
+            poisoned_task.await.unwrap(),
+            Err(RfbTcpServerError::ConnectionGatePoisoned)
+        ));
     }
 
     #[tokio::test]
