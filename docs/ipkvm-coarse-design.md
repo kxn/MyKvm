@@ -481,19 +481,25 @@ WebSocket 兼容：
 
 ### 阶段 0：硬件到货前
 
+已完成：
+
 - 建立 Rust 工作区。
 - 固定 tokio 作为 I/O 运行时。
 - 建立 `[workspace.dependencies]` 集中管理外部依赖版本。
 - 建立最小 CI：格式检查和 `cargo test --workspace --all-features`。
-- 写 CH9329 命令帧、应答帧和增量解帧单元测试。
-- 写 HID 用法编号映射基础表。
+- 完成 CH9329 命令帧、类型化 HID 报告、应答解析和增量解帧，并覆盖协议金样、错误恢复和性质测试。
 - 写键盘状态机测试：重复按下去重、6KRO 溢出、释放所有键。
 - 写鼠标状态机测试：按钮组合、绝对坐标、相对位移拆包、模式切换和释放。
 - 写坐标换算测试，覆盖厂家示例；桌面适配层后续覆盖非整数 DPI 缩放。
 - 写模拟视频源，支持尺寸变化事件。
 - 写 fake 命令队列和有序批次提交测试。
 - `ipkvm-video` 使用 `mock` feature 提供测试帧源。
-- `ipkvm-core` 使用 `mock` feature 提供 fake serial。
+- `ipkvm-core` 使用 `mock` feature 提供 fake 命令队列。
+- 将会话默认串口波特率设为 CH9329 出厂值 9600。
+
+待完成：
+
+- 写 HID 用法编号到桌面和 RFB 键值的映射基础表。
 - 写 RFB 3.8 握手、`Raw` 编码、`DesktopSize` 伪编码协议样例测试。
 - 写未知伪编码忽略测试。
 - 用模拟帧缓冲跑通普通 VNC 客户端和 noVNC。

@@ -40,7 +40,7 @@ impl ConsoleSessionConfig {
             video_device_id,
             serial_port,
             VideoFormat::new(1920, 1080, 60, PixelFormat::Mjpeg),
-            115_200,
+            9_600,
             KeyboardLayout::EnUs,
             MouseMode::Absolute,
         )
@@ -116,14 +116,14 @@ mod tests {
     }
 
     #[test]
-    fn session_config_defaults_prefer_mjpeg_and_fast_serial() {
+    fn session_config_defaults_to_factory_serial_baud() {
         let config = ConsoleSessionConfig::default_for_devices("video0", "COM3");
 
         assert_eq!(
             config.video_format(),
             VideoFormat::new(1920, 1080, 60, PixelFormat::Mjpeg)
         );
-        assert_eq!(config.baud_rate(), 115_200);
+        assert_eq!(config.baud_rate(), 9_600);
         assert_eq!(config.mouse_mode(), MouseMode::Absolute);
     }
 }
