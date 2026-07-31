@@ -1,11 +1,71 @@
+mod connection;
 mod frame;
 mod pending;
 
 use std::time::Duration;
+use std::{io::ErrorKind, net::SocketAddr};
 
-use ipkvm_rfb::{RfbFramebufferError, RfbProtocolLimits};
+use ipkvm_rfb::{
+    RfbConfigError, RfbEncodeError, RfbFramebufferError, RfbProtocolError, RfbProtocolLimits,
+    RfbRectangle,
+};
 use ipkvm_video::PixelFormat;
 use thiserror::Error;
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct RfbClientId(u64);
+
+impl RfbClientId {
+    pub fn get(self) -> u64 {
+        self.0
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RfbTcpEvent {
+    Connected {
+        client_id: RfbClientId,
+        peer_addr: SocketAddr,
+        shared: bool,
+    },
+    Key {
+        client_id: RfbClientId,
+        down: bool,
+        keysym: u32,
+    },
+    Pointer {
+        client_id: RfbClientId,
+        button_mask: u8,
+        x: u16,
+        y: u16,
+    },
+    CutText {
+        client_id: RfbClientId,
+        bytes: Vec<u8>,
+    },
+    ContinuousUpdates {
+        client_id: RfbClientId,
+        enable: bool,
+        rectangle: RfbRectangle,
+    },
+    Disconnected {
+        client_id: RfbClientId,
+        peer_addr: SocketAddr,
+        reason: RfbDisconnectReason,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RfbDisconnectReason {
+    ClientClosed,
+    ServerShutdown,
+    HandshakeTimeout,
+    CoreConfig(RfbConfigError),
+    Protocol(RfbProtocolError),
+    Encode(RfbEncodeError),
+    Frame(RfbTcpFrameError),
+    Io(ErrorKind),
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RfbTcpConfig {

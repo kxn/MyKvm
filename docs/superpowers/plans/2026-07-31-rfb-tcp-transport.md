@@ -542,7 +542,7 @@ git commit -m "feat: coalesce RFB update requests (#5)"
 - 产出：`ConnectionEnd`
 - 保证：core 输出立即写出，输入事件按协议顺序进入有界通道
 
-- [ ] **步骤 1：写入真实 socket 握手失败测试**
+- [x] **步骤 1：写入真实 socket 握手失败测试**
 
 在 `connection.rs` 内部测试模块绑定回环 listener，客户端逐字节发送：
 
@@ -609,7 +609,7 @@ async fn handshake_timeout_uses_paused_clock() {
 }
 ```
 
-- [ ] **步骤 2：运行测试并确认红灯**
+- [x] **步骤 2：运行测试并确认红灯**
 
 运行：
 
@@ -619,7 +619,7 @@ cargo test -p ipkvm-headless connection
 
 预期：编译失败，指出 `run_connection` 和 `ConnectionEnd` 尚不存在。
 
-- [ ] **步骤 3：实现连接初始化和输出写入**
+- [x] **步骤 3：实现连接初始化和输出写入**
 
 `run_connection` 负责把内部可失败驱动器归一化为单一结束状态：
 
@@ -715,7 +715,7 @@ impl ConnectionEnd {
 }
 ```
 
-- [ ] **步骤 4：实现握手状态循环**
+- [x] **步骤 4：实现握手状态循环**
 
 使用 `tokio::select!` 等待 socket、shutdown、event receiver 关闭和握手 deadline。每次 `push_input`：
 
@@ -739,7 +739,7 @@ async fn send_event(
 }
 ```
 
-- [ ] **步骤 5：运行测试并确认绿灯**
+- [x] **步骤 5：运行测试并确认绿灯**
 
 运行：
 
@@ -749,7 +749,7 @@ cargo test -p ipkvm-headless connection
 
 预期：握手、事件顺序、协议错误、暂停时钟超时和 shutdown 测试全部通过。
 
-- [ ] **步骤 6：提交**
+- [x] **步骤 6：提交**
 
 ```powershell
 git add Cargo.toml Cargo.lock crates/ipkvm-headless
