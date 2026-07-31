@@ -12,7 +12,7 @@ pub use ch9329::{
     Ch9329ResponseError, CommandStatus, KeyboardReport, LockLedState, MAX_DATA_LEN,
     RelativeMouseReport,
 };
-pub use geometry::{Ch9329Point, Point, ViewRect, map_pointer_to_ch9329};
+pub use geometry::map_framebuffer_axis;
 pub use input::{
     FramebufferSize, InputError, InputResult, InputSink, KeyEvent, KeyboardUsage, MouseMode,
     PointerButton, PointerEvent,
@@ -43,25 +43,6 @@ mod tests {
         assert_eq!(
             Ch9329Frame::new(0x00, 0x02, &data),
             Err(Ch9329FrameError::DataTooLong(256))
-        );
-    }
-
-    #[test]
-    fn pointer_mapping_clamps_to_ch9329_absolute_range() {
-        let rect = ViewRect {
-            x: 10,
-            y: 20,
-            width: 100,
-            height: 50,
-        };
-
-        assert_eq!(
-            map_pointer_to_ch9329(Point { x: 10, y: 20 }, rect),
-            Ch9329Point { x: 0, y: 0 }
-        );
-        assert_eq!(
-            map_pointer_to_ch9329(Point { x: 110, y: 70 }, rect),
-            Ch9329Point { x: 4095, y: 4095 }
         );
     }
 

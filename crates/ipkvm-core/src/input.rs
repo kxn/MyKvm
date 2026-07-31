@@ -75,6 +75,11 @@ pub enum InputError {
     InvalidFramebufferSize { width: u32, height: u32 },
     #[error("pointer coordinate {coordinate} is outside extent {extent}")]
     PointerOutOfBounds { coordinate: u32, extent: u32 },
+    #[error("pointer event {event} does not match mouse mode {mode:?}")]
+    PointerModeMismatch {
+        mode: MouseMode,
+        event: &'static str,
+    },
     #[error("absolute pointer position is not known")]
     PointerPositionUnknown,
     #[error("command queue rejected a batch")]
