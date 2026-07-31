@@ -365,7 +365,7 @@ git commit -m "test: enforce dependency license policy (#13)"
 - 产出：`scripts/verify-licenses.ps1` 作为当前 workspace 独立许可证验收入口。
 - 产出：`scripts/verify.ps1` 在所有 Rust 验收前运行策略测试和 workspace 审计。
 
-- [ ] **步骤 1：先在统一验证中调用尚不存在的脚本**
+- [x] **步骤 1：先在统一验证中调用尚不存在的脚本**
 
 在文本编码检查之后、Rust 格式检查之前增加：
 
@@ -384,7 +384,7 @@ Invoke-CheckedCommand "Check dependency licenses and sources" {
 & git ls-files -- "*.json" "*.md" "*.ps1" "*.psm1" "*.rs" "*.toml" ...
 ```
 
-- [ ] **步骤 2：运行统一验证并确认按预期失败**
+- [x] **步骤 2：运行统一验证并确认按预期失败**
 
 运行：
 
@@ -394,7 +394,7 @@ Invoke-CheckedCommand "Check dependency licenses and sources" {
 
 预期：策略测试通过，随后因为 `verify-licenses.ps1` 不存在而失败。
 
-- [ ] **步骤 3：实现 workspace 审计脚本**
+- [x] **步骤 3：实现 workspace 审计脚本**
 
 创建：
 
@@ -424,7 +424,7 @@ finally {
 Write-Host "依赖许可证和来源检查通过。"
 ```
 
-- [ ] **步骤 4：单独运行当前依赖图审计**
+- [x] **步骤 4：单独运行当前依赖图审计**
 
 运行：
 
@@ -436,7 +436,7 @@ Write-Host "依赖许可证和来源检查通过。"
 
 如果出现无效 SPDX 表达式，只能用 `licenses.clarify` 配合实际许可证文件哈希解决；禁止把未知许可证全局放行。
 
-- [ ] **步骤 5：运行统一验证**
+- [x] **步骤 5：运行统一验证**
 
 运行：
 
@@ -446,12 +446,14 @@ Write-Host "依赖许可证和来源检查通过。"
 
 预期：新增两个门禁以及原有 Rust 验收全部通过。
 
-- [ ] **步骤 6：提交**
+- [x] **步骤 6：提交**
 
 ```powershell
 git add scripts/verify.ps1 scripts/verify-licenses.ps1
 git commit -m "build: audit dependency licenses locally (#13)"
 ```
+
+实施说明：统一入口的首次运行证明策略脚本会把最后一个预期失败原生命令的 `LASTEXITCODE` 泄漏给调用者。测试脚本在所有断言通过后显式归零，避免外层误判；随后独立审计和完整统一验证均通过。
 
 ---
 

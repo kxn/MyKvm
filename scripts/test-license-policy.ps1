@@ -377,3 +377,4 @@ finally {
 }
 
 Write-Host "Dependency license policy tests passed."
+$global:LASTEXITCODE = 0
