@@ -224,7 +224,7 @@ pub enum RfbPointerError {
 
 ### 步骤
 
-- [ ] **步骤 1：写入映射器红灯测试**
+- [x] **步骤 1：写入映射器红灯测试**
 
 在 `pointer.rs` 使用只记录批次的 `RecordingSink`，增加：
 
@@ -258,7 +258,7 @@ fn first_left_press_moves_before_pressing_button() {
 - 同一按钮状态的新坐标只有移动事件。
 - 左、中、右同时变化时顺序稳定。
 
-- [ ] **步骤 2：确认映射器红灯**
+- [x] **步骤 2：确认映射器红灯**
 
 ```powershell
 cargo test -p ipkvm-headless rfb_input::pointer
@@ -266,7 +266,7 @@ cargo test -p ipkvm-headless rfb_input::pointer
 
 预期：模块或 `RfbPointerMapper::handle_pointer` 不存在。
 
-- [ ] **步骤 3：实现按钮差分**
+- [x] **步骤 3：实现按钮差分**
 
 `RfbPointerMapper` 只保存：
 
@@ -291,7 +291,7 @@ const UNSUPPORTED_BUTTON_MASK: u8 = 0b1110_0000;
 4. 滚轮向上上升沿
 5. 滚轮向下上升沿
 
-- [ ] **步骤 4：写入滚轮边沿红灯测试**
+- [x] **步骤 4：写入滚轮边沿红灯测试**
 
 覆盖：
 
@@ -301,7 +301,7 @@ const UNSUPPORTED_BUTTON_MASK: u8 = 0b1110_0000;
 - `0x18` 同时产生 `+1` 和 `-1` 两个离散事件。
 - 左键保持按下时滚轮事件不产生多余按钮变化。
 
-- [ ] **步骤 5：实现滚轮、忽略位和 outcome**
+- [x] **步骤 5：实现滚轮、忽略位和 outcome**
 
 使用：
 
@@ -317,7 +317,7 @@ RfbPointerOutcome::AppliedIgnoringButtons {
 }
 ```
 
-- [ ] **步骤 6：写入 sink 失败回滚测试**
+- [x] **步骤 6：写入 sink 失败回滚测试**
 
 记录 sink 第一次返回错误：
 
@@ -327,7 +327,7 @@ RfbPointerOutcome::AppliedIgnoringButtons {
 
 这验证 mapper 只在 sink 成功后提交掩码。
 
-- [ ] **步骤 7：运行 headless 单元验证并提交**
+- [x] **步骤 7：运行 headless 单元验证并提交**
 
 ```powershell
 cargo test -p ipkvm-headless rfb_input::pointer
