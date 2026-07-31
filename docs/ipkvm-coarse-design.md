@@ -19,7 +19,9 @@
 
 `/rfb` 默认不要求子协议；请求包含 `binary` 时响应选择该子协议。单条 WebSocket 消息和帧都限制为 `RfbProtocolLimits::max_buffered_input_bytes`，现有活动连接返回 `409 Conflict`，关闭信号、事件接收端关闭、闸门中毒或客户端标识耗尽返回 `503 Service Unavailable`。锁定 noVNC 1.7.0 提交 `63107bd06d9e1f6136ff21aeda8cd62cbf0d433e` 的无子协议线级初始化样本验证初始与增量 `Raw` 更新；独立升级测试覆盖可选 `binary` 子协议，共享驱动测试覆盖 `DesktopSize`。
 
-上述实现不是完整网页产品：没有 noVNC 静态资源、真实浏览器闭环、真实视频采集、真实串口、鉴权、TLS 或可运行的 headless 二进制。以下无头网页和设备会话描述是目标形态，不能当作当前已交付能力。
+`HeadlessWebService` 已把项目自有中文控制台页面、固定 noVNC 1.7.0 资源和现有 `/rfb` 组装为单一嵌入式 HTTP 服务。真实 Chrome 自动化已经证明模拟帧像素、桌面与窄视口等比缩放、键盘 HID、缩放后的绝对坐标、按钮顺序、断开释放和重连到达 `RfbInputPump` 后的 `InputSink`。资源来源、逐文件哈希、许可证和浏览器测试依赖也进入统一本机门禁。
+
+上述实现仍不是可控制真实机器的完整无头产品：正式二进制尚未组装真实视频、真实串口、设备选择和进程生命周期，鉴权与 TLS 也未实现。以下设备会话、状态接口和生产启动描述仍是目标形态，不能当作当前已交付能力。
 
 当前不做完整安全子系统。鉴权、TLS、访问控制、审计、公网暴露、反向代理、VPN、会话权限等都视为后续可叠加层；但默认监听地址固定为 `127.0.0.1`，只有显式配置才允许监听其他地址。
 
@@ -368,16 +370,18 @@ GET  /api/devices       视频和串口设备列表
 POST /api/session       启动或重启会话
 GET  /api/status        当前帧率、串口统计、最后输入时间、丢帧计数、活动客户端数
 GET  /api/screenshot    最新帧 JPEG 快照
-GET  /novnc/...         noVNC 静态资源
+GET  /vendor/novnc/...  noVNC 静态资源
 GET  /rfb               基于 WebSocket 的 RFB
+GET  /licenses/         第三方许可证与源码入口
 ```
 
-noVNC 静态资源打包计划：
+noVNC 静态资源打包现状：
 
-- 当前仓库未嵌入或分发 noVNC 静态资源，也没有完整网页或真实浏览器闭环。
-- 后续可将 noVNC 静态资源内嵌进二进制，发布形态为单文件加配置文件。
-- 可评估 `include_dir` 或 `rust-embed`，进入依赖前需要许可证审计。
-- noVNC 版本固定，发布包保留 noVNC 和其第三方静态资源的许可证说明。
+- 仓库保存固定的 noVNC 1.7.0 完整 npm 发布包、来源元数据和逐文件哈希清单。
+- `include_dir 0.7.4` 在编译时嵌入 noVNC 与项目页面，运行时不需要 Node.js 或外部静态目录。
+- 项目页面只导入 noVNC 核心库，不复制上游完整应用界面。
+- `/licenses/` 提供 noVNC、MPL、pako 和 DES 许可证与嵌入源码入口。
+- 资源门禁和真实浏览器闭环已经加入 `scripts/verify.ps1`。
 
 ### RFB/VNC 服务
 
@@ -526,9 +530,13 @@ WebSocket 兼容：
 - 使用真实回环 TCP、模拟 BGRA 帧和 `Ch9329InputSink<FakeCommandQueue>` 自动验证键盘、指针与最终释放闭环。
 - 完成双分辨率 Y4M 循环播放 mock 帧源（`ipkvm-video` 的 `mock` 功能）与 `ipkvm-demo` 演示二进制，并用独立第三方 VNC 客户端 vncdotool 1.3.0 验证 RFB TCP 画面和 `DesktopSize` 动态分辨率切换；自动化回归测试见 `crates/ipkvm-headless/tests/rfb_dynamic_resolution.rs`。
 - 完成 RFB WebSocket 传输：axum `/rfb` 入口、可选 `binary` 子协议、锁定 noVNC 1.7.0 提交的线级初始化样本、TCP/WS 跨传输互斥与取消安全连接闸门。
+- 完成嵌入式 HTTP 服务，固定并分发 noVNC 1.7.0 资源。
+- 使用真实 Chrome 自动验证 noVNC 页面、模拟帧像素、两种视口等比缩放、键盘、绝对指针、按钮、释放和重连闭环。
+- 建立 noVNC 来源、逐文件完整性、许可证与浏览器依赖锁文件的自动门禁。
 
 待完成：
 
+- 使用锁定版本的第三方普通 VNC 客户端验证兼容性。
 - 有明确维护的可用 runner 后，再设计并启用 Gitea Actions；在此之前以本地自动化验证结果作为 PR 验收证据。
 
 ### 阶段 1：桌面本地最小版本
@@ -663,9 +671,9 @@ WebSocket 兼容：
 - USB 视频类 v1.5：https://www.usb.org/document-library/video-class-v15-document-set
 - RFC 6143 RFB 协议：https://www.rfc-editor.org/rfc/rfc6143
 - RFB 社区协议规格：https://github.com/rfbproto/rfbproto/blob/master/rfbproto.rst
-- noVNC：https://github.com/novnc/noVNC
-- noVNC 接口文档：https://github.com/novnc/noVNC/blob/master/docs/API.md
-- noVNC 嵌入文档：https://github.com/novnc/noVNC/blob/master/docs/EMBEDDING.md
+- noVNC 固定提交：https://github.com/novnc/noVNC/tree/63107bd06d9e1f6136ff21aeda8cd62cbf0d433e
+- noVNC 接口文档：https://github.com/novnc/noVNC/blob/63107bd06d9e1f6136ff21aeda8cd62cbf0d433e/docs/API.md
+- noVNC 嵌入文档：https://github.com/novnc/noVNC/blob/63107bd06d9e1f6136ff21aeda8cd62cbf0d433e/docs/EMBEDDING.md
 - noVNC 服务端要求：https://novnc.com/noVNC/
 - WebSocket 子协议头说明：https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Sec-WebSocket-Protocol
 - libjpeg-turbo 许可证：https://github.com/libjpeg-turbo/libjpeg-turbo/blob/main/LICENSE.md
