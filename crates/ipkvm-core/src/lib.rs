@@ -3,7 +3,7 @@ mod geometry;
 mod input;
 mod serial;
 
-#[cfg(feature = "mock")]
+#[cfg(any(test, feature = "mock"))]
 pub mod fake_serial;
 
 pub use ch9329::{
@@ -16,7 +16,10 @@ pub use input::{
     FramebufferSize, InputError, InputResult, InputSink, KeyEvent, MouseMode, PointerButton,
     PointerEvent,
 };
-pub use serial::{SerialError, SerialResult, SerialStats, SerialWriter};
+pub use serial::{
+    CommandBatch, CommandBatchError, CommandQueue, CommandQueueError, CommandQueueResult,
+    QueueStats,
+};
 
 #[cfg(test)]
 mod tests {
@@ -133,28 +136,6 @@ mod tests {
                 y: 540,
                 framebuffer_size: size
             }]
-        );
-    }
-
-    #[cfg(feature = "mock")]
-    #[test]
-    fn fake_serial_records_frames_in_write_order() {
-        use crate::fake_serial::FakeSerialWriter;
-
-        let writer = FakeSerialWriter::new();
-        let first = Ch9329Frame::new(0x00, 0x02, &[0x01]).unwrap();
-        let second = Ch9329Frame::new(0x00, 0x04, &[0x02]).unwrap();
-
-        writer.enqueue(first.clone()).unwrap();
-        writer.enqueue(second.clone()).unwrap();
-
-        assert_eq!(writer.written_frames(), vec![first, second]);
-        assert_eq!(
-            writer.stats(),
-            SerialStats {
-                frames_written: 2,
-                bytes_written: 14,
-            }
         );
     }
 }
