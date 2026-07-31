@@ -194,6 +194,26 @@ impl TestWebSocketRfbClient {
         self.send_binary(&message).await;
     }
 
+    pub async fn set_pixel_format(&mut self, message: &[u8; 20]) {
+        self.send_binary(message).await;
+    }
+
+    pub async fn set_encodings(&mut self, encodings: &[i32]) {
+        let count = u16::try_from(encodings.len()).unwrap();
+        let mut message = vec![2, 0];
+        message.extend_from_slice(&count.to_be_bytes());
+        for encoding in encodings {
+            message.extend_from_slice(&encoding.to_be_bytes());
+        }
+        self.send_binary(&message).await;
+    }
+
+    pub async fn send_key(&mut self, down: bool, keysym: u32) {
+        let mut message = vec![4, u8::from(down), 0, 0];
+        message.extend_from_slice(&keysym.to_be_bytes());
+        self.send_binary(&message).await;
+    }
+
     pub async fn read_update(&mut self, pixel_bytes: usize) -> FramebufferUpdate {
         let message = self.read_binary().await;
         assert_eq!(message.len(), 16 + pixel_bytes);

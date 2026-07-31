@@ -37,9 +37,10 @@ struct RawUpgradeResponse {
 
 struct TestWebSocketServer {
     address: SocketAddr,
+    source: Arc<MockFrameSource>,
     events: mpsc::Receiver<RfbServerEvent>,
     shutdown: watch::Sender<bool>,
-    task: JoinHandle<std::io::Result<()>>,
+    task: Option<JoinHandle<std::io::Result<()>>>,
 }
 
 impl TestWebSocketServer {
@@ -63,7 +64,7 @@ impl TestWebSocketServer {
         source.publish_frame(default_frame());
         let (shutdown, shutdown_rx) = watch::channel(false);
         let service = RfbWebSocketService::new(
-            source,
+            Arc::clone(&source),
             event_tx,
             config,
             shutdown_rx,
@@ -81,9 +82,10 @@ impl TestWebSocketServer {
         });
         Self {
             address,
+            source,
             events,
             shutdown,
-            task,
+            task: Some(task),
         }
     }
 
@@ -172,11 +174,19 @@ impl TestWebSocketServer {
             RfbDisconnectReason::ClientClosed
         );
     }
+
+    async fn stop(mut self) {
+        let task = self.task.take().unwrap();
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+    }
 }
 
 impl Drop for TestWebSocketServer {
     fn drop(&mut self) {
-        self.task.abort();
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
     }
 }
 
@@ -191,6 +201,50 @@ fn default_frame() -> Arc<VideoFrame> {
         Arc::from([0, 0, 255, 0, 0, 255, 0, 0]),
     ))
 }
+
+fn bgra_frame(seq: u64, bytes: [u8; 4]) -> Arc<VideoFrame> {
+    Arc::new(VideoFrame::new(
+        seq,
+        MonotonicTimestamp::from_nanos(seq),
+        1,
+        1,
+        4,
+        PixelFormat::Bgra8888,
+        Arc::from(bytes),
+    ))
+}
+
+// noVNC 1.7.0 commit 63107bd06d9e1f6136ff21aeda8cd62cbf0d433e, without H.264.
+const NOVNC_1_7_SET_PIXEL_FORMAT: [u8; 20] = [
+    0, 0, 0, 0, 32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 0, 8, 16, 0, 0, 0,
+];
+
+const NOVNC_1_7_ENCODINGS_WITHOUT_H264: [i32; 24] = [
+    1,
+    7,
+    -260,
+    16,
+    21,
+    5,
+    2,
+    6,
+    0,
+    -26,
+    -254,
+    -223,
+    -224,
+    -258,
+    -261,
+    -308,
+    -309,
+    -312,
+    -313,
+    -307,
+    0xc0a1e5ceu32 as i32,
+    -316,
+    0x574d5664,
+    -239,
+];
 
 fn key_message(down: bool, keysym: u32) -> Vec<u8> {
     let mut message = vec![4, u8::from(down), 0, 0];
@@ -231,6 +285,69 @@ fn header_contains_token(headers: &HeaderMap, name: HeaderName, expected: &str) 
 fn assert_empty_rejection(response: &Response<Option<Vec<u8>>>, expected: StatusCode) {
     assert_eq!(response.status(), expected);
     assert!(response.body().as_ref().is_none_or(Vec::is_empty));
+}
+
+#[tokio::test]
+async fn novnc_1_7_without_h264_receives_initial_and_incremental_raw_updates() {
+    let mut server = TestWebSocketServer::start().await;
+    server
+        .source
+        .publish_frame(bgra_frame(2, [30, 20, 10, 255]));
+    let (socket, response) = server.connect_without_protocol().await;
+    assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+    let mut client = TestWebSocketRfbClient::new(socket);
+
+    let init = client.handshake(true).await;
+    assert_eq!((init.width, init.height), (1, 1));
+    let client_id = server.expect_connected().await;
+    client.set_pixel_format(&NOVNC_1_7_SET_PIXEL_FORMAT).await;
+    client
+        .set_encodings(&NOVNC_1_7_ENCODINGS_WITHOUT_H264)
+        .await;
+
+    let mut initial_request = vec![3, 0, 0, 0, 0, 0];
+    initial_request.extend_from_slice(&init.width.to_be_bytes());
+    initial_request.extend_from_slice(&init.height.to_be_bytes());
+    client.send_binary(&initial_request).await;
+    let initial_update = client.read_update(4).await;
+    assert_eq!(
+        (
+            initial_update.x,
+            initial_update.y,
+            initial_update.width,
+            initial_update.height,
+        ),
+        (0, 0, 1, 1)
+    );
+    assert_eq!(initial_update.encoding, 0);
+    assert_eq!(initial_update.pixels, [10, 20, 30, 0]);
+
+    let mut incremental_request = vec![3, 1, 0, 0, 0, 0];
+    incremental_request.extend_from_slice(&init.width.to_be_bytes());
+    incremental_request.extend_from_slice(&init.height.to_be_bytes());
+    client.send_binary(&incremental_request).await;
+    server
+        .source
+        .publish_frame(bgra_frame(3, [60, 50, 40, 255]));
+    let incremental_update = client.read_update(4).await;
+    assert_eq!(
+        (
+            incremental_update.x,
+            incremental_update.y,
+            incremental_update.width,
+            incremental_update.height,
+        ),
+        (0, 0, 1, 1)
+    );
+    assert_eq!(incremental_update.encoding, 0);
+    assert_eq!(incremental_update.pixels, [40, 50, 60, 0]);
+
+    client.close().await;
+    assert_eq!(
+        server.expect_disconnected().await,
+        (client_id, RfbDisconnectReason::ClientClosed)
+    );
+    server.stop().await;
 }
 
 #[tokio::test]
