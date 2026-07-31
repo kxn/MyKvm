@@ -4,6 +4,7 @@ mod framebuffer;
 mod protocol;
 
 pub use framebuffer::{BgraFrameView, RfbFramebufferError, RfbRectangle, RfbSize};
+pub use protocol::client::{FramebufferUpdateRequest, RfbProtocolError};
 pub use protocol::pixel_format::{RfbColorChannel, RfbPixelFormat, RfbPixelFormatError};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
