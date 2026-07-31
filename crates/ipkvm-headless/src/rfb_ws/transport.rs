@@ -28,7 +28,7 @@ impl RfbTransport for WebSocketTransport {
             | Some(Ok(Message::Pong(_))) => Ok(RfbTransportRead::Continue),
             Some(Ok(Message::Close(_))) | None => Ok(RfbTransportRead::Closed),
             Some(Ok(Message::Text(_))) => Err(RfbTransportError::UnexpectedTextMessage),
-            Some(Err(_)) => Err(RfbTransportError::WebSocket),
+            Some(Err(error)) => Err(RfbTransportError::websocket(error)),
         }
     }
 
@@ -36,7 +36,7 @@ impl RfbTransport for WebSocketTransport {
         self.socket
             .send(Message::Binary(bytes.into()))
             .await
-            .map_err(|_| RfbTransportError::WebSocket)
+            .map_err(RfbTransportError::websocket)
     }
 
     async fn close(&mut self) {

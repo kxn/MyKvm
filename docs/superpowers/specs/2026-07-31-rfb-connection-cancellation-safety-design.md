@@ -3,7 +3,7 @@
 ## 1. 文档状态
 
 - 关联 issue：`#15`
-- 状态：已批准，待实施
+- 状态：已实施
 - 适用范围：TCP 与 WebSocket 共用的单活动 RFB 连接生命周期
 - 前置设计：`2026-07-31-rfb-websocket-transport-design.md`
 

@@ -59,6 +59,10 @@ mod tests {
     #[test]
     fn frame_adapter_rejects_unsupported_format_and_width() {
         let wrong = video_frame(1, 1, 1, 4, PixelFormat::Mjpeg, vec![0; 4]);
+        assert_eq!(
+            frame_view(&wrong).unwrap_err().to_string(),
+            "RFB requires BGRA8888, got Mjpeg"
+        );
         assert!(matches!(
             frame_view(&wrong),
             Err(RfbFrameError::UnsupportedPixelFormat(PixelFormat::Mjpeg))

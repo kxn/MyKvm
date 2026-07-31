@@ -75,9 +75,9 @@ impl ConnectionEnd {
             Self::Failed(RfbConnectionError::Transport(RfbTransportError::Io(error))) => {
                 RfbDisconnectReason::Io(error.kind())
             }
-            Self::Failed(RfbConnectionError::Transport(RfbTransportError::WebSocket)) => {
-                RfbDisconnectReason::WebSocket
-            }
+            Self::Failed(RfbConnectionError::Transport(RfbTransportError::WebSocket {
+                ..
+            })) => RfbDisconnectReason::WebSocket,
             Self::Failed(RfbConnectionError::Transport(
                 RfbTransportError::UnexpectedTextMessage,
             )) => RfbDisconnectReason::UnexpectedTextMessage,
@@ -536,7 +536,9 @@ mod tests {
 
     #[tokio::test]
     async fn transport_websocket_error_has_a_stable_disconnect_reason() {
-        let transport = FakeTransport::from_error(RfbTransportError::WebSocket);
+        let transport = FakeTransport::from_error(RfbTransportError::websocket(io::Error::other(
+            "test WebSocket transport failure",
+        )));
         let result = run_test_connection(transport).await;
         assert_eq!(result.end.reason(), Some(RfbDisconnectReason::WebSocket));
     }

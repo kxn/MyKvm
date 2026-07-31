@@ -10,11 +10,11 @@
 
 ### 1.1 实施事实核对
 
-实现位于 `ipkvm-headless`：公共 `RfbConnectionSettings`、`RfbClientId`、`RfbServerEvent`、`RfbDisconnectReason`、`RfbFrameError` 与 `RfbConnectionGate` 均在 `rfb_connection`。`RfbConnectionGate::new()` 和 `Default::default()` 都创建容量为 1、客户端标识从 1 开始的独立连接闸门。生产组装通过 `RfbTcpServer::new(listener, frame_source, event_tx, config, gate)` 与 `RfbWebSocketService::new(frame_source, event_tx, config, shutdown, gate)` 显式接收同一个连接闸门；后者的 `router()` 只提供 `/rfb`，监听器和 `ConnectInfo<SocketAddr>` 由上层组装。
+实现位于 `ipkvm-headless`：公共 `RfbConnectionSettings`、`RfbClientId`、`RfbServerEvent`、`RfbDisconnectReason`、`RfbFrameError` 与 `RfbConnectionGate` 均在 `rfb_connection`。`RfbConnectionGate::new()` 和 `Default::default()` 都创建容量为 1、客户端标识从 1 开始的独立连接闸门。闸门使用“未激活预约”和“已激活租约”两阶段所有权；预约普通析构会释放，租约只有在 `Disconnected` 成功入队后才显式释放，异常析构会关闭并毒化闸门。生产组装通过 `RfbTcpServer::new(listener, frame_source, event_tx, config, gate)` 与 `RfbWebSocketService::new(frame_source, event_tx, config, shutdown, gate)` 显式接收同一个连接闸门；后者的 `router()` 只提供 `/rfb`，监听器和 `ConnectInfo<SocketAddr>` 由上层组装。
 
-错误分类保持类型化：TCP I/O 映射为 `RfbDisconnectReason::Io(ErrorKind)`，WebSocket 传输层故障映射为 `WebSocket`，Text 消息映射为 `UnexpectedTextMessage`；普通关闭、关闭信号、协议、编码和帧错误保留各自分类。`/rfb` 无子协议时返回不含 `Sec-WebSocket-Protocol` 的 `101`，请求 `binary` 时选择 `binary`；已有活动连接返回 `409`，关闭信号、事件接收端关闭和客户端标识耗尽返回 `503`。单条 WebSocket 消息与帧的大小都使用 `max_buffered_input_bytes`，没有第二套重复上限。
+错误分类保持类型化：TCP I/O 映射为 `RfbDisconnectReason::Io(ErrorKind)`，WebSocket 传输层故障在私有错误链中保留底层来源，对外映射为稳定的 `WebSocket`，Text 消息映射为 `UnexpectedTextMessage`；普通关闭、关闭信号、协议、编码和帧错误保留各自分类。`/rfb` 无子协议时返回不含 `Sec-WebSocket-Protocol` 的 `101`，请求 `binary` 时选择 `binary`；已有活动连接返回 `409`，关闭信号、事件接收端关闭、客户端标识耗尽和闸门中毒返回 `503`。单条 WebSocket 消息与帧的大小都使用 `max_buffered_input_bytes`，没有第二套重复上限。
 
-自动化测试按实际测试文件分组记录在第 14 节：`rfb_websocket.rs` 有 16 个 WebSocket 集成测试，`rfb_transport_exclusion.rs` 有 2 个跨传输层排他性测试，`rfb_tcp.rs` 有 8 个 TCP 回归测试，`rfb_input_pump.rs` 有 2 个 RFB 输入泵集成测试。依赖锁定为生产 `axum 0.8.9`，测试 `tokio-tungstenite 0.29.0` 与 `futures-util 0.3.33`，均来自 crates.io，并由许可证与来源门禁审计。noVNC 仅作为固定线级样本来源，不进入仓库或产物；完整网页、真实浏览器、真实视频采集、真实串口、鉴权、TLS 和可运行的无头二进制不属于本次已实施内容。
+自动化测试按实际测试文件分组记录在第 14 节：`rfb_websocket.rs` 有 16 个 WebSocket 集成测试，`rfb_transport_exclusion.rs` 有 2 个跨传输层排他性测试，`rfb_tcp.rs` 有 8 个 TCP 回归测试，`rfb_input_pump.rs` 有 2 个 RFB 输入泵集成测试。依赖锁定为 `axum 0.8.9`、`tokio-tungstenite 0.29.0` 与 `futures-util 0.3.33`，均来自 crates.io，并由许可证与来源门禁审计。后两项是本 crate 的直接开发依赖，同时也通过 axum WebSocket 功能进入正常生产依赖树。noVNC 仅作为固定线级样本来源，不进入仓库或产物；完整网页、真实浏览器、真实视频采集、真实串口、鉴权、TLS 和可运行的无头二进制不属于本次已实施内容。
 
 ## 2. 目标
 
@@ -78,14 +78,18 @@ noVNC 完成 `ServerInit` 后立即发送：
 
 ### 4.3 依赖与许可证
 
-生产依赖：
+直接生产依赖：
 
 - `axum = 0.8.9`，MIT。
 
-测试依赖：
+直接开发依赖：
 
 - `tokio-tungstenite = 0.29.0`，MIT，与 axum 0.8.9 的依赖版本保持一致。
-- `futures-util = 0.3.33`，MIT 或 Apache-2.0，只用于 WebSocket 测试客户端的 `SinkExt` 和 `StreamExt`。
+- `futures-util = 0.3.33`，MIT 或 Apache-2.0，用于 WebSocket 测试客户端的 `SinkExt` 和 `StreamExt`。
+
+`cargo tree -p ipkvm-headless -e normal` 同时显示 `tokio-tungstenite` 与
+`futures-util` 由 axum 的 `ws` 功能传递进入正常生产依赖树。因此“直接开发依赖”只描述
+本 crate 的 `Cargo.toml` 声明位置，不表示它们不会进入生产构建。
 
 实施时以 `Cargo.lock` 的实际解析结果为准，并运行现有 `cargo deny` 门禁。noVNC 的 MPL-2.0 资源不在本阶段进入仓库或产物，因此本阶段不触发 noVNC 分发边界。
 
@@ -286,9 +290,16 @@ pub struct RfbConnectionGate { /* 私有共享状态 */ }
 - 容量为 1 的 `Semaphore`。
 - 一个 `AtomicU64` 下一个客户端标识；`0` 是标识空间已经耗尽的哨兵值。
 
-取得许可时同时分配 `RfbClientId`。返回的私有许可持有信号量许可和
-客户端标识，直到对应 `Disconnected` 成功进入事件队列后才释放。客户端标识从 1 开始，
-使用 `checked_add`，永不回绕或复用。
+取得闸门时同时分配 `RfbClientId`。返回的私有预约持有信号量许可；预约在 HTTP 升级失败
+或进入连接驱动前被取消时可以普通析构并释放。共享 owner 在第一个 `.await` 前把预约激活
+为不可克隆的租约，并取消信号量的自动归还。租约只有在共享收尾函数把对应
+`Disconnected` 成功送入事件队列后才同步显式释放。
+
+已激活 owner、连接驱动或共享收尾被取消，或者事件接收端关闭时，租约析构会关闭
+semaphore 并把闸门置为 `Poisoned`。等待中的 TCP 任务被唤醒并返回
+`RfbTcpServerError::ConnectionGatePoisoned`，新的 WebSocket 升级返回空 `503`；上层必须
+重启服务实例，不能在旧输入状态未确认释放时继续接纳控制者。客户端标识从 1 开始，使用
+`checked_add`，永不回绕或复用。
 
 不提供“每个入口自动创建独立连接闸门”的便捷构造，因为那会允许 TCP 和 WebSocket
 同时成为控制者。所有生产组装和测试必须显式传入连接闸门。
@@ -307,7 +318,8 @@ UnexpectedTextMessage,
 规则：
 
 - TCP `std::io::Error` 继续降级为 `Io(ErrorKind)`。
-- axum/tungstenite 的不可克隆错误降级为稳定的 `WebSocket` 分类。
+- axum/tungstenite 的不可克隆错误保留在私有 `RfbTransportError` 错误链中，对外降级为
+  稳定的 `WebSocket` 分类。
 - 收到 Text 消息使用独立的 `UnexpectedTextMessage`，便于区分应用层误用和底层连接故障。
 - `Ping`、`Pong` 和正常 `Close` 不属于错误。
 - 事件接收端已关闭时无法再可靠发送 `Disconnected`，因此不制造虚假的断开事件。
@@ -422,7 +434,7 @@ TCP 驱动一致。
 - 等待连接闸门时同时监听关闭信号和事件接收端关闭。
 - 取得连接闸门后分配全局唯一、不可回绕的客户端标识。
 - 普通连接错误只关闭当前连接并发送一次 `Disconnected`。
-- 接受连接失败、客户端标识耗尽和事件接收端关闭仍是服务端级错误。
+- 接受连接失败、客户端标识耗尽、闸门中毒和事件接收端关闭仍是服务端级错误。
 - 关闭信号结束当前连接后停止接受连接。
 - `Disconnected` 成功入队后才释放连接闸门；输入泵因此总能在下一连接取得许可前处理完
   前一连接的生命周期事件。
@@ -493,12 +505,14 @@ WebSocket 服务使用上层传入的共享 `RfbConnectionGate`：
 1. 升级处理器调用连接闸门的 `try_acquire()`；连接闸门内部使用拥有所有权的信号量许可。
 2. 未取得许可时立即返回 `409`，不等待当前客户端。
 3. 成功取得许可时由连接闸门分配客户端标识。
-4. 许可移动到 `on_upgrade` 任务，覆盖完整 WebSocket/RFB 生命周期。
-5. 连接驱动结束并完成断开事件发送后释放许可。
-6. 无论当前活动连接来自 TCP 还是 WebSocket，新的 WebSocket 请求都得到 `409`。
-7. 当前连接释放后，后续 WebSocket 请求或已接受并等待的 TCP 客户端可以取得许可。
+4. 未激活预约移动到 `on_upgrade` 任务；升级失败或回调首次 poll 前取消会自动释放预约。
+5. 回调首次 poll 时在任何 `.await` 前激活租约，覆盖完整 WebSocket/RFB 生命周期。
+6. 连接驱动结束并完成断开事件发送后，由共享收尾同步释放租约。
+7. 已激活任务异常消失或断开事件无法入队时毒化闸门，后续升级返回 `503`。
+8. 无论当前活动连接来自 TCP 还是 WebSocket，新的 WebSocket 请求都得到 `409`。
+9. 当前连接正常释放后，后续 WebSocket 请求或已接受并等待的 TCP 客户端可以取得许可。
 
-许可在 HTTP 升级期间已经占用，避免两个并发升级都进入 RFB 握手。
+预约在 HTTP 升级期间已经占用闸门，避免两个并发升级都进入 RFB 握手。
 
 ### 11.4 客户端标识
 
@@ -517,10 +531,10 @@ WebSocket 服务使用上层传入的共享 `RfbConnectionGate`：
 WebSocket 升级成功后：
 
 1. 为连接订阅独立 `FrameReceiver`。
-2. 调用共享连接驱动。
+2. 共享 owner 在第一个 `.await` 前激活预约，再调用共享连接驱动。
 3. 共享驱动器返回前调用传输层的 `close()`；WebSocket 传输层尝试发送 `Close` 帧。
-4. 事件通道仍可用时发送且只发送一次 `Disconnected`。
-5. `Disconnected` 成功入队后释放单连接许可。
+4. 共享收尾在事件通道仍可用时发送且只发送一次 `Disconnected`。
+5. `Disconnected` 成功入队后同步释放租约；收尾取消或发送失败会毒化闸门。
 
 `Close` 帧或 WebSocket 流正常结束映射为 `ClientClosed`。关闭信号映射为
 `ServerShutdown`。底层协议错误映射为 `WebSocket`。收到 Text 映射为
@@ -576,7 +590,13 @@ H.264 的确定性分支；协议核心对未知编码的既有测试以及下�
 - `RfbTcpConfig` 默认读取块、零读取块和超上限读取块校验。
 - `RfbWebSocketConfig` 继承共享连接配置校验。
 - 帧适配覆盖像素格式、尺寸、行跨度、长度和帧序号。
-- `RfbConnectionGate` 覆盖 `Default` 与 `new()` 的等价初始状态、单许可、以及 `u64::MAX` 仅分配一次且不回绕。
+- `RfbConnectionGate` 覆盖 `Default` 与 `new()` 的等价初始状态、单预约、容量循环守恒、
+  未激活析构、显式释放、已激活异常析构中毒并唤醒等待者，以及 `u64::MAX` 仅分配一次且
+  不回绕。
+- 共享收尾覆盖满事件通道反压、成功入队后释放、等待期间取消、无断开原因和接收端已关闭；
+  失败路径均保持无虚假事件并毒化闸门。
+- 真实 TCP owner 在完成握手并产生 `Connected` 后被中止，闸门确定性中毒；后续 TCP 服务
+  返回类型化 `ConnectionGatePoisoned`。
 
 ### 14.2 共享连接驱动
 
@@ -658,9 +678,10 @@ H.264 的确定性分支；协议核心对未知编码的既有测试以及下�
 
 ### 16.4 多连接绕过输入单控制者
 
-措施：TCP 与 WebSocket 必须显式使用同一个连接闸门；许可覆盖完整连接生命周期，并在
-`Disconnected` 入队后释放。并发真实连接测试同时覆盖 TCP/TCP、WS/WS、TCP/WS 和
-WS/TCP。
+措施：TCP 与 WebSocket 必须显式使用同一个连接闸门；共享 owner 把预约激活为关闭失败
+的租约，只有共享收尾在 `Disconnected` 入队后才能释放。异常取消毒化闸门，不会接纳第二
+个控制者。并发真实连接测试同时覆盖 TCP/TCP、WS/WS、TCP/WS 和 WS/TCP，确定性单元测试
+覆盖取消与中毒。
 
 ### 16.5 慢客户端形成无界输出
 
@@ -669,13 +690,14 @@ WS/TCP。
 
 ### 16.6 关闭信号与断开事件竞态
 
-措施：共享驱动器只返回一个 `ConnectionEnd`，外围统一关闭传输层和发送一次
-`Disconnected`；测试关闭信号、`Close` 和错误三条路径。
+措施：共享驱动器只返回一个 `ConnectionEnd`，共享收尾统一发送一次 `Disconnected` 并
+同步释放租约；发送等待期间的 future 取消会毒化闸门。测试关闭信号、`Close`、错误、
+事件通道关闭和收尾取消路径。
 
 ### 16.7 WebSocket 库错误不可稳定比较
 
-措施：对外只暴露稳定错误分类，底层错误不进入可克隆事件；Text 单独分类，其他
-WebSocket 故障统一为 `WebSocket`。
+措施：对外只暴露稳定错误分类，底层错误保留在私有 `Error::source()` 链中但不进入可克隆
+事件；Text 单独分类，其他 WebSocket 故障统一为 `WebSocket`。
 
 ### 16.8 新依赖扩大许可证或来源风险
 

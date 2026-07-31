@@ -121,7 +121,7 @@ pub enum RfbDisconnectReason {
 pub enum RfbFrameError {
     #[error("no video frame is available")]
     FrameUnavailable,
-    #[error("RFB TCP requires BGRA8888, got {0:?}")]
+    #[error("RFB requires BGRA8888, got {0:?}")]
     UnsupportedPixelFormat(PixelFormat),
     #[error("video frame width {0} exceeds the RFB limit")]
     WidthOutOfRange(u32),
