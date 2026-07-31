@@ -21,7 +21,7 @@ impl MockFrameSource {
 
     pub fn publish_frame(&self, frame: SharedVideoFrame) {
         *self.latest.write().expect("mock frame lock poisoned") = Some(Arc::clone(&frame));
-        let _ = self.sender.send(Some(frame));
+        self.sender.send_replace(Some(frame));
     }
 }
 

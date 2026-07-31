@@ -159,4 +159,26 @@ mod tests {
         assert!(Arc::ptr_eq(&source.latest_frame().unwrap(), &frame));
         assert!(Arc::ptr_eq(receiver.borrow().as_ref().unwrap(), &frame));
     }
+
+    #[cfg(feature = "mock")]
+    #[test]
+    fn mock_frame_source_retains_frame_published_before_subscription() {
+        use crate::mock::MockFrameSource;
+
+        let source = MockFrameSource::new();
+        let frame = Arc::new(VideoFrame::new(
+            8,
+            MonotonicTimestamp::from_nanos(800),
+            1,
+            1,
+            4,
+            PixelFormat::Bgra8888,
+            Arc::from(vec![0, 0, 0, 0].into_boxed_slice()),
+        ));
+
+        source.publish_frame(Arc::clone(&frame));
+        let receiver = source.subscribe();
+
+        assert!(Arc::ptr_eq(receiver.borrow().as_ref().unwrap(), &frame));
+    }
 }
