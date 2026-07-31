@@ -9,6 +9,7 @@ use ipkvm_rfb::{
 use ipkvm_video::PixelFormat;
 use thiserror::Error;
 
+pub(crate) use gate::RfbConnectionPermit;
 pub use gate::{RfbConnectionGate, RfbConnectionGateError};
 
 #[derive(Clone, Debug, Eq, PartialEq)]

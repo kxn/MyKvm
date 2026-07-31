@@ -11,7 +11,8 @@ use super::{
     connection::{ConnectionEnd, RfbTcpConnectionError, run_connection},
 };
 use crate::rfb_connection::{
-    RfbClientId, RfbConnectionGate, RfbConnectionGateError, RfbDisconnectReason, RfbServerEvent,
+    RfbClientId, RfbConnectionGate, RfbConnectionGateError, RfbConnectionPermit,
+    RfbDisconnectReason, RfbServerEvent,
 };
 
 pub struct RfbTcpServer<S> {
@@ -88,8 +89,8 @@ impl<S: FrameSource + 'static> RfbTcpServer<S> {
                 return Err(RfbTcpServerError::EventChannelClosed);
             }
             let reason = end.reason().ok_or(RfbTcpServerError::EventChannelClosed)?;
-            self.send_disconnected(client_id, peer_addr, reason).await?;
-            drop(permit);
+            self.finish_connection(permit, client_id, peer_addr, reason)
+                .await?;
             if matches!(&end, ConnectionEnd::ServerShutdown) {
                 return Ok(());
             }
@@ -111,6 +112,18 @@ impl<S: FrameSource + 'static> RfbTcpServer<S> {
             .await
             .map_err(|_| RfbTcpServerError::EventChannelClosed)
     }
+
+    async fn finish_connection(
+        &self,
+        permit: RfbConnectionPermit,
+        client_id: RfbClientId,
+        peer_addr: std::net::SocketAddr,
+        reason: RfbDisconnectReason,
+    ) -> Result<(), RfbTcpServerError> {
+        self.send_disconnected(client_id, peer_addr, reason).await?;
+        drop(permit);
+        Ok(())
+    }
 }
 
 fn shutdown_is_requested(shutdown: &watch::Receiver<bool>) -> bool {
@@ -130,7 +143,7 @@ async fn wait_for_shutdown(shutdown: &mut watch::Receiver<bool>) {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use std::{sync::Arc, task::Poll};
 
     use ipkvm_video::mock::MockFrameSource;
     use tokio::{
@@ -157,6 +170,57 @@ mod tests {
             .unwrap(),
             event_rx,
         )
+    }
+
+    #[tokio::test]
+    async fn gate_stays_busy_while_disconnected_event_waits_for_capacity() {
+        let (server, mut event_rx) = make_server().await;
+        let gate = server.gate.clone();
+        let peer_addr = "127.0.0.1:5900".parse().unwrap();
+        server
+            .event_tx
+            .send(RfbServerEvent::Key {
+                client_id: RfbClientId(99),
+                down: true,
+                keysym: 0x41,
+            })
+            .await
+            .unwrap();
+
+        let permit = gate.acquire().await.unwrap();
+        let client_id = permit.client_id();
+        let finish = server.finish_connection(
+            permit,
+            client_id,
+            peer_addr,
+            RfbDisconnectReason::ClientClosed,
+        );
+        tokio::pin!(finish);
+        std::future::poll_fn(|context| match finish.as_mut().poll(context) {
+            Poll::Pending => Poll::Ready(()),
+            Poll::Ready(result) => panic!("full event channel completed disconnect: {result:?}"),
+        })
+        .await;
+
+        assert_eq!(
+            gate.try_acquire().unwrap_err(),
+            RfbConnectionGateError::Busy
+        );
+
+        assert!(matches!(
+            event_rx.recv().await,
+            Some(RfbServerEvent::Key { .. })
+        ));
+        finish.await.unwrap();
+        assert!(matches!(
+            event_rx.recv().await,
+            Some(RfbServerEvent::Disconnected {
+                client_id: actual_client_id,
+                peer_addr: actual_peer_addr,
+                reason: RfbDisconnectReason::ClientClosed,
+            }) if actual_client_id == client_id && actual_peer_addr == peer_addr
+        ));
+        assert_eq!(gate.try_acquire().unwrap().client_id().get(), 2);
     }
 
     #[tokio::test]
