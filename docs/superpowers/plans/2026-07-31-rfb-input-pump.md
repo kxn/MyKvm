@@ -643,7 +643,7 @@ git add README.md docs
 git commit -m "docs: record RFB input pump completion (#11)"
 ```
 
-- [ ] **步骤 7：最终自审**
+- [x] **步骤 7：最终自审**
 
 确认：
 

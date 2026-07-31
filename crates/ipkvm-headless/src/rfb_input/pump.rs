@@ -952,10 +952,72 @@ mod tests {
         assert_eq!(pump.sink().release_count, 1);
     }
 
-    #[test]
-    fn real_ch9329_sink_orders_input_and_final_release_batches() {
+    #[tokio::test]
+    async fn run_returns_the_failed_event_and_leaves_later_events_in_the_channel() {
         let client_id = client(12);
         let peer_addr = peer(5911);
+        let failed_key = RfbTcpEvent::Key {
+            client_id,
+            down: true,
+            keysym: 0x61,
+        };
+        let later_pointer = RfbTcpEvent::Pointer {
+            client_id,
+            button_mask: 0,
+            x: 10,
+            y: 20,
+            framebuffer_size: RfbSize::new(100, 100).unwrap(),
+        };
+        let (tx, mut rx) = tokio::sync::mpsc::channel(3);
+        tx.send(connected(client_id, peer_addr)).await.unwrap();
+        tx.send(failed_key.clone()).await.unwrap();
+        tx.send(later_pointer).await.unwrap();
+        drop(tx);
+
+        let mut pump = RfbInputPump::new(RecordingSink {
+            fail_next_key: true,
+            ..RecordingSink::default()
+        });
+        let mut notices = Vec::new();
+        let error = pump
+            .run(&mut rx, |notice| notices.push(notice.clone()))
+            .await
+            .unwrap_err();
+        let RfbInputRunError::Event(error) = error else {
+            panic!("expected an event processing error");
+        };
+        assert_eq!(error.event(), &failed_key);
+        assert_eq!(rx.len(), 1);
+        assert_eq!(pump.active_client(), Some(client_id));
+
+        let (retry, _) = error.into_parts();
+        notices.push(pump.handle_event(retry).unwrap());
+        pump.run(&mut rx, |notice| notices.push(notice.clone()))
+            .await
+            .unwrap();
+
+        assert_eq!(pump.active_client(), None);
+        assert_eq!(pump.sink().key_batches.len(), 1);
+        assert_eq!(pump.sink().pointer_batches.len(), 1);
+        assert_eq!(pump.sink().release_count, 1);
+        assert!(matches!(
+            notices.as_slice(),
+            [
+                RfbInputNotice::ControllerAcquired { .. },
+                RfbInputNotice::Keyboard { .. },
+                RfbInputNotice::Pointer { .. },
+                RfbInputNotice::ControllerReleased {
+                    reason: RfbControllerReleaseReason::EventSourceClosed,
+                    ..
+                },
+            ]
+        ));
+    }
+
+    #[test]
+    fn real_ch9329_sink_orders_input_and_final_release_batches() {
+        let client_id = client(13);
+        let peer_addr = peer(5912);
         let queue = FakeCommandQueue::new();
         let sink = Ch9329InputSink::new(queue.clone(), 0, MouseMode::Absolute);
         let mut pump = RfbInputPump::new(sink);
@@ -999,8 +1061,8 @@ mod tests {
 
     #[test]
     fn real_ch9329_release_failure_rolls_back_sink_and_pump_together() {
-        let client_id = client(13);
-        let peer_addr = peer(5912);
+        let client_id = client(14);
+        let peer_addr = peer(5913);
         let queue = FakeCommandQueue::new();
         let sink = Ch9329InputSink::new(queue.clone(), 0, MouseMode::Absolute);
         let mut pump = RfbInputPump::new(sink);
@@ -1043,18 +1105,18 @@ mod tests {
         assert_eq!(queue.accepted_batches().len(), 3);
         assert_eq!(pump.active_client(), None);
 
-        let second = client(14);
-        pump.handle_event(connected(second, peer(5913))).unwrap();
+        let second = client(15);
+        pump.handle_event(connected(second, peer(5914))).unwrap();
         assert_eq!(pump.active_client(), Some(second));
     }
 
     #[test]
     fn real_ch9329_pointer_uses_the_size_carried_by_the_tcp_event() {
-        let client_id = client(15);
+        let client_id = client(16);
         let queue = FakeCommandQueue::new();
         let sink = Ch9329InputSink::new(queue.clone(), 0, MouseMode::Absolute);
         let mut pump = RfbInputPump::new(sink);
-        pump.handle_event(connected(client_id, peer(5914))).unwrap();
+        pump.handle_event(connected(client_id, peer(5915))).unwrap();
 
         pump.handle_event(RfbTcpEvent::Pointer {
             client_id,
