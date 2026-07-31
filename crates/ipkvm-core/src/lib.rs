@@ -6,7 +6,10 @@ mod serial;
 #[cfg(feature = "mock")]
 pub mod fake_serial;
 
-pub use ch9329::{Ch9329Error, Ch9329Frame};
+pub use ch9329::{
+    AbsoluteMouseReport, Ch9329Command, Ch9329Frame, Ch9329FrameError, Ch9329ReportError,
+    KeyboardReport, MAX_DATA_LEN, RelativeMouseReport,
+};
 pub use geometry::{Ch9329Point, Point, ViewRect, map_pointer_to_ch9329};
 pub use input::{
     FramebufferSize, InputError, InputResult, InputSink, KeyEvent, MouseMode, PointerButton,
@@ -34,7 +37,7 @@ mod tests {
 
         assert_eq!(
             Ch9329Frame::new(0x00, 0x02, &data),
-            Err(Ch9329Error::DataTooLong(256))
+            Err(Ch9329FrameError::DataTooLong(256))
         );
     }
 
