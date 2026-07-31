@@ -7,6 +7,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+ipkvm-core = { path = "../ipkvm-core" }
 ipkvm-rfb = { path = "../ipkvm-rfb" }
 ipkvm-session = { path = "../ipkvm-session" }
 ipkvm-video = { path = "../ipkvm-video" }
@@ -14,6 +15,7 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt"] }
 
 [dev-dependencies]
+ipkvm-core = { path = "../ipkvm-core", features = ["mock"] }
 ipkvm-video = { path = "../ipkvm-video", features = ["mock"] }
 tokio = { workspace = true, features = ["test-util"] }
 

@@ -58,8 +58,8 @@ mod tests {
             Ok(())
         }
 
-        fn handle_key(&mut self, event: KeyEvent) -> InputResult<()> {
-            self.keys.push(event);
+        fn handle_key_batch(&mut self, events: &[KeyEvent]) -> InputResult<()> {
+            self.keys.extend_from_slice(events);
             Ok(())
         }
 

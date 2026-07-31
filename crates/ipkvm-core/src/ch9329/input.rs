@@ -17,13 +17,22 @@ struct KeyboardState {
 }
 
 impl KeyboardState {
-    fn apply_key(&self, event: KeyEvent) -> InputResult<Option<(KeyboardState, KeyboardReport)>> {
+    fn apply_keys(
+        &self,
+        events: &[KeyEvent],
+    ) -> InputResult<Option<(KeyboardState, KeyboardReport)>> {
         let mut next = *self;
-        let changed = match event {
-            KeyEvent::Down { usage } => next.press(usage.get())?,
-            KeyEvent::Up { usage } => next.release(usage.get()),
-        };
-        if !changed {
+        for event in events {
+            match *event {
+                KeyEvent::Down { usage } => {
+                    next.press(usage.get())?;
+                }
+                KeyEvent::Up { usage } => {
+                    next.release(usage.get());
+                }
+            }
+        }
+        if next == *self {
             return Ok(None);
         }
         Ok(Some((next, next.report())))
@@ -134,7 +143,11 @@ impl<Q: CommandQueue> Ch9329InputSink<Q> {
     }
 
     pub fn handle_key(&mut self, event: KeyEvent) -> InputResult<()> {
-        let Some((next, report)) = self.keyboard.apply_key(event)? else {
+        self.handle_key_batch(std::slice::from_ref(&event))
+    }
+
+    pub fn handle_key_batch(&mut self, events: &[KeyEvent]) -> InputResult<()> {
+        let Some((next, report)) = self.keyboard.apply_keys(events)? else {
             return Ok(());
         };
         self.enqueue_commands(vec![Ch9329Command::Keyboard(report)])?;
@@ -277,6 +290,10 @@ impl<Q: CommandQueue> InputSink for Ch9329InputSink<Q> {
         Ch9329InputSink::handle_key(self, event)
     }
 
+    fn handle_key_batch(&mut self, events: &[KeyEvent]) -> InputResult<()> {
+        Ch9329InputSink::handle_key_batch(self, events)
+    }
+
     fn handle_pointer(&mut self, event: PointerEvent) -> InputResult<()> {
         Ch9329InputSink::handle_pointer(self, event)
     }
@@ -363,6 +380,89 @@ mod tests {
         assert_eq!(
             queue.accepted_batches()[0].frames()[0].data(),
             &[0, 0, 4, 0, 0, 0, 0, 0]
+        );
+    }
+
+    #[test]
+    fn key_batch_enqueues_one_final_report() {
+        let queue = FakeCommandQueue::new();
+        let mut sink = Ch9329InputSink::new(queue.clone(), 0, MouseMode::Absolute);
+        let shift = KeyboardUsage::new(0xe1).unwrap();
+        let a = KeyboardUsage::new(0x04).unwrap();
+
+        sink.handle_key_batch(&[KeyEvent::Down { usage: shift }, KeyEvent::Down { usage: a }])
+            .unwrap();
+
+        let batches = queue.accepted_batches();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].frames().len(), 1);
+        assert_eq!(
+            batches[0].frames()[0].data(),
+            &[0x02, 0, 0x04, 0, 0, 0, 0, 0]
+        );
+    }
+
+    #[test]
+    fn failed_key_batch_does_not_commit_partial_state() {
+        let queue = FakeCommandQueue::new();
+        let mut sink = Ch9329InputSink::new(queue.clone(), 0, MouseMode::Absolute);
+        let keys = (0x04..=0x0a)
+            .map(|usage| KeyEvent::Down {
+                usage: KeyboardUsage::new(usage).unwrap(),
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            sink.handle_key_batch(&keys),
+            Err(InputError::RolloverLimitExceeded)
+        );
+        assert!(queue.accepted_batches().is_empty());
+
+        sink.handle_key(KeyEvent::Down {
+            usage: KeyboardUsage::new(0x0a).unwrap(),
+        })
+        .unwrap();
+        assert_eq!(queue.accepted_batches().len(), 1);
+    }
+
+    #[test]
+    fn empty_or_net_unchanged_key_batch_does_not_enqueue() {
+        let queue = FakeCommandQueue::new();
+        let mut sink = Ch9329InputSink::new(queue.clone(), 0, MouseMode::Absolute);
+        let a = KeyboardUsage::new(0x04).unwrap();
+
+        sink.handle_key_batch(&[]).unwrap();
+        sink.handle_key_batch(&[KeyEvent::Down { usage: a }, KeyEvent::Up { usage: a }])
+            .unwrap();
+
+        assert!(queue.accepted_batches().is_empty());
+    }
+
+    #[test]
+    fn rejected_key_batch_can_be_retried_without_state_drift() {
+        let queue = FakeCommandQueue::new();
+        let mut sink = Ch9329InputSink::new(queue.clone(), 0, MouseMode::Absolute);
+        let events = [
+            KeyEvent::Down {
+                usage: KeyboardUsage::new(0xe1).unwrap(),
+            },
+            KeyEvent::Down {
+                usage: KeyboardUsage::new(0x04).unwrap(),
+            },
+        ];
+        queue.fail_next(CommandQueueError::Closed);
+
+        assert_eq!(
+            sink.handle_key_batch(&events),
+            Err(InputError::CommandQueue(CommandQueueError::Closed))
+        );
+        sink.handle_key_batch(&events).unwrap();
+
+        let batches = queue.accepted_batches();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(
+            batches[0].frames()[0].data(),
+            &[0x02, 0, 0x04, 0, 0, 0, 0, 0]
         );
     }
 
@@ -741,7 +841,7 @@ mod tests {
                 } else {
                     KeyEvent::Up { usage }
                 };
-                match state.apply_key(event) {
+                match state.apply_keys(std::slice::from_ref(&event)) {
                     Ok(Some((next, _))) => state = next,
                     Ok(None) | Err(InputError::RolloverLimitExceeded) => {}
                     Err(error) => panic!("unexpected keyboard error: {error}"),
