@@ -8,5 +8,13 @@
 *.yml text eol=lf
 *.yaml text eol=lf
 *.ps1 text eol=lf
+*.psm1 text eol=lf
+*.json text eol=lf
+*.html text eol=lf
+*.css text eol=lf
+*.js text eol=lf
+*.mjs text eol=lf
+*.sha256 text eol=lf
 *.pdf binary
 *.zip binary
+third_party/novnc/1.7.0/** -text whitespace=-trailing-space
