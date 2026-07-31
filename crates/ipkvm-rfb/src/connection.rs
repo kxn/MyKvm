@@ -1,0 +1,572 @@
+use crate::protocol::client::{ClientMessage, ClientMessageDecoder};
+use crate::protocol::server::{
+    NONE_SECURITY_TYPES, PROTOCOL_VERSION, SECURITY_RESULT_OK, encode_server_init,
+};
+use crate::{
+    FramebufferUpdateRequest, RfbPixelFormat, RfbProtocolError, RfbProtocolLimits, RfbRectangle,
+    RfbSize,
+};
+use thiserror::Error;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RfbConnectionConfig {
+    pub desktop_name: String,
+    pub initial_size: RfbSize,
+    pub limits: RfbProtocolLimits,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RfbConnectionState {
+    AwaitingVersion,
+    AwaitingSecuritySelection,
+    AwaitingClientInit,
+    Normal,
+    Failed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum RfbEvent {
+    HandshakeCompleted {
+        shared: bool,
+    },
+    FramebufferUpdateRequested(FramebufferUpdateRequest),
+    Key {
+        down: bool,
+        keysym: u32,
+    },
+    Pointer {
+        button_mask: u8,
+        x: u16,
+        y: u16,
+    },
+    CutText(Vec<u8>),
+    EnableContinuousUpdates {
+        enable: bool,
+        rectangle: RfbRectangle,
+    },
+}
+
+pub struct RfbConnectionCore {
+    config: RfbConnectionConfig,
+    state: RfbConnectionState,
+    handshake_input: Vec<u8>,
+    client_decoder: ClientMessageDecoder,
+    output: Vec<u8>,
+    server_init: Vec<u8>,
+    pixel_format: RfbPixelFormat,
+    encoding_preferences: Vec<i32>,
+}
+
+impl RfbConnectionCore {
+    pub fn new(config: RfbConnectionConfig) -> Result<Self, RfbConfigError> {
+        validate_config(&config)?;
+        let pixel_format = RfbPixelFormat::default_bgrx8888();
+        let server_init =
+            encode_server_init(config.initial_size, pixel_format, &config.desktop_name)?;
+        Ok(Self {
+            client_decoder: ClientMessageDecoder::new(config.limits),
+            config,
+            state: RfbConnectionState::AwaitingVersion,
+            handshake_input: Vec::new(),
+            output: PROTOCOL_VERSION.to_vec(),
+            server_init,
+            pixel_format,
+            encoding_preferences: Vec::new(),
+        })
+    }
+
+    pub fn push_input(&mut self, bytes: &[u8]) -> Vec<Result<RfbEvent, RfbProtocolError>> {
+        if self.state == RfbConnectionState::Failed {
+            return vec![Err(RfbProtocolError::ConnectionFailed)];
+        }
+        if self.state == RfbConnectionState::Normal {
+            return self.push_normal_input(bytes);
+        }
+
+        let Some(attempted) = self.handshake_input.len().checked_add(bytes.len()) else {
+            return self.fail(RfbProtocolError::LengthOverflow);
+        };
+        if attempted > self.config.limits.max_buffered_input_bytes {
+            return self.fail(RfbProtocolError::InputBufferLimitExceeded {
+                attempted,
+                maximum: self.config.limits.max_buffered_input_bytes,
+            });
+        }
+        self.handshake_input.extend_from_slice(bytes);
+
+        let mut results = Vec::new();
+        loop {
+            match self.state {
+                RfbConnectionState::AwaitingVersion => {
+                    if self.handshake_input.len() < PROTOCOL_VERSION.len() {
+                        break;
+                    }
+                    let mut version = [0_u8; 12];
+                    version.copy_from_slice(&self.handshake_input[..12]);
+                    self.handshake_input.drain(..12);
+                    if &version != PROTOCOL_VERSION {
+                        results.extend(self.fail(RfbProtocolError::UnsupportedVersion(version)));
+                        break;
+                    }
+                    self.output.extend_from_slice(&NONE_SECURITY_TYPES);
+                    self.state = RfbConnectionState::AwaitingSecuritySelection;
+                }
+                RfbConnectionState::AwaitingSecuritySelection => {
+                    let Some(selection) = self.handshake_input.first().copied() else {
+                        break;
+                    };
+                    self.handshake_input.drain(..1);
+                    if selection != 1 {
+                        results.extend(
+                            self.fail(RfbProtocolError::UnsupportedSecurityType(selection)),
+                        );
+                        break;
+                    }
+                    self.output.extend_from_slice(&SECURITY_RESULT_OK);
+                    self.state = RfbConnectionState::AwaitingClientInit;
+                }
+                RfbConnectionState::AwaitingClientInit => {
+                    let Some(shared) = self.handshake_input.first().copied() else {
+                        break;
+                    };
+                    self.handshake_input.drain(..1);
+                    self.output.extend_from_slice(&self.server_init);
+                    self.state = RfbConnectionState::Normal;
+                    results.push(Ok(RfbEvent::HandshakeCompleted {
+                        shared: shared != 0,
+                    }));
+
+                    if !self.handshake_input.is_empty() {
+                        let remaining = std::mem::take(&mut self.handshake_input);
+                        results.extend(self.push_normal_input(&remaining));
+                    }
+                    break;
+                }
+                RfbConnectionState::Normal | RfbConnectionState::Failed => break,
+            }
+        }
+        results
+    }
+
+    pub fn take_output(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.output)
+    }
+
+    pub fn state(&self) -> RfbConnectionState {
+        self.state
+    }
+
+    pub fn pixel_format(&self) -> RfbPixelFormat {
+        self.pixel_format
+    }
+
+    pub fn encoding_preferences(&self) -> &[i32] {
+        &self.encoding_preferences
+    }
+
+    pub fn supports_desktop_size(&self) -> bool {
+        self.encoding_preferences.contains(&-223)
+    }
+
+    fn push_normal_input(&mut self, bytes: &[u8]) -> Vec<Result<RfbEvent, RfbProtocolError>> {
+        let mut results = Vec::new();
+        for decoded in self.client_decoder.push(bytes) {
+            match decoded {
+                Ok(ClientMessage::SetPixelFormat(format)) => self.pixel_format = format,
+                Ok(ClientMessage::SetEncodings(encodings)) => {
+                    self.encoding_preferences = encodings;
+                }
+                Ok(ClientMessage::FramebufferUpdateRequest(request)) => {
+                    results.push(Ok(RfbEvent::FramebufferUpdateRequested(request)));
+                }
+                Ok(ClientMessage::Key { down, keysym }) => {
+                    results.push(Ok(RfbEvent::Key { down, keysym }));
+                }
+                Ok(ClientMessage::Pointer { button_mask, x, y }) => {
+                    results.push(Ok(RfbEvent::Pointer { button_mask, x, y }));
+                }
+                Ok(ClientMessage::CutText(bytes)) => {
+                    results.push(Ok(RfbEvent::CutText(bytes)));
+                }
+                Ok(ClientMessage::EnableContinuousUpdates { enable, rectangle }) => {
+                    results.push(Ok(RfbEvent::EnableContinuousUpdates { enable, rectangle }));
+                }
+                Err(error) => {
+                    self.state = RfbConnectionState::Failed;
+                    results.push(Err(error));
+                    break;
+                }
+            }
+        }
+        results
+    }
+
+    fn fail(&mut self, error: RfbProtocolError) -> Vec<Result<RfbEvent, RfbProtocolError>> {
+        self.state = RfbConnectionState::Failed;
+        self.handshake_input.clear();
+        vec![Err(error)]
+    }
+}
+
+#[derive(Clone, Debug, Error, Eq, PartialEq)]
+pub enum RfbConfigError {
+    #[error("protocol limit {0} must be non-zero")]
+    ZeroLimit(&'static str),
+    #[error("framebuffer limit {actual} cannot hold one BGRA pixel")]
+    FramebufferLimitTooSmall { actual: usize },
+    #[error("initial BGRA framebuffer requires {required} bytes, maximum is {maximum}")]
+    InitialFramebufferTooLarge { required: usize, maximum: usize },
+    #[error("desktop name has {actual} bytes, maximum is {maximum}")]
+    DesktopNameTooLong { actual: usize, maximum: usize },
+    #[error("input capacity is {actual} bytes, at least {required} are required")]
+    InputCapacityTooSmall { actual: usize, required: usize },
+    #[error("output capacity is {actual} bytes, at least {required} are required")]
+    OutputCapacityTooSmall { actual: usize, required: usize },
+    #[error("protocol limit calculation overflow")]
+    LimitOverflow,
+}
+
+fn validate_config(config: &RfbConnectionConfig) -> Result<(), RfbConfigError> {
+    let limits = config.limits;
+    for (name, value) in [
+        ("max_desktop_name_bytes", limits.max_desktop_name_bytes),
+        ("max_encodings", limits.max_encodings),
+        ("max_cut_text_bytes", limits.max_cut_text_bytes),
+        ("max_buffered_input_bytes", limits.max_buffered_input_bytes),
+        ("max_queued_output_bytes", limits.max_queued_output_bytes),
+        ("max_framebuffer_bytes", limits.max_framebuffer_bytes),
+    ] {
+        if value == 0 {
+            return Err(RfbConfigError::ZeroLimit(name));
+        }
+    }
+    if limits.max_framebuffer_bytes < 4 {
+        return Err(RfbConfigError::FramebufferLimitTooSmall {
+            actual: limits.max_framebuffer_bytes,
+        });
+    }
+
+    let name_length = config.desktop_name.len();
+    if name_length > limits.max_desktop_name_bytes || u32::try_from(name_length).is_err() {
+        return Err(RfbConfigError::DesktopNameTooLong {
+            actual: name_length,
+            maximum: limits.max_desktop_name_bytes.min(u32::MAX as usize),
+        });
+    }
+
+    let initial_frame_bytes = usize::from(config.initial_size.width())
+        .checked_mul(usize::from(config.initial_size.height()))
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or(RfbConfigError::LimitOverflow)?;
+    if initial_frame_bytes > limits.max_framebuffer_bytes {
+        return Err(RfbConfigError::InitialFramebufferTooLarge {
+            required: initial_frame_bytes,
+            maximum: limits.max_framebuffer_bytes,
+        });
+    }
+
+    let cut_text_message = limits
+        .max_cut_text_bytes
+        .checked_add(8)
+        .ok_or(RfbConfigError::LimitOverflow)?;
+    let encodings_message = limits
+        .max_encodings
+        .checked_mul(4)
+        .and_then(|body| body.checked_add(4))
+        .ok_or(RfbConfigError::LimitOverflow)?;
+    let required_input = cut_text_message.max(encodings_message).max(20);
+    if limits.max_buffered_input_bytes < required_input {
+        return Err(RfbConfigError::InputCapacityTooSmall {
+            actual: limits.max_buffered_input_bytes,
+            required: required_input,
+        });
+    }
+
+    let raw_update = limits
+        .max_framebuffer_bytes
+        .checked_add(16)
+        .ok_or(RfbConfigError::LimitOverflow)?;
+    let handshake = 12_usize
+        .checked_add(2)
+        .and_then(|length| length.checked_add(4))
+        .and_then(|length| length.checked_add(24))
+        .and_then(|length| length.checked_add(name_length))
+        .ok_or(RfbConfigError::LimitOverflow)?;
+    let required_output = raw_update.max(handshake);
+    if limits.max_queued_output_bytes < required_output {
+        return Err(RfbConfigError::OutputCapacityTooSmall {
+            actual: limits.max_queued_output_bytes,
+            required: required_output,
+        });
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn config() -> RfbConnectionConfig {
+        RfbConnectionConfig {
+            desktop_name: "my_ipkvm".to_owned(),
+            initial_size: RfbSize::new(640, 480).unwrap(),
+            limits: RfbProtocolLimits::default(),
+        }
+    }
+
+    #[test]
+    fn rejects_internally_inconsistent_limits() {
+        let mut input = config();
+        input.limits.max_buffered_input_bytes = 20;
+        input.limits.max_cut_text_bytes = 20;
+        assert!(matches!(
+            RfbConnectionCore::new(input),
+            Err(RfbConfigError::InputCapacityTooSmall { .. })
+        ));
+
+        let mut output = config();
+        output.initial_size = RfbSize::new(1, 1).unwrap();
+        output.limits.max_framebuffer_bytes = 1024;
+        output.limits.max_queued_output_bytes = 1024;
+        assert!(matches!(
+            RfbConnectionCore::new(output),
+            Err(RfbConfigError::OutputCapacityTooSmall { .. })
+        ));
+
+        let mut initial_frame = config();
+        initial_frame.limits.max_framebuffer_bytes = 1024;
+        assert!(matches!(
+            RfbConnectionCore::new(initial_frame),
+            Err(RfbConfigError::InitialFramebufferTooLarge {
+                required: 1_228_800,
+                maximum: 1024,
+            })
+        ));
+    }
+
+    #[test]
+    fn rejects_zero_limits_and_oversized_desktop_name() {
+        let mut zero = config();
+        zero.limits.max_encodings = 0;
+        assert!(matches!(
+            RfbConnectionCore::new(zero),
+            Err(RfbConfigError::ZeroLimit("max_encodings"))
+        ));
+
+        let mut name = config();
+        name.limits.max_desktop_name_bytes = 3;
+        assert!(matches!(
+            RfbConnectionCore::new(name),
+            Err(RfbConfigError::DesktopNameTooLong { .. })
+        ));
+    }
+
+    fn complete(config: RfbConnectionConfig) -> RfbConnectionCore {
+        let mut connection = RfbConnectionCore::new(config).unwrap();
+        assert_eq!(connection.take_output(), b"RFB 003.008\n");
+        assert!(connection.push_input(b"RFB 003.008\n").is_empty());
+        assert_eq!(connection.take_output(), [1, 1]);
+        assert!(connection.push_input(&[1]).is_empty());
+        assert_eq!(connection.take_output(), [0, 0, 0, 0]);
+        assert!(matches!(
+            connection.push_input(&[1]).as_slice(),
+            [Ok(RfbEvent::HandshakeCompleted { shared: true })]
+        ));
+        assert!(!connection.take_output().is_empty());
+        connection
+    }
+
+    fn completed_connection() -> RfbConnectionCore {
+        complete(config())
+    }
+
+    #[test]
+    fn completes_rfb_38_none_handshake_across_arbitrary_chunks() {
+        let mut connection = RfbConnectionCore::new(config()).unwrap();
+        assert_eq!(connection.state(), RfbConnectionState::AwaitingVersion);
+        assert_eq!(connection.take_output(), b"RFB 003.008\n");
+
+        assert!(connection.push_input(b"RFB 003.").is_empty());
+        assert!(connection.push_input(b"008\n").is_empty());
+        assert_eq!(
+            connection.state(),
+            RfbConnectionState::AwaitingSecuritySelection
+        );
+        assert_eq!(connection.take_output(), [1, 1]);
+
+        assert!(connection.push_input(&[1]).is_empty());
+        assert_eq!(connection.take_output(), [0, 0, 0, 0]);
+        assert_eq!(connection.state(), RfbConnectionState::AwaitingClientInit);
+
+        assert_eq!(
+            connection.push_input(&[1]),
+            vec![Ok(RfbEvent::HandshakeCompleted { shared: true })]
+        );
+        assert_eq!(connection.state(), RfbConnectionState::Normal);
+        let server_init = connection.take_output();
+        assert_eq!(&server_init[..4], [0x02, 0x80, 0x01, 0xe0]);
+    }
+
+    #[test]
+    fn rejects_other_versions_and_security_types() {
+        let mut version = RfbConnectionCore::new(config()).unwrap();
+        version.take_output();
+        assert!(matches!(
+            version.push_input(b"RFB 003.007\n").as_slice(),
+            [Err(RfbProtocolError::UnsupportedVersion(_))]
+        ));
+        assert_eq!(version.state(), RfbConnectionState::Failed);
+
+        let mut security = RfbConnectionCore::new(config()).unwrap();
+        security.take_output();
+        security.push_input(b"RFB 003.008\n");
+        security.take_output();
+        assert_eq!(
+            security.push_input(&[2]),
+            vec![Err(RfbProtocolError::UnsupportedSecurityType(2))]
+        );
+        assert_eq!(security.state(), RfbConnectionState::Failed);
+    }
+
+    #[test]
+    fn handshake_input_limit_is_checked_before_append() {
+        let mut limited = config();
+        limited.limits.max_encodings = 1;
+        limited.limits.max_cut_text_bytes = 1;
+        limited.limits.max_buffered_input_bytes = 20;
+        let mut connection = RfbConnectionCore::new(limited).unwrap();
+        connection.take_output();
+
+        assert_eq!(
+            connection.push_input(&[0_u8; 21]),
+            vec![Err(RfbProtocolError::InputBufferLimitExceeded {
+                attempted: 21,
+                maximum: 20,
+            })]
+        );
+        assert_eq!(connection.state(), RfbConnectionState::Failed);
+        assert!(connection.take_output().is_empty());
+    }
+
+    #[test]
+    fn pipelined_bytes_continue_into_the_normal_decoder() {
+        let mut connection = RfbConnectionCore::new(config()).unwrap();
+        connection.take_output();
+        let mut bytes = b"RFB 003.008\n".to_vec();
+        bytes.extend_from_slice(&[1, 1]);
+        bytes.extend_from_slice(&[4, 1, 0, 0, 0, 0, 0xff, 0x0d]);
+
+        assert_eq!(
+            connection.push_input(&bytes),
+            vec![
+                Ok(RfbEvent::HandshakeCompleted { shared: true }),
+                Ok(RfbEvent::Key {
+                    down: true,
+                    keysym: 0xff0d,
+                }),
+            ]
+        );
+        assert_eq!(connection.state(), RfbConnectionState::Normal);
+    }
+
+    #[test]
+    fn completed_connection_helper_reaches_normal_state() {
+        assert_eq!(completed_connection().state(), RfbConnectionState::Normal);
+    }
+
+    #[test]
+    fn applies_negotiation_messages_and_emits_input_events() {
+        let mut connection = completed_connection();
+        let mut messages = vec![2, 0, 0, 2];
+        messages.extend_from_slice(&0_i32.to_be_bytes());
+        messages.extend_from_slice(&(-223_i32).to_be_bytes());
+        messages.extend_from_slice(&[4, 1, 0, 0, 0, 0, 0xff, 0x0d]);
+
+        assert_eq!(
+            connection.push_input(&messages),
+            vec![Ok(RfbEvent::Key {
+                down: true,
+                keysym: 0xff0d,
+            })]
+        );
+        assert_eq!(connection.encoding_preferences(), &[0, -223]);
+        assert!(connection.supports_desktop_size());
+
+        assert!(connection.push_input(&[2, 0, 0, 0]).is_empty());
+        assert!(connection.encoding_preferences().is_empty());
+        assert!(!connection.supports_desktop_size());
+
+        let mut unknown_encodings = vec![2, 0, 0, 2];
+        unknown_encodings.extend_from_slice(&12_345_i32.to_be_bytes());
+        unknown_encodings.extend_from_slice(&(-313_i32).to_be_bytes());
+        assert!(connection.push_input(&unknown_encodings).is_empty());
+        assert_eq!(connection.encoding_preferences(), &[12_345, -313]);
+        assert!(!connection.supports_desktop_size());
+        assert!(connection.take_output().is_empty());
+    }
+
+    #[test]
+    fn applies_pixel_format_and_emits_remaining_messages_in_order() {
+        let mut connection = completed_connection();
+        let format = RfbPixelFormat::new(16, 16, false, 31, 63, 31, 11, 5, 0).unwrap();
+        let mut messages = vec![0, 9, 8, 7];
+        messages.extend_from_slice(&format.to_wire());
+        messages.extend_from_slice(&[3, 0, 0, 1, 0, 2, 0, 3, 0, 4]);
+        messages.extend_from_slice(&[5, 3, 0, 10, 0, 20]);
+        messages.extend_from_slice(&[6, 0, 0, 0, 0, 0, 0, 2, 0x41, 0xff]);
+        messages.extend_from_slice(&[150, 1, 0, 5, 0, 6, 0, 7, 0, 8]);
+
+        assert_eq!(
+            connection.push_input(&messages),
+            vec![
+                Ok(RfbEvent::FramebufferUpdateRequested(
+                    FramebufferUpdateRequest {
+                        incremental: false,
+                        rectangle: RfbRectangle {
+                            x: 1,
+                            y: 2,
+                            width: 3,
+                            height: 4,
+                        },
+                    }
+                )),
+                Ok(RfbEvent::Pointer {
+                    button_mask: 3,
+                    x: 10,
+                    y: 20,
+                }),
+                Ok(RfbEvent::CutText(vec![0x41, 0xff])),
+                Ok(RfbEvent::EnableContinuousUpdates {
+                    enable: true,
+                    rectangle: RfbRectangle {
+                        x: 5,
+                        y: 6,
+                        width: 7,
+                        height: 8,
+                    },
+                }),
+            ]
+        );
+        assert_eq!(connection.pixel_format(), format);
+    }
+
+    #[test]
+    fn preserves_events_before_a_fatal_message_and_then_stays_failed() {
+        let mut connection = completed_connection();
+        assert_eq!(
+            connection.push_input(&[4, 1, 0, 0, 0, 0, 0xff, 0x0d, 99]),
+            vec![
+                Ok(RfbEvent::Key {
+                    down: true,
+                    keysym: 0xff0d,
+                }),
+                Err(RfbProtocolError::UnsupportedClientMessageType(99)),
+            ]
+        );
+        assert_eq!(connection.state(), RfbConnectionState::Failed);
+        assert_eq!(
+            connection.push_input(&[4, 0, 0, 0, 0, 0, 0xff, 0x0d]),
+            vec![Err(RfbProtocolError::ConnectionFailed)]
+        );
+    }
+}

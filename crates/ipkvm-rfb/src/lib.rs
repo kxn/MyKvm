@@ -1,8 +1,12 @@
 //! VNC/RFB 服务抽象。
 
+mod connection;
 mod framebuffer;
 mod protocol;
 
+pub use connection::{
+    RfbConfigError, RfbConnectionConfig, RfbConnectionCore, RfbConnectionState, RfbEvent,
+};
 pub use framebuffer::{BgraFrameView, RfbFramebufferError, RfbRectangle, RfbSize};
 pub use protocol::client::{FramebufferUpdateRequest, RfbProtocolError};
 pub use protocol::pixel_format::{RfbColorChannel, RfbPixelFormat, RfbPixelFormatError};
