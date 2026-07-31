@@ -76,7 +76,7 @@ crates/ipkvm-headless/tests/support/mod.rs
 - 产出：`pub trait FrameSource: Send + Sync`
 - 保持：`FrameSource::latest_frame()` 和 `FrameSource::subscribe()` 签名不变
 
-- [ ] **步骤 1：写入会失败的契约测试**
+- [x] **步骤 1：写入会失败的契约测试**
 
 在 `crates/ipkvm-video/src/lib.rs` 测试模块中把现有 RGB 测试改为：
 
@@ -108,7 +108,7 @@ fn frame_sources_are_send_and_sync() {
 }
 ```
 
-- [ ] **步骤 2：运行测试并确认红灯**
+- [x] **步骤 2：运行测试并确认红灯**
 
 运行：
 
@@ -118,7 +118,7 @@ cargo test -p ipkvm-video --all-features
 
 预期：编译失败，指出 `PixelFormat::Bgra8888` 尚不存在。
 
-- [ ] **步骤 3：实现明确格式和跨任务约束**
+- [x] **步骤 3：实现明确格式和跨任务约束**
 
 把 `PixelFormat::Rgb` 替换为：
 
@@ -145,7 +145,7 @@ pub trait FrameSource: Send + Sync {
 
 同步修改测试构造的像素格式，不保留含义不明确的 `Rgb` 兼容别名。
 
-- [ ] **步骤 4：运行定向测试并确认绿灯**
+- [x] **步骤 4：运行定向测试并确认绿灯**
 
 运行：
 
@@ -155,7 +155,7 @@ cargo test -p ipkvm-video --all-features
 
 预期：全部通过。
 
-- [ ] **步骤 5：提交**
+- [x] **步骤 5：提交**
 
 ```powershell
 git add crates/ipkvm-video/src/lib.rs crates/ipkvm-video/src/mock.rs
