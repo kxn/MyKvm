@@ -1,5 +1,7 @@
 use ipkvm_rfb::RfbServerConfig;
 
+pub mod rfb_tcp;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HeadlessConfig {
     pub bind_address: String,

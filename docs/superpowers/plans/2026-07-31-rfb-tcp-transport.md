@@ -184,7 +184,7 @@ git commit -m "refactor: make BGRA video frames explicit (#5)"
 - 产出：`RfbTcpConfigError`、`RfbTcpFrameError`
 - 产出：`frame_view(&VideoFrame) -> Result<BgraFrameView<'_>, RfbTcpFrameError>`
 
-- [ ] **步骤 1：写入配置和帧适配失败测试**
+- [x] **步骤 1：写入配置和帧适配失败测试**
 
 在 `rfb_tcp/mod.rs` 和 `rfb_tcp/frame.rs` 的测试模块中定义以下测试：
 
@@ -292,7 +292,7 @@ fn video_frame(
 }
 ```
 
-- [ ] **步骤 2：运行测试并确认红灯**
+- [x] **步骤 2：运行测试并确认红灯**
 
 运行：
 
@@ -302,7 +302,7 @@ cargo test -p ipkvm-headless rfb_tcp
 
 预期：编译失败，指出 `rfb_tcp` 模块和相关类型尚不存在。
 
-- [ ] **步骤 3：增加依赖 feature**
+- [x] **步骤 3：增加依赖 feature**
 
 工作区保留现有 Tokio 版本。`crates/ipkvm-headless/Cargo.toml` 增加：
 
@@ -325,7 +325,7 @@ tokio = { workspace = true, features = ["test-util"] }
 pub mod rfb_tcp;
 ```
 
-- [ ] **步骤 4：实现公共类型和配置校验**
+- [x] **步骤 4：实现公共类型和配置校验**
 
 `rfb_tcp/mod.rs` 定义设计文档第 7、13、14 节中的类型。配置校验核心为：
 
@@ -359,7 +359,7 @@ impl RfbClientId {
 }
 ```
 
-- [ ] **步骤 5：实现帧适配**
+- [x] **步骤 5：实现帧适配**
 
 `frame.rs` 的转换必须通过 `RfbSize` 和 `BgraFrameView` 复用协议层校验：
 
@@ -383,7 +383,7 @@ pub(super) fn frame_view(
 }
 ```
 
-- [ ] **步骤 6：运行定向测试并确认绿灯**
+- [x] **步骤 6：运行定向测试并确认绿灯**
 
 运行：
 
@@ -394,7 +394,7 @@ cargo test -p ipkvm-video --all-features
 
 预期：全部通过。
 
-- [ ] **步骤 7：提交**
+- [x] **步骤 7：提交**
 
 ```powershell
 git add Cargo.toml Cargo.lock crates/ipkvm-headless crates/ipkvm-video

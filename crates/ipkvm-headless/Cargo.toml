@@ -9,8 +9,14 @@ rust-version.workspace = true
 [dependencies]
 ipkvm-rfb = { path = "../ipkvm-rfb" }
 ipkvm-session = { path = "../ipkvm-session" }
+ipkvm-video = { path = "../ipkvm-video" }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt"] }
+
+[dev-dependencies]
+ipkvm-video = { path = "../ipkvm-video", features = ["mock"] }
+tokio = { workspace = true, features = ["test-util"] }
 
 [[bin]]
 name = "ipkvm-headless"
 path = "src/main.rs"
-
