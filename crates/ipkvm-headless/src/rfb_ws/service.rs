@@ -65,10 +65,7 @@ async fn handle_upgrade<S: FrameSource + 'static>(
 
     let permit = match state.gate.try_acquire() {
         Ok(permit) => permit,
-        Err(RfbConnectionGateError::Busy) => return StatusCode::CONFLICT.into_response(),
-        Err(RfbConnectionGateError::ClientIdOverflow) => {
-            return StatusCode::SERVICE_UNAVAILABLE.into_response();
-        }
+        Err(error) => return gate_error_status(error).into_response(),
     };
     let limit = state
         .config
@@ -116,4 +113,31 @@ async fn run_upgraded_connection<S: FrameSource + 'static>(
 
 fn shutdown_is_requested(shutdown: &watch::Receiver<bool>) -> bool {
     *shutdown.borrow() || shutdown.has_changed().is_err()
+}
+
+fn gate_error_status(error: RfbConnectionGateError) -> StatusCode {
+    match error {
+        RfbConnectionGateError::Busy => StatusCode::CONFLICT,
+        RfbConnectionGateError::ClientIdOverflow => StatusCode::SERVICE_UNAVAILABLE,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::body::to_bytes;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn client_id_exhaustion_maps_to_empty_service_unavailable() {
+        let response = gate_error_status(RfbConnectionGateError::ClientIdOverflow).into_response();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
 }

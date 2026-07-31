@@ -3,9 +3,13 @@ mod support;
 use std::{net::SocketAddr, sync::Arc};
 
 use axum::{
-    http::{HeaderValue, StatusCode, header::SEC_WEBSOCKET_PROTOCOL},
+    http::{
+        HeaderMap, HeaderName, HeaderValue, StatusCode,
+        header::{CONNECTION, SEC_WEBSOCKET_ACCEPT, SEC_WEBSOCKET_PROTOCOL, UPGRADE},
+    },
     serve,
 };
+use futures_util::StreamExt;
 use ipkvm_headless::{
     rfb_connection::{
         RfbClientId, RfbConnectionGate, RfbConnectionSettings, RfbDisconnectReason, RfbServerEvent,
@@ -20,10 +24,16 @@ use tokio::{
     sync::{mpsc, watch},
     task::JoinHandle,
 };
-use tokio_tungstenite::{
-    connect_async,
-    tungstenite::{Error as WebSocketError, Message, client::IntoClientRequest, http::Response},
+use tokio_tungstenite::tungstenite::{
+    Error as WebSocketError, Message, client::IntoClientRequest, http::Response, protocol::Role,
 };
+use tokio_tungstenite::{WebSocketStream, connect_async};
+
+struct RawUpgradeResponse {
+    status: StatusCode,
+    headers: HeaderMap,
+    stream: TcpStream,
+}
 
 struct TestWebSocketServer {
     address: SocketAddr,
@@ -97,14 +107,14 @@ impl TestWebSocketServer {
         connect_async(request).await.unwrap()
     }
 
-    async fn rejected_status(&self) -> StatusCode {
+    async fn rejected_response(&self) -> Response<Option<Vec<u8>>> {
         match connect_async(self.url()).await.unwrap_err() {
-            WebSocketError::Http(response) => response.status(),
+            WebSocketError::Http(response) => *response,
             error => panic!("expected rejected HTTP upgrade, got {error:?}"),
         }
     }
 
-    async fn raw_upgrade_response_with_protocols(&self, protocols: &str) -> String {
+    async fn raw_upgrade_response_with_protocols(&self, protocols: &str) -> RawUpgradeResponse {
         let mut stream = TcpStream::connect(self.address).await.unwrap();
         let request = format!(
             "GET /rfb HTTP/1.1\r\nHost: {}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Protocol: {protocols}\r\n\r\n",
@@ -122,7 +132,12 @@ impl TestWebSocketServer {
             stream.read_exact(&mut byte).await.unwrap();
             response.push(byte[0]);
         }
-        String::from_utf8(response).unwrap()
+        let (status, headers) = parse_http_response_headers(&response);
+        RawUpgradeResponse {
+            status,
+            headers,
+            stream,
+        }
     }
 
     async fn expect_connected(&mut self) -> RfbClientId {
@@ -139,6 +154,23 @@ impl TestWebSocketServer {
             } => (client_id, reason),
             event => panic!("expected disconnected event, got {event:?}"),
         }
+    }
+
+    async fn assert_event_queue_empty_after_reconnect_barrier(&mut self) {
+        let (socket, response) = self.connect_without_protocol().await;
+        assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+        let mut barrier_client = TestWebSocketRfbClient::new(socket);
+        assert_eq!(barrier_client.read_banner().await, *b"RFB 003.008\n");
+        assert!(matches!(
+            self.events.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+
+        barrier_client.close().await;
+        assert_eq!(
+            self.expect_disconnected().await.1,
+            RfbDisconnectReason::ClientClosed
+        );
     }
 }
 
@@ -166,6 +198,41 @@ fn key_message(down: bool, keysym: u32) -> Vec<u8> {
     message
 }
 
+fn parse_http_response_headers(response: &[u8]) -> (StatusCode, HeaderMap) {
+    let response = std::str::from_utf8(response).unwrap();
+    let response = response.strip_suffix("\r\n\r\n").unwrap();
+    let mut lines = response.split("\r\n");
+    let mut status_line = lines.next().unwrap().splitn(3, ' ');
+    assert_eq!(status_line.next(), Some("HTTP/1.1"));
+    let status = StatusCode::from_bytes(status_line.next().unwrap().as_bytes()).unwrap();
+    assert!(status_line.next().is_some());
+
+    let mut headers = HeaderMap::new();
+    for line in lines {
+        let (name, value) = line.split_once(':').unwrap();
+        headers.append(
+            HeaderName::from_bytes(name.as_bytes()).unwrap(),
+            HeaderValue::from_str(value.trim()).unwrap(),
+        );
+    }
+    (status, headers)
+}
+
+fn header_contains_token(headers: &HeaderMap, name: HeaderName, expected: &str) -> bool {
+    headers.get_all(name).iter().any(|value| {
+        value
+            .to_str()
+            .unwrap()
+            .split(',')
+            .any(|token| token.trim().eq_ignore_ascii_case(expected))
+    })
+}
+
+fn assert_empty_rejection(response: &Response<Option<Vec<u8>>>, expected: StatusCode) {
+    assert_eq!(response.status(), expected);
+    assert!(response.body().as_ref().is_none_or(Vec::is_empty));
+}
+
 #[tokio::test]
 async fn websocket_upgrade_does_not_require_a_subprotocol() {
     let server = TestWebSocketServer::start().await;
@@ -190,11 +257,30 @@ async fn websocket_upgrade_selects_binary_only_when_requested() {
 async fn an_unrelated_protocol_is_not_echoed() {
     let server = TestWebSocketServer::start().await;
     let response = server.raw_upgrade_response_with_protocols("chat").await;
-    assert!(response.starts_with("HTTP/1.1 101 "));
+    assert_eq!(response.status, StatusCode::SWITCHING_PROTOCOLS);
+    assert!(header_contains_token(
+        &response.headers,
+        CONNECTION,
+        "upgrade"
+    ));
+    assert!(header_contains_token(
+        &response.headers,
+        UPGRADE,
+        "websocket"
+    ));
+    assert_eq!(
+        response.headers.get(SEC_WEBSOCKET_ACCEPT),
+        Some(&HeaderValue::from_static("s3pPLMBiTxaQ9kYGzzhZRbK+xOo="))
+    );
+    assert!(response.headers.get(SEC_WEBSOCKET_PROTOCOL).is_none());
+
+    let mut socket = WebSocketStream::from_raw_socket(response.stream, Role::Client, None).await;
     assert!(
-        !response
-            .to_ascii_lowercase()
-            .contains("\r\nsec-websocket-protocol:")
+        matches!(
+            socket.next().await,
+            Some(Ok(Message::Binary(bytes))) if bytes.as_ref() == b"RFB 003.008\n"
+        ),
+        "upgraded socket did not carry the binary RFB banner"
     );
 }
 
@@ -307,10 +393,9 @@ async fn text_message_disconnects_once_with_unexpected_text_reason() {
     client.send_text("not RFB").await;
     let (_, reason) = server.expect_disconnected().await;
     assert_eq!(reason, RfbDisconnectReason::UnexpectedTextMessage);
-    assert!(matches!(
-        server.events.try_recv(),
-        Err(mpsc::error::TryRecvError::Empty)
-    ));
+    server
+        .assert_event_queue_empty_after_reconnect_barrier()
+        .await;
 }
 
 #[tokio::test]
@@ -323,20 +408,30 @@ async fn close_message_disconnects_once_with_client_closed_reason() {
     client.close().await;
     let (_, reason) = server.expect_disconnected().await;
     assert_eq!(reason, RfbDisconnectReason::ClientClosed);
-    assert!(matches!(
-        server.events.try_recv(),
-        Err(mpsc::error::TryRecvError::Empty)
-    ));
+    server
+        .assert_event_queue_empty_after_reconnect_barrier()
+        .await;
 }
 
 #[tokio::test]
 async fn second_upgrade_is_rejected_while_a_connection_is_active() {
-    let server = TestWebSocketServer::start().await;
+    let mut server = TestWebSocketServer::start().await;
     let (socket, _) = server.connect_without_protocol().await;
     let mut first = TestWebSocketRfbClient::new(socket);
     first.read_banner().await;
 
-    assert_eq!(server.rejected_status().await, StatusCode::CONFLICT);
+    let response = server.rejected_response().await;
+    assert_empty_rejection(&response, StatusCode::CONFLICT);
+    assert!(matches!(
+        server.events.try_recv(),
+        Err(mpsc::error::TryRecvError::Empty)
+    ));
+
+    first.close().await;
+    assert_eq!(
+        server.expect_disconnected().await.1,
+        RfbDisconnectReason::ClientClosed
+    );
 }
 
 #[tokio::test]
@@ -372,6 +467,15 @@ async fn shutdown_disconnects_an_active_connection() {
 }
 
 #[tokio::test]
+async fn shutdown_before_upgrade_returns_empty_service_unavailable() {
+    let server = TestWebSocketServer::start().await;
+    server.shutdown.send(true).unwrap();
+
+    let response = server.rejected_response().await;
+    assert_empty_rejection(&response, StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
 async fn closed_event_receiver_rejects_upgrade_with_service_unavailable() {
     let (event_tx, events) = mpsc::channel(1);
     drop(events);
@@ -383,10 +487,8 @@ async fn closed_event_receiver_rejects_upgrade_with_service_unavailable() {
     )
     .await;
 
-    assert_eq!(
-        server.rejected_status().await,
-        StatusCode::SERVICE_UNAVAILABLE
-    );
+    let response = server.rejected_response().await;
+    assert_empty_rejection(&response, StatusCode::SERVICE_UNAVAILABLE);
 }
 
 #[tokio::test]
@@ -406,4 +508,8 @@ async fn oversized_websocket_message_disconnects_with_websocket_reason() {
         server.expect_disconnected().await.1,
         RfbDisconnectReason::WebSocket
     );
+    assert!(matches!(
+        client.read_message().await,
+        Ok(Message::Close(_)) | Err(_)
+    ));
 }
