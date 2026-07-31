@@ -135,14 +135,14 @@ git commit -m "feat: preserve RFB pointer coordinate epochs (#11)"
 
 ### 步骤
 
-- [ ] **步骤 1：写入 TCP 事件红灯测试**
+- [x] **步骤 1：写入 TCP 事件红灯测试**
 
 扩展现有输入顺序测试：
 
 - Pointer 事件包含握手时公告尺寸。
 - 键盘、Pointer、剪贴板的相对顺序不变。
 
-- [ ] **步骤 2：写入动态尺寸流水测试**
+- [x] **步骤 2：写入动态尺寸流水测试**
 
 使用真实回环 TCP：
 
@@ -154,7 +154,7 @@ git commit -m "feat: preserve RFB pointer coordinate epochs (#11)"
 6. 读取服务端 `DesktopSize` 后再发 Pointer。
 7. 新事件尺寸为 `800x600`。
 
-- [ ] **步骤 3：扩展事件枚举**
+- [x] **步骤 3：扩展事件枚举**
 
 ```rust
 RfbTcpEvent::Pointer {
@@ -168,11 +168,11 @@ RfbTcpEvent::Pointer {
 
 `connection.rs` 只复制 `RfbEvent` 已携带的字段，不读取 `FrameSource`。
 
-- [ ] **步骤 4：修正所有模式匹配和测试构造**
+- [x] **步骤 4：修正所有模式匹配和测试构造**
 
 使用显式字段或 `..`，但涉及坐标语义的测试必须断言尺寸，不能全部用 `..` 隐藏回归。
 
-- [ ] **步骤 5：运行 headless TCP 验证**
+- [x] **步骤 5：运行 headless TCP 验证**
 
 ```powershell
 cargo test -p ipkvm-headless rfb_tcp
@@ -182,7 +182,7 @@ cargo fmt --all -- --check
 git diff --check
 ```
 
-- [ ] **步骤 6：提交**
+- [x] **步骤 6：提交**
 
 ```powershell
 git add crates/ipkvm-headless

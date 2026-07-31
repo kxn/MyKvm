@@ -11,7 +11,7 @@ use std::{
 
 use ipkvm_rfb::{
     RfbConfigError, RfbEncodeError, RfbFramebufferError, RfbProtocolError, RfbProtocolLimits,
-    RfbRectangle,
+    RfbRectangle, RfbSize,
 };
 use ipkvm_video::PixelFormat;
 use thiserror::Error;
@@ -44,6 +44,7 @@ pub enum RfbTcpEvent {
         button_mask: u8,
         x: u16,
         y: u16,
+        framebuffer_size: RfbSize,
     },
     CutText {
         client_id: RfbClientId,
