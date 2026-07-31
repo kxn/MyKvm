@@ -2,6 +2,12 @@
 
 这个目录保存 my_ipkvm 设计和实现过程中会反复阅读的本地资料。
 
+## RFB WebSocket 固定实现资料
+
+- noVNC 兼容目标固定为 1.7.0 commit `63107bd06d9e1f6136ff21aeda8cd62cbf0d433e`。经常阅读的上游文件是 [WebSocket 字节队列实现](https://github.com/novnc/noVNC/blob/63107bd06d9e1f6136ff21aeda8cd62cbf0d433e/core/websock.js)、[RFB 初始化与消息处理](https://github.com/novnc/noVNC/blob/63107bd06d9e1f6136ff21aeda8cd62cbf0d433e/core/rfb.js) 和 [编码常量](https://github.com/novnc/noVNC/blob/63107bd06d9e1f6136ff21aeda8cd62cbf0d433e/core/encodings.js)。本仓库只保留中文索引和线级 fixture，不复制上游源码。
+- 生产 WebSocket 路由使用 [axum 0.8.9 WebSocket 模块](https://docs.rs/axum/0.8.9/axum/extract/ws/) 与 [WebSocketUpgrade](https://docs.rs/axum/0.8.9/axum/extract/ws/struct.WebSocketUpgrade.html)。`axum` 仅启用 `http1`、`tokio`、`ws` feature；锁文件版本为 0.8.9。
+- 测试客户端使用 `tokio-tungstenite` 0.29.0 和 `futures-util` 0.3.33；两者仅用于集成测试，不进入生产依赖。
+
 ## 已下载资料
 
 - `CH9329-serial-protocol-wch-20190508.pdf`  

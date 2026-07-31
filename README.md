@@ -2,9 +2,9 @@
 
 my_ipkvm 是一个软件 IPKVM 项目：主控机通过 USB HDMI 采集卡读取目标机控制台画面，并通过 CH9329 + CH340 串口线向目标机注入 USB HID 键盘鼠标事件。
 
-当前工程已完成 CH9329 协议与输入核心、传输无关的 RFB 3.8 协议核心、使用模拟 BGRA 帧源的单客户端 RFB TCP 库闭环、en-US 键盘和绝对指针映射，以及单活动 RFB 控制者输入事件泵。事件泵已经自动验证断线与事件源关闭时的 `release_all()`、失败回滚和真实回环 TCP 到 fake CH9329 队列的闭环。真实串口、真实视频采集、可直接运行的无头进程、WebSocket/noVNC 和桌面界面仍按阶段计划继续实现。
+当前工程已完成 CH9329 协议与输入核心、传输无关的 RFB 3.8 协议核心、en-US 键盘和绝对指针映射，以及单活动 RFB 控制者输入事件泵。RFB 已有 TCP 与 WebSocket 两个库级 transport：`RfbTcpServer` 和可组合的 axum `/rfb` `RfbWebSocketService`。两者共用连接驱动、`RfbServerEvent` 事件模型和全局 `RfbConnectionGate`；生产组装必须向两个服务显式传入同一个 gate。WebSocket transport 已通过锁定到 noVNC 1.7.0 commit `63107bd06d9e1f6136ff21aeda8cd62cbf0d433e` 的线级初始化样本，包括无子协议和可选 `binary` 子协议路径。
 
-当前 `ipkvm-headless` 二进制仍是脚手架，尚不能控制真实机器；上述能力目前是库级闭环，尚未接到真实串口和可直接运行的后台进程。
+当前 `ipkvm-headless` 二进制仍是脚手架，尚不能控制真实机器；上述能力目前是库级闭环。完整网页、真实浏览器闭环、noVNC 静态资源、真实视频采集、真实串口、鉴权、TLS 和可直接运行的无头进程均尚未实现。
 
 ## 当前模块
 
@@ -13,7 +13,7 @@ my_ipkvm 是一个软件 IPKVM 项目：主控机通过 USB HDMI 采集卡读取
 - `ipkvm-session`：把视频帧源和输入接收端组合成一个控制台会话。
 - `ipkvm-rfb`：传输无关的 RFB 3.8 None 握手、客户端消息增量解码、true-color 像素转换、Raw 更新、DesktopSize 和指针输入坐标时期。
 - `ipkvm-desktop`：本地图形界面入口。
-- `ipkvm-headless`：已有单客户端 RFB TCP 库接口、en-US 键盘映射器、绝对指针映射器和单控制者输入事件泵；可运行后台进程、HTTP、WebSocket/noVNC 和设备会话仍待实现。
+- `ipkvm-headless`：RFB TCP 与 WebSocket transport、共享连接驱动、单控制者 gate、en-US 键盘映射器、绝对指针映射器和输入事件泵；完整 HTTP 页面、noVNC 静态资源、设备会话组装和可运行后台进程尚未实现。
 
 `ipkvm-session` 当前默认按 CH9329 出厂波特率 9600 配置串口。硬件到货前不自动改写芯片参数，也不假定成品线支持 115200。
 
@@ -25,6 +25,7 @@ my_ipkvm 是一个软件 IPKVM 项目：主控机通过 USB HDMI 采集卡读取
 - `docs/superpowers/specs/2026-07-31-rfb-keyboard-mapping-design.md`
 - `docs/superpowers/specs/2026-07-31-rfb-pointer-mapping-design.md`
 - `docs/superpowers/specs/2026-07-31-rfb-input-pump-design.md`
+- `docs/superpowers/specs/2026-07-31-rfb-websocket-transport-design.md`
 - `docs/superpowers/specs/2026-07-31-dependency-license-policy-design.md`
 - `docs/dependency-license-policy.md`
 - `docs/references/README.md`

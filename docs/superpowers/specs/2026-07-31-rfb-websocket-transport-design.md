@@ -3,10 +3,18 @@
 ## 1. 文档状态
 
 - 关联 issue：`#15`
-- 状态：已批准，待实施
+- 状态：已实施
 - 适用阶段：无头版 WebSocket 网络闭环
 - 前置依赖：`#5` 已完成的 RFB TCP 传输、`#11` 已完成的 RFB 输入事件泵、`#13` 已完成的依赖许可证门禁
 - 后续阶段：noVNC 静态资源集成与真实浏览器闭环
+
+### 1.1 实施事实核对
+
+实现位于 `ipkvm-headless`：公共 `RfbConnectionSettings`、`RfbClientId`、`RfbServerEvent`、`RfbDisconnectReason`、`RfbFrameError` 与 `RfbConnectionGate` 均在 `rfb_connection`。`RfbConnectionGate::new()` 和 `Default::default()` 都创建容量为 1、client id 从 1 开始的独立 gate。生产组装通过 `RfbTcpServer::new(listener, frame_source, event_tx, config, gate)` 与 `RfbWebSocketService::new(frame_source, event_tx, config, shutdown, gate)` 显式接收同一个 gate；后者的 `router()` 只提供 `/rfb`，监听器和 `ConnectInfo<SocketAddr>` 由上层组装。
+
+错误分类保持类型化：TCP I/O 映射为 `RfbDisconnectReason::Io(ErrorKind)`，WebSocket transport 故障映射为 `WebSocket`，Text message 映射为 `UnexpectedTextMessage`；普通关闭、shutdown、协议、编码和帧错误保留各自分类。`/rfb` 无子协议时返回不含 `Sec-WebSocket-Protocol` 的 `101`，请求 `binary` 时选择 `binary`；已有活动连接返回 `409`，shutdown、事件接收端关闭和 client id 耗尽返回 `503`。单条 WebSocket message 与 frame 的大小都使用 `max_buffered_input_bytes`，没有第二套重复上限。
+
+本设计实施时，`ipkvm-headless` 有 109 个自动化测试，包含 16 个真实 listener/axum/tokio-tungstenite WebSocket 集成测试、2 个 TCP/WebSocket 排他性测试、8 个 TCP 回归测试和 2 个 RFB 输入泵集成测试；`ipkvm-rfb` 有 58 个协议与线级测试。依赖锁定为生产 `axum 0.8.9`，测试 `tokio-tungstenite 0.29.0` 与 `futures-util 0.3.33`，均来自 crates.io，并由许可证与来源门禁审计。noVNC 仅作为固定线级样本来源，不进入仓库或产物；完整网页、真实浏览器、真实视频采集、真实串口、鉴权、TLS 和可运行的 headless 二进制不属于本次已实施内容。
 
 ## 2. 目标
 
@@ -482,7 +490,7 @@ HTTP 拒绝没有 RFB client id，不产生 `Connected` 或 `Disconnected`。
 
 WebSocket 服务使用上层传入的共享 `RfbConnectionGate`：
 
-1. upgrade handler 通过 gate 使用 `try_acquire_owned`。
+1. upgrade handler 调用 gate 的 `try_acquire()`；gate 内部使用 owned semaphore permit。
 2. 未取得许可时立即返回 `409`，不等待当前客户端。
 3. 成功取得许可时由 gate 分配 client id。
 4. 许可移动到 `on_upgrade` 任务，覆盖完整 WebSocket/RFB 生命周期。
@@ -510,7 +518,7 @@ WebSocket upgrade 成功后：
 
 1. 为连接订阅独立 `FrameReceiver`。
 2. 调用共享连接驱动。
-3. 驱动返回后尝试发送 WebSocket Close。
+3. 共享驱动返回前调用 transport 的 `close()`；WebSocket transport 尝试发送 Close frame。
 4. 事件通道仍可用时发送且只发送一次 `Disconnected`。
 5. `Disconnected` 成功入队后释放单连接许可。
 
@@ -560,7 +568,7 @@ H.264 是否进入 noVNC 编码列表取决于浏览器 WebCodecs 能力。本�
 H.264 的确定性分支；协议 core 对未知编码的既有测试以及下一阶段真实浏览器测试覆盖
 带 H.264 的分支。
 
-## 14. 自动化测试设计
+## 14. 自动化测试实施结果
 
 ### 14.1 共享配置和帧适配
 
@@ -618,19 +626,14 @@ H.264 的确定性分支；协议 core 对未知编码的既有测试以及下�
 .\scripts\verify.ps1
 ```
 
-该命令必须覆盖格式、全工作区测试、Clippy、文档、依赖许可证和来源审计。本阶段没有
-必须人工执行的测试。
+该命令覆盖格式、全工作区测试、Clippy、Rust 文档、依赖许可证和来源审计，以及工作区和暂存区 diff 检查。本阶段没有人工验证例外。
 
-## 15. 文档和 issue 收口
-
-实施完成后：
+## 15. 文档收口
 
 - `README.md` 记录已有原生 TCP 与 WebSocket 两种 RFB 入口，但不得声称完整网页已完成。
 - `docs/ipkvm-coarse-design.md` 标记共享连接驱动和 WebSocket transport 已完成。
 - 长期文档使用 `RfbServerEvent` 和 `RfbFrameError` 新名称。
-- 旧的已实施设计文档保留当时的历史名称，不伪造历史状态；需要理解当前 API 时以本文和
-  代码为准。
-- issue `#15` 记录设计、红灯测试、实现提交、依赖审计和全量验证证据。
+- 当前公共 API、依赖和测试范围以本文与代码为准；历史设计文档不回写为当前事实。
 
 ## 16. 风险与排除措施
 

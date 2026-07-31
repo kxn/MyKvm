@@ -13,6 +13,14 @@
 
 本设计不基于 Qt/PyQt 实现。`kvm-serial` 只作为协议和产品行为参考，不继承它的 PyQt 图形界面。
 
+## 当前实施状态
+
+截至 2026-07-31，`ipkvm-headless` 已提供库级 RFB TCP 与 WebSocket transport：`RfbTcpServer` 服务原生 TCP，`RfbWebSocketService` 提供可组合的 axum `/rfb` 路由。两者共用 `rfb_connection` 连接驱动、`RfbServerEvent` 事件模型和全局单活动 `RfbConnectionGate`；生产组装必须显式创建一个 gate，并把其 clone 分别传给两个服务。WebSocket 输入和输出承载连续 RFB 二进制字节流，不赋予 WebSocket 消息边界 RFB 语义。
+
+`/rfb` 默认不要求子协议；请求包含 `binary` 时响应选择该子协议。单条 WebSocket message 和 frame 都限制为 `RfbProtocolLimits::max_buffered_input_bytes`，现有活动连接返回 `409 Conflict`，shutdown、事件接收端关闭或 client id 耗尽返回 `503 Service Unavailable`。锁定 noVNC 1.7.0 commit `63107bd06d9e1f6136ff21aeda8cd62cbf0d433e` 的线级初始化样本已验证 `Raw` 与 `DesktopSize` 兼容路径。
+
+上述实现不是完整网页产品：没有 noVNC 静态资源、真实浏览器闭环、真实视频采集、真实串口、鉴权、TLS 或可运行的 headless 二进制。以下无头网页和设备会话描述是目标形态，不能当作当前已交付能力。
+
 当前不做完整安全子系统。鉴权、TLS、访问控制、审计、公网暴露、反向代理、VPN、会话权限等都视为后续可叠加层；但默认监听地址固定为 `127.0.0.1`，只有显式配置才允许监听其他地址。
 
 ## 总体结论
@@ -331,14 +339,14 @@ VideoEvent
 
 ### 对外入口
 
-无头版提供两个入口：
+完整无头产品计划提供两个入口：
 
 ```text
 TCP 5900       标准 RFB/VNC 服务，供普通 VNC 客户端使用
 HTTP 6080      设备选择页、noVNC 静态页面、RFB WebSocket 入口
 ```
 
-默认绑定：
+完整无头产品的默认绑定：
 
 - 默认监听 `127.0.0.1`。
 - 只有显式设置 `--bind` 或配置文件字段时才监听其他地址。
@@ -364,9 +372,10 @@ GET  /novnc/...         noVNC 静态资源
 GET  /rfb               基于 WebSocket 的 RFB
 ```
 
-noVNC 静态资源打包：
+noVNC 静态资源打包计划：
 
-- 当前最小版本将 noVNC 静态资源内嵌进二进制，发布形态为单文件加配置文件。
+- 当前仓库未嵌入或分发 noVNC 静态资源，也没有完整网页或真实浏览器闭环。
+- 后续可将 noVNC 静态资源内嵌进二进制，发布形态为单文件加配置文件。
 - 可评估 `include_dir` 或 `rust-embed`，进入依赖前需要许可证审计。
 - noVNC 版本固定，发布包保留 noVNC 和其第三方静态资源的许可证说明。
 
