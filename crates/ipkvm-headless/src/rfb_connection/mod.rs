@@ -1,4 +1,5 @@
 mod driver;
+mod finalize;
 mod frame;
 mod gate;
 mod pending;
@@ -13,8 +14,11 @@ use ipkvm_rfb::{
 use ipkvm_video::PixelFormat;
 use thiserror::Error;
 
-pub(crate) use driver::{ConnectionEnd, run_connection};
-pub(crate) use gate::RfbConnectionPermit;
+pub(crate) use driver::ConnectionEnd;
+pub(crate) use finalize::{
+    RfbConnectionFinalizeError, finalize_connection, run_managed_connection,
+};
+pub(crate) use gate::RfbConnectionReservation;
 pub use gate::{RfbConnectionGate, RfbConnectionGateError};
 pub(crate) use transport::{RfbTransport, RfbTransportError, RfbTransportRead};
 

@@ -4,7 +4,7 @@ use std::sync::{
 };
 
 use thiserror::Error;
-use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, TryAcquireError};
 
 use super::RfbClientId;
 
@@ -13,6 +13,7 @@ pub struct RfbConnectionGate {
     pub(super) inner: Arc<GateInner>,
 }
 
+#[derive(Debug)]
 pub(super) struct GateInner {
     semaphore: Arc<Semaphore>,
     pub(super) next_client_id: AtomicU64,
@@ -22,13 +23,22 @@ pub(super) struct GateInner {
 pub enum RfbConnectionGateError {
     #[error("an RFB connection is already active")]
     Busy,
+    #[error("the RFB connection gate is poisoned")]
+    Poisoned,
     #[error("RFB client identifier space is exhausted")]
     ClientIdOverflow,
 }
 
 #[derive(Debug)]
-pub(crate) struct RfbConnectionPermit {
-    _semaphore_permit: OwnedSemaphorePermit,
+pub(crate) struct RfbConnectionReservation {
+    semaphore_permit: Option<OwnedSemaphorePermit>,
+    inner: Arc<GateInner>,
+    client_id: RfbClientId,
+}
+
+#[derive(Debug)]
+pub(super) struct RfbConnectionLease {
+    inner: Option<Arc<GateInner>>,
     client_id: RfbClientId,
 }
 
@@ -42,32 +52,37 @@ impl RfbConnectionGate {
         }
     }
 
-    pub(crate) async fn acquire(&self) -> Result<RfbConnectionPermit, RfbConnectionGateError> {
+    pub(crate) async fn acquire(&self) -> Result<RfbConnectionReservation, RfbConnectionGateError> {
         let semaphore_permit = self
             .inner
             .semaphore
             .clone()
             .acquire_owned()
             .await
-            .expect("RFB connection gate semaphore is never closed");
+            .map_err(|_| RfbConnectionGateError::Poisoned)?;
         let client_id = self.allocate_client_id()?;
-        Ok(RfbConnectionPermit {
-            _semaphore_permit: semaphore_permit,
+        Ok(RfbConnectionReservation {
+            semaphore_permit: Some(semaphore_permit),
+            inner: Arc::clone(&self.inner),
             client_id,
         })
     }
 
     #[allow(dead_code)]
-    pub(crate) fn try_acquire(&self) -> Result<RfbConnectionPermit, RfbConnectionGateError> {
-        let semaphore_permit = self
-            .inner
-            .semaphore
-            .clone()
-            .try_acquire_owned()
-            .map_err(|_| RfbConnectionGateError::Busy)?;
+    pub(crate) fn try_acquire(&self) -> Result<RfbConnectionReservation, RfbConnectionGateError> {
+        let semaphore_permit =
+            self.inner
+                .semaphore
+                .clone()
+                .try_acquire_owned()
+                .map_err(|error| match error {
+                    TryAcquireError::NoPermits => RfbConnectionGateError::Busy,
+                    TryAcquireError::Closed => RfbConnectionGateError::Poisoned,
+                })?;
         let client_id = self.allocate_client_id()?;
-        Ok(RfbConnectionPermit {
-            _semaphore_permit: semaphore_permit,
+        Ok(RfbConnectionReservation {
+            semaphore_permit: Some(semaphore_permit),
+            inner: Arc::clone(&self.inner),
             client_id,
         })
     }
@@ -98,9 +113,43 @@ impl Default for RfbConnectionGate {
     }
 }
 
-impl RfbConnectionPermit {
+impl RfbConnectionReservation {
+    #[cfg(test)]
     pub(crate) fn client_id(&self) -> RfbClientId {
         self.client_id
+    }
+
+    pub(in crate::rfb_connection) fn activate(mut self) -> RfbConnectionLease {
+        self.semaphore_permit
+            .take()
+            .expect("an RFB connection reservation is activated exactly once")
+            .forget();
+        RfbConnectionLease {
+            inner: Some(Arc::clone(&self.inner)),
+            client_id: self.client_id,
+        }
+    }
+}
+
+impl RfbConnectionLease {
+    pub(in crate::rfb_connection) fn client_id(&self) -> RfbClientId {
+        self.client_id
+    }
+
+    pub(in crate::rfb_connection) fn release(mut self) {
+        self.inner
+            .take()
+            .expect("an RFB connection lease is released exactly once")
+            .semaphore
+            .add_permits(1);
+    }
+}
+
+impl Drop for RfbConnectionLease {
+    fn drop(&mut self) {
+        if let Some(inner) = self.inner.take() {
+            inner.semaphore.close();
+        }
     }
 }
 
@@ -129,6 +178,46 @@ mod tests {
         );
         drop(first);
         assert_eq!(gate.try_acquire().unwrap().client_id().get(), 2);
+    }
+
+    #[tokio::test]
+    async fn activated_lease_releases_only_when_explicitly_finalized() {
+        let gate = RfbConnectionGate::new();
+
+        for _ in 0..16 {
+            let lease = gate.try_acquire().unwrap().activate();
+            assert_eq!(
+                gate.try_acquire().unwrap_err(),
+                RfbConnectionGateError::Busy
+            );
+            lease.release();
+
+            let next = gate.try_acquire().unwrap();
+            assert_eq!(
+                gate.try_acquire().unwrap_err(),
+                RfbConnectionGateError::Busy
+            );
+            next.activate().release();
+        }
+    }
+
+    #[tokio::test]
+    async fn dropping_activated_lease_poisons_gate_and_wakes_waiter() {
+        let gate = RfbConnectionGate::new();
+        let lease = gate.try_acquire().unwrap().activate();
+        let waiter_gate = gate.clone();
+        let waiter = tokio::spawn(async move { waiter_gate.acquire().await });
+
+        drop(lease);
+
+        assert_eq!(
+            waiter.await.unwrap().unwrap_err(),
+            RfbConnectionGateError::Poisoned
+        );
+        assert_eq!(
+            gate.try_acquire().unwrap_err(),
+            RfbConnectionGateError::Poisoned
+        );
     }
 
     #[tokio::test]

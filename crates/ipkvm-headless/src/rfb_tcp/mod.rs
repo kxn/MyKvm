@@ -58,6 +58,8 @@ pub enum RfbTcpServerError {
     Accept(#[source] io::Error),
     #[error("RFB client identifier space is exhausted")]
     ClientIdOverflow,
+    #[error("the RFB connection gate is poisoned")]
+    ConnectionGatePoisoned,
     #[error("RFB event receiver is closed")]
     EventChannelClosed,
 }

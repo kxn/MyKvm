@@ -12,7 +12,8 @@ use tokio::sync::{mpsc, watch};
 
 use super::{RfbWebSocketConfig, RfbWebSocketServiceError, transport::WebSocketTransport};
 use crate::rfb_connection::{
-    RfbConnectionGate, RfbConnectionGateError, RfbConnectionPermit, RfbServerEvent, run_connection,
+    RfbConnectionGate, RfbConnectionGateError, RfbConnectionReservation, RfbServerEvent,
+    finalize_connection, run_managed_connection,
 };
 
 pub struct RfbWebSocketService<S> {
@@ -84,11 +85,10 @@ async fn run_upgraded_connection<S: FrameSource + 'static>(
     state: Arc<ServiceState<S>>,
     socket: WebSocket,
     peer_addr: SocketAddr,
-    permit: RfbConnectionPermit,
+    reservation: RfbConnectionReservation,
 ) {
-    let client_id = permit.client_id();
-    let end = run_connection(
-        client_id,
+    let completion = run_managed_connection(
+        reservation,
         peer_addr,
         WebSocketTransport::new(socket),
         state.frame_source.subscribe(),
@@ -97,18 +97,7 @@ async fn run_upgraded_connection<S: FrameSource + 'static>(
         state.shutdown.clone(),
     )
     .await;
-
-    if let Some(reason) = end.reason() {
-        let _ = state
-            .event_tx
-            .send(RfbServerEvent::Disconnected {
-                client_id,
-                peer_addr,
-                reason,
-            })
-            .await;
-    }
-    drop(permit);
+    let _ = finalize_connection(&state.event_tx, completion).await;
 }
 
 fn shutdown_is_requested(shutdown: &watch::Receiver<bool>) -> bool {
@@ -118,7 +107,9 @@ fn shutdown_is_requested(shutdown: &watch::Receiver<bool>) -> bool {
 fn gate_error_status(error: RfbConnectionGateError) -> StatusCode {
     match error {
         RfbConnectionGateError::Busy => StatusCode::CONFLICT,
-        RfbConnectionGateError::ClientIdOverflow => StatusCode::SERVICE_UNAVAILABLE,
+        RfbConnectionGateError::Poisoned | RfbConnectionGateError::ClientIdOverflow => {
+            StatusCode::SERVICE_UNAVAILABLE
+        }
     }
 }
 
@@ -131,6 +122,19 @@ mod tests {
     #[tokio::test]
     async fn client_id_exhaustion_maps_to_empty_service_unavailable() {
         let response = gate_error_status(RfbConnectionGateError::ClientIdOverflow).into_response();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(
+            to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn poisoned_gate_maps_to_empty_service_unavailable() {
+        let response = gate_error_status(RfbConnectionGateError::Poisoned).into_response();
 
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert!(

@@ -8,8 +8,8 @@ use tokio::{
 
 use super::{RfbTcpConfig, RfbTcpServerError, transport::TcpTransport};
 use crate::rfb_connection::{
-    ConnectionEnd, RfbClientId, RfbConnectionGate, RfbConnectionGateError, RfbConnectionPermit,
-    RfbDisconnectReason, RfbServerEvent, run_connection,
+    ConnectionEnd, RfbConnectionFinalizeError, RfbConnectionGate, RfbConnectionGateError,
+    RfbServerEvent, finalize_connection, run_managed_connection,
 };
 
 pub struct RfbTcpServer<S> {
@@ -57,19 +57,19 @@ impl<S: FrameSource + 'static> RfbTcpServer<S> {
                     return Err(RfbTcpServerError::EventChannelClosed);
                 }
             };
-            let permit = tokio::select! {
+            let reservation = tokio::select! {
                 result = self.gate.acquire() => {
                     result.map_err(|error| match error {
                         RfbConnectionGateError::ClientIdOverflow => RfbTcpServerError::ClientIdOverflow,
+                        RfbConnectionGateError::Poisoned => RfbTcpServerError::ConnectionGatePoisoned,
                         RfbConnectionGateError::Busy => unreachable!("awaited gate acquisition cannot be busy"),
                     })?
                 }
                 _ = wait_for_shutdown(&mut shutdown) => return Ok(()),
                 _ = self.event_tx.closed() => return Err(RfbTcpServerError::EventChannelClosed),
             };
-            let client_id = permit.client_id();
-            let end = run_connection(
-                client_id,
+            let completion = run_managed_connection(
+                reservation,
                 peer_addr,
                 TcpTransport::new(stream, self.config.read_buffer_bytes),
                 self.frame_source.subscribe(),
@@ -78,42 +78,19 @@ impl<S: FrameSource + 'static> RfbTcpServer<S> {
                 shutdown.clone(),
             )
             .await;
-
-            let reason = end.reason().ok_or(RfbTcpServerError::EventChannelClosed)?;
-            self.finish_connection(permit, client_id, peer_addr, reason)
-                .await?;
+            let end = finalize_connection(&self.event_tx, completion).await?;
             if matches!(&end, ConnectionEnd::ServerShutdown) {
                 return Ok(());
             }
         }
     }
+}
 
-    async fn send_disconnected(
-        &self,
-        client_id: RfbClientId,
-        peer_addr: std::net::SocketAddr,
-        reason: RfbDisconnectReason,
-    ) -> Result<(), RfbTcpServerError> {
-        self.event_tx
-            .send(RfbServerEvent::Disconnected {
-                client_id,
-                peer_addr,
-                reason,
-            })
-            .await
-            .map_err(|_| RfbTcpServerError::EventChannelClosed)
-    }
-
-    async fn finish_connection(
-        &self,
-        permit: RfbConnectionPermit,
-        client_id: RfbClientId,
-        peer_addr: std::net::SocketAddr,
-        reason: RfbDisconnectReason,
-    ) -> Result<(), RfbTcpServerError> {
-        self.send_disconnected(client_id, peer_addr, reason).await?;
-        drop(permit);
-        Ok(())
+impl From<RfbConnectionFinalizeError> for RfbTcpServerError {
+    fn from(error: RfbConnectionFinalizeError) -> Self {
+        match error {
+            RfbConnectionFinalizeError::EventChannelClosed => Self::EventChannelClosed,
+        }
     }
 }
 
@@ -134,11 +111,12 @@ async fn wait_for_shutdown(shutdown: &mut watch::Receiver<bool>) {
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::Arc, task::Poll};
+    use std::sync::Arc;
 
-    use ipkvm_video::mock::MockFrameSource;
+    use ipkvm_video::{MonotonicTimestamp, PixelFormat, VideoFrame, mock::MockFrameSource};
     use tokio::{
-        net::TcpListener,
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::{TcpListener, TcpStream},
         sync::{mpsc, watch},
     };
 
@@ -150,10 +128,20 @@ mod tests {
     ) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let (event_tx, event_rx) = mpsc::channel(1);
+        let frame_source = Arc::new(MockFrameSource::new());
+        frame_source.publish_frame(Arc::new(VideoFrame::new(
+            1,
+            MonotonicTimestamp::from_nanos(1),
+            1,
+            1,
+            4,
+            PixelFormat::Bgra8888,
+            Arc::from([0_u8, 0, 0, 0]),
+        )));
         (
             RfbTcpServer::new(
                 listener,
-                Arc::new(MockFrameSource::new()),
+                frame_source,
                 event_tx,
                 RfbTcpConfig::default(),
                 RfbConnectionGate::new(),
@@ -164,54 +152,42 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn gate_stays_busy_while_disconnected_event_waits_for_capacity() {
+    async fn aborting_connected_owner_poisons_gate() {
         let (server, mut event_rx) = make_server().await;
+        let address = server.listener.local_addr().unwrap();
         let gate = server.gate.clone();
-        let peer_addr = "127.0.0.1:5900".parse().unwrap();
-        server
-            .event_tx
-            .send(RfbServerEvent::Key {
-                client_id: RfbClientId(99),
-                down: true,
-                keysym: 0x41,
-            })
-            .await
-            .unwrap();
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let owner = tokio::spawn(server.run(shutdown_rx));
+        let mut stream = TcpStream::connect(address).await.unwrap();
+        let mut banner = [0_u8; 12];
+        stream.read_exact(&mut banner).await.unwrap();
+        assert_eq!(&banner, b"RFB 003.008\n");
+        stream.write_all(b"RFB 003.008\n").await.unwrap();
+        let mut security_types = [0_u8; 2];
+        stream.read_exact(&mut security_types).await.unwrap();
+        assert_eq!(security_types, [1, 1]);
+        stream.write_all(&[1]).await.unwrap();
+        let mut security_result = [0_u8; 4];
+        stream.read_exact(&mut security_result).await.unwrap();
+        assert_eq!(security_result, [0; 4]);
+        stream.write_all(&[1]).await.unwrap();
+        let mut server_init = [0_u8; 24];
+        stream.read_exact(&mut server_init).await.unwrap();
+        let name_length = u32::from_be_bytes(server_init[20..24].try_into().unwrap()) as usize;
+        let mut name = vec![0_u8; name_length];
+        stream.read_exact(&mut name).await.unwrap();
+        assert_eq!(name, b"my_ipkvm");
+        assert!(matches!(
+            event_rx.recv().await,
+            Some(RfbServerEvent::Connected { .. })
+        ));
 
-        let permit = gate.acquire().await.unwrap();
-        let client_id = permit.client_id();
-        let finish = server.finish_connection(
-            permit,
-            client_id,
-            peer_addr,
-            RfbDisconnectReason::ClientClosed,
-        );
-        tokio::pin!(finish);
-        std::future::poll_fn(|context| match finish.as_mut().poll(context) {
-            Poll::Pending => Poll::Ready(()),
-            Poll::Ready(result) => panic!("full event channel completed disconnect: {result:?}"),
-        })
-        .await;
-
+        owner.abort();
+        assert!(owner.await.unwrap_err().is_cancelled());
         assert_eq!(
             gate.try_acquire().unwrap_err(),
-            RfbConnectionGateError::Busy
+            RfbConnectionGateError::Poisoned
         );
-
-        assert!(matches!(
-            event_rx.recv().await,
-            Some(RfbServerEvent::Key { .. })
-        ));
-        finish.await.unwrap();
-        assert!(matches!(
-            event_rx.recv().await,
-            Some(RfbServerEvent::Disconnected {
-                client_id: actual_client_id,
-                peer_addr: actual_peer_addr,
-                reason: RfbDisconnectReason::ClientClosed,
-            }) if actual_client_id == client_id && actual_peer_addr == peer_addr
-        ));
-        assert_eq!(gate.try_acquire().unwrap().client_id().get(), 2);
     }
 
     #[tokio::test]
