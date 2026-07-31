@@ -429,7 +429,8 @@ keysym、坐标裁剪和输入泵错误继续由现有 Rust 测试承担，不�
 - vendored 文件集合与 `manifest.sha256` 完全一致。
 - 每个文件 SHA-256 一致。
 - 不存在清单外文件或缺失文件。
-- `package.json` 版本、上游提交记录和 npm tarball 完整性记录匹配设计。
+- 包内 `package.json` 的名称、版本、许可证和空运行依赖匹配设计。
+- `npm-metadata.json` 的版本、`gitHead`、tarball 和 integrity 匹配设计。
 - 必须分发的 noVNC 与 pako 许可证文件存在。
 - 浏览器 `package-lock.json` 只包含批准的固定 registry 来源和完整性字段。
 
@@ -440,8 +441,10 @@ keysym、坐标裁剪和输入泵错误继续由现有 Rust 测试承担，不�
 1. 下载到唯一系统临时目录并验证固定大小、SHA-256 和 SHA-512。
 2. 解包前枚举 tar 条目，拒绝绝对路径、`..`、非 `package/` 根、符号链接和硬链接。
 3. 只在系统临时目录解包，并检查所有结果没有 reparse point 且规范路径仍在临时根内。
-4. 校验包内 `package.json` 的版本和 `gitHead`，检查必须许可证文件。
-5. 只在确认目标是仓库内 `third_party/novnc/<固定版本>` 后替换并生成 SHA-256 清单。
+4. 校验包内 `package.json` 的名称、版本、许可证和空运行依赖。
+5. 校验固定 `npm-metadata.json` 的 `gitHead`、tarball 和 integrity，并检查必须许可证
+   文件。
+6. 只在确认目标是仓库内 `third_party/novnc/<固定版本>` 后替换并生成 SHA-256 清单。
 
 资源门禁自测必须在临时副本中覆盖篡改、缺失、额外文件和恶意 tar 路径/链接反例。正常
 资源验证流程不访问网络。
