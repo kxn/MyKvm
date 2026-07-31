@@ -771,7 +771,7 @@ git commit -m "feat: drive one RFB TCP connection (#5)"
 - 消费：`RfbConnectionCore::queue_framebuffer_update`
 - 产出：非增量立即更新、增量等待最新帧、DesktopSize 更新
 
-- [ ] **步骤 1：写入帧更新失败测试**
+- [x] **步骤 1：写入帧更新失败测试**
 
 在连接模块测试中增加：
 
@@ -781,7 +781,7 @@ git commit -m "feat: drive one RFB TCP connection (#5)"
 - `desktop_size_is_sent_before_new_pixels`
 - `resize_without_negotiation_ends_connection`
 - `regressed_frame_sequence_ends_connection`
-- `small_output_limit_never_writes_partial_update`
+- `framebuffer_limit_never_writes_partial_update`
 
 关键增量测试行为：
 
@@ -808,7 +808,7 @@ assert_eq!(update.raw_pixels(), &[10, 20, 30, 0, 40, 50, 60, 0]);
 
 `try_read_update` 不使用真实 sleep。测试在 update request 后发送一个 KeyEvent，并等待对应 `RfbTcpEvent::Key`，以此证明 server 已经处理完前面的 update request；随后调用 `TcpStream::try_read`，`WouldBlock` 表示没有 unsolicited update。
 
-- [ ] **步骤 2：运行测试并确认红灯**
+- [x] **步骤 2：运行测试并确认红灯**
 
 运行：
 
@@ -818,7 +818,7 @@ cargo test -p ipkvm-headless connection
 
 预期：测试失败，因为连接循环尚未消费 framebuffer 请求和帧 watch 变化。
 
-- [ ] **步骤 3：实现帧序号和 pending 状态**
+- [x] **步骤 3：实现帧序号和 pending 状态**
 
 连接状态增加：
 
@@ -850,7 +850,7 @@ fn latest_frame(
 }
 ```
 
-- [ ] **步骤 4：实现请求处理**
+- [x] **步骤 4：实现请求处理**
 
 每个 `FramebufferUpdateRequested`：
 
@@ -876,7 +876,7 @@ if should_send {
 
 `queue_and_write_frame` 持有 `Arc<VideoFrame>` 到编码结束，避免悬空借用。
 
-- [ ] **步骤 5：运行测试并确认绿灯**
+- [x] **步骤 5：运行测试并确认绿灯**
 
 运行：
 
@@ -886,7 +886,7 @@ cargo test -p ipkvm-headless connection
 
 预期：所有连接和帧更新测试通过。
 
-- [ ] **步骤 6：提交**
+- [x] **步骤 6：提交**
 
 ```powershell
 git add crates/ipkvm-headless/src/rfb_tcp
