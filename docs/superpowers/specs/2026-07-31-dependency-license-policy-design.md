@@ -1,8 +1,17 @@
 # 依赖许可证白名单与本地自动审计设计
 
-状态：已批准，待实施
+状态：已实施并通过本地自动化验证
 
 关联 issue：#13
+
+实施结果：
+
+- 固定并校验 `cargo-deny 0.20.2`。
+- `deny.toml` 已建立宽松许可证白名单、按包例外边界和 crates.io/Git 来源规则。
+- 临时 Cargo/Git 夹具已证明 GPL-3.0-only、未批准 Git 来源和未固定 `rev` 会失败。
+- 当前锁定依赖图的许可证和来源检查已接入 `scripts/verify.ps1`。
+- Windows PowerShell 5.1 可执行脚本保持 ASCII，中文工具错误由 Unicode 转义在运行时还原，兼容仓库无 BOM UTF-8 规则。
+- 本项没有人工验收例外。
 
 ## 1. 背景
 
@@ -295,4 +304,3 @@ cargo deny --locked check licenses sources
 - [许可证配置与按包例外](https://embarkstudios.github.io/cargo-deny/checks/licenses/cfg.html)
 - [来源配置](https://embarkstudios.github.io/cargo-deny/checks/sources/cfg.html)
 - [cargo-deny crates.io 页面](https://crates.io/crates/cargo-deny/0.20.2)
-

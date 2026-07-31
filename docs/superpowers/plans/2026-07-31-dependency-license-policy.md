@@ -543,7 +543,7 @@ git commit -m "docs: record dependency license rules (#13)"
 
 - 产出：可审计的实施状态和完整本地验证证据。
 
-- [ ] **步骤 1：运行精确工具版本检查**
+- [x] **步骤 1：运行精确工具版本检查**
 
 运行：
 
@@ -557,7 +557,7 @@ cargo-deny --version
 cargo-deny 0.20.2
 ```
 
-- [ ] **步骤 2：独立运行策略负向测试**
+- [x] **步骤 2：独立运行策略负向测试**
 
 运行：
 
@@ -567,7 +567,7 @@ cargo-deny 0.20.2
 
 预期：版本契约、宽松许可证、GPL 拒绝和 Git 来源拒绝全部通过。
 
-- [ ] **步骤 3：独立运行当前依赖图审计**
+- [x] **步骤 3：独立运行当前依赖图审计**
 
 运行：
 
@@ -577,7 +577,7 @@ cargo-deny 0.20.2
 
 预期：当前 workspace 的许可证和来源全部通过。
 
-- [ ] **步骤 4：运行完整本地验收**
+- [x] **步骤 4：运行完整本地验收**
 
 运行：
 
@@ -587,7 +587,7 @@ cargo-deny 0.20.2
 
 预期：许可证门禁、UTF-8、Rust 格式、全 workspace 测试、Clippy、Rust 文档和 Git 差异全部通过。
 
-- [ ] **步骤 5：进行实施自审**
+- [x] **步骤 5：进行实施自审**
 
 运行：
 
@@ -608,7 +608,7 @@ rg -n "\[ \]" docs/superpowers/plans/2026-07-31-dependency-license-policy.md
 - 文档没有声称 Cargo 审计覆盖非 Cargo 组件。
 - 工作树没有临时夹具和无关文件。
 
-- [ ] **步骤 6：回写完成状态**
+- [x] **步骤 6：回写完成状态**
 
 设计文档状态改为：
 
@@ -618,7 +618,7 @@ rg -n "\[ \]" docs/superpowers/plans/2026-07-31-dependency-license-policy.md
 
 勾选本计划全部步骤，并记录实际验证命令，不写无法复现的人工结论。
 
-- [ ] **步骤 7：提交完成记录**
+- [x] **步骤 7：提交完成记录**
 
 ```powershell
 git add docs/superpowers/specs/2026-07-31-dependency-license-policy-design.md `
