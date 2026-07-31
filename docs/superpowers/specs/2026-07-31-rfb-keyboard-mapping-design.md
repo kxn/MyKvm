@@ -3,7 +3,7 @@
 ## 1. 文档状态
 
 - 关联 issue：`#7`
-- 状态：已完成调研和设计，等待按实施计划执行
+- 状态：已实施并通过本地自动化验证
 - 适用范围：en-US 目标键盘上的 RFB `KeyEvent`
 - 前置依赖：`#5` 已完成的 `RfbTcpEvent::Key` 和 `ipkvm-core::InputSink`
 

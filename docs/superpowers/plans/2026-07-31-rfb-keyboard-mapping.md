@@ -858,7 +858,7 @@ git commit -m "test: cover RFB keyboard mappings and rollback (#7)"
 - 消费：前四项全部实现
 - 产出：准确阶段状态和完整本地验证证据
 
-- [ ] **步骤 1：核对测试清单**
+- [x] **步骤 1：核对测试清单**
 
 ```powershell
 cargo test -p ipkvm-core -- --list
@@ -874,7 +874,7 @@ cargo test -p ipkvm-headless -- --list
 - duplicate down、unknown up、锁定键和 unsupported keysym。
 - alias 引用和真实 6KRO sink 拒绝后的 mapper 回滚。
 
-- [ ] **步骤 2：更新 README**
+- [x] **步骤 2：更新 README**
 
 当前状态改为包含：
 
@@ -884,7 +884,7 @@ cargo test -p ipkvm-headless -- --list
 
 明确 mapper 尚未接到可运行无头进程。
 
-- [ ] **步骤 3：更新阶段计划**
+- [x] **步骤 3：更新阶段计划**
 
 在 `docs/ipkvm-coarse-design.md` 的阶段 0：
 
@@ -892,14 +892,14 @@ cargo test -p ipkvm-headless -- --list
 - 从待完成项移除“写 HID 用法编号到桌面和 RFB 键值的映射基础表”。
 - 增加待完成的 RFB PointerEvent 状态映射和控制者生命周期。
 
-- [ ] **步骤 4：回写设计与计划状态**
+- [x] **步骤 4：回写设计与计划状态**
 
 - 设计状态改为“已实施”。
 - 所有实际完成步骤改为 `[x]`。
 - 删除与最终公共名称不一致的草案名称。
 - 扫描 `TBD`、`TODO`、临时说明和中英文混杂段落。
 
-- [ ] **步骤 5：运行完整本地验证**
+- [x] **步骤 5：运行完整本地验证**
 
 ```powershell
 .\scripts\verify.ps1
@@ -914,14 +914,14 @@ cargo test -p ipkvm-headless -- --list
 - Rust 文档 `-D warnings` 通过。
 - 工作区和暂存区 `git diff --check` 通过。
 
-- [ ] **步骤 6：提交**
+- [x] **步骤 6：提交**
 
 ```powershell
 git add README.md docs
 git commit -m "docs: record RFB keyboard mapping completion (#7)"
 ```
 
-- [ ] **步骤 7：最终自审**
+- [x] **步骤 7：最终自审**
 
 ```powershell
 git status --short
