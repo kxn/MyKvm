@@ -70,17 +70,17 @@ Go 可用于无头后台进程，但不推荐作为桌面主实现。Go 的网�
 
 默认策略：
 
-- 允许：MIT、Apache-2.0、BSD、ISC、Zlib、MPL-2.0、系统 SDK。
-- 可接受但需隔离：LGPL 动态库，例如 GStreamer、LGPL 构建的 FFmpeg、平台媒体库包装层。
+- Cargo 全局自动允许：MIT、Apache-2.0、Apache-2.0 WITH LLVM-exception、BSD-2-Clause、BSD-3-Clause、ISC、Zlib、Unicode-3.0。
+- 可接受但按组件审查：MPL-2.0、LGPL 动态库、LGPL Rust 代码和系统 SDK；必须记录链接、修改与分发义务，不进入 Cargo 全局自动允许列表。
 - 不接受：GPL 依赖进入主程序分发包，除非以后明确决定整项目 GPL。
 - 不采用：PyQt 免费版，因为它是 GPL/商业版双许可，不是 LGPL。
 
 Rust 具体规则：
 
-- 普通 Cargo 依赖会静态链接进最终二进制，因此不把 LGPL Rust 库当普通依赖使用。
-- 如果必须使用 LGPL Rust 代码，将其拆成独立 `cdylib` 或独立进程，通过 C ABI 或 IPC 调用。
+- 普通 Cargo 依赖通常静态链接进最终二进制。LGPL Rust 代码不是绝对禁止，但必须按具体 crate 设计重新链接和发布义务；优先拆成动态库或独立进程。
+- 固定 `cargo-deny 0.20.2`，默认拒绝未批准许可证、未知注册表和 Git 来源；Git 例外必须锁定完整提交 `rev`。
 - FFmpeg/GStreamer 不进入当前最小版本；以后如使用，优先动态加载或动态链接，并在发布包内保留许可证说明、源码获取方式和替换库说明。
-- noVNC 核心库是 MPL-2.0，可以作为网页前端依赖；若修改 noVNC 自身文件，修改过的文件按 MPL-2.0 保留。
+- noVNC 核心库是 MPL-2.0，可以作为单独审查的网页前端组件；若修改 noVNC 自身文件，修改过的文件按 MPL-2.0 保留。
 - MJPEG 解码优先评估 libjpeg-turbo。其许可证属于 BSD 风格/IJG 风格，可进入白名单，但 Rust 绑定和分发方式仍需单独审计。
 
 ## 运行时决策
@@ -495,6 +495,7 @@ WebSocket 兼容：
 - 固定 tokio 作为 I/O 运行时。
 - 建立 `[workspace.dependencies]` 集中管理外部依赖版本。
 - 建立本地一键自动化验证脚本，覆盖文本编码、Rust 格式、全工作区测试、Clippy、Rust 文档和 Git 差异。
+- 固定 `cargo-deny 0.20.2`，建立依赖许可证分级、来源限制、临时负向策略测试和当前锁定依赖图审计。
 - 完成 CH9329 命令帧、类型化 HID 报告、应答解析和增量解帧，并覆盖协议金样、错误恢复和性质测试。
 - 写键盘状态机测试：重复按下去重、6KRO 溢出、释放所有键。
 - 写鼠标状态机测试：按钮组合、绝对坐标、相对位移拆包、模式切换和释放。
@@ -519,7 +520,6 @@ WebSocket 兼容：
 
 - 使用锁定版本的第三方普通 VNC 客户端验证兼容性。
 - 完成 RFB WebSocket 传输并使用锁定版本的 noVNC 验证兼容性。
-- 确定依赖许可证白名单。
 - 有明确维护的可用 runner 后，再设计并启用 Gitea Actions；在此之前以本地自动化验证结果作为 PR 验收证据。
 
 ### 阶段 1：桌面本地最小版本

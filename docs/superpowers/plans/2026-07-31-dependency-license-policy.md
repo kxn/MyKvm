@@ -471,7 +471,7 @@ git commit -m "build: audit dependency licenses locally (#13)"
 - 产出：开发者新增依赖时可直接执行的稳定规则。
 - 产出：阶段 0 状态与实际实现一致。
 
-- [ ] **步骤 1：新增许可证策略文档**
+- [x] **步骤 1：新增许可证策略文档**
 
 文档必须明确：
 
@@ -483,7 +483,7 @@ git commit -m "build: audit dependency licenses locally (#13)"
 - 发布阶段仍需生成第三方清单并附带要求的许可证和源码说明。
 - `cargo-deny` 是自动化证据，不是法律意见。
 
-- [ ] **步骤 2：更新开发规范**
+- [x] **步骤 2：更新开发规范**
 
 在依赖和 PR 规则中增加：
 
@@ -493,11 +493,11 @@ git commit -m "build: audit dependency licenses locally (#13)"
 
 把统一验证说明更新为包含许可证策略测试和当前依赖图审计。
 
-- [ ] **步骤 3：更新 README**
+- [x] **步骤 3：更新 README**
 
 在本地验证部分加入固定工具安装命令，并说明 `scripts/verify.ps1` 已包含许可证和来源检查。
 
-- [ ] **步骤 4：更新粗粒度阶段状态**
+- [x] **步骤 4：更新粗粒度阶段状态**
 
 阶段 0 已完成列表增加：
 
@@ -509,7 +509,7 @@ git commit -m "build: audit dependency licenses locally (#13)"
 
 把原许可证策略中的 MPL/LGPL 表述改成与本设计一致：可接受但按组件审查，不进入 Cargo 全局自动允许列表。
 
-- [ ] **步骤 5：校验文档语言和格式**
+- [x] **步骤 5：校验文档语言和格式**
 
 运行：
 
@@ -522,7 +522,7 @@ git diff --check
 
 预期：没有占位符或冲突标记，差异格式通过。
 
-- [ ] **步骤 6：提交**
+- [x] **步骤 6：提交**
 
 ```powershell
 git add README.md docs/dependency-license-policy.md `
