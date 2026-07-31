@@ -61,7 +61,7 @@ crates/ipkvm-rfb/
 - 产出：后续协议模块使用的大端整数读写辅助。
 - 后续任务依赖本任务定义的尺寸不变量、帧跨度和默认资源上限。
 
-- [ ] **步骤 1：调整 crate 依赖**
+- [x] **步骤 1：调整 crate 依赖**
 
 将 `crates/ipkvm-rfb/Cargo.toml` 的依赖改为：
 
@@ -81,7 +81,7 @@ cargo check -p ipkvm-rfb
 
 预期：通过；该步骤只调整依赖边界，不引入协议行为。
 
-- [ ] **步骤 2：写尺寸、矩形和帧视图失败测试**
+- [x] **步骤 2：写尺寸、矩形和帧视图失败测试**
 
 在新建的 `framebuffer.rs` 测试模块写入：
 
@@ -160,7 +160,7 @@ fn frame_view_reports_span_overflow() {
 
 在 `lib.rs` 声明 `mod framebuffer;` 并暂时只重导出测试引用的名称。
 
-- [ ] **步骤 3：运行基础值测试确认失败**
+- [x] **步骤 3：运行基础值测试确认失败**
 
 运行：
 
@@ -170,7 +170,7 @@ cargo test -p ipkvm-rfb framebuffer
 
 预期：编译失败，提示 `RfbSize`、`RfbRectangle`、`BgraFrameView` 或 `RfbFramebufferError` 尚未定义。
 
-- [ ] **步骤 4：实现尺寸、矩形和帧视图**
+- [x] **步骤 4：实现尺寸、矩形和帧视图**
 
 实现以下类型和签名：
 
@@ -235,7 +235,7 @@ pub enum RfbFramebufferError {
 - 空交集返回 `None`；输入矩形允许零宽或零高。
 - `row(y)` 只返回该行的有效像素，不包含 stride 尾部。
 
-- [ ] **步骤 5：写资源限制和 wire 辅助失败测试**
+- [x] **步骤 5：写资源限制和 wire 辅助失败测试**
 
 在 `lib.rs` 测试模块加入：
 
@@ -273,7 +273,7 @@ fn reads_and_writes_rfb_big_endian_integers() {
 }
 ```
 
-- [ ] **步骤 6：运行限制和 wire 测试确认失败**
+- [x] **步骤 6：运行限制和 wire 测试确认失败**
 
 运行：
 
@@ -284,7 +284,7 @@ cargo test -p ipkvm-rfb protocol::wire
 
 预期：编译失败，提示 `RfbProtocolLimits` 和 wire 辅助尚未定义。
 
-- [ ] **步骤 7：实现资源限制和 wire 辅助**
+- [x] **步骤 7：实现资源限制和 wire 辅助**
 
 在 `lib.rs` 定义：
 
@@ -326,7 +326,7 @@ pub(crate) fn write_i32(output: &mut Vec<u8>, value: i32);
 
 读取辅助对短切片返回 `None`，不 panic；写入统一使用大端字节。
 
-- [ ] **步骤 8：验证并提交任务 1**
+- [x] **步骤 8：验证并提交任务 1**
 
 运行：
 
@@ -362,7 +362,7 @@ git commit -m "feat: add RFB protocol value types (#2)"
 - 产出：wire 像素格式解析、序列化及单像素 BGR 转换。
 - 后续客户端解码器使用 `from_wire`，服务器编码器使用 `write_bgr`。
 
-- [ ] **步骤 1：写默认格式和 wire 金样失败测试**
+- [x] **步骤 1：写默认格式和 wire 金样失败测试**
 
 在 `pixel_format.rs` 测试模块写入：
 
@@ -392,7 +392,7 @@ fn default_format_writes_bgr_zero_bytes() {
 }
 ```
 
-- [ ] **步骤 2：运行默认格式测试确认失败**
+- [x] **步骤 2：运行默认格式测试确认失败**
 
 运行：
 
@@ -402,7 +402,7 @@ cargo test -p ipkvm-rfb protocol::pixel_format::tests::default_format
 
 预期：编译失败，提示 `RfbPixelFormat` 尚未定义。
 
-- [ ] **步骤 3：实现默认格式和像素写出骨架**
+- [x] **步骤 3：实现默认格式和像素写出骨架**
 
 定义：
 
@@ -439,7 +439,7 @@ impl RfbPixelFormat {
 
 `write_bgr` 先按 `(value * channel_max + 127) / 255` 缩放，再组合位域，最后按 1、2 或 4 字节和目标大小端输出。
 
-- [ ] **步骤 4：写合法格式和非法格式失败测试**
+- [x] **步骤 4：写合法格式和非法格式失败测试**
 
 加入：
 
@@ -491,7 +491,7 @@ fn rejects_color_map_and_invalid_masks() {
 }
 ```
 
-- [ ] **步骤 5：运行格式校验测试确认失败**
+- [x] **步骤 5：运行格式校验测试确认失败**
 
 运行：
 
@@ -501,7 +501,7 @@ cargo test -p ipkvm-rfb protocol::pixel_format
 
 预期：编译失败，提示 `new`、`from_wire`、`to_wire` 或错误类型尚未定义。
 
-- [ ] **步骤 6：实现格式校验和 wire 解析**
+- [x] **步骤 6：实现格式校验和 wire 解析**
 
 补齐：
 
@@ -555,7 +555,7 @@ impl RfbPixelFormat {
 
 wire 中布尔字段按非零为 true，padding 只读取不校验。
 
-- [ ] **步骤 7：补充全部格式边界测试并验证**
+- [x] **步骤 7：补充全部格式边界测试并验证**
 
 补充：
 
@@ -613,7 +613,7 @@ git diff --check
 
 预期：全部通过。
 
-- [ ] **步骤 8：提交任务 2**
+- [x] **步骤 8：提交任务 2**
 
 ```powershell
 git add crates/ipkvm-rfb
@@ -637,7 +637,7 @@ git commit -m "feat: add RFB pixel format support (#2)"
 - 产出：公共 `FramebufferUpdateRequest` 和 `RfbProtocolError`。
 - 后续连接状态机消费有序解码结果，并把内部消息转换为公共状态或事件。
 
-- [ ] **步骤 1：写固定长度消息解码失败测试**
+- [x] **步骤 1：写固定长度消息解码失败测试**
 
 在 `client.rs` 测试模块加入：
 
@@ -690,7 +690,7 @@ fn decodes_fixed_messages_and_nonzero_booleans() {
 }
 ```
 
-- [ ] **步骤 2：运行固定长度消息测试确认失败**
+- [x] **步骤 2：运行固定长度消息测试确认失败**
 
 运行：
 
@@ -700,7 +700,7 @@ cargo test -p ipkvm-rfb protocol::client::tests::decodes_fixed_messages
 
 预期：编译失败，提示客户端消息类型和解码器尚未定义。
 
-- [ ] **步骤 3：定义消息、错误和单消息解码骨架**
+- [x] **步骤 3：定义消息、错误和单消息解码骨架**
 
 公共类型：
 
@@ -760,7 +760,7 @@ impl ClientMessageDecoder {
 
 先实现类型 3、4、5、150 的精确固定长度解码。padding 不校验，布尔字段非零即 true。
 
-- [ ] **步骤 4：写可变长度和像素格式消息失败测试**
+- [x] **步骤 4：写可变长度和像素格式消息失败测试**
 
 加入：
 
@@ -826,7 +826,7 @@ fn returns_complete_messages_and_keeps_an_incomplete_tail() {
 }
 ```
 
-- [ ] **步骤 5：运行可变消息测试确认失败**
+- [x] **步骤 5：运行可变消息测试确认失败**
 
 运行：
 
@@ -837,7 +837,7 @@ cargo test -p ipkvm-rfb protocol::client::tests::waits_for_complete
 
 预期：测试失败，因为类型 0、2、6 尚未解码。
 
-- [ ] **步骤 6：实现可变消息和增量缓存**
+- [x] **步骤 6：实现可变消息和增量缓存**
 
 消息长度固定为：
 
@@ -861,7 +861,7 @@ cargo test -p ipkvm-rfb protocol::client::tests::waits_for_complete
 - 失败后的下一次 `push` 返回单个 `ConnectionFailed`。
 - `ClientCutText` 原样保留字节，不执行 UTF-8 转换。
 
-- [ ] **步骤 7：写限制和错误终态失败测试**
+- [x] **步骤 7：写限制和错误终态失败测试**
 
 加入：
 
@@ -943,7 +943,7 @@ fn invalid_pixel_format_is_wrapped_as_a_fatal_protocol_error() {
 }
 ```
 
-- [ ] **步骤 8：实现错误终态并验证任务 3**
+- [x] **步骤 8：实现错误终态并验证任务 3**
 
 完成限制检查和失败终态后运行：
 
@@ -956,7 +956,7 @@ git diff --check
 
 预期：全部通过。
 
-- [ ] **步骤 9：提交任务 3**
+- [x] **步骤 9：提交任务 3**
 
 ```powershell
 git add crates/ipkvm-rfb
@@ -981,7 +981,7 @@ git commit -m "feat: decode RFB client messages (#2)"
 - 产出：`RfbConfigError` 和握手服务器消息编码。
 - 后续 framebuffer 更新任务在同一连接对象中读取协商状态并排队输出。
 
-- [ ] **步骤 1：写服务器握手字节金样失败测试**
+- [x] **步骤 1：写服务器握手字节金样失败测试**
 
 在 `server.rs` 测试模块加入：
 
@@ -1011,7 +1011,7 @@ assert_eq!(NONE_SECURITY_TYPES, [1, 1]);
 assert_eq!(SECURITY_RESULT_OK, [0, 0, 0, 0]);
 ```
 
-- [ ] **步骤 2：运行服务器消息测试确认失败**
+- [x] **步骤 2：运行服务器消息测试确认失败**
 
 运行：
 
@@ -1021,7 +1021,7 @@ cargo test -p ipkvm-rfb protocol::server
 
 预期：编译失败，提示服务器消息编码尚未定义。
 
-- [ ] **步骤 3：实现握手服务器消息编码**
+- [x] **步骤 3：实现握手服务器消息编码**
 
 在 `server.rs` 定义：
 
@@ -1039,7 +1039,7 @@ pub(crate) fn encode_server_init(
 
 `ServerInit` 精确写入宽、高、16 字节像素格式、UTF-8 名称长度和名称字节。名称长度转换为 `u32` 使用检查转换。
 
-- [ ] **步骤 4：写配置校验失败测试**
+- [x] **步骤 4：写配置校验失败测试**
 
 在 `connection.rs` 测试模块加入：
 
@@ -1100,7 +1100,7 @@ fn rejects_zero_limits_and_oversized_desktop_name() {
 }
 ```
 
-- [ ] **步骤 5：运行配置测试确认失败**
+- [x] **步骤 5：运行配置测试确认失败**
 
 运行：
 
@@ -1110,7 +1110,7 @@ cargo test -p ipkvm-rfb connection::tests::rejects_
 
 预期：编译失败，提示连接配置、连接核心或配置错误尚未定义。
 
-- [ ] **步骤 6：实现配置类型和完整一致性校验**
+- [x] **步骤 6：实现配置类型和完整一致性校验**
 
 定义：
 
@@ -1143,7 +1143,7 @@ pub enum RfbConfigError {
 - 输出队列至少为 `max(max_framebuffer + 16, 12 + 2 + 4 + 24 + desktop_name.len())`。
 - 所有公式使用 `checked_add`、`checked_mul`。
 
-- [ ] **步骤 7：写完整握手状态机失败测试**
+- [x] **步骤 7：写完整握手状态机失败测试**
 
 先在测试模块加入只使用公共握手 API 的辅助：
 
@@ -1257,7 +1257,7 @@ fn pipelined_bytes_continue_into_the_normal_decoder() {
 }
 ```
 
-- [ ] **步骤 8：实现连接状态和握手**
+- [x] **步骤 8：实现连接状态和握手**
 
 定义：
 
@@ -1312,7 +1312,7 @@ impl RfbConnectionCore {
 - 致命错误是结果列表最后一项，连接立即进入 `Failed`。
 - `take_output` 使用 `mem::take` 原子取走当前输出。
 
-- [ ] **步骤 9：写正常阶段状态应用和事件失败测试**
+- [x] **步骤 9：写正常阶段状态应用和事件失败测试**
 
 加入：
 
@@ -1418,7 +1418,7 @@ fn preserves_events_before_a_fatal_message_and_then_stays_failed() {
 }
 ```
 
-- [ ] **步骤 10：实现正常阶段消息应用并验证任务 4**
+- [x] **步骤 10：实现正常阶段消息应用并验证任务 4**
 
 连接进入正常状态时，把握手缓冲中的剩余字节一次性交给 `ClientMessageDecoder`。后续输入直接交给该解码器。`SetPixelFormat` 和 `SetEncodings` 在连接内部应用，其余消息转为 `RfbEvent`。
 
@@ -1433,7 +1433,7 @@ git diff --check
 
 预期：全部通过。
 
-- [ ] **步骤 11：提交任务 4**
+- [x] **步骤 11：提交任务 4**
 
 ```powershell
 git add crates/ipkvm-rfb
@@ -1457,7 +1457,7 @@ git commit -m "feat: add RFB 3.8 handshake core (#2)"
 - 产出：`FramebufferUpdateOutcome` 和 `RfbEncodeError`。
 - TCP 和 WebSocket 后续只需把 `take_output` 返回的字节写到传输。
 
-- [ ] **步骤 1：加入 framebuffer 更新测试辅助**
+- [x] **步骤 1：加入 framebuffer 更新测试辅助**
 
 在 `connection.rs` 的测试模块加入：
 
@@ -1511,7 +1511,7 @@ fn queue_full_frame(
 
 这些函数只位于 `#[cfg(test)]` 模块，不进入 crate 公共 API。
 
-- [ ] **步骤 2：写默认 Raw 更新金样失败测试**
+- [x] **步骤 2：写默认 Raw 更新金样失败测试**
 
 在 `connection.rs` 测试模块加入：
 
@@ -1565,7 +1565,7 @@ fn queues_cropped_raw_update_in_default_pixel_format() {
 }
 ```
 
-- [ ] **步骤 3：运行 Raw 金样测试确认失败**
+- [x] **步骤 3：运行 Raw 金样测试确认失败**
 
 运行：
 
@@ -1575,7 +1575,7 @@ cargo test -p ipkvm-rfb connection::tests::queues_cropped_raw
 
 预期：编译失败，提示更新方法、结果或编码错误尚未定义。
 
-- [ ] **步骤 4：定义更新 API 和 Raw 编码**
+- [x] **步骤 4：定义更新 API 和 Raw 编码**
 
 定义：
 
@@ -1617,7 +1617,7 @@ Raw 消息规则：
 - `incremental=true` 当前仍发送完整交集。
 - 空交集写入 `[0, 0, 0, 0]` 并返回 `EmptyQueued`。
 
-- [ ] **步骤 5：写 stride、像素格式和空交集测试**
+- [x] **步骤 5：写 stride、像素格式和空交集测试**
 
 加入测试：
 
@@ -1669,7 +1669,7 @@ fn empty_intersection_queues_zero_rectangle_update() {
 
 运行这些测试，确认在对应实现前失败；实现后重新运行并确认通过。
 
-- [ ] **步骤 6：写 DesktopSize 协商和独立更新失败测试**
+- [x] **步骤 6：写 DesktopSize 协商和独立更新失败测试**
 
 加入：
 
@@ -1718,7 +1718,7 @@ fn negotiated_resize_is_a_standalone_desktop_size_update() {
 }
 ```
 
-- [ ] **步骤 7：实现 DesktopSize 独立更新**
+- [x] **步骤 7：实现 DesktopSize 独立更新**
 
 尺寸变化时：
 
@@ -1729,7 +1729,7 @@ fn negotiated_resize_is_a_standalone_desktop_size_update() {
 - 下一次请求在新尺寸下输出 Raw。
 - 只有真实尺寸变化才发送 `DesktopSize`。
 
-- [ ] **步骤 8：写输出事务性和容量边界失败测试**
+- [x] **步骤 8：写输出事务性和容量边界失败测试**
 
 加入：
 
@@ -1858,7 +1858,7 @@ fn raw_and_queue_length_helpers_report_overflow() {
 }
 ```
 
-- [ ] **步骤 9：实现先构造后提交并验证任务 5**
+- [x] **步骤 9：实现先构造后提交并验证任务 5**
 
 服务器编码辅助先在临时 `Vec<u8>` 中构造完整消息。连接在检查：
 
@@ -1895,7 +1895,7 @@ git diff --check
 
 预期：全部通过。
 
-- [ ] **步骤 10：提交任务 5**
+- [x] **步骤 10：提交任务 5**
 
 ```powershell
 git add crates/ipkvm-rfb
@@ -1922,7 +1922,7 @@ git commit -m "feat: encode RFB framebuffer updates (#2)"
 - 性质测试验证分块不变量、几何边界、输出长度和不 panic。
 - 不新增 TCP、WebSocket 或测试专用生产接口。
 
-- [ ] **步骤 1：写完整公共 API 转录测试**
+- [x] **步骤 1：写完整公共 API 转录测试**
 
 在 `protocol_transcript.rs` 写入一个完整流程：
 
@@ -1994,7 +1994,7 @@ fn completes_handshake_negotiation_request_and_raw_update() {
 }
 ```
 
-- [ ] **步骤 2：运行转录测试并修复公共 API 差异**
+- [x] **步骤 2：运行转录测试并修复公共 API 差异**
 
 运行：
 
@@ -2004,7 +2004,7 @@ cargo test -p ipkvm-rfb --test protocol_transcript
 
 预期：首次运行只允许因公共导出遗漏或行为差异失败。先确认失败与测试目标一致，再补公共导出或修复根因；不得复制内部编码逻辑到测试。
 
-- [ ] **步骤 3：写任意分块等价性质测试**
+- [x] **步骤 3：写任意分块等价性质测试**
 
 在 `client.rs` 测试模块先定义每种支持消息的代表字节：
 
@@ -2105,7 +2105,7 @@ proptest! {
 }
 ```
 
-- [ ] **步骤 4：写像素、矩形和随机输入性质测试**
+- [x] **步骤 4：写像素、矩形和随机输入性质测试**
 
 在 `pixel_format.rs` 测试模块定义：
 
@@ -2165,7 +2165,7 @@ proptest! {
 
 内部测试辅助只能放在 `#[cfg(test)]` 模块，不进入公共 API。
 
-- [ ] **步骤 5：写输出失败事务性性质测试**
+- [x] **步骤 5：写输出失败事务性性质测试**
 
 在 `connection.rs` 测试模块加入：
 
@@ -2214,7 +2214,7 @@ proptest! {
 }
 ```
 
-- [ ] **步骤 6：运行性质测试并处理真实失败**
+- [x] **步骤 6：运行性质测试并处理真实失败**
 
 运行：
 
@@ -2224,7 +2224,7 @@ cargo test -p ipkvm-rfb
 
 预期：全部通过。若性质测试发现失败，先把最小反例固化为普通回归测试并确认失败，再修复生产代码根因，最后重新运行全部 `ipkvm-rfb` 测试。
 
-- [ ] **步骤 7：更新长期状态文档**
+- [x] **步骤 7：更新长期状态文档**
 
 更新 `README.md`：
 
@@ -2237,7 +2237,7 @@ cargo test -p ipkvm-rfb
 - 把“未知伪编码忽略测试”改为准确完成描述：未知 encoding 保留且不使连接失败，未知客户端消息类型因无法确定长度而致命失败。
 - “用模拟帧缓冲跑通普通 VNC 客户端和 noVNC”继续留在待完成，因为本次没有 TCP 或 WebSocket。
 
-- [ ] **步骤 8：执行最终验证**
+- [x] **步骤 8：执行最终验证**
 
 依次运行：
 
@@ -2255,14 +2255,14 @@ git diff --check
 - `git status --short` 只包含本 issue 预期文件。
 - 不需要人工测试；真实 VNC 客户端兼容性明确留给 TCP 接入 issue。
 
-- [ ] **步骤 9：提交任务 6**
+- [x] **步骤 9：提交任务 6**
 
 ```powershell
 git add README.md docs/ipkvm-coarse-design.md crates/ipkvm-rfb
 git commit -m "test: harden RFB protocol core (#2)"
 ```
 
-- [ ] **步骤 10：进行实现审查和 issue 收口**
+- [x] **步骤 10：进行实现审查和 issue 收口**
 
 按 `requesting-code-review` 对设计 `docs/superpowers/specs/2026-07-31-rfb-38-protocol-core-design.md`、本计划和实现 diff 做审查。修复所有严重和重要问题，并为每个行为修复先增加失败回归测试。
 
