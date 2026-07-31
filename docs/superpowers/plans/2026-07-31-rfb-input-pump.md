@@ -200,7 +200,7 @@ git commit -m "feat: carry RFB pointer framebuffer size (#11)"
 
 ### 步骤
 
-- [ ] **步骤 1：写入公共 API 编译红灯**
+- [x] **步骤 1：写入公共 API 编译红灯**
 
 测试导入：
 
@@ -219,7 +219,7 @@ RfbKeyboardRejection
 
 测试必须先因类型不存在而失败。
 
-- [ ] **步骤 2：定义通知类型**
+- [x] **步骤 2：定义通知类型**
 
 `RfbInputNotice`：
 
@@ -234,7 +234,7 @@ RfbKeyboardRejection
 
 所有通知保存判断所需的类型化字段，不保存剪贴板正文。
 
-- [ ] **步骤 3：定义错误类型**
+- [x] **步骤 3：定义错误类型**
 
 `RfbInputLifecycleError`：
 
@@ -259,7 +259,7 @@ RfbKeyboardRejection
 - 当前事件失败。
 - 事件源关闭时释放失败。
 
-- [ ] **步骤 4：建立最小 pump 外壳**
+- [x] **步骤 4：建立最小 pump 外壳**
 
 ```rust
 pub struct RfbInputPump<S> {
@@ -278,7 +278,7 @@ pub struct RfbInputPump<S> {
 
 不提供 `sink_mut`、无条件 `into_sink` 或析构释放。
 
-- [ ] **步骤 5：运行公共契约测试并提交**
+- [x] **步骤 5：运行公共契约测试并提交**
 
 ```powershell
 cargo test -p ipkvm-headless --lib
@@ -298,7 +298,7 @@ git commit -m "feat: define RFB input pump contracts (#11)"
 
 ### 步骤
 
-- [ ] **步骤 1：写入连接和合法输入红灯测试**
+- [x] **步骤 1：写入连接和合法输入红灯测试**
 
 纯内存 `RecordingSink` 验证：
 
@@ -307,7 +307,7 @@ git commit -m "feat: define RFB input pump contracts (#11)"
 - Pointer 使用事件携带的尺寸调用指针 mapper。
 - 每个事件产生准确通知。
 
-- [ ] **步骤 2：实现活动控制者校验**
+- [x] **步骤 2：实现活动控制者校验**
 
 内部 `require_active(client_id, event_kind)`：
 
@@ -317,7 +317,7 @@ git commit -m "feat: define RFB input pump contracts (#11)"
 
 `Connected` 在已有控制者时返回 `ControllerAlreadyActive`。
 
-- [ ] **步骤 3：写入可继续拒绝红灯测试**
+- [x] **步骤 3：写入可继续拒绝红灯测试**
 
 - 不支持 keysym 返回 `KeyboardRejected::UnsupportedKeysym`。
 - Shift 冲突返回 `KeyboardRejected::ConflictingShiftRequirements`。
@@ -325,11 +325,11 @@ git commit -m "feat: define RFB input pump contracts (#11)"
 - `CutText` 返回只含字节数的忽略通知。
 - `ContinuousUpdates` 返回类型化忽略通知。
 
-- [ ] **步骤 4：实现键盘错误分类和非输入通知**
+- [x] **步骤 4：实现键盘错误分类和非输入通知**
 
 只把 `RfbKeyboardError::Input` 转成致命 sink 错误。其余键盘映射错误转通知。
 
-- [ ] **步骤 5：写入失败事件返还红灯测试**
+- [x] **步骤 5：写入失败事件返还红灯测试**
 
 - sink 拒绝键盘批次。
 - `handle_event` 返回的错误保留完全相等的原事件。
@@ -337,11 +337,11 @@ git commit -m "feat: define RFB input pump contracts (#11)"
 - 取回事件重试后成功。
 - 指针 sink 失败执行同样测试。
 
-- [ ] **步骤 6：实现失败封装**
+- [x] **步骤 6：实现失败封装**
 
 `handle_event(event)` 内部借用事件处理；失败时把取得所有权的原事件和错误一起返回。
 
-- [ ] **步骤 7：写入生命周期异常红灯测试**
+- [x] **步骤 7：写入生命周期异常红灯测试**
 
 - 未连接先输入。
 - 活动期间重复 `Connected`。
@@ -351,11 +351,11 @@ git commit -m "feat: define RFB input pump contracts (#11)"
 
 确认所有错误都不调用 sink、不改变 mapper 和控制者。
 
-- [ ] **步骤 8：实现生命周期错误**
+- [x] **步骤 8：实现生命周期错误**
 
 严格遵守当前顺序 server 契约，不做隐式抢占或自动切换。
 
-- [ ] **步骤 9：运行单元验证并提交**
+- [x] **步骤 9：运行单元验证并提交**
 
 ```powershell
 cargo test -p ipkvm-headless rfb_input::pump
@@ -376,7 +376,7 @@ git commit -m "feat: route RFB controller input events (#11)"
 
 ### 步骤
 
-- [ ] **步骤 1：写入握手前断线红灯测试**
+- [x] **步骤 1：写入握手前断线红灯测试**
 
 没有 `Connected` 的 `Disconnected`：
 
@@ -384,7 +384,7 @@ git commit -m "feat: route RFB controller input events (#11)"
 - 不调用 `release_all()`。
 - 保持无活动控制者。
 
-- [ ] **步骤 2：写入正常断线释放红灯测试**
+- [x] **步骤 2：写入正常断线释放红灯测试**
 
 1. 连接。
 2. 按下键盘键和鼠标按钮。
@@ -394,7 +394,7 @@ git commit -m "feat: route RFB controller input events (#11)"
 6. pump 变为空闲。
 7. 第二个控制者连接后，相同键和按钮会再次产生输入，证明 mapper 已重置。
 
-- [ ] **步骤 3：写入释放失败重试红灯测试**
+- [x] **步骤 3：写入释放失败重试红灯测试**
 
 - 第一次 `release_all` 返回错误。
 - 错误保留原 `Disconnected`。
@@ -402,7 +402,7 @@ git commit -m "feat: route RFB controller input events (#11)"
 - 取回并重试同一事件后释放成功。
 - 新控制者随后可以正常连接。
 
-- [ ] **步骤 4：实现统一释放函数**
+- [x] **步骤 4：实现统一释放函数**
 
 内部所有释放入口共用一个函数：
 
@@ -414,7 +414,7 @@ git commit -m "feat: route RFB controller input events (#11)"
 
 公开 `release_active()` 使用 `Explicit` 原因。
 
-- [ ] **步骤 5：写入通道关闭红灯测试**
+- [x] **步骤 5：写入通道关闭红灯测试**
 
 Tokio 有界通道：
 
@@ -424,13 +424,13 @@ Tokio 有界通道：
 - 观察回调按顺序收到通知。
 - 没有活动控制者时关闭通道不调用释放。
 
-- [ ] **步骤 6：写入通道关闭释放失败测试**
+- [x] **步骤 6：写入通道关闭释放失败测试**
 
 - 关闭时释放失败返回 `SourceClosedRelease`。
 - pump 保留活动控制者。
 - 调用 `release_active()` 可以重试。
 
-- [ ] **步骤 7：实现异步运行循环**
+- [x] **步骤 7：实现异步运行循环**
 
 只使用：
 
@@ -440,7 +440,7 @@ while let Some(event) = receiver.recv().await
 
 不额外 spawn，不建立第二个队列，不吞掉错误。观察回调只接收成功通知。
 
-- [ ] **步骤 8：运行验证并提交**
+- [x] **步骤 8：运行验证并提交**
 
 ```powershell
 cargo test -p ipkvm-headless rfb_input::pump

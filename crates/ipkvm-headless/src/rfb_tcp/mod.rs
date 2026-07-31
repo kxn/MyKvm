@@ -25,6 +25,11 @@ impl RfbClientId {
     pub fn get(self) -> u64 {
         self.0
     }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(value: u64) -> Self {
+        Self(value)
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
