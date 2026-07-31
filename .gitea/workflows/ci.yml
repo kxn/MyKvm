@@ -7,10 +7,13 @@ on:
 jobs:
   rust:
     runs-on: ubuntu-latest
+    env:
+      RUSTUP_DIST_SERVER: https://mirrors.tuna.tsinghua.edu.cn/rustup
+      RUSTUP_UPDATE_ROOT: https://mirrors.tuna.tsinghua.edu.cn/rustup/rustup
     steps:
       - uses: actions/checkout@v4
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.89.0
         with:
           components: rustfmt, clippy
       - name: Check formatting
