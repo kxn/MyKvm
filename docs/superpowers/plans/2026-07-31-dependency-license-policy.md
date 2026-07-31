@@ -222,7 +222,7 @@ git commit -m "test: fix cargo-deny tool contract (#13)"
 - 产出：可重复、无远端网络依赖的许可证和 Git 来源策略测试。
 - 产出：后续 workspace 审计使用的根目录 `deny.toml`。
 
-- [ ] **步骤 1：扩展临时夹具测试**
+- [x] **步骤 1：扩展临时夹具测试**
 
 在版本契约测试之后增加：
 
@@ -245,7 +245,7 @@ git -C $gitDependency commit -m "fixture"
 
 所有 Cargo 夹具都包含独立 `[workspace]`，避免被父仓库 workspace 自动吸收。
 
-- [ ] **步骤 2：运行测试并确认策略文件缺失**
+- [x] **步骤 2：运行测试并确认策略文件缺失**
 
 运行：
 
@@ -255,7 +255,7 @@ git -C $gitDependency commit -m "fixture"
 
 预期：失败，明确指出根目录 `deny.toml` 不存在或无法读取。
 
-- [ ] **步骤 3：新增最小 deny.toml**
+- [x] **步骤 3：新增最小 deny.toml**
 
 创建：
 
@@ -294,7 +294,7 @@ unused-allowed-source = "allow"
 
 配置不增加 LGPL/MPL 例外；当前依赖图不需要例外。
 
-- [ ] **步骤 4：安装固定工具**
+- [x] **步骤 4：安装固定工具**
 
 若本机尚未安装，运行：
 
@@ -320,7 +320,7 @@ cargo-deny --version
 cargo-deny 0.20.2
 ```
 
-- [ ] **步骤 5：运行策略测试**
+- [x] **步骤 5：运行策略测试**
 
 运行：
 
@@ -330,7 +330,7 @@ cargo-deny 0.20.2
 
 预期：允许夹具通过；GPL 和 Git 夹具均被目标规则拒绝；脚本最终退出码为 0。
 
-- [ ] **步骤 6：确认测试没有污染仓库**
+- [x] **步骤 6：确认测试没有污染仓库**
 
 运行：
 
@@ -341,12 +341,14 @@ git diff --check
 
 预期：没有临时 Cargo.lock、嵌套 Git 仓库或其他未跟踪夹具。
 
-- [ ] **步骤 7：提交**
+- [x] **步骤 7：提交**
 
 ```powershell
 git add deny.toml scripts/test-license-policy.ps1
 git commit -m "test: enforce dependency license policy (#13)"
 ```
+
+实施说明：`cargo-deny 0.20.2` 对未批准且未固定提交的 Git 来源同时产生 `source-not-allowed` 和 `git-source-underspecified`，负向测试按固定版本的实际诊断校验。测试运行后系统临时目录和仓库内均无残留夹具。
 
 ---
 
