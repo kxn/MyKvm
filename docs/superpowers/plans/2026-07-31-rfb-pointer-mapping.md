@@ -426,7 +426,7 @@ git commit -m "test: cover RFB pointer mapping boundaries (#9)"
 
 ### 步骤
 
-- [ ] **步骤 1：核对测试清单**
+- [x] **步骤 1：核对测试清单**
 
 ```powershell
 cargo test -p ipkvm-core -- --list
@@ -442,7 +442,7 @@ cargo test -p ipkvm-headless -- --list
 - 四角、零尺寸、越界和恢复。
 - 真实 CH9329 sink 的双层回滚。
 
-- [ ] **步骤 2：更新 README**
+- [x] **步骤 2：更新 README**
 
 当前状态增加：
 
@@ -450,7 +450,7 @@ cargo test -p ipkvm-headless -- --list
 - RFB 绝对指针状态映射。
 - 映射器尚未接到运行时事件泵。
 
-- [ ] **步骤 3：更新粗粒度设计**
+- [x] **步骤 3：更新粗粒度设计**
 
 阶段 0：
 
@@ -464,13 +464,13 @@ cargo test -p ipkvm-headless -- --list
 - 水平滚轮和侧键当前忽略但可观测。
 - 越界坐标拒绝策略。
 
-- [ ] **步骤 4：回写专项设计状态**
+- [x] **步骤 4：回写专项设计状态**
 
 - 设计状态改为“已实施并通过本地自动化验证”。
 - 所有实际步骤改为 `[x]`。
 - 扫描 `TBD`、`TODO`、临时说明和中英文混杂段落。
 
-- [ ] **步骤 5：运行完整本地验证**
+- [x] **步骤 5：运行完整本地验证**
 
 ```powershell
 .\scripts\verify.ps1
@@ -485,14 +485,14 @@ cargo test -p ipkvm-headless -- --list
 - Rust 文档 `-D warnings`。
 - 工作区和暂存区 `git diff --check`。
 
-- [ ] **步骤 6：提交**
+- [x] **步骤 6：提交**
 
 ```powershell
 git add README.md docs
 git commit -m "docs: record RFB pointer mapping completion (#9)"
 ```
 
-- [ ] **步骤 7：最终自审**
+- [x] **步骤 7：最终自审**
 
 ```powershell
 git status --short
