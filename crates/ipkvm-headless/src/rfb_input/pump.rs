@@ -431,7 +431,8 @@ impl<S: InputSink> RfbInputPump<S> {
 #[cfg(test)]
 mod tests {
     use ipkvm_core::{
-        FramebufferSize, InputResult, KeyEvent, MouseMode, PointerButton, PointerEvent,
+        Ch9329InputSink, CommandQueueError, FramebufferSize, InputResult, KeyEvent, MouseMode,
+        PointerButton, PointerEvent, fake_serial::FakeCommandQueue,
     };
     use ipkvm_rfb::RfbSize;
 
@@ -949,5 +950,126 @@ mod tests {
         ));
         assert_eq!(pump.active_client(), None);
         assert_eq!(pump.sink().release_count, 1);
+    }
+
+    #[test]
+    fn real_ch9329_sink_orders_input_and_final_release_batches() {
+        let client_id = client(12);
+        let peer_addr = peer(5911);
+        let queue = FakeCommandQueue::new();
+        let sink = Ch9329InputSink::new(queue.clone(), 0, MouseMode::Absolute);
+        let mut pump = RfbInputPump::new(sink);
+
+        pump.handle_event(connected(client_id, peer_addr)).unwrap();
+        pump.handle_event(RfbTcpEvent::Key {
+            client_id,
+            down: true,
+            keysym: 0x61,
+        })
+        .unwrap();
+        pump.handle_event(RfbTcpEvent::Pointer {
+            client_id,
+            button_mask: 1,
+            x: 10,
+            y: 20,
+            framebuffer_size: RfbSize::new(100, 100).unwrap(),
+        })
+        .unwrap();
+        pump.handle_event(RfbTcpEvent::Disconnected {
+            client_id,
+            peer_addr,
+            reason: RfbDisconnectReason::ClientClosed,
+        })
+        .unwrap();
+
+        let batches = queue.accepted_batches();
+        assert_eq!(batches.len(), 3);
+        assert_eq!(batches[0].frames().len(), 1);
+        assert_eq!(batches[0].frames()[0].command(), 0x02);
+        assert_eq!(batches[1].frames().len(), 2);
+        assert_eq!(batches[1].frames()[0].data()[1], 0);
+        assert_eq!(batches[1].frames()[1].data()[1], 1);
+        let release = batches[2].frames();
+        assert_eq!(release.len(), 2);
+        assert_eq!(release[0].data(), &[0; 8]);
+        assert_eq!(release[1].command(), 0x04);
+        assert_eq!(release[1].data()[1], 0);
+        assert_eq!(pump.active_client(), None);
+    }
+
+    #[test]
+    fn real_ch9329_release_failure_rolls_back_sink_and_pump_together() {
+        let client_id = client(13);
+        let peer_addr = peer(5912);
+        let queue = FakeCommandQueue::new();
+        let sink = Ch9329InputSink::new(queue.clone(), 0, MouseMode::Absolute);
+        let mut pump = RfbInputPump::new(sink);
+        pump.handle_event(connected(client_id, peer_addr)).unwrap();
+        pump.handle_event(RfbTcpEvent::Key {
+            client_id,
+            down: true,
+            keysym: 0x61,
+        })
+        .unwrap();
+        pump.handle_event(RfbTcpEvent::Pointer {
+            client_id,
+            button_mask: 1,
+            x: 10,
+            y: 20,
+            framebuffer_size: RfbSize::new(100, 100).unwrap(),
+        })
+        .unwrap();
+        let disconnect = RfbTcpEvent::Disconnected {
+            client_id,
+            peer_addr,
+            reason: RfbDisconnectReason::ClientClosed,
+        };
+        queue.fail_next(CommandQueueError::Closed);
+
+        let error = pump.handle_event(disconnect).unwrap_err();
+        assert!(matches!(
+            error.error(),
+            RfbInputError::Sink {
+                operation: RfbInputOperation::Release,
+                source: InputError::CommandQueue(CommandQueueError::Closed),
+                ..
+            }
+        ));
+        assert_eq!(queue.accepted_batches().len(), 2);
+        assert_eq!(pump.active_client(), Some(client_id));
+
+        let (retry, _) = error.into_parts();
+        pump.handle_event(retry).unwrap();
+        assert_eq!(queue.accepted_batches().len(), 3);
+        assert_eq!(pump.active_client(), None);
+
+        let second = client(14);
+        pump.handle_event(connected(second, peer(5913))).unwrap();
+        assert_eq!(pump.active_client(), Some(second));
+    }
+
+    #[test]
+    fn real_ch9329_pointer_uses_the_size_carried_by_the_tcp_event() {
+        let client_id = client(15);
+        let queue = FakeCommandQueue::new();
+        let sink = Ch9329InputSink::new(queue.clone(), 0, MouseMode::Absolute);
+        let mut pump = RfbInputPump::new(sink);
+        pump.handle_event(connected(client_id, peer(5914))).unwrap();
+
+        pump.handle_event(RfbTcpEvent::Pointer {
+            client_id,
+            button_mask: 0,
+            x: 199,
+            y: 99,
+            framebuffer_size: RfbSize::new(200, 100).unwrap(),
+        })
+        .unwrap();
+
+        let batches = queue.accepted_batches();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(
+            &batches[0].frames()[0].data()[2..6],
+            &[0xeb, 0x0f, 0xd7, 0x0f]
+        );
     }
 }

@@ -461,7 +461,7 @@ git commit -m "feat: release RFB input on lifecycle end (#11)"
 
 ### 步骤
 
-- [ ] **步骤 1：建立真实 sink 集成测试**
+- [x] **步骤 1：建立真实 sink 集成测试**
 
 组合：
 
@@ -484,7 +484,7 @@ RfbInputPump
 - 最后一个 `release_all` 批次同时含全零键盘和鼠标释放报告。
 - pump 最终无活动控制者。
 
-- [ ] **步骤 2：验证真实 sink 释放失败**
+- [x] **步骤 2：验证真实 sink 释放失败**
 
 在断线前配置 `FakeCommandQueue::fail_next`：
 
@@ -493,11 +493,11 @@ RfbInputPump
 - 重试后只增加一个完整释放批次。
 - sink 和 pump 的状态都能继续服务下一个控制者。
 
-- [ ] **步骤 3：验证动态尺寸指针**
+- [x] **步骤 3：验证动态尺寸指针**
 
 构造携带新 `RfbSize` 的 Pointer，检查 CH9329 报告坐标按该尺寸换算，不受任何模拟视频源最新尺寸影响。
 
-- [ ] **步骤 4：运行集成验证并提交**
+- [x] **步骤 4：运行集成验证并提交**
 
 ```powershell
 cargo test -p ipkvm-headless --test rfb_input_pump
