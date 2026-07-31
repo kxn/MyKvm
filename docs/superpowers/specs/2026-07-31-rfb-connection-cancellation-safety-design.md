@@ -69,8 +69,9 @@ semaphore，把闸门置为永久中毒状态并唤醒正在等待的 TCP 任务
 
 ## 5. 共享断开收尾
 
-新增 `rfb_connection/finalize.rs`，提供 crate 私有的
-`finalize_connection(event_tx, lease, peer_addr, end)`：
+新增 `rfb_connection/finalize.rs`。共享 owner 返回不可克隆的
+`RfbConnectionCompletion`，其中封装租约、对端地址和 `ConnectionEnd`；crate 私有的
+`finalize_connection(event_tx, completion)` 消费该完成值：
 
 1. 从 `ConnectionEnd` 取得稳定断开原因；事件通道已关闭时返回类型化错误。
 2. 使用租约中的客户端标识发送唯一一次 `RfbServerEvent::Disconnected`。
@@ -134,15 +135,17 @@ WebSocket 传输单元测试或共享驱动测试必须遍历 `std::error::Error
 
 - `RfbFrameError::UnsupportedPixelFormat` 文案改为传输无关的
   “RFB requires BGRA8888”。
-- 文档明确 `tokio-tungstenite` 与 `futures-util` 是直接开发依赖，同时也会通过
-  axum WebSocket 功能进入生产依赖树；不能声称它们不进入生产依赖。
+- 文档明确 `tokio-tungstenite` 与 `futures-util` 是直接开发依赖；前者由 axum `ws`
+  功能引入正常生产依赖树，后者是 axum 的正常依赖并且还经 tower 进入。不能声称它们
+  不进入生产依赖。
 - 前置 WebSocket 设计中的许可生命周期、风险和测试说明按本设计修正。
 
 ## 9. 自审结论
 
 - **正确性：** 两阶段类型使“尚未激活”和“已经激活”在类型与析构语义上不可混淆，租约
   不可克隆且只能由共享收尾消费。
-- **取消安全：** 唯一可取消点位于 `Disconnected` 发送期间，此时租约析构不释放。
+- **取消安全：** 连接驱动中的任意 `.await` 被取消都会通过租约析构毒化闸门；正常收尾的
+  入队与释放区间只有 `Disconnected` 发送一个取消点，发送成功后同步释放。
 - **并发性：** 激活和显式释放都是同步操作，不增加锁和异步竞态；循环测试固定 semaphore
   容量不漂移。
 - **兼容性：** RFB 线级协议和正常路径 HTTP 状态不变；新增 `Poisoned` 服务级错误与

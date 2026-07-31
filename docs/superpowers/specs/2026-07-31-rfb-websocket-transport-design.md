@@ -87,9 +87,10 @@ noVNC 完成 `ServerInit` 后立即发送：
 - `tokio-tungstenite = 0.29.0`，MIT，与 axum 0.8.9 的依赖版本保持一致。
 - `futures-util = 0.3.33`，MIT 或 Apache-2.0，用于 WebSocket 测试客户端的 `SinkExt` 和 `StreamExt`。
 
-`cargo tree -p ipkvm-headless -e normal` 同时显示 `tokio-tungstenite` 与
-`futures-util` 由 axum 的 `ws` 功能传递进入正常生产依赖树。因此“直接开发依赖”只描述
-本 crate 的 `Cargo.toml` 声明位置，不表示它们不会进入生产构建。
+`cargo tree -p ipkvm-headless -e normal` 显示 `tokio-tungstenite` 由 axum 的 `ws`
+功能引入；`futures-util` 是 axum 的正常依赖，并且还经 tower 进入。两者都在正常生产
+依赖树中。因此“直接开发依赖”只描述本 crate 的 `Cargo.toml` 声明位置，不表示它们不会
+进入生产构建。
 
 实施时以 `Cargo.lock` 的实际解析结果为准，并运行现有 `cargo deny` 门禁。noVNC 的 MPL-2.0 资源不在本阶段进入仓库或产物，因此本阶段不触发 noVNC 分发边界。
 
@@ -494,6 +495,7 @@ axum::serve(
 - 已收到关闭信号：`503 Service Unavailable`。
 - 事件接收端已关闭：`503 Service Unavailable`。
 - 已有活动连接：`409 Conflict`。
+- 连接闸门中毒：`503 Service Unavailable`。
 - 连接闸门中的客户端标识已耗尽：`503 Service Unavailable`，且永不回绕。
 
 HTTP 拒绝没有 RFB 客户端标识，不产生 `Connected` 或 `Disconnected`。
@@ -503,7 +505,7 @@ HTTP 拒绝没有 RFB 客户端标识，不产生 `Connected` 或 `Disconnected`
 WebSocket 服务使用上层传入的共享 `RfbConnectionGate`：
 
 1. 升级处理器调用连接闸门的 `try_acquire()`；连接闸门内部使用拥有所有权的信号量许可。
-2. 未取得许可时立即返回 `409`，不等待当前客户端。
+2. 活动连接占用闸门时立即返回 `409`；闸门中毒或客户端标识耗尽时返回 `503`。
 3. 成功取得许可时由连接闸门分配客户端标识。
 4. 未激活预约移动到 `on_upgrade` 任务；升级失败或回调首次 poll 前取消会自动释放预约。
 5. 回调首次 poll 时在任何 `.await` 前激活租约，覆盖完整 WebSocket/RFB 生命周期。

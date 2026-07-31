@@ -12,6 +12,10 @@ impl WebSocketTransport {
     }
 }
 
+fn map_websocket_error(error: axum::Error) -> RfbTransportError {
+    RfbTransportError::websocket(error)
+}
+
 impl RfbTransport for WebSocketTransport {
     async fn receive_into(
         &mut self,
@@ -28,7 +32,7 @@ impl RfbTransport for WebSocketTransport {
             | Some(Ok(Message::Pong(_))) => Ok(RfbTransportRead::Continue),
             Some(Ok(Message::Close(_))) | None => Ok(RfbTransportRead::Closed),
             Some(Ok(Message::Text(_))) => Err(RfbTransportError::UnexpectedTextMessage),
-            Some(Err(error)) => Err(RfbTransportError::websocket(error)),
+            Some(Err(error)) => Err(map_websocket_error(error)),
         }
     }
 
@@ -36,10 +40,34 @@ impl RfbTransport for WebSocketTransport {
         self.socket
             .send(Message::Binary(bytes.into()))
             .await
-            .map_err(RfbTransportError::websocket)
+            .map_err(map_websocket_error)
     }
 
     async fn close(&mut self) {
         let _ = self.socket.send(Message::Close(None)).await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio_tungstenite::tungstenite::Error as TungsteniteError;
+
+    use super::*;
+
+    #[test]
+    fn websocket_mapping_preserves_axum_and_tungstenite_sources() {
+        let error = map_websocket_error(axum::Error::new(TungsteniteError::ConnectionClosed));
+        let mut current: &(dyn std::error::Error + 'static) = &error;
+        let mut saw_axum = false;
+        let mut saw_tungstenite = false;
+
+        while let Some(source) = current.source() {
+            saw_axum |= source.downcast_ref::<axum::Error>().is_some();
+            saw_tungstenite |= source.downcast_ref::<TungsteniteError>().is_some();
+            current = source;
+        }
+
+        assert!(saw_axum);
+        assert!(saw_tungstenite);
     }
 }
