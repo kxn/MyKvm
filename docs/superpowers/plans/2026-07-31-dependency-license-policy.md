@@ -52,7 +52,7 @@
 - 产出：`Get-CargoDenyExecutable -> string`
 - 后续任务只通过该模块读取版本和定位工具，不复制版本常量。
 
-- [ ] **步骤 1：先写版本契约测试**
+- [x] **步骤 1：先写版本契约测试**
 
 `scripts/test-license-policy.ps1` 首先导入尚不存在的模块，并覆盖正确、错误和格式异常三种输出：
 
@@ -103,7 +103,7 @@ Assert-ThrowsLike {
 } "无法解析 cargo-deny 版本"
 ```
 
-- [ ] **步骤 2：运行测试并确认按预期失败**
+- [x] **步骤 2：运行测试并确认按预期失败**
 
 运行：
 
@@ -113,7 +113,7 @@ Assert-ThrowsLike {
 
 预期：失败，原因是 `license-policy-tools.psm1` 不存在。
 
-- [ ] **步骤 3：实现最小工具模块**
+- [x] **步骤 3：实现最小工具模块**
 
 `scripts/license-policy-tools.psm1` 的核心实现：
 
@@ -177,7 +177,7 @@ Export-ModuleMember -Function @(
 )
 ```
 
-- [ ] **步骤 4：运行版本契约测试**
+- [x] **步骤 4：运行版本契约测试**
 
 运行：
 
@@ -187,7 +187,7 @@ Export-ModuleMember -Function @(
 
 预期：版本解析测试通过；脚本退出码为 0。
 
-- [ ] **步骤 5：检查 PowerShell 和 Git 差异**
+- [x] **步骤 5：检查 PowerShell 和 Git 差异**
 
 运行：
 
@@ -198,12 +198,14 @@ git status --short
 
 预期：只有本任务两个脚本有改动，没有 `AGENTS.md`。
 
-- [ ] **步骤 6：提交**
+- [x] **步骤 6：提交**
 
 ```powershell
 git add scripts/test-license-policy.ps1 scripts/license-policy-tools.psm1
 git commit -m "test: fix cargo-deny tool contract (#13)"
 ```
+
+实施说明：Windows PowerShell 5.1 会把无 BOM 的脚本源码按本地代码页解析，而仓库文本规则禁止 BOM。实际脚本源码保持 ASCII，中文错误消息由 Unicode 转义在运行时还原；测试已先观察到编码解析失败，再把 RED 校正为目标模块缺失，并最终通过。
 
 ---
 
@@ -649,4 +651,3 @@ PR 描述包含：
 - 人工验证例外：无。
 
 合并后确认 issue #13 关闭，清理功能工作树和远端分支，并将主分支快进到合并提交。
-
