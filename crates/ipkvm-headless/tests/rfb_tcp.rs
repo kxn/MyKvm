@@ -2,8 +2,11 @@ mod support;
 
 use std::{io, sync::Arc};
 
-use ipkvm_headless::rfb_tcp::{
-    RfbClientId, RfbDisconnectReason, RfbTcpConfig, RfbTcpEvent, RfbTcpServer, RfbTcpServerError,
+use ipkvm_headless::{
+    rfb_connection::{
+        RfbClientId, RfbConnectionGate, RfbDisconnectReason, RfbFrameError, RfbServerEvent,
+    },
+    rfb_tcp::{RfbTcpConfig, RfbTcpServer, RfbTcpServerError},
 };
 use ipkvm_rfb::{RfbProtocolError, RfbSize};
 use ipkvm_video::{MonotonicTimestamp, PixelFormat, VideoFrame, mock::MockFrameSource};
@@ -28,7 +31,7 @@ fn frame(seq: u64, width: u32, height: u32, format: PixelFormat, bytes: &[u8]) -
 struct ServerFixture {
     address: std::net::SocketAddr,
     source: Arc<MockFrameSource>,
-    events: mpsc::Receiver<RfbTcpEvent>,
+    events: mpsc::Receiver<RfbServerEvent>,
     shutdown: watch::Sender<bool>,
     task: tokio::task::JoinHandle<Result<(), RfbTcpServerError>>,
 }
@@ -48,6 +51,7 @@ impl ServerFixture {
             Arc::clone(&source),
             event_tx,
             RfbTcpConfig::default(),
+            RfbConnectionGate::new(),
         )
         .unwrap();
         let task = tokio::spawn(server.run(shutdown_rx));
@@ -62,14 +66,14 @@ impl ServerFixture {
 
     async fn expect_connected(&mut self) -> RfbClientId {
         match self.events.recv().await.unwrap() {
-            RfbTcpEvent::Connected { client_id, .. } => client_id,
+            RfbServerEvent::Connected { client_id, .. } => client_id,
             event => panic!("expected connected event, got {event:?}"),
         }
     }
 
     async fn expect_disconnected(&mut self, expected_id: RfbClientId) -> RfbDisconnectReason {
         match self.events.recv().await.unwrap() {
-            RfbTcpEvent::Disconnected {
+            RfbServerEvent::Disconnected {
                 client_id, reason, ..
             } => {
                 assert_eq!(client_id, expected_id);
@@ -148,7 +152,7 @@ async fn bounded_event_channel_preserves_input_order() {
     client.send_key(false, 0x41).await;
     assert_eq!(
         fixture.events.recv().await,
-        Some(RfbTcpEvent::Key {
+        Some(RfbServerEvent::Key {
             client_id,
             down: true,
             keysym: 0x41,
@@ -156,7 +160,7 @@ async fn bounded_event_channel_preserves_input_order() {
     );
     assert_eq!(
         fixture.events.recv().await,
-        Some(RfbTcpEvent::Key {
+        Some(RfbServerEvent::Key {
             client_id,
             down: false,
             keysym: 0x41,
@@ -167,7 +171,7 @@ async fn bounded_event_channel_preserves_input_order() {
     client.send_cut_text(b"abc").await;
     assert!(matches!(
         fixture.events.recv().await,
-        Some(RfbTcpEvent::Pointer {
+        Some(RfbServerEvent::Pointer {
             client_id: actual,
             button_mask: 1,
             x: 20,
@@ -177,7 +181,7 @@ async fn bounded_event_channel_preserves_input_order() {
     ));
     assert_eq!(
         fixture.events.recv().await,
-        Some(RfbTcpEvent::CutText {
+        Some(RfbServerEvent::CutText {
             client_id,
             bytes: b"abc".to_vec(),
         })
@@ -195,12 +199,12 @@ async fn missing_initial_frame_disconnects_then_valid_frame_reconnects() {
         io::ErrorKind::UnexpectedEof
     );
     let reason = match fixture.events.recv().await.unwrap() {
-        RfbTcpEvent::Disconnected { reason, .. } => reason,
+        RfbServerEvent::Disconnected { reason, .. } => reason,
         event => panic!("expected disconnected event, got {event:?}"),
     };
     assert_eq!(
         reason,
-        RfbDisconnectReason::Frame(ipkvm_headless::rfb_tcp::RfbTcpFrameError::FrameUnavailable)
+        RfbDisconnectReason::Frame(RfbFrameError::FrameUnavailable)
     );
 
     fixture.source.publish_frame(default_frame());
@@ -220,14 +224,12 @@ async fn invalid_initial_frame_disconnects_then_valid_frame_reconnects() {
         io::ErrorKind::UnexpectedEof
     );
     let reason = match fixture.events.recv().await.unwrap() {
-        RfbTcpEvent::Disconnected { reason, .. } => reason,
+        RfbServerEvent::Disconnected { reason, .. } => reason,
         event => panic!("expected disconnected event, got {event:?}"),
     };
     assert!(matches!(
         reason,
-        RfbDisconnectReason::Frame(
-            ipkvm_headless::rfb_tcp::RfbTcpFrameError::UnsupportedPixelFormat(PixelFormat::Mjpeg)
-        )
+        RfbDisconnectReason::Frame(RfbFrameError::UnsupportedPixelFormat(PixelFormat::Mjpeg))
     ));
 
     fixture.source.publish_frame(default_frame());
@@ -263,7 +265,14 @@ async fn closed_event_receiver_is_a_server_error() {
     let (event_tx, event_rx) = mpsc::channel(1);
     drop(event_rx);
     let (_shutdown, shutdown_rx) = watch::channel(false);
-    let server = RfbTcpServer::new(listener, source, event_tx, RfbTcpConfig::default()).unwrap();
+    let server = RfbTcpServer::new(
+        listener,
+        source,
+        event_tx,
+        RfbTcpConfig::default(),
+        RfbConnectionGate::new(),
+    )
+    .unwrap();
 
     assert!(matches!(
         server.run(shutdown_rx).await,

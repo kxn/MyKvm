@@ -3,103 +3,31 @@ mod frame;
 mod pending;
 mod server;
 
-use std::time::Duration;
-use std::{
-    io::{self, ErrorKind},
-    net::SocketAddr,
-};
+use std::io;
 
-use ipkvm_rfb::{
-    RfbConfigError, RfbEncodeError, RfbFramebufferError, RfbProtocolError, RfbProtocolLimits,
-    RfbRectangle, RfbSize,
-};
-use ipkvm_video::PixelFormat;
 use thiserror::Error;
+
+use crate::rfb_connection::{RfbConnectionSettings, RfbConnectionSettingsError};
 
 pub use server::RfbTcpServer;
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct RfbClientId(u64);
-
-impl RfbClientId {
-    pub fn get(self) -> u64 {
-        self.0
-    }
-
-    #[cfg(test)]
-    pub(crate) fn for_test(value: u64) -> Self {
-        Self(value)
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum RfbTcpEvent {
-    Connected {
-        client_id: RfbClientId,
-        peer_addr: SocketAddr,
-        shared: bool,
-    },
-    Key {
-        client_id: RfbClientId,
-        down: bool,
-        keysym: u32,
-    },
-    Pointer {
-        client_id: RfbClientId,
-        button_mask: u8,
-        x: u16,
-        y: u16,
-        framebuffer_size: RfbSize,
-    },
-    CutText {
-        client_id: RfbClientId,
-        bytes: Vec<u8>,
-    },
-    ContinuousUpdates {
-        client_id: RfbClientId,
-        enable: bool,
-        rectangle: RfbRectangle,
-    },
-    Disconnected {
-        client_id: RfbClientId,
-        peer_addr: SocketAddr,
-        reason: RfbDisconnectReason,
-    },
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum RfbDisconnectReason {
-    ClientClosed,
-    ServerShutdown,
-    HandshakeTimeout,
-    CoreConfig(RfbConfigError),
-    Protocol(RfbProtocolError),
-    Encode(RfbEncodeError),
-    Frame(RfbTcpFrameError),
-    Io(ErrorKind),
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RfbTcpConfig {
-    pub desktop_name: String,
+    pub connection: RfbConnectionSettings,
     pub read_buffer_bytes: usize,
-    pub handshake_timeout: Duration,
-    pub protocol_limits: RfbProtocolLimits,
 }
 
 impl RfbTcpConfig {
     pub fn validate(&self) -> Result<(), RfbTcpConfigError> {
+        self.connection.validate()?;
         if self.read_buffer_bytes == 0 {
             return Err(RfbTcpConfigError::ZeroReadBuffer);
         }
-        if self.read_buffer_bytes > self.protocol_limits.max_buffered_input_bytes {
+        if self.read_buffer_bytes > self.connection.protocol_limits.max_buffered_input_bytes {
             return Err(RfbTcpConfigError::ReadBufferExceedsInputLimit {
                 actual: self.read_buffer_bytes,
-                maximum: self.protocol_limits.max_buffered_input_bytes,
+                maximum: self.connection.protocol_limits.max_buffered_input_bytes,
             });
-        }
-        if self.handshake_timeout.is_zero() {
-            return Err(RfbTcpConfigError::ZeroHandshakeTimeout);
         }
         Ok(())
     }
@@ -108,22 +36,20 @@ impl RfbTcpConfig {
 impl Default for RfbTcpConfig {
     fn default() -> Self {
         Self {
-            desktop_name: "my_ipkvm".to_string(),
+            connection: RfbConnectionSettings::default(),
             read_buffer_bytes: 16 * 1024,
-            handshake_timeout: Duration::from_secs(10),
-            protocol_limits: RfbProtocolLimits::default(),
         }
     }
 }
 
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum RfbTcpConfigError {
+    #[error("invalid RFB connection configuration: {0}")]
+    Connection(#[from] RfbConnectionSettingsError),
     #[error("TCP read buffer must be non-zero")]
     ZeroReadBuffer,
     #[error("TCP read buffer is {actual} bytes, protocol input limit is {maximum}")]
     ReadBufferExceedsInputLimit { actual: usize, maximum: usize },
-    #[error("RFB handshake timeout must be non-zero")]
-    ZeroHandshakeTimeout,
 }
 
 #[derive(Debug, Error)]
@@ -138,24 +64,6 @@ pub enum RfbTcpServerError {
     EventChannelClosed,
 }
 
-#[derive(Clone, Debug, Error, Eq, PartialEq)]
-pub enum RfbTcpFrameError {
-    #[error("no video frame is available")]
-    FrameUnavailable,
-    #[error("RFB TCP requires BGRA8888, got {0:?}")]
-    UnsupportedPixelFormat(PixelFormat),
-    #[error("video frame width {0} exceeds the RFB limit")]
-    WidthOutOfRange(u32),
-    #[error("video frame height {0} exceeds the RFB limit")]
-    HeightOutOfRange(u32),
-    #[error("video frame stride {0} cannot be represented on this platform")]
-    StrideOutOfRange(u32),
-    #[error("invalid BGRA8888 video frame: {0}")]
-    InvalidBgraFrame(#[from] RfbFramebufferError),
-    #[error("video frame sequence regressed from {previous} to {actual}")]
-    FrameSequenceRegressed { previous: u64, actual: u64 },
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,7 +73,10 @@ mod tests {
         let config = RfbTcpConfig::default();
 
         assert_eq!(config.read_buffer_bytes, 16 * 1024);
-        assert_eq!(config.handshake_timeout, Duration::from_secs(10));
+        assert_eq!(
+            config.connection.handshake_timeout,
+            std::time::Duration::from_secs(10)
+        );
         assert!(config.validate().is_ok());
     }
 
@@ -178,19 +89,28 @@ mod tests {
         assert_eq!(zero.validate(), Err(RfbTcpConfigError::ZeroReadBuffer));
 
         let mut oversized = RfbTcpConfig::default();
-        oversized.read_buffer_bytes = oversized.protocol_limits.max_buffered_input_bytes + 1;
+        oversized.read_buffer_bytes = oversized
+            .connection
+            .protocol_limits
+            .max_buffered_input_bytes
+            + 1;
         assert!(matches!(
             oversized.validate(),
             Err(RfbTcpConfigError::ReadBufferExceedsInputLimit { .. })
         ));
 
         let no_timeout = RfbTcpConfig {
-            handshake_timeout: Duration::ZERO,
+            connection: RfbConnectionSettings {
+                handshake_timeout: std::time::Duration::ZERO,
+                ..RfbConnectionSettings::default()
+            },
             ..RfbTcpConfig::default()
         };
         assert_eq!(
             no_timeout.validate(),
-            Err(RfbTcpConfigError::ZeroHandshakeTimeout)
+            Err(RfbTcpConfigError::Connection(
+                RfbConnectionSettingsError::ZeroHandshakeTimeout
+            ))
         );
     }
 }

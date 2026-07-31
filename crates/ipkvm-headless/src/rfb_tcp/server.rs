@@ -7,24 +7,28 @@ use tokio::{
 };
 
 use super::{
-    RfbClientId, RfbDisconnectReason, RfbTcpConfig, RfbTcpEvent, RfbTcpServerError,
+    RfbTcpConfig, RfbTcpServerError,
     connection::{ConnectionEnd, RfbTcpConnectionError, run_connection},
+};
+use crate::rfb_connection::{
+    RfbClientId, RfbConnectionGate, RfbConnectionGateError, RfbDisconnectReason, RfbServerEvent,
 };
 
 pub struct RfbTcpServer<S> {
     listener: TcpListener,
     frame_source: Arc<S>,
-    event_tx: mpsc::Sender<RfbTcpEvent>,
+    event_tx: mpsc::Sender<RfbServerEvent>,
     config: RfbTcpConfig,
-    next_client_id: Option<u64>,
+    gate: RfbConnectionGate,
 }
 
 impl<S: FrameSource + 'static> RfbTcpServer<S> {
     pub fn new(
         listener: TcpListener,
         frame_source: Arc<S>,
-        event_tx: mpsc::Sender<RfbTcpEvent>,
+        event_tx: mpsc::Sender<RfbServerEvent>,
         config: RfbTcpConfig,
+        gate: RfbConnectionGate,
     ) -> Result<Self, RfbTcpServerError> {
         config.validate()?;
         Ok(Self {
@@ -32,7 +36,7 @@ impl<S: FrameSource + 'static> RfbTcpServer<S> {
             frame_source,
             event_tx,
             config,
-            next_client_id: Some(1),
+            gate,
         })
     }
 
@@ -40,10 +44,7 @@ impl<S: FrameSource + 'static> RfbTcpServer<S> {
     ///
     /// 调用方在本方法返回前必须持续消费事件通道。事件交付采用无损反压；
     /// 如果接收端停止消费且通道已满，连接关闭和 `Disconnected` 事件也会等待容量。
-    pub async fn run(
-        mut self,
-        mut shutdown: watch::Receiver<bool>,
-    ) -> Result<(), RfbTcpServerError> {
+    pub async fn run(self, mut shutdown: watch::Receiver<bool>) -> Result<(), RfbTcpServerError> {
         loop {
             if shutdown_is_requested(&shutdown) {
                 return Ok(());
@@ -58,7 +59,17 @@ impl<S: FrameSource + 'static> RfbTcpServer<S> {
                     return Err(RfbTcpServerError::EventChannelClosed);
                 }
             };
-            let client_id = self.allocate_client_id()?;
+            let permit = tokio::select! {
+                result = self.gate.acquire() => {
+                    result.map_err(|error| match error {
+                        RfbConnectionGateError::ClientIdOverflow => RfbTcpServerError::ClientIdOverflow,
+                        RfbConnectionGateError::Busy => unreachable!("awaited gate acquisition cannot be busy"),
+                    })?
+                }
+                _ = wait_for_shutdown(&mut shutdown) => return Ok(()),
+                _ = self.event_tx.closed() => return Err(RfbTcpServerError::EventChannelClosed),
+            };
+            let client_id = permit.client_id();
             let end = run_connection(
                 client_id,
                 peer_addr,
@@ -78,19 +89,11 @@ impl<S: FrameSource + 'static> RfbTcpServer<S> {
             }
             let reason = end.reason().ok_or(RfbTcpServerError::EventChannelClosed)?;
             self.send_disconnected(client_id, peer_addr, reason).await?;
+            drop(permit);
             if matches!(&end, ConnectionEnd::ServerShutdown) {
                 return Ok(());
             }
         }
-    }
-
-    fn allocate_client_id(&mut self) -> Result<RfbClientId, RfbTcpServerError> {
-        let value = self
-            .next_client_id
-            .take()
-            .ok_or(RfbTcpServerError::ClientIdOverflow)?;
-        self.next_client_id = value.checked_add(1);
-        Ok(RfbClientId(value))
     }
 
     async fn send_disconnected(
@@ -100,7 +103,7 @@ impl<S: FrameSource + 'static> RfbTcpServer<S> {
         reason: RfbDisconnectReason,
     ) -> Result<(), RfbTcpServerError> {
         self.event_tx
-            .send(RfbTcpEvent::Disconnected {
+            .send(RfbServerEvent::Disconnected {
                 client_id,
                 peer_addr,
                 reason,
@@ -137,7 +140,10 @@ mod tests {
 
     use super::*;
 
-    async fn make_server() -> (RfbTcpServer<MockFrameSource>, mpsc::Receiver<RfbTcpEvent>) {
+    async fn make_server() -> (
+        RfbTcpServer<MockFrameSource>,
+        mpsc::Receiver<RfbServerEvent>,
+    ) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let (event_tx, event_rx) = mpsc::channel(1);
         (
@@ -146,22 +152,11 @@ mod tests {
                 Arc::new(MockFrameSource::new()),
                 event_tx,
                 RfbTcpConfig::default(),
+                RfbConnectionGate::new(),
             )
             .unwrap(),
             event_rx,
         )
-    }
-
-    #[tokio::test]
-    async fn client_id_allocation_never_wraps() {
-        let (mut server, _event_rx) = make_server().await;
-        server.next_client_id = Some(u64::MAX);
-
-        assert_eq!(server.allocate_client_id().unwrap().get(), u64::MAX);
-        assert!(matches!(
-            server.allocate_client_id(),
-            Err(RfbTcpServerError::ClientIdOverflow)
-        ));
     }
 
     #[tokio::test]
