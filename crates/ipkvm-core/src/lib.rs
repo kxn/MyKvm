@@ -8,13 +8,14 @@ pub mod fake_serial;
 
 pub use ch9329::{
     AbsoluteMouseReport, Ch9329Command, Ch9329DecodeError, Ch9329Decoder, Ch9329Frame,
-    Ch9329FrameError, Ch9329Info, Ch9329ReportError, Ch9329Response, Ch9329ResponseError,
-    CommandStatus, KeyboardReport, LockLedState, MAX_DATA_LEN, RelativeMouseReport,
+    Ch9329FrameError, Ch9329Info, Ch9329InputSink, Ch9329ReportError, Ch9329Response,
+    Ch9329ResponseError, CommandStatus, KeyboardReport, LockLedState, MAX_DATA_LEN,
+    RelativeMouseReport,
 };
 pub use geometry::{Ch9329Point, Point, ViewRect, map_pointer_to_ch9329};
 pub use input::{
-    FramebufferSize, InputError, InputResult, InputSink, KeyEvent, MouseMode, PointerButton,
-    PointerEvent,
+    FramebufferSize, InputError, InputResult, InputSink, KeyEvent, KeyboardUsage, MouseMode,
+    PointerButton, PointerEvent,
 };
 pub use serial::{
     CommandBatch, CommandBatchError, CommandQueue, CommandQueueError, CommandQueueResult,
@@ -86,10 +87,6 @@ mod tests {
             Ok(())
         }
 
-        fn type_text(&mut self, _text: &str) -> InputResult<()> {
-            Ok(())
-        }
-
         fn release_all(&mut self) -> InputResult<()> {
             self.release_count += 1;
             Ok(())
@@ -100,16 +97,14 @@ mod tests {
     fn input_sink_uses_unified_result_returning_contract() {
         let mut sink = RecordingSink::default();
 
-        sink.handle_key(KeyEvent::Down { hid_usage: 0x04 }).unwrap();
-        sink.handle_key(KeyEvent::Up { hid_usage: 0x04 }).unwrap();
+        let usage = KeyboardUsage::new(0x04).unwrap();
+        sink.handle_key(KeyEvent::Down { usage }).unwrap();
+        sink.handle_key(KeyEvent::Up { usage }).unwrap();
         sink.release_all().unwrap();
 
         assert_eq!(
             sink.keys,
-            vec![
-                KeyEvent::Down { hid_usage: 0x04 },
-                KeyEvent::Up { hid_usage: 0x04 }
-            ]
+            vec![KeyEvent::Down { usage }, KeyEvent::Up { usage }]
         );
         assert_eq!(sink.release_count, 1);
     }
