@@ -1,10 +1,11 @@
 use crate::protocol::client::{ClientMessage, ClientMessageDecoder};
 use crate::protocol::server::{
-    NONE_SECURITY_TYPES, PROTOCOL_VERSION, SECURITY_RESULT_OK, encode_server_init,
+    NONE_SECURITY_TYPES, PROTOCOL_VERSION, SECURITY_RESULT_OK, checked_output_len,
+    encode_desktop_size_update, encode_empty_update, encode_raw_update, encode_server_init,
 };
 use crate::{
-    FramebufferUpdateRequest, RfbPixelFormat, RfbProtocolError, RfbProtocolLimits, RfbRectangle,
-    RfbSize,
+    BgraFrameView, FramebufferUpdateRequest, RfbPixelFormat, RfbProtocolError, RfbProtocolLimits,
+    RfbRectangle, RfbSize,
 };
 use thiserror::Error;
 
@@ -46,6 +47,27 @@ pub enum RfbEvent {
     },
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FramebufferUpdateOutcome {
+    RawQueued { rectangle: RfbRectangle },
+    EmptyQueued,
+    ResizeAnnounced { size: RfbSize },
+}
+
+#[derive(Clone, Debug, Error, Eq, PartialEq)]
+pub enum RfbEncodeError {
+    #[error("framebuffer spans {actual} bytes, maximum is {maximum}")]
+    FramebufferTooLarge { actual: usize, maximum: usize },
+    #[error("framebuffer update length overflow")]
+    LengthOverflow,
+    #[error("output queue would grow to {attempted} bytes, maximum is {maximum}")]
+    OutputQueueFull { attempted: usize, maximum: usize },
+    #[error("RFB handshake is not complete")]
+    HandshakeNotComplete,
+    #[error("framebuffer changed from {announced:?} to {actual:?} without DesktopSize negotiation")]
+    DesktopSizeNotNegotiated { announced: RfbSize, actual: RfbSize },
+}
+
 pub struct RfbConnectionCore {
     config: RfbConnectionConfig,
     state: RfbConnectionState,
@@ -55,6 +77,7 @@ pub struct RfbConnectionCore {
     server_init: Vec<u8>,
     pixel_format: RfbPixelFormat,
     encoding_preferences: Vec<i32>,
+    announced_size: RfbSize,
 }
 
 impl RfbConnectionCore {
@@ -63,6 +86,7 @@ impl RfbConnectionCore {
         let pixel_format = RfbPixelFormat::default_bgrx8888();
         let server_init =
             encode_server_init(config.initial_size, pixel_format, &config.desktop_name)?;
+        let announced_size = config.initial_size;
         Ok(Self {
             client_decoder: ClientMessageDecoder::new(config.limits),
             config,
@@ -72,6 +96,7 @@ impl RfbConnectionCore {
             server_init,
             pixel_format,
             encoding_preferences: Vec::new(),
+            announced_size,
         })
     }
 
@@ -168,6 +193,42 @@ impl RfbConnectionCore {
         self.encoding_preferences.contains(&-223)
     }
 
+    pub fn queue_framebuffer_update(
+        &mut self,
+        frame: BgraFrameView<'_>,
+        request: FramebufferUpdateRequest,
+    ) -> Result<FramebufferUpdateOutcome, RfbEncodeError> {
+        if self.state != RfbConnectionState::Normal {
+            return Err(RfbEncodeError::HandshakeNotComplete);
+        }
+        if frame.byte_span() > self.config.limits.max_framebuffer_bytes {
+            return Err(RfbEncodeError::FramebufferTooLarge {
+                actual: frame.byte_span(),
+                maximum: self.config.limits.max_framebuffer_bytes,
+            });
+        }
+        if frame.size() != self.announced_size {
+            if !self.supports_desktop_size() {
+                return Err(RfbEncodeError::DesktopSizeNotNegotiated {
+                    announced: self.announced_size,
+                    actual: frame.size(),
+                });
+            }
+            let size = frame.size();
+            self.queue_output(encode_desktop_size_update(size))?;
+            self.announced_size = size;
+            return Ok(FramebufferUpdateOutcome::ResizeAnnounced { size });
+        }
+
+        let Some(rectangle) = request.rectangle.intersection(frame.size()) else {
+            self.queue_output(encode_empty_update())?;
+            return Ok(FramebufferUpdateOutcome::EmptyQueued);
+        };
+        let message = encode_raw_update(frame, rectangle, self.pixel_format)?;
+        self.queue_output(message)?;
+        Ok(FramebufferUpdateOutcome::RawQueued { rectangle })
+    }
+
     fn push_normal_input(&mut self, bytes: &[u8]) -> Vec<Result<RfbEvent, RfbProtocolError>> {
         let mut results = Vec::new();
         for decoded in self.client_decoder.push(bytes) {
@@ -205,6 +266,18 @@ impl RfbConnectionCore {
         self.state = RfbConnectionState::Failed;
         self.handshake_input.clear();
         vec![Err(error)]
+    }
+
+    fn queue_output(&mut self, message: Vec<u8>) -> Result<(), RfbEncodeError> {
+        let attempted = checked_output_len(self.output.len(), message.len())?;
+        if attempted > self.config.limits.max_queued_output_bytes {
+            return Err(RfbEncodeError::OutputQueueFull {
+                attempted,
+                maximum: self.config.limits.max_queued_output_bytes,
+            });
+        }
+        self.output.extend_from_slice(&message);
+        Ok(())
     }
 }
 
@@ -378,6 +451,52 @@ mod tests {
 
     fn completed_connection() -> RfbConnectionCore {
         complete(config())
+    }
+
+    fn config_with_size(width: u16, height: u16) -> RfbConnectionConfig {
+        RfbConnectionConfig {
+            desktop_name: "my_ipkvm".to_owned(),
+            initial_size: RfbSize::new(width, height).unwrap(),
+            limits: RfbProtocolLimits::default(),
+        }
+    }
+
+    fn completed_connection_with_size(width: u16, height: u16) -> RfbConnectionCore {
+        complete(config_with_size(width, height))
+    }
+
+    fn set_rgb565(connection: &mut RfbConnectionCore) {
+        let format = RfbPixelFormat::new(16, 16, false, 31, 63, 31, 11, 5, 0).unwrap();
+        let mut message = vec![0, 0, 0, 0];
+        message.extend_from_slice(&format.to_wire());
+        assert!(connection.push_input(&message).is_empty());
+        assert_eq!(connection.pixel_format(), format);
+    }
+
+    fn negotiate_desktop_size(connection: &mut RfbConnectionCore) {
+        let mut message = vec![2, 0, 0, 1];
+        message.extend_from_slice(&(-223_i32).to_be_bytes());
+        assert!(connection.push_input(&message).is_empty());
+        assert!(connection.supports_desktop_size());
+    }
+
+    fn queue_full_frame(
+        connection: &mut RfbConnectionCore,
+        frame: BgraFrameView<'_>,
+    ) -> Result<FramebufferUpdateOutcome, RfbEncodeError> {
+        let size = frame.size();
+        connection.queue_framebuffer_update(
+            frame,
+            FramebufferUpdateRequest {
+                incremental: false,
+                rectangle: RfbRectangle {
+                    x: 0,
+                    y: 0,
+                    width: size.width(),
+                    height: size.height(),
+                },
+            },
+        )
     }
 
     #[test]
@@ -568,5 +687,225 @@ mod tests {
             connection.push_input(&[4, 0, 0, 0, 0, 0, 0xff, 0x0d]),
             vec![Err(RfbProtocolError::ConnectionFailed)]
         );
+    }
+
+    #[test]
+    fn queues_cropped_raw_update_in_default_pixel_format() {
+        let mut connection = completed_connection_with_size(2, 2);
+        let pixels = [1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255, 10, 11, 12, 255];
+        let frame = BgraFrameView::new(RfbSize::new(2, 2).unwrap(), 8, &pixels).unwrap();
+
+        assert_eq!(
+            connection.queue_framebuffer_update(
+                frame,
+                FramebufferUpdateRequest {
+                    incremental: true,
+                    rectangle: RfbRectangle {
+                        x: 1,
+                        y: 0,
+                        width: 1,
+                        height: 2,
+                    },
+                },
+            ),
+            Ok(FramebufferUpdateOutcome::RawQueued {
+                rectangle: RfbRectangle {
+                    x: 1,
+                    y: 0,
+                    width: 1,
+                    height: 2,
+                },
+            })
+        );
+
+        assert_eq!(
+            connection.take_output(),
+            [
+                0, 0, 0, 1, 0, 1, 0, 0, 0, 1, 0, 2, 0, 0, 0, 0, 4, 5, 6, 0, 10, 11, 12, 0,
+            ]
+        );
+    }
+
+    #[test]
+    fn raw_update_uses_stride_and_negotiated_rgb565() {
+        let mut connection = completed_connection_with_size(2, 2);
+        set_rgb565(&mut connection);
+        let pixels = [
+            0, 0, 255, 0, 0, 255, 0, 0, 99, 99, 99, 99, 255, 0, 0, 0, 255, 255, 255, 0,
+        ];
+        let frame = BgraFrameView::new(RfbSize::new(2, 2).unwrap(), 12, &pixels).unwrap();
+
+        queue_full_frame(&mut connection, frame).unwrap();
+        let output = connection.take_output();
+        assert_eq!(
+            &output[16..],
+            [0x00, 0xf8, 0xe0, 0x07, 0x1f, 0x00, 0xff, 0xff]
+        );
+    }
+
+    #[test]
+    fn empty_intersection_queues_zero_rectangle_update() {
+        let mut connection = completed_connection_with_size(2, 2);
+        let pixels = [0_u8; 16];
+        let frame = BgraFrameView::new(RfbSize::new(2, 2).unwrap(), 8, &pixels).unwrap();
+        let outcome = connection
+            .queue_framebuffer_update(
+                frame,
+                FramebufferUpdateRequest {
+                    incremental: true,
+                    rectangle: RfbRectangle {
+                        x: 10,
+                        y: 10,
+                        width: 1,
+                        height: 1,
+                    },
+                },
+            )
+            .unwrap();
+
+        assert_eq!(outcome, FramebufferUpdateOutcome::EmptyQueued);
+        assert_eq!(connection.take_output(), [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn resize_requires_desktop_size_negotiation() {
+        let mut connection = completed_connection_with_size(2, 2);
+        let pixels = [0_u8; 24];
+        let frame = BgraFrameView::new(RfbSize::new(3, 2).unwrap(), 12, &pixels).unwrap();
+
+        assert_eq!(
+            queue_full_frame(&mut connection, frame),
+            Err(RfbEncodeError::DesktopSizeNotNegotiated {
+                announced: RfbSize::new(2, 2).unwrap(),
+                actual: RfbSize::new(3, 2).unwrap(),
+            })
+        );
+        assert!(connection.take_output().is_empty());
+    }
+
+    #[test]
+    fn negotiated_resize_is_a_standalone_desktop_size_update() {
+        let mut connection = completed_connection_with_size(2, 2);
+        negotiate_desktop_size(&mut connection);
+        let pixels = [0_u8; 24];
+        let frame = BgraFrameView::new(RfbSize::new(3, 2).unwrap(), 12, &pixels).unwrap();
+
+        assert_eq!(
+            queue_full_frame(&mut connection, frame),
+            Ok(FramebufferUpdateOutcome::ResizeAnnounced {
+                size: RfbSize::new(3, 2).unwrap(),
+            })
+        );
+        assert_eq!(
+            connection.take_output(),
+            [0, 0, 0, 1, 0, 0, 0, 0, 0, 3, 0, 2, 0xff, 0xff, 0xff, 0x21,]
+        );
+
+        assert!(matches!(
+            queue_full_frame(&mut connection, frame),
+            Ok(FramebufferUpdateOutcome::RawQueued { .. })
+        ));
+    }
+
+    #[test]
+    fn oversized_frame_error_leaves_output_unchanged() {
+        let mut config = config_with_size(2, 2);
+        config.limits.max_framebuffer_bytes = 16;
+        config.limits.max_queued_output_bytes = 64;
+        let mut connection = complete(config);
+        assert!(connection.take_output().is_empty());
+
+        let pixels = [0_u8; 24];
+        let frame = BgraFrameView::new(RfbSize::new(3, 2).unwrap(), 12, &pixels).unwrap();
+        assert_eq!(
+            queue_full_frame(&mut connection, frame),
+            Err(RfbEncodeError::FramebufferTooLarge {
+                actual: 24,
+                maximum: 16,
+            })
+        );
+        assert!(connection.take_output().is_empty());
+    }
+
+    #[test]
+    fn update_before_handshake_does_not_consume_banner() {
+        let mut connection = RfbConnectionCore::new(config_with_size(2, 2)).unwrap();
+        let pixels = [0_u8; 16];
+        let frame = BgraFrameView::new(RfbSize::new(2, 2).unwrap(), 8, &pixels).unwrap();
+
+        assert_eq!(
+            queue_full_frame(&mut connection, frame),
+            Err(RfbEncodeError::HandshakeNotComplete)
+        );
+        assert_eq!(connection.take_output(), b"RFB 003.008\n");
+    }
+
+    #[test]
+    fn output_capacity_error_preserves_the_first_queued_update() {
+        let mut config = config_with_size(2, 2);
+        config.limits.max_framebuffer_bytes = 16;
+        config.limits.max_queued_output_bytes = 50;
+        let mut connection = complete(config);
+        let pixels = [0_u8; 16];
+        let frame = BgraFrameView::new(RfbSize::new(2, 2).unwrap(), 8, &pixels).unwrap();
+
+        queue_full_frame(&mut connection, frame).unwrap();
+        assert_eq!(
+            queue_full_frame(&mut connection, frame),
+            Err(RfbEncodeError::OutputQueueFull {
+                attempted: 64,
+                maximum: 50,
+            })
+        );
+        assert_eq!(
+            connection.take_output(),
+            [
+                0, 0, 0, 1, 0, 0, 0, 0, 0, 2, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                0, 0, 0, 0,
+            ]
+        );
+    }
+
+    #[test]
+    fn failed_desktop_size_queue_does_not_commit_new_size() {
+        let mut config = config_with_size(2, 2);
+        config.limits.max_framebuffer_bytes = 24;
+        config.limits.max_queued_output_bytes = 50;
+        let mut connection = complete(config);
+        negotiate_desktop_size(&mut connection);
+
+        let old_pixels = [0_u8; 16];
+        let old_frame = BgraFrameView::new(RfbSize::new(2, 2).unwrap(), 8, &old_pixels).unwrap();
+        queue_full_frame(&mut connection, old_frame).unwrap();
+        connection
+            .queue_framebuffer_update(
+                old_frame,
+                FramebufferUpdateRequest {
+                    incremental: true,
+                    rectangle: RfbRectangle {
+                        x: 10,
+                        y: 10,
+                        width: 1,
+                        height: 1,
+                    },
+                },
+            )
+            .unwrap();
+
+        let new_pixels = [0_u8; 24];
+        let new_frame = BgraFrameView::new(RfbSize::new(3, 2).unwrap(), 12, &new_pixels).unwrap();
+        assert_eq!(
+            queue_full_frame(&mut connection, new_frame),
+            Err(RfbEncodeError::OutputQueueFull {
+                attempted: 52,
+                maximum: 50,
+            })
+        );
+        assert_eq!(connection.take_output().len(), 36);
+        assert!(matches!(
+            queue_full_frame(&mut connection, new_frame),
+            Ok(FramebufferUpdateOutcome::ResizeAnnounced { size })
+                if size == RfbSize::new(3, 2).unwrap()
+        ));
     }
 }

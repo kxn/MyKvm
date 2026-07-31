@@ -5,7 +5,8 @@ mod framebuffer;
 mod protocol;
 
 pub use connection::{
-    RfbConfigError, RfbConnectionConfig, RfbConnectionCore, RfbConnectionState, RfbEvent,
+    FramebufferUpdateOutcome, RfbConfigError, RfbConnectionConfig, RfbConnectionCore,
+    RfbConnectionState, RfbEncodeError, RfbEvent,
 };
 pub use framebuffer::{BgraFrameView, RfbFramebufferError, RfbRectangle, RfbSize};
 pub use protocol::client::{FramebufferUpdateRequest, RfbProtocolError};

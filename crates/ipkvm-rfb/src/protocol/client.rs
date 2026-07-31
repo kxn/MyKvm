@@ -67,6 +67,7 @@ impl ClientMessageDecoder {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn buffered_len(&self) -> usize {
         self.buffer.len()
     }

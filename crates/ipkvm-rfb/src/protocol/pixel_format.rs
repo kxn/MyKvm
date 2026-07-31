@@ -173,6 +173,7 @@ impl RfbPixelFormat {
         )
     }
 
+    #[cfg(test)]
     pub(crate) fn to_wire(self) -> [u8; 16] {
         let red_max = self.red_max.to_be_bytes();
         let green_max = self.green_max.to_be_bytes();
