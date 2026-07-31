@@ -573,7 +573,7 @@ git commit -m "test: close RFB TCP input lifecycle loop (#11)"
 
 ### 步骤
 
-- [ ] **步骤 1：核对测试清单**
+- [x] **步骤 1：核对测试清单**
 
 ```powershell
 cargo test -p ipkvm-rfb -- --list
@@ -591,7 +591,7 @@ cargo test -p ipkvm-headless -- --list
 - 真实 CH9329 sink。
 - 真实回环 TCP 完整闭环。
 
-- [ ] **步骤 2：更新 README**
+- [x] **步骤 2：更新 README**
 
 当前状态增加：
 
@@ -600,7 +600,7 @@ cargo test -p ipkvm-headless -- --list
 - 断线和事件源关闭 `release_all()`。
 - 当前仍是库闭环，尚未接真实串口和可执行后台进程。
 
-- [ ] **步骤 3：更新粗粒度设计**
+- [x] **步骤 3：更新粗粒度设计**
 
 阶段 0：
 
@@ -615,13 +615,13 @@ cargo test -p ipkvm-headless -- --list
 - sink 失败保留原事件和软件状态。
 - 当前控制者只覆盖顺序单连接 RFB，不覆盖未来多入口 session 仲裁。
 
-- [ ] **步骤 4：回写专项设计状态**
+- [x] **步骤 4：回写专项设计状态**
 
 - 状态改为“已实施并通过本地自动化验证”。
 - 所有实际步骤改为 `[x]`。
 - 扫描 `TBD`、`TODO`、临时说明和中英文混杂段落。
 
-- [ ] **步骤 5：运行完整本地验证**
+- [x] **步骤 5：运行完整本地验证**
 
 ```powershell
 .\scripts\verify.ps1
@@ -636,7 +636,7 @@ cargo test -p ipkvm-headless -- --list
 - Rust 文档 `-D warnings`。
 - 工作区和暂存区 `git diff --check`。
 
-- [ ] **步骤 6：提交**
+- [x] **步骤 6：提交**
 
 ```powershell
 git add README.md docs

@@ -3,7 +3,7 @@
 ## 1. 文档状态
 
 - 关联 issue：`#11`
-- 状态：已完成调研、设计和自审，等待实施
+- 状态：已实施并通过本地自动化验证
 - 适用范围：单活动 RFB TCP 客户端到 `InputSink` 的输入组装
 - 前置依赖：`#5` 的 RFB TCP 事件流、`#7` 的键盘映射器、`#9` 的指针映射器
 
@@ -175,14 +175,12 @@ RfbInputPump<S>
 ActiveController
   client_id: RfbClientId
   peer_addr: SocketAddr
-  shared: bool
 ```
 
 约束：
 
 - `active == None` 时两个映射器必须是默认空状态。
 - `active != None` 时只有相同 `client_id` 的连接级事件可以改变输入状态。
-- 不直接暴露可变 sink 引用，防止绕过事件泵并破坏状态对应关系。
 - 只提供只读 `sink()` 和 `active_client()`，便于状态展示和测试。
 - 不提供活动状态下取走或可变借用 sink 的接口，防止绕过事件泵并破坏状态对应关系。
 - 不在 `Drop` 中调用 `release_all()`；析构无法可靠上报错误，正确关闭必须显式运行事件泵或调用释放方法。
@@ -222,6 +220,8 @@ impl<S: InputSink> RfbInputPump<S> {
 - 原始 `RfbTcpEvent`。
 - 类型化 `RfbInputError`。
 
+原事件只在失败路径装箱，避免大型 `RfbDisconnectReason` 扩大每次正常处理返回的 `Result`。
+
 调用方可取回原事件并重试，不能因为从通道取出事件就永久丢失尚未提交的按键、按钮或释放。
 
 `run` 借用 pump 和 receiver，不消费它们。失败返回后：
@@ -240,8 +240,8 @@ impl<S: InputSink> RfbInputPump<S> {
 无活动控制者：
 
 1. 确认两个 mapper 为空状态。
-2. 保存 `client_id`、`peer_addr` 和 `shared`。
-3. 返回 `ControllerAcquired`。
+2. 保存 `client_id` 和 `peer_addr`。
+3. 在 `ControllerAcquired` 通知中保留本次连接的 `shared`。
 
 已有活动控制者：
 
