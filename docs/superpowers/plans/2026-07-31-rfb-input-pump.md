@@ -519,7 +519,7 @@ git commit -m "test: cover RFB input pump rollback (#11)"
 
 ### 步骤
 
-- [ ] **步骤 1：写入端到端红灯测试**
+- [x] **步骤 1：写入端到端红灯测试**
 
 启动：
 
@@ -529,7 +529,7 @@ git commit -m "test: cover RFB input pump rollback (#11)"
 - 容量较小的事件通道。
 - `RfbInputPump<Ch9329InputSink<FakeCommandQueue>>`。
 
-- [ ] **步骤 2：使用独立最小客户端驱动**
+- [x] **步骤 2：使用独立最小客户端驱动**
 
 测试客户端自己写 RFB 字节，不调用 server 编码器：
 
@@ -540,7 +540,7 @@ git commit -m "test: cover RFB input pump rollback (#11)"
 5. 等待 server 产生断线。
 6. 发送 server shutdown。
 
-- [ ] **步骤 3：断言闭环结果**
+- [x] **步骤 3：断言闭环结果**
 
 - 事件泵观察到连接、键盘、指针、释放。
 - Fake 队列最终含输入和释放批次。
@@ -548,7 +548,7 @@ git commit -m "test: cover RFB input pump rollback (#11)"
 - sender 丢弃后事件泵正常返回。
 - 没有手工调用 mapper 或 `release_all()` 绕过事件泵。
 
-- [ ] **步骤 4：运行 headless 全量验证并提交**
+- [x] **步骤 4：运行 headless 全量验证并提交**
 
 ```powershell
 cargo test -p ipkvm-headless --test rfb_input_pump
