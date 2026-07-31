@@ -1,0 +1,119 @@
+use std::{net::SocketAddr, sync::Arc};
+
+use axum::{
+    Router,
+    extract::{ConnectInfo, State, WebSocketUpgrade, ws::WebSocket},
+    http::StatusCode,
+    response::{IntoResponse, Response},
+    routing::any,
+};
+use ipkvm_video::FrameSource;
+use tokio::sync::{mpsc, watch};
+
+use super::{RfbWebSocketConfig, RfbWebSocketServiceError, transport::WebSocketTransport};
+use crate::rfb_connection::{
+    RfbConnectionGate, RfbConnectionGateError, RfbConnectionPermit, RfbServerEvent, run_connection,
+};
+
+pub struct RfbWebSocketService<S> {
+    state: Arc<ServiceState<S>>,
+}
+
+struct ServiceState<S> {
+    frame_source: Arc<S>,
+    event_tx: mpsc::Sender<RfbServerEvent>,
+    config: RfbWebSocketConfig,
+    shutdown: watch::Receiver<bool>,
+    gate: RfbConnectionGate,
+}
+
+impl<S: FrameSource + 'static> RfbWebSocketService<S> {
+    pub fn new(
+        frame_source: Arc<S>,
+        event_tx: mpsc::Sender<RfbServerEvent>,
+        config: RfbWebSocketConfig,
+        shutdown: watch::Receiver<bool>,
+        gate: RfbConnectionGate,
+    ) -> Result<Self, RfbWebSocketServiceError> {
+        config.validate()?;
+        Ok(Self {
+            state: Arc::new(ServiceState {
+                frame_source,
+                event_tx,
+                config,
+                shutdown,
+                gate,
+            }),
+        })
+    }
+
+    pub fn router(&self) -> Router {
+        Router::new()
+            .route("/rfb", any(handle_upgrade::<S>))
+            .with_state(Arc::clone(&self.state))
+    }
+}
+
+async fn handle_upgrade<S: FrameSource + 'static>(
+    State(state): State<Arc<ServiceState<S>>>,
+    ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
+    ws: WebSocketUpgrade,
+) -> Response {
+    if shutdown_is_requested(&state.shutdown) || state.event_tx.is_closed() {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
+
+    let permit = match state.gate.try_acquire() {
+        Ok(permit) => permit,
+        Err(RfbConnectionGateError::Busy) => return StatusCode::CONFLICT.into_response(),
+        Err(RfbConnectionGateError::ClientIdOverflow) => {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
+    };
+    let limit = state
+        .config
+        .connection
+        .protocol_limits
+        .max_buffered_input_bytes;
+
+    ws.protocols(["binary"])
+        .max_message_size(limit)
+        .max_frame_size(limit)
+        .on_upgrade(move |socket| run_upgraded_connection(state, socket, peer_addr, permit))
+        .into_response()
+}
+
+async fn run_upgraded_connection<S: FrameSource + 'static>(
+    state: Arc<ServiceState<S>>,
+    socket: WebSocket,
+    peer_addr: SocketAddr,
+    permit: RfbConnectionPermit,
+) {
+    let client_id = permit.client_id();
+    let end = run_connection(
+        client_id,
+        peer_addr,
+        WebSocketTransport::new(socket),
+        state.frame_source.subscribe(),
+        state.event_tx.clone(),
+        state.config.connection.clone(),
+        state.shutdown.clone(),
+    )
+    .await;
+
+    if let Some(reason) = end.reason() {
+        let _ = state
+            .event_tx
+            .send(RfbServerEvent::Disconnected {
+                client_id,
+                peer_addr,
+                reason,
+            })
+            .await;
+    }
+    drop(permit);
+}
+
+fn shutdown_is_requested(shutdown: &watch::Receiver<bool>) -> bool {
+    *shutdown.borrow() || shutdown.has_changed().is_err()
+}
