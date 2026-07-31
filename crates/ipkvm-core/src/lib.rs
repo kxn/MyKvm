@@ -63,8 +63,8 @@ mod tests {
             Ok(())
         }
 
-        fn handle_pointer(&mut self, event: PointerEvent) -> InputResult<()> {
-            self.pointers.push(event);
+        fn handle_pointer_batch(&mut self, events: &[PointerEvent]) -> InputResult<()> {
+            self.pointers.extend_from_slice(events);
             Ok(())
         }
 

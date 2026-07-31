@@ -1,10 +1,12 @@
 mod keyboard;
 mod keymap;
+mod pointer;
 
 use ipkvm_core::InputError;
 use thiserror::Error;
 
 pub use keyboard::RfbKeyboardMapper;
+pub use pointer::RfbPointerMapper;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RfbKeyboardOutcome {
@@ -21,5 +23,17 @@ pub enum RfbKeyboardError {
     #[error("active RFB characters require conflicting Shift states")]
     ConflictingShiftRequirements,
     #[error("input sink rejected RFB keyboard state")]
+    Input(#[from] InputError),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RfbPointerOutcome {
+    Applied,
+    AppliedIgnoringButtons { button_mask: u8 },
+}
+
+#[derive(Clone, Debug, Error, Eq, PartialEq)]
+pub enum RfbPointerError {
+    #[error("input sink rejected RFB pointer state")]
     Input(#[from] InputError),
 }

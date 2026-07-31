@@ -100,6 +100,11 @@ pub trait InputSink {
     }
 
     fn handle_key_batch(&mut self, events: &[KeyEvent]) -> InputResult<()>;
-    fn handle_pointer(&mut self, event: PointerEvent) -> InputResult<()>;
+
+    fn handle_pointer(&mut self, event: PointerEvent) -> InputResult<()> {
+        self.handle_pointer_batch(std::slice::from_ref(&event))
+    }
+
+    fn handle_pointer_batch(&mut self, events: &[PointerEvent]) -> InputResult<()>;
     fn release_all(&mut self) -> InputResult<()>;
 }

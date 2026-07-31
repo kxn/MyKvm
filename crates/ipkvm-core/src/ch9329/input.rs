@@ -107,6 +107,130 @@ impl MouseState {
             )?)),
         }
     }
+
+    fn apply_events(
+        &self,
+        events: &[PointerEvent],
+    ) -> InputResult<(MouseState, Vec<Ch9329Command>)> {
+        let mut next = *self;
+        let mut commands = Vec::new();
+        for event in events {
+            next.apply_event(*event, &mut commands)?;
+        }
+        Ok((next, commands))
+    }
+
+    fn apply_event(
+        &mut self,
+        event: PointerEvent,
+        commands: &mut Vec<Ch9329Command>,
+    ) -> InputResult<()> {
+        match event {
+            PointerEvent::AbsoluteMove {
+                x,
+                y,
+                framebuffer_size,
+            } => self.apply_absolute_move(x, y, framebuffer_size, commands),
+            PointerEvent::RelativeMove { dx, dy } => self.apply_relative_move(dx, dy, commands),
+            PointerEvent::Button { button, down } => self.apply_button(button, down, commands),
+            PointerEvent::Wheel { delta } => self.apply_wheel(delta, commands),
+        }
+    }
+
+    fn apply_absolute_move(
+        &mut self,
+        x: u32,
+        y: u32,
+        framebuffer_size: FramebufferSize,
+        commands: &mut Vec<Ch9329Command>,
+    ) -> InputResult<()> {
+        self.require_mode(MouseMode::Absolute, "absolute move")?;
+        let (x, y) = map_absolute_position(x, y, framebuffer_size)?;
+        let report = AbsoluteMouseReport::new(self.buttons, x, y, 0)?;
+        commands.push(Ch9329Command::MouseAbsolute(report));
+        self.last_absolute = Some((x, y));
+        Ok(())
+    }
+
+    fn apply_relative_move(
+        &self,
+        dx: i16,
+        dy: i16,
+        commands: &mut Vec<Ch9329Command>,
+    ) -> InputResult<()> {
+        self.require_mode(MouseMode::Relative, "relative move")?;
+        commands.extend(relative_commands(self.buttons, split_relative(dx, dy, 0))?);
+        Ok(())
+    }
+
+    fn apply_button(
+        &mut self,
+        button: PointerButton,
+        down: bool,
+        commands: &mut Vec<Ch9329Command>,
+    ) -> InputResult<()> {
+        let mask = button_mask(button);
+        let already_down = self.buttons & mask != 0;
+        if already_down == down {
+            return Ok(());
+        }
+
+        if down {
+            self.buttons |= mask;
+        } else {
+            self.buttons &= !mask;
+        }
+        let command = match self.mode {
+            MouseMode::Absolute => {
+                let (x, y) = self
+                    .last_absolute
+                    .ok_or(InputError::PointerPositionUnknown)?;
+                Ch9329Command::MouseAbsolute(AbsoluteMouseReport::new(self.buttons, x, y, 0)?)
+            }
+            MouseMode::Relative => {
+                Ch9329Command::MouseRelative(RelativeMouseReport::new(self.buttons, 0, 0, 0)?)
+            }
+        };
+        commands.push(command);
+        Ok(())
+    }
+
+    fn apply_wheel(&self, delta: i16, commands: &mut Vec<Ch9329Command>) -> InputResult<()> {
+        let chunks = split_relative(0, 0, delta);
+        if chunks.is_empty() {
+            return Ok(());
+        }
+
+        match self.mode {
+            MouseMode::Absolute => {
+                let (x, y) = self
+                    .last_absolute
+                    .ok_or(InputError::PointerPositionUnknown)?;
+                for (_, _, wheel) in chunks {
+                    commands.push(Ch9329Command::MouseAbsolute(AbsoluteMouseReport::new(
+                        self.buttons,
+                        x,
+                        y,
+                        wheel,
+                    )?));
+                }
+            }
+            MouseMode::Relative => {
+                commands.extend(relative_commands(self.buttons, chunks)?);
+            }
+        }
+        Ok(())
+    }
+
+    fn require_mode(&self, expected: MouseMode, event: &'static str) -> InputResult<()> {
+        if self.mode != expected {
+            return Err(InputError::PointerModeMismatch {
+                mode: self.mode,
+                event,
+            });
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug)]
@@ -156,16 +280,17 @@ impl<Q: CommandQueue> Ch9329InputSink<Q> {
     }
 
     pub fn handle_pointer(&mut self, event: PointerEvent) -> InputResult<()> {
-        match event {
-            PointerEvent::AbsoluteMove {
-                x,
-                y,
-                framebuffer_size,
-            } => self.handle_absolute_move(x, y, framebuffer_size),
-            PointerEvent::RelativeMove { dx, dy } => self.handle_relative_move(dx, dy),
-            PointerEvent::Button { button, down } => self.handle_button(button, down),
-            PointerEvent::Wheel { delta } => self.handle_wheel(delta),
+        self.handle_pointer_batch(std::slice::from_ref(&event))
+    }
+
+    pub fn handle_pointer_batch(&mut self, events: &[PointerEvent]) -> InputResult<()> {
+        let (next, commands) = self.mouse.apply_events(events)?;
+        if commands.is_empty() {
+            return Ok(());
         }
+        self.enqueue_commands(commands)?;
+        self.mouse = next;
+        Ok(())
     }
 
     pub fn release_all(&mut self) -> InputResult<()> {
@@ -176,96 +301,6 @@ impl<Q: CommandQueue> Ch9329InputSink<Q> {
         self.enqueue_commands(commands)?;
         self.keyboard = KeyboardState::default();
         self.mouse.buttons = 0;
-        Ok(())
-    }
-
-    fn handle_absolute_move(
-        &mut self,
-        x: u32,
-        y: u32,
-        framebuffer_size: FramebufferSize,
-    ) -> InputResult<()> {
-        self.require_mode(MouseMode::Absolute, "absolute move")?;
-        let (x, y) = map_absolute_position(x, y, framebuffer_size)?;
-        let report = AbsoluteMouseReport::new(self.mouse.buttons, x, y, 0)?;
-        self.enqueue_commands(vec![Ch9329Command::MouseAbsolute(report)])?;
-        self.mouse.last_absolute = Some((x, y));
-        Ok(())
-    }
-
-    fn handle_relative_move(&mut self, dx: i16, dy: i16) -> InputResult<()> {
-        self.require_mode(MouseMode::Relative, "relative move")?;
-        let chunks = split_relative(dx, dy, 0);
-        if chunks.is_empty() {
-            return Ok(());
-        }
-        let commands = relative_commands(self.mouse.buttons, chunks)?;
-        self.enqueue_commands(commands)
-    }
-
-    fn handle_button(&mut self, button: PointerButton, down: bool) -> InputResult<()> {
-        let mask = button_mask(button);
-        let already_down = self.mouse.buttons & mask != 0;
-        if already_down == down {
-            return Ok(());
-        }
-
-        let mut next = self.mouse;
-        if down {
-            next.buttons |= mask;
-        } else {
-            next.buttons &= !mask;
-        }
-
-        let command = match self.mouse.mode {
-            MouseMode::Absolute => {
-                let (x, y) = self
-                    .mouse
-                    .last_absolute
-                    .ok_or(InputError::PointerPositionUnknown)?;
-                Ch9329Command::MouseAbsolute(AbsoluteMouseReport::new(next.buttons, x, y, 0)?)
-            }
-            MouseMode::Relative => {
-                Ch9329Command::MouseRelative(RelativeMouseReport::new(next.buttons, 0, 0, 0)?)
-            }
-        };
-        self.enqueue_commands(vec![command])?;
-        self.mouse = next;
-        Ok(())
-    }
-
-    fn handle_wheel(&mut self, delta: i16) -> InputResult<()> {
-        if delta == 0 {
-            return Ok(());
-        }
-
-        let chunks = split_relative(0, 0, delta);
-        let commands = match self.mouse.mode {
-            MouseMode::Absolute => {
-                let (x, y) = self
-                    .mouse
-                    .last_absolute
-                    .ok_or(InputError::PointerPositionUnknown)?;
-                chunks
-                    .into_iter()
-                    .map(|(_, _, wheel)| {
-                        AbsoluteMouseReport::new(self.mouse.buttons, x, y, wheel)
-                            .map(Ch9329Command::MouseAbsolute)
-                    })
-                    .collect::<Result<Vec<_>, _>>()?
-            }
-            MouseMode::Relative => relative_commands(self.mouse.buttons, chunks)?,
-        };
-        self.enqueue_commands(commands)
-    }
-
-    fn require_mode(&self, expected: MouseMode, event: &'static str) -> InputResult<()> {
-        if self.mouse.mode != expected {
-            return Err(InputError::PointerModeMismatch {
-                mode: self.mouse.mode,
-                event,
-            });
-        }
         Ok(())
     }
 
@@ -296,6 +331,10 @@ impl<Q: CommandQueue> InputSink for Ch9329InputSink<Q> {
 
     fn handle_pointer(&mut self, event: PointerEvent) -> InputResult<()> {
         Ch9329InputSink::handle_pointer(self, event)
+    }
+
+    fn handle_pointer_batch(&mut self, events: &[PointerEvent]) -> InputResult<()> {
+        Ch9329InputSink::handle_pointer_batch(self, events)
     }
 
     fn release_all(&mut self) -> InputResult<()> {
@@ -586,6 +625,144 @@ mod tests {
             Err(InputError::PointerPositionUnknown)
         );
         assert!(queue.accepted_batches().is_empty());
+    }
+
+    #[test]
+    fn pointer_batch_enqueues_all_reports_atomically() {
+        let queue = FakeCommandQueue::new();
+        let mut sink = Ch9329InputSink::new(queue.clone(), 0, MouseMode::Absolute);
+        let size = FramebufferSize {
+            width: 100,
+            height: 100,
+        };
+
+        sink.handle_pointer_batch(&[
+            PointerEvent::AbsoluteMove {
+                x: 10,
+                y: 20,
+                framebuffer_size: size,
+            },
+            PointerEvent::Button {
+                button: PointerButton::Left,
+                down: true,
+            },
+            PointerEvent::Wheel { delta: 1 },
+        ])
+        .unwrap();
+
+        let batches = queue.accepted_batches();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].frames().len(), 3);
+        assert_eq!(batches[0].frames()[0].data()[1], 0);
+        assert_eq!(batches[0].frames()[1].data()[1], 1);
+        assert_eq!(batches[0].frames()[2].data()[1], 1);
+        assert_eq!(batches[0].frames()[2].data()[6], 1);
+    }
+
+    #[test]
+    fn pointer_batch_rejects_later_invalid_event_without_partial_state() {
+        let queue = FakeCommandQueue::new();
+        let mut sink = Ch9329InputSink::new(queue.clone(), 0, MouseMode::Absolute);
+        let size = FramebufferSize {
+            width: 100,
+            height: 100,
+        };
+
+        assert_eq!(
+            sink.handle_pointer_batch(&[
+                PointerEvent::AbsoluteMove {
+                    x: 10,
+                    y: 20,
+                    framebuffer_size: size,
+                },
+                PointerEvent::AbsoluteMove {
+                    x: 100,
+                    y: 20,
+                    framebuffer_size: size,
+                },
+            ]),
+            Err(InputError::PointerOutOfBounds {
+                coordinate: 100,
+                extent: 100,
+            })
+        );
+        assert!(queue.accepted_batches().is_empty());
+        assert_eq!(
+            sink.handle_pointer(PointerEvent::Button {
+                button: PointerButton::Left,
+                down: true,
+            }),
+            Err(InputError::PointerPositionUnknown)
+        );
+    }
+
+    #[test]
+    fn rejected_pointer_batch_can_be_retried_without_state_drift() {
+        let queue = FakeCommandQueue::new();
+        let mut sink = Ch9329InputSink::new(queue.clone(), 0, MouseMode::Absolute);
+        let events = [
+            PointerEvent::AbsoluteMove {
+                x: 10,
+                y: 20,
+                framebuffer_size: FramebufferSize {
+                    width: 100,
+                    height: 100,
+                },
+            },
+            PointerEvent::Button {
+                button: PointerButton::Left,
+                down: true,
+            },
+        ];
+        queue.fail_next(CommandQueueError::Closed);
+
+        assert_eq!(
+            sink.handle_pointer_batch(&events),
+            Err(InputError::CommandQueue(CommandQueueError::Closed))
+        );
+        sink.handle_pointer_batch(&events).unwrap();
+
+        let batches = queue.accepted_batches();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].frames().len(), 2);
+        assert_eq!(batches[0].frames()[0].data()[1], 0);
+        assert_eq!(batches[0].frames()[1].data()[1], 1);
+    }
+
+    #[test]
+    fn pointer_batch_preserves_transient_click_and_skips_noops() {
+        let queue = FakeCommandQueue::new();
+        let mut sink = Ch9329InputSink::new(queue.clone(), 0, MouseMode::Relative);
+
+        sink.handle_pointer_batch(&[]).unwrap();
+        sink.handle_pointer_batch(&[
+            PointerEvent::Button {
+                button: PointerButton::Left,
+                down: false,
+            },
+            PointerEvent::RelativeMove { dx: 0, dy: 0 },
+            PointerEvent::Wheel { delta: 0 },
+        ])
+        .unwrap();
+        assert!(queue.accepted_batches().is_empty());
+
+        sink.handle_pointer_batch(&[
+            PointerEvent::Button {
+                button: PointerButton::Left,
+                down: true,
+            },
+            PointerEvent::Button {
+                button: PointerButton::Left,
+                down: false,
+            },
+        ])
+        .unwrap();
+
+        let batches = queue.accepted_batches();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].frames().len(), 2);
+        assert_eq!(batches[0].frames()[0].data()[1], 1);
+        assert_eq!(batches[0].frames()[1].data()[1], 0);
     }
 
     #[test]
