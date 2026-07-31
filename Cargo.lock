@@ -108,8 +108,8 @@ dependencies = [
 name = "ipkvm-rfb"
 version = "0.1.0"
 dependencies = [
- "ipkvm-core",
- "ipkvm-video",
+ "proptest",
+ "thiserror",
 ]
 
 [[package]]
