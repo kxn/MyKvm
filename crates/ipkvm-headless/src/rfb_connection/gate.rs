@@ -92,6 +92,12 @@ impl RfbConnectionGate {
     }
 }
 
+impl Default for RfbConnectionGate {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RfbConnectionPermit {
     pub(crate) fn client_id(&self) -> RfbClientId {
         self.client_id
@@ -103,6 +109,14 @@ mod tests {
     use std::sync::atomic::Ordering;
 
     use super::*;
+
+    #[test]
+    fn default_creates_a_fresh_gate() {
+        let gate = RfbConnectionGate::default();
+        let permit = gate.try_acquire().unwrap();
+
+        assert_eq!(permit.client_id().get(), 1);
+    }
 
     #[tokio::test]
     async fn gate_allows_exactly_one_permit() {
