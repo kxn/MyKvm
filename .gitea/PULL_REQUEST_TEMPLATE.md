@@ -17,8 +17,7 @@
 请填写实际运行过的命令和结果。
 
 ```powershell
-cargo fmt --all --check
-cargo test --workspace --all-features
+.\scripts\verify.ps1
 ```
 
 ## 人工验证例外

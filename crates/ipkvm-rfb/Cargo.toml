@@ -7,5 +7,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-ipkvm-core = { path = "../ipkvm-core" }
-ipkvm-video = { path = "../ipkvm-video" }
+thiserror.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

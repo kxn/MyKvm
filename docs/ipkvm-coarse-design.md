@@ -486,7 +486,7 @@ WebSocket 兼容：
 - 建立 Rust 工作区。
 - 固定 tokio 作为 I/O 运行时。
 - 建立 `[workspace.dependencies]` 集中管理外部依赖版本。
-- 建立最小 CI：格式检查和 `cargo test --workspace --all-features`。
+- 建立本地一键自动化验证脚本，覆盖文本编码、Rust 格式、全工作区测试、Clippy、Rust 文档和 Git 差异。
 - 完成 CH9329 命令帧、类型化 HID 报告、应答解析和增量解帧，并覆盖协议金样、错误恢复和性质测试。
 - 写键盘状态机测试：重复按下去重、6KRO 溢出、释放所有键。
 - 写鼠标状态机测试：按钮组合、绝对坐标、相对位移拆包、模式切换和释放。
@@ -496,14 +496,15 @@ WebSocket 兼容：
 - `ipkvm-video` 使用 `mock` feature 提供测试帧源。
 - `ipkvm-core` 使用 `mock` feature 提供 fake 命令队列。
 - 将会话默认串口波特率设为 CH9329 出厂值 9600。
+- 完成传输无关的 RFB 3.8 `None` 握手、客户端消息增量解码、`Raw` 编码和 `DesktopSize` 伪编码，并覆盖协议金样、任意分片和性质测试。
+- 未知正数 encoding 和负数 pseudo-encoding 会被保留且不使连接失败；未知客户端消息类型因无法确定长度而进入失败终态，不尝试扫描重同步。
 
 待完成：
 
 - 写 HID 用法编号到桌面和 RFB 键值的映射基础表。
-- 写 RFB 3.8 握手、`Raw` 编码、`DesktopSize` 伪编码协议样例测试。
-- 写未知伪编码忽略测试。
 - 用模拟帧缓冲跑通普通 VNC 客户端和 noVNC。
 - 确定依赖许可证白名单。
+- 有明确维护的可用 runner 后，再设计并启用 Gitea Actions；在此之前以本地自动化验证结果作为 PR 验收证据。
 
 ### 阶段 1：桌面本地最小版本
 
