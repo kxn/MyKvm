@@ -1,0 +1,9 @@
+/.gitattributes text eol=lf
+/.gitignore text eol=lf
+*.rs text eol=lf
+*.toml text eol=lf
+*.md text eol=lf
+*.txt text eol=lf
+*.rst text eol=lf
+*.pdf binary
+*.zip binary

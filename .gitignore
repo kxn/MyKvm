@@ -1,0 +1,7 @@
+/target/
+/.research/
+*.pdb
+*.log
+.env
+.env.*
+!.env.example

@@ -1,0 +1,17 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/ipkvm-core",
+    "crates/ipkvm-video",
+    "crates/ipkvm-session",
+    "crates/ipkvm-rfb",
+    "crates/ipkvm-desktop",
+    "crates/ipkvm-headless",
+]
+
+[workspace.package]
+edition = "2024"
+license = "MIT"
+repository = "http://10.10.10.5:3000/kxn/my_ipkvm"
+rust-version = "1.89"
+
