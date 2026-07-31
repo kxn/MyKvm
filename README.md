@@ -25,6 +25,8 @@ my_ipkvm 是一个软件 IPKVM 项目：主控机通过 USB HDMI 采集卡读取
 - `docs/superpowers/specs/2026-07-31-rfb-keyboard-mapping-design.md`
 - `docs/superpowers/specs/2026-07-31-rfb-pointer-mapping-design.md`
 - `docs/superpowers/specs/2026-07-31-rfb-input-pump-design.md`
+- `docs/superpowers/specs/2026-07-31-dependency-license-policy-design.md`
+- `docs/dependency-license-policy.md`
 - `docs/references/README.md`
 
 ## 开发规范
@@ -39,7 +41,8 @@ my_ipkvm 是一个软件 IPKVM 项目：主控机通过 USB HDMI 采集卡读取
 当前不依赖 Gitea Actions runner。提交和 PR 的自动化验收在本机通过统一脚本执行：
 
 ```powershell
+cargo install --locked --version 0.20.2 cargo-deny
 .\scripts\verify.ps1
 ```
 
-脚本会检查文本 UTF-8 编码、Rust 格式、全工作区测试、Clippy、Rust 文档和 Git 差异。
+脚本会检查文本 UTF-8 编码，用临时负向夹具验证许可证策略，再检查当前锁定依赖图的许可证和来源，随后检查 Rust 格式、全工作区测试、Clippy、Rust 文档和 Git 差异。固定工具版本、许可证分级和非 Cargo 组件边界见 `docs/dependency-license-policy.md`。

@@ -23,7 +23,7 @@ function Invoke-CheckedCommand {
 function Test-TrackedTextEncoding {
     $strictUtf8 = [System.Text.UTF8Encoding]::new($false, $true)
     $trackedFiles = @(
-        & git ls-files -- "*.json" "*.md" "*.ps1" "*.rs" "*.toml" "*.yaml" "*.yml" "AGENTS.md" "Cargo.lock"
+        & git ls-files -- "*.json" "*.md" "*.ps1" "*.psm1" "*.rs" "*.toml" "*.yaml" "*.yml" "AGENTS.md" "Cargo.lock"
     )
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to list tracked text files, exit code: $LASTEXITCODE"
@@ -63,6 +63,12 @@ try {
     Write-Host "==> Check text encoding"
     Test-TrackedTextEncoding
 
+    Invoke-CheckedCommand "Test dependency license policy" {
+        & (Join-Path $PSScriptRoot "test-license-policy.ps1")
+    }
+    Invoke-CheckedCommand "Check dependency licenses and sources" {
+        & (Join-Path $PSScriptRoot "verify-licenses.ps1")
+    }
     Invoke-CheckedCommand "Check Rust formatting" {
         cargo fmt --all --check
     }
