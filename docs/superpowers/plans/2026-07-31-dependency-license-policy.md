@@ -626,7 +626,7 @@ git add docs/superpowers/specs/2026-07-31-dependency-license-policy-design.md `
 git commit -m "docs: record license audit completion (#13)"
 ```
 
-- [ ] **步骤 8：再次运行完整验收**
+- [x] **步骤 8：再次运行完整验收**
 
 运行：
 
