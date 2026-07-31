@@ -416,7 +416,7 @@ git commit -m "feat: add RFB TCP contracts and frame adapter (#5)"
 - 产出：`PendingFramebufferRequest::merge`
 - 产出：`PendingFramebufferRequest::take`
 
-- [ ] **步骤 1：写入请求合并失败测试**
+- [x] **步骤 1：写入请求合并失败测试**
 
 覆盖多个 outstanding request 和整数边界：
 
@@ -460,7 +460,7 @@ fn merge_clips_without_u16_wraparound() {
 }
 ```
 
-- [ ] **步骤 2：运行测试并确认红灯**
+- [x] **步骤 2：运行测试并确认红灯**
 
 运行：
 
@@ -470,7 +470,7 @@ cargo test -p ipkvm-headless pending
 
 预期：编译失败，指出 `PendingFramebufferRequest` 尚不存在。
 
-- [ ] **步骤 3：实现常量空间合并器**
+- [x] **步骤 3：实现常量空间合并器**
 
 使用一个 `Option<FramebufferUpdateRequest>` 保存状态。每个矩形先调用 `intersection(size)`；完全位于画面外的请求归一化为零面积矩形：
 
@@ -508,7 +508,7 @@ impl PendingFramebufferRequest {
 
 `union` 使用 `u32` 计算 right/bottom，并限制到 `size.width()` 和 `size.height()`。两个零面积矩形合并后仍为零面积，不制造全屏请求。
 
-- [ ] **步骤 4：运行测试并确认绿灯**
+- [x] **步骤 4：运行测试并确认绿灯**
 
 运行：
 
@@ -518,7 +518,7 @@ cargo test -p ipkvm-headless pending
 
 预期：全部通过。
 
-- [ ] **步骤 5：提交**
+- [x] **步骤 5：提交**
 
 ```powershell
 git add crates/ipkvm-headless/src/rfb_tcp
