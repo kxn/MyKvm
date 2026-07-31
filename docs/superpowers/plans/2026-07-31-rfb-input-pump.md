@@ -31,7 +31,7 @@
 
 ### 步骤
 
-- [ ] **步骤 1：写入初始尺寸红灯测试**
+- [x] **步骤 1：写入初始尺寸红灯测试**
 
 在 `connection.rs` 单元测试中完成握手后发送：
 
@@ -43,7 +43,7 @@ PointerEvent(mask=0, x=10, y=20)
 
 测试必须先因枚举缺少 `framebuffer_size` 字段而编译失败。
 
-- [ ] **步骤 2：写入尺寸切换红灯测试**
+- [x] **步骤 2：写入尺寸切换红灯测试**
 
 1. 初始尺寸 `640x480`。
 2. 协商 `DesktopSize`。
@@ -51,7 +51,7 @@ PointerEvent(mask=0, x=10, y=20)
 4. 再发送指针事件。
 5. 预期事件尺寸为 `800x600`。
 
-- [ ] **步骤 3：写入跨半包时期红灯测试**
+- [x] **步骤 3：写入跨半包时期红灯测试**
 
 1. 在旧尺寸下向 decoder 写入一个未完成的 6 字节指针消息前半段。
 2. 成功排队新尺寸。
@@ -61,7 +61,7 @@ PointerEvent(mask=0, x=10, y=20)
 
 该测试固定保守时期边界，防止消息在 TCP 分片中途切换尺寸。
 
-- [ ] **步骤 4：公开 decoder 空闲查询**
+- [x] **步骤 4：公开 decoder 空闲查询**
 
 把仅测试可用的 `buffered_len()` 保持私有测试辅助，同时增加生产内部方法：
 
@@ -71,7 +71,7 @@ pub(crate) fn is_idle(&self) -> bool
 
 它只返回 `buffer.is_empty()`，不暴露缓冲内容。
 
-- [ ] **步骤 5：实现三段尺寸状态**
+- [x] **步骤 5：实现三段尺寸状态**
 
 `RfbConnectionCore` 增加：
 
@@ -100,14 +100,14 @@ pending_input_size: Option<RfbSize>,
 - 完成转换且 decoder 空闲后，再提交 `pending_input_size`。
 - 协议失败时不需要为了后续输入提交新时期。
 
-- [ ] **步骤 6：补齐失败原子性测试**
+- [x] **步骤 6：补齐失败原子性测试**
 
 扩展现有 `failed_desktop_size_queue_does_not_commit_new_size`：
 
 - 输出容量失败后，后续指针仍携带旧尺寸。
 - 再次成功排队尺寸后，后续指针才携带新尺寸。
 
-- [ ] **步骤 7：运行协议 core 验证**
+- [x] **步骤 7：运行协议 core 验证**
 
 ```powershell
 cargo test -p ipkvm-rfb
@@ -116,7 +116,7 @@ cargo fmt --all -- --check
 git diff --check
 ```
 
-- [ ] **步骤 8：提交**
+- [x] **步骤 8：提交**
 
 ```powershell
 git add crates/ipkvm-rfb
