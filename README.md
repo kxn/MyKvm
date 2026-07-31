@@ -30,7 +30,10 @@ my_ipkvm 是一个软件 IPKVM 项目：主控机通过 USB HDMI 采集卡读取
 
 ## 验证
 
+当前不依赖 Gitea Actions runner。提交和 PR 的自动化验收在本机通过统一脚本执行：
+
 ```powershell
-cargo fmt --all --check
-cargo test --workspace --all-features
+.\scripts\verify.ps1
 ```
+
+脚本会检查文本 UTF-8 编码、Rust 格式、全工作区测试、Clippy、Rust 文档和 Git 差异。
