@@ -10,11 +10,11 @@
 
 ### 1.1 实施事实核对
 
-实现位于 `ipkvm-headless`：公共 `RfbConnectionSettings`、`RfbClientId`、`RfbServerEvent`、`RfbDisconnectReason`、`RfbFrameError` 与 `RfbConnectionGate` 均在 `rfb_connection`。`RfbConnectionGate::new()` 和 `Default::default()` 都创建容量为 1、client id 从 1 开始的独立 gate。生产组装通过 `RfbTcpServer::new(listener, frame_source, event_tx, config, gate)` 与 `RfbWebSocketService::new(frame_source, event_tx, config, shutdown, gate)` 显式接收同一个 gate；后者的 `router()` 只提供 `/rfb`，监听器和 `ConnectInfo<SocketAddr>` 由上层组装。
+实现位于 `ipkvm-headless`：公共 `RfbConnectionSettings`、`RfbClientId`、`RfbServerEvent`、`RfbDisconnectReason`、`RfbFrameError` 与 `RfbConnectionGate` 均在 `rfb_connection`。`RfbConnectionGate::new()` 和 `Default::default()` 都创建容量为 1、客户端标识从 1 开始的独立连接闸门。生产组装通过 `RfbTcpServer::new(listener, frame_source, event_tx, config, gate)` 与 `RfbWebSocketService::new(frame_source, event_tx, config, shutdown, gate)` 显式接收同一个连接闸门；后者的 `router()` 只提供 `/rfb`，监听器和 `ConnectInfo<SocketAddr>` 由上层组装。
 
-错误分类保持类型化：TCP I/O 映射为 `RfbDisconnectReason::Io(ErrorKind)`，WebSocket transport 故障映射为 `WebSocket`，Text message 映射为 `UnexpectedTextMessage`；普通关闭、shutdown、协议、编码和帧错误保留各自分类。`/rfb` 无子协议时返回不含 `Sec-WebSocket-Protocol` 的 `101`，请求 `binary` 时选择 `binary`；已有活动连接返回 `409`，shutdown、事件接收端关闭和 client id 耗尽返回 `503`。单条 WebSocket message 与 frame 的大小都使用 `max_buffered_input_bytes`，没有第二套重复上限。
+错误分类保持类型化：TCP I/O 映射为 `RfbDisconnectReason::Io(ErrorKind)`，WebSocket 传输层故障映射为 `WebSocket`，Text 消息映射为 `UnexpectedTextMessage`；普通关闭、关闭信号、协议、编码和帧错误保留各自分类。`/rfb` 无子协议时返回不含 `Sec-WebSocket-Protocol` 的 `101`，请求 `binary` 时选择 `binary`；已有活动连接返回 `409`，关闭信号、事件接收端关闭和客户端标识耗尽返回 `503`。单条 WebSocket 消息与帧的大小都使用 `max_buffered_input_bytes`，没有第二套重复上限。
 
-本设计实施时，`ipkvm-headless` 有 109 个自动化测试，包含 16 个真实 listener/axum/tokio-tungstenite WebSocket 集成测试、2 个 TCP/WebSocket 排他性测试、8 个 TCP 回归测试和 2 个 RFB 输入泵集成测试；`ipkvm-rfb` 有 58 个协议与线级测试。依赖锁定为生产 `axum 0.8.9`，测试 `tokio-tungstenite 0.29.0` 与 `futures-util 0.3.33`，均来自 crates.io，并由许可证与来源门禁审计。noVNC 仅作为固定线级样本来源，不进入仓库或产物；完整网页、真实浏览器、真实视频采集、真实串口、鉴权、TLS 和可运行的 headless 二进制不属于本次已实施内容。
+自动化测试按实际测试文件分组记录在第 14 节：`rfb_websocket.rs` 有 16 个 WebSocket 集成测试，`rfb_transport_exclusion.rs` 有 2 个跨传输层排他性测试，`rfb_tcp.rs` 有 8 个 TCP 回归测试，`rfb_input_pump.rs` 有 2 个 RFB 输入泵集成测试。依赖锁定为生产 `axum 0.8.9`，测试 `tokio-tungstenite 0.29.0` 与 `futures-util 0.3.33`，均来自 crates.io，并由许可证与来源门禁审计。noVNC 仅作为固定线级样本来源，不进入仓库或产物；完整网页、真实浏览器、真实视频采集、真实串口、鉴权、TLS 和可运行的无头二进制不属于本次已实施内容。
 
 ## 2. 目标
 
@@ -68,12 +68,12 @@ noVNC 完成 `ServerInit` 后立即发送：
 
 ### 4.2 axum WebSocket 行为
 
-采用 axum 0.8.9，并只启用 `http1`、`tokio` 和 `ws` feature：
+采用 axum 0.8.9，并只启用 `http1`、`tokio` 和 `ws` 功能开关：
 
 - `WebSocketUpgrade::protocols(["binary"])` 只会在客户端提供该值时选择它；未提供子协议的客户端仍可升级。
-- `max_message_size` 和 `max_frame_size` 可在 upgrade 前限制单条输入。
+- `max_message_size` 和 `max_frame_size` 可在升级前限制单条输入。
 - axum/tungstenite 会处理 WebSocket 分片，并把完整消息交给应用层。
-- Ping/Pong 是控制消息，不属于 RFB 字节流；连接驱动忽略它们。
+- `Ping`/`Pong` 是控制消息，不属于 RFB 字节流；连接驱动器忽略它们。
 - `send(Message::Binary(...)).await` 是输出反压点，不增加应用层无界发送队列。
 
 ### 4.3 依赖与许可证
@@ -93,7 +93,7 @@ noVNC 完成 `ServerInit` 后立即发送：
 
 ### 5.1 方案 A：抽取共享异步连接驱动，TCP 与 WebSocket 各自适配
 
-共享驱动持有 RFB core、视频 receiver、帧请求合并器和事件发送器。传输适配器只提供收取字节、发送二进制字节和关闭三个能力。
+共享驱动器持有 RFB 核心、视频接收器、帧请求合并器和事件发送器。传输适配器只提供收取字节、发送二进制字节和关闭三个能力。
 
 优点：
 
@@ -115,7 +115,7 @@ noVNC 完成 `ServerInit` 后立即发送：
 
 缺点：
 
-- 握手超时、帧序号、请求合并、事件顺序、resize 和反压立即出现两份实现。
+- 握手超时、帧序号、请求合并、事件顺序、尺寸调整和反压立即出现两份实现。
 - 后续修复必须同步两个循环，极易产生协议行为分叉。
 - 与“从根因修复、禁止补丁式扩展”的项目规范冲突。
 
@@ -128,7 +128,7 @@ noVNC 完成 `ServerInit` 后立即发送：
 缺点：
 
 - 增加内部端口、第二份缓冲、额外任务和关闭竞态。
-- 无法自然统一 client id、事件通道和单活动连接状态。
+- 无法自然统一客户端标识、事件通道和单活动连接状态。
 - 测试只能间接观察错误，诊断能力较差。
 
 ### 5.4 结论
@@ -142,12 +142,12 @@ noVNC 完成 `ServerInit` 后立即发送：
 新增 `crates/ipkvm-headless/src/rfb_connection/`，负责：
 
 - 传输无关公共配置。
-- client id、应用事件和断开原因。
-- TCP 与 WebSocket 共用的单活动连接许可和 client id 分配。
+- 客户端标识、应用事件和断开原因。
+- TCP 与 WebSocket 共用的单活动连接许可和客户端标识分配。
 - 视频帧到 RFB framebuffer 的适配。
-- outstanding framebuffer request 的有界合并。
-- RFB core、帧 receiver、序号和握手超时状态。
-- 把 RFB core 事件按顺序发送到有界应用事件通道。
+- 未完成帧缓冲区请求的有界合并。
+- RFB 核心、帧接收器、序号和握手超时状态。
+- 把 RFB 核心事件按顺序发送到有界应用事件通道。
 - 通用异步连接循环。
 
 建议文件：
@@ -170,12 +170,12 @@ rfb_connection/
 
 - `RfbTcpConfig` 与 TCP 读取块大小校验。
 - `TcpStream` 到共享传输接口的适配。
-- `TcpListener` accept 循环。
-- 顺序服务客户端和 TCP server 级错误。
+- `TcpListener` 接受连接循环。
+- 顺序服务客户端和 TCP 服务端级错误。
 
 移出：
 
-- RFB core 状态。
+- RFB 核心状态。
 - 帧适配和请求合并。
 - 公共 RFB 事件与断开原因。
 
@@ -184,11 +184,11 @@ rfb_connection/
 新增 `crates/ipkvm-headless/src/rfb_ws/`，负责：
 
 - `RfbWebSocketConfig`。
-- `/rfb` axum route。
+- `/rfb` axum 路由。
 - 可组合的 `RfbWebSocketService<S>`。
-- WebSocket upgrade 参数和可选 `binary` 子协议。
+- WebSocket 升级参数和可选 `binary` 子协议。
 - 单活动连接许可。
-- client id 分配。
+- 客户端标识分配。
 - WebSocket 消息到共享传输接口的适配。
 - HTTP 层拒绝状态。
 
@@ -223,7 +223,7 @@ pub struct RfbConnectionSettings {
 - `handshake_timeout = 10 秒`
 - `protocol_limits = RfbProtocolLimits::default()`
 
-`validate` 至少拒绝零握手超时。RFB core 继续负责桌面名和协议上限之间的完整一致性校验。
+`validate` 至少拒绝零握手超时。RFB 核心继续负责桌面名和协议上限之间的完整一致性校验。
 
 ### 7.2 TCP 配置
 
@@ -245,7 +245,7 @@ pub struct RfbWebSocketConfig {
 }
 ```
 
-单条 WebSocket 消息和单个 WebSocket frame 的最大值均使用
+单条 WebSocket 消息和单个 WebSocket 帧的最大值均使用
 `connection.protocol_limits.max_buffered_input_bytes`，不维护第二个含义重复的上限。
 
 ### 7.4 共享事件
@@ -276,22 +276,22 @@ TCP 所有权关系。
 ### 7.5 全局连接许可
 
 ```rust
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct RfbConnectionGate { /* 私有共享状态 */ }
 ```
 
-上层在组装 TCP 与 WebSocket 入口时创建一个 gate，并把 clone 分别传给
-`RfbTcpServer` 和 `RfbWebSocketService`。gate 内部持有：
+上层在组装 TCP 与 WebSocket 入口时创建一个连接闸门，并把副本分别传给
+`RfbTcpServer` 和 `RfbWebSocketService`。连接闸门内部持有：
 
 - 容量为 1 的 `Semaphore`。
-- 一个 `AtomicU64` 下一个 client id；`0` 是 id 空间已经耗尽的哨兵值。
+- 一个 `AtomicU64` 下一个客户端标识；`0` 是标识空间已经耗尽的哨兵值。
 
-取得许可时同时分配 `RfbClientId`。返回的私有 permit 持有 semaphore permit 和
-client id，直到对应 `Disconnected` 成功进入事件队列后才释放。client id 从 1 开始，
+取得许可时同时分配 `RfbClientId`。返回的私有许可持有信号量许可和
+客户端标识，直到对应 `Disconnected` 成功进入事件队列后才释放。客户端标识从 1 开始，
 使用 `checked_add`，永不回绕或复用。
 
-不提供“每个入口自动创建独立 gate”的便捷构造，因为那会允许 TCP 和 WebSocket
-同时成为控制者。所有生产组装和测试必须显式传入 gate。
+不提供“每个入口自动创建独立连接闸门”的便捷构造，因为那会允许 TCP 和 WebSocket
+同时成为控制者。所有生产组装和测试必须显式传入连接闸门。
 
 ### 7.6 共享错误
 
@@ -309,7 +309,7 @@ UnexpectedTextMessage,
 - TCP `std::io::Error` 继续降级为 `Io(ErrorKind)`。
 - axum/tungstenite 的不可克隆错误降级为稳定的 `WebSocket` 分类。
 - 收到 Text 消息使用独立的 `UnexpectedTextMessage`，便于区分应用层误用和底层连接故障。
-- Ping、Pong 和正常 Close 不属于错误。
+- `Ping`、`Pong` 和正常 `Close` 不属于错误。
 - 事件接收端已关闭时无法再可靠发送 `Disconnected`，因此不制造虚假的断开事件。
 
 `RfbConnectionSettingsError`、`RfbConnectionGateError`、`RfbTcpConfigError`、
@@ -347,14 +347,14 @@ enum RfbTransportRead {
 - `Data` 时 `buffer` 必须非空。
 - `Continue` 表示已消费不属于 RFB 的控制消息，驱动继续等待。
 - `Closed` 表示客户端正常关闭。
-- 传输实现每次接收前清空 `buffer`，不得把旧数据重复交给 core。
-- 驱动忽略 transport 消息边界，每次 `Data` 都调用同一个
+- 传输实现每次接收前清空 `buffer`，不得把旧数据重复交给核心。
+- 驱动器忽略传输层消息边界，每次 `Data` 都调用同一个
   `RfbConnectionCore::push_input`。
 - 生产代码不引入 `async-trait`，不使用动态 trait object。
 
 TCP 适配器把读取块大小保存在自身，复用驱动提供的 `Vec<u8>`；读取零字节返回
-`Closed`。WebSocket 适配器把 Binary 追加到同一个 `Vec<u8>`，Ping/Pong 返回
-`Continue`，Close 或流结束返回 `Closed`，Text 返回类型化错误。
+`Closed`。WebSocket 适配器把 `Binary` 追加到同一个 `Vec<u8>`，`Ping`/`Pong` 返回
+`Continue`，`Close` 或流结束返回 `Closed`，`Text` 返回类型化错误。
 
 ## 9. 共享连接驱动
 
@@ -368,39 +368,39 @@ TCP 适配器把读取块大小保存在自身，复用驱动提供的 `Vec<u8>`
 - 当前连接自己的 `FrameReceiver`
 - `mpsc::Sender<RfbServerEvent>`
 - `RfbConnectionSettings`
-- `watch::Receiver<bool>` shutdown
+- `watch::Receiver<bool>` 关闭信号
 
 初始化顺序保持现有 TCP 行为：
 
-1. 启动时已 shutdown 则直接结束。
-2. 读取并校验当前视频帧；没有帧时不发送虚假 framebuffer。
+1. 启动时已收到关闭信号则直接结束。
+2. 读取并校验当前视频帧；没有帧时不发送虚假帧缓冲区。
 3. 用当前尺寸创建 `RfbConnectionCore`。
-4. 立即发送 RFB banner。
+4. 立即发送 RFB 握手横幅。
 5. 启动握手截止时间。
 
 ### 9.2 主循环
 
 主循环同时等待：
 
-- transport 输入。
-- 存在 pending 增量请求时的视频帧变化。
-- shutdown。
+- 传输层输入。
+- 存在待处理增量请求时的视频帧变化。
+- 关闭信号。
 - 事件接收端关闭。
 - 握手未完成时的截止时间。
 
 每次输入处理顺序：
 
 1. `push_input`。
-2. 立即发送 core 已产生的输出。
-3. 按 core 返回顺序处理事件。
-4. update request 在驱动内合并和响应。
+2. 立即发送核心已产生的输出。
+3. 按核心返回顺序处理事件。
+4. 更新请求在驱动器内合并和响应。
 5. 其他事件通过有界 mpsc 无损发送。
-6. 再次发送事件处理期间产生的 core 输出。
+6. 再次发送事件处理期间产生的核心输出。
 
 同一输入批次中，协议错误之前已经完成的有效事件必须先交付。这一行为与现有
 TCP 驱动一致。
 
-### 9.3 帧请求和 resize
+### 9.3 帧请求和尺寸调整
 
 现有行为原样迁移：
 
@@ -408,23 +408,23 @@ TCP 驱动一致。
 - 增量请求等待更大的帧序号。
 - 多个增量请求合并成一个常量空间的最小外接矩形。
 - 帧序号倒退断开连接。
-- 已协商 `DesktopSize` 时先发送 resize，下一请求再发新尺寸像素。
+- 已协商 `DesktopSize` 时先发送尺寸调整，下一请求再发新尺寸像素。
 - 未协商 `DesktopSize` 时返回编码错误并断开。
 - 不发送 unsolicited framebuffer update。
 
 ## 10. TCP 行为保持
 
-`RfbTcpServer` 仍然顺序 accept，并在开始 RFB 连接前取得共享 gate：
+`RfbTcpServer` 仍然顺序接受连接，并在开始 RFB 连接前取得共享连接闸门：
 
-- 当前客户端结束前，backlog 中的第二个 TCP 客户端不收到 RFB banner。
-- 如果 WebSocket 正在活动，已经 accept 的 TCP 客户端等待 gate，等待期间不收到
-  RFB banner，握手超时也尚未开始。
-- 等待 gate 时同时监听 shutdown 和事件接收端关闭。
-- 取得 gate 后分配全局唯一、不可回绕的 id。
+- 当前客户端结束前，积压队列中的第二个 TCP 客户端不收到 RFB 握手横幅。
+- 如果 WebSocket 正在活动，已接受的 TCP 客户端等待连接闸门，等待期间不收到
+  RFB 握手横幅，握手超时也尚未开始。
+- 等待连接闸门时同时监听关闭信号和事件接收端关闭。
+- 取得连接闸门后分配全局唯一、不可回绕的客户端标识。
 - 普通连接错误只关闭当前连接并发送一次 `Disconnected`。
-- accept 失败、client id 耗尽和事件接收端关闭仍是 server 级错误。
-- shutdown 结束当前连接后停止 accept。
-- `Disconnected` 成功入队后才释放 gate；输入泵因此总能在下一连接取得许可前处理完
+- 接受连接失败、客户端标识耗尽和事件接收端关闭仍是服务端级错误。
+- 关闭信号结束当前连接后停止接受连接。
+- `Disconnected` 成功入队后才释放连接闸门；输入泵因此总能在下一连接取得许可前处理完
   前一连接的生命周期事件。
 
 现有回环 TCP 集成测试是抽取重构的回归门禁。除公共类型重命名和配置嵌套外，
@@ -463,13 +463,13 @@ axum::serve(
 ```
 
 `ConnectInfo<SocketAddr>` 是事件中 `peer_addr` 的来源。上层未按该方式提供连接信息时，
-upgrade 请求应被 axum 拒绝，而不是伪造地址。
+升级请求应被 axum 拒绝，而不是伪造地址。
 
-### 11.2 upgrade 规则
+### 11.2 升级规则
 
 `/rfb` 使用 axum WebSocket extractor，并配置：
 
-- 支持 HTTP/1.1 GET WebSocket upgrade。
+- 支持 HTTP/1.1 GET WebSocket 升级。
 - `protocols(["binary"])`。
 - `max_message_size(max_buffered_input_bytes)`。
 - `max_frame_size(max_buffered_input_bytes)`。
@@ -479,50 +479,50 @@ upgrade 请求应被 axum 拒绝，而不是伪造地址。
 - 无子协议请求：`101 Switching Protocols`，响应不含
   `Sec-WebSocket-Protocol`。
 - 请求包含 `binary`：`101 Switching Protocols`，响应选择 `binary`。
-- shutdown 已请求：`503 Service Unavailable`。
+- 已收到关闭信号：`503 Service Unavailable`。
 - 事件接收端已关闭：`503 Service Unavailable`。
 - 已有活动连接：`409 Conflict`。
-- gate 中的 client id 已耗尽：`503 Service Unavailable`，且永不回绕。
+- 连接闸门中的客户端标识已耗尽：`503 Service Unavailable`，且永不回绕。
 
-HTTP 拒绝没有 RFB client id，不产生 `Connected` 或 `Disconnected`。
+HTTP 拒绝没有 RFB 客户端标识，不产生 `Connected` 或 `Disconnected`。
 
 ### 11.3 全局单活动连接
 
 WebSocket 服务使用上层传入的共享 `RfbConnectionGate`：
 
-1. upgrade handler 调用 gate 的 `try_acquire()`；gate 内部使用 owned semaphore permit。
+1. 升级处理器调用连接闸门的 `try_acquire()`；连接闸门内部使用拥有所有权的信号量许可。
 2. 未取得许可时立即返回 `409`，不等待当前客户端。
-3. 成功取得许可时由 gate 分配 client id。
+3. 成功取得许可时由连接闸门分配客户端标识。
 4. 许可移动到 `on_upgrade` 任务，覆盖完整 WebSocket/RFB 生命周期。
 5. 连接驱动结束并完成断开事件发送后释放许可。
 6. 无论当前活动连接来自 TCP 还是 WebSocket，新的 WebSocket 请求都得到 `409`。
-7. 当前连接释放后，后续 WebSocket 请求或已经 accept 并等待的 TCP 客户端可以取得许可。
+7. 当前连接释放后，后续 WebSocket 请求或已接受并等待的 TCP 客户端可以取得许可。
 
-许可在 HTTP upgrade 期间已经占用，避免两个并发 upgrade 都进入 RFB 握手。
+许可在 HTTP 升级期间已经占用，避免两个并发升级都进入 RFB 握手。
 
-### 11.4 client id
+### 11.4 客户端标识
 
-client id 由共享 gate 分配：
+客户端标识由共享连接闸门分配：
 
 - 从 1 开始。
 - TCP 与 WebSocket 使用同一个序列。
-- 每个获得单连接许可并进入 upgrade 流程的请求分配一次。
+- 每个获得单连接许可并进入升级流程的请求分配一次。
 - 使用 compare-exchange 循环和 `checked_add` 分配；`u64::MAX` 被成功分配后把原子值更新
   为 `0`。
 - 分配过程不使用锁，也不执行 `.await`。
-- HTTP upgrade 失败可以留下 id 空洞，但 id 永不复用。
+- HTTP 升级失败可以留下标识空洞，但标识永不复用。
 
 ### 11.5 生命周期
 
-WebSocket upgrade 成功后：
+WebSocket 升级成功后：
 
 1. 为连接订阅独立 `FrameReceiver`。
 2. 调用共享连接驱动。
-3. 共享驱动返回前调用 transport 的 `close()`；WebSocket transport 尝试发送 Close frame。
+3. 共享驱动器返回前调用传输层的 `close()`；WebSocket 传输层尝试发送 `Close` 帧。
 4. 事件通道仍可用时发送且只发送一次 `Disconnected`。
 5. `Disconnected` 成功入队后释放单连接许可。
 
-Close frame 或 WebSocket 流正常结束映射为 `ClientClosed`。shutdown 映射为
+`Close` 帧或 WebSocket 流正常结束映射为 `ClientClosed`。关闭信号映射为
 `ServerShutdown`。底层协议错误映射为 `WebSocket`。收到 Text 映射为
 `UnexpectedTextMessage`。
 
@@ -530,26 +530,26 @@ Close frame 或 WebSocket 流正常结束映射为 `ClientClosed`。shutdown 映
 
 ### 12.1 输入
 
-- axum 在消息和 frame 层拒绝超过协议输入上限的数据。
+- axum 在消息和帧层拒绝超过协议输入上限的数据。
 - WebSocket 适配器最多复制当前一条 Binary 消息到共享接收 `Vec<u8>`。
-- core 的 `max_buffered_input_bytes` 继续限制跨消息保留的 RFB 半包。
-- 事件通道满时共享驱动停止读取 transport，反压传播到 WebSocket/TCP。
+- 核心的 `max_buffered_input_bytes` 继续限制跨消息保留的 RFB 半包。
+- 事件通道满时共享驱动器停止读取传输层，反压传播到 WebSocket/TCP。
 - 不使用 `try_send` 丢弃键盘释放、鼠标释放或生命周期事件。
 
 ### 12.2 输出
 
-- core 的 `max_queued_output_bytes` 限制一条待发送 RFB 输出。
+- 核心的 `max_queued_output_bytes` 限制一条待发送 RFB 输出。
 - 每次 `take_output` 后立即 `send_binary(...).await`。
 - TCP 使用 `write_all`，WebSocket 使用单条 Binary 消息。
-- 不 split WebSocket，不创建独立 writer task，不增加无界发送 channel。
-- 慢客户端使当前连接停在发送点；视频 watch receiver 仍只保留最新帧。
+- 不拆分 WebSocket，不创建独立写入任务，不增加无界发送通道。
+- 慢客户端使当前连接停在发送点；视频 `watch` 接收器仍只保留最新帧。
 
-WebSocket 消息边界只是一种承载：服务端可以把一次 core 输出放在一条 Binary 消息中，
+WebSocket 消息边界只是一种承载：服务端可以把一次核心输出放在一条 Binary 消息中，
 客户端输入可以任意拆成多条 Binary 消息。
 
 ## 13. noVNC 1.7.0 兼容样本
 
-集成测试保存一份由固定提交源码推导出的中文注释线级 fixture，不复制 noVNC 源文件。
+集成测试保存一份由固定提交源码推导出的中文注释线级测试样本，不复制 noVNC 源文件。
 
 测试场景：
 
@@ -564,63 +564,68 @@ WebSocket 消息边界只是一种承载：服务端可以把一次 core 输出�
 7. 校验服务端选择 `Raw`，并把输入 BGRA 像素转换为 noVNC 所需的 `R, G, B, 0`。
 8. 发送后续增量请求，发布新帧，校验更新继续工作。
 
-H.264 是否进入 noVNC 编码列表取决于浏览器 WebCodecs 能力。本阶段 fixture 使用没有
-H.264 的确定性分支；协议 core 对未知编码的既有测试以及下一阶段真实浏览器测试覆盖
+H.264 是否进入 noVNC 编码列表取决于浏览器 WebCodecs 能力。本阶段测试样本使用没有
+H.264 的确定性分支；协议核心对未知编码的既有测试以及下一阶段真实浏览器测试覆盖
 带 H.264 的分支。
 
 ## 14. 自动化测试实施结果
 
-### 14.1 共享配置和帧适配
+### 14.1 共享配置、帧适配和连接闸门
 
 - `RfbConnectionSettings` 默认值和零超时校验。
 - `RfbTcpConfig` 默认读取块、零读取块和超上限读取块校验。
-- `RfbWebSocketConfig` 继承共享连接校验。
-- 原有格式、尺寸、stride、长度和帧序号测试迁移后全部通过。
+- `RfbWebSocketConfig` 继承共享连接配置校验。
+- 帧适配覆盖像素格式、尺寸、行跨度、长度和帧序号。
+- `RfbConnectionGate` 覆盖 `Default` 与 `new()` 的等价初始状态、单许可、以及 `u64::MAX` 仅分配一次且不回绕。
 
-### 14.2 共享驱动
+### 14.2 共享连接驱动
 
 - 分片握手产生一次 `Connected`。
-- 同一批次中有效输入事件先于后续协议错误交付。
-- 键盘、指针、剪贴板和连续更新事件不重排。
-- 非增量更新、增量等待、请求合并和动态尺寸行为不变。
-- shutdown、握手超时、帧错误、协议错误和事件通道关闭得到确定结果。
-- 输出发送失败映射为对应 transport 错误。
-- transport 控制消息的 `Continue` 不进入 RFB core。
+- 握手超时使用 Tokio 暂停时钟验证，不依赖真实短暂休眠。
+- 同一批次中有效输入事件先于后续协议错误交付；键盘、指针、剪贴板和连续更新事件不重排。
+- 非增量更新、增量等待、请求合并和动态尺寸行为保持不变。
+- 关闭信号、帧错误、协议错误和事件通道关闭得到确定结果；输出发送失败映射为对应传输层错误。
+- 传输层控制消息的 `Continue` 不进入 RFB 核心。
 
-### 14.3 TCP 回归
+### 14.3 TCP 回归：`crates/ipkvm-headless/tests/rfb_tcp.rs`
 
-- 现有 `crates/ipkvm-headless/tests/rfb_tcp.rs` 全部通过。
-- 现有 `crates/ipkvm-headless/tests/rfb_input_pump.rs` 全部通过。
-- 第二个 TCP 客户端仍在首个连接结束后才收到 banner。
-- TCP I/O 错误仍记录 `Io(ErrorKind)`。
-- WebSocket 活动时 TCP 客户端可以建立 TCP 连接，但在共享 gate 释放前不收到 banner。
+当前文件有 8 个测试，覆盖事件接收端关闭、初始帧缺失或无效后的重连、协商 RGB565、
+有界事件通道反压、关闭信号、协议错误后继续服务，以及第二个 TCP 客户端在首个连接
+断开后才收到 RFB 握手横幅。
 
-### 14.4 WebSocket 集成
+### 14.4 WebSocket 集成：`crates/ipkvm-headless/tests/rfb_websocket.rs`
 
-使用真实 `127.0.0.1:0` listener、axum server 和
-`tokio-tungstenite` 客户端，不 mock HTTP upgrade：
+当前文件有 16 个测试，使用真实 `127.0.0.1:0` 监听器、axum 服务端和
+`tokio-tungstenite` 客户端，不模拟 HTTP 升级：
 
-1. `/rfb` 无子协议 upgrade 成功且响应不选择子协议。
-2. 请求 `binary` 时响应选择 `binary`。
-3. 不同 Binary 消息中的逐字节 RFB 输入可以完成握手。
-4. 服务端 RFB 输出全部是 Binary。
-5. noVNC 1.7.0 初始化 fixture 获得正确 Raw 像素。
-6. Key 和 Pointer 事件进入 `RfbServerEvent`，坐标携带输入时的 framebuffer 尺寸。
-7. Ping/Pong 不污染 RFB 输入，连接继续工作。
-8. Text 消息断开并产生 `UnexpectedTextMessage`。
-9. 正常 Close 产生 `ClientClosed`。
-10. 握手超时使用 Tokio 暂停时钟，不使用真实短 sleep。
-11. shutdown 结束活动连接并产生 `ServerShutdown`。
-12. 事件接收端关闭使活动连接结束，后续 upgrade 返回 `503`。
-13. 活动连接存在时第二个 upgrade 返回 `409`。
-14. 首个连接断开后下一个 upgrade 成功。
-15. 超过输入上限的 WebSocket 消息由 WebSocket 层拒绝且内存有界。
-16. client id 到 `u64::MAX` 后不回绕。
-17. TCP 活动时 WebSocket upgrade 返回 `409`。
-18. WebSocket 活动时 TCP 客户端不收到 banner；前一连接的 `Disconnected` 入队后，
-    TCP 才完成握手并成为控制者。
+1. 未请求子协议时升级成功且响应不选择子协议。
+2. 仅在请求包含 `binary` 时选择 `binary`。
+3. 分散在多个 Binary 消息中的逐字节 RFB 输入可以完成握手。
+4. 服务端所有 RFB 输出均为 Binary 消息。
+5. noVNC 1.7.0 无 H.264 线级样本得到初始和增量 `Raw` 更新。
+6. 一条 Binary 消息中的多个 RFB 事件保持顺序。
+7. `Ping`/`Pong` 不污染 RFB 输入，连接可继续完成握手。
+8. Text 消息断开一次并产生 `UnexpectedTextMessage`。
+9. `Close` 消息断开一次并产生 `ClientClosed`。
+10. 活动连接存在时第二次升级返回 `409`。
+11. `Disconnected` 事件成功入队后连接闸门才重新开放。
+12. 关闭信号在升级前返回空 `503` 响应。
+13. 关闭信号结束活动连接并产生 `ServerShutdown`。
+14. 事件接收端关闭使后续升级返回 `503`。
+15. 超过输入上限的 WebSocket 消息以 `WebSocket` 原因断开。
+16. 无关子协议不会在响应中回显。
 
-### 14.5 命令级验证
+### 14.5 跨传输层排他性：`crates/ipkvm-headless/tests/rfb_transport_exclusion.rs`
+
+当前文件有 2 个测试：TCP 活动时 WebSocket 升级返回 `409`；WebSocket 活动时 TCP
+客户端在 `Disconnected` 入队并释放共享连接闸门前不收到 RFB 握手横幅。
+
+### 14.6 RFB 输入泵：`crates/ipkvm-headless/tests/rfb_input_pump.rs`
+
+当前文件有 2 个测试，覆盖公共输入泵契约，以及真实 TCP 客户端驱动 CH9329 输入并在
+断开时释放输入状态。
+
+### 14.7 命令级验证
 
 ```powershell
 .\scripts\verify.ps1
@@ -631,7 +636,7 @@ H.264 的确定性分支；协议 core 对未知编码的既有测试以及下�
 ## 15. 文档收口
 
 - `README.md` 记录已有原生 TCP 与 WebSocket 两种 RFB 入口，但不得声称完整网页已完成。
-- `docs/ipkvm-coarse-design.md` 标记共享连接驱动和 WebSocket transport 已完成。
+- `docs/ipkvm-coarse-design.md` 标记共享连接驱动器和 WebSocket 传输层已完成。
 - 长期文档使用 `RfbServerEvent` 和 `RfbFrameError` 新名称。
 - 当前公共 API、依赖和测试范围以本文与代码为准；历史设计文档不回写为当前事实。
 
@@ -649,23 +654,23 @@ H.264 的确定性分支；协议 core 对未知编码的既有测试以及下�
 
 ### 16.3 noVNC 默认子协议假设错误
 
-措施：默认无子协议是固定兼容条件；同时测试无子协议和显式 `binary` 两种 upgrade。
+措施：默认无子协议是固定兼容条件；同时测试无子协议和显式 `binary` 两种升级。
 
 ### 16.4 多连接绕过输入单控制者
 
-措施：TCP 与 WebSocket 必须显式使用同一个 gate；许可覆盖完整连接生命周期，并在
+措施：TCP 与 WebSocket 必须显式使用同一个连接闸门；许可覆盖完整连接生命周期，并在
 `Disconnected` 入队后释放。并发真实连接测试同时覆盖 TCP/TCP、WS/WS、TCP/WS 和
 WS/TCP。
 
 ### 16.5 慢客户端形成无界输出
 
-措施：不 split writer、不建立输出 channel；每次 core 输出只在一次 awaited send 中
-存在，视频源继续使用最新值 watch。
+措施：不拆分写入器、不建立输出通道；每次核心输出只在一次等待发送中
+存在，视频源继续使用最新值 `watch`。
 
-### 16.6 shutdown 与断开事件竞态
+### 16.6 关闭信号与断开事件竞态
 
-措施：共享驱动只返回一个 `ConnectionEnd`，外围统一关闭 transport 和发送一次
-`Disconnected`；测试 shutdown、Close 和错误三条路径。
+措施：共享驱动器只返回一个 `ConnectionEnd`，外围统一关闭传输层和发送一次
+`Disconnected`；测试关闭信号、`Close` 和错误三条路径。
 
 ### 16.7 WebSocket 库错误不可稳定比较
 

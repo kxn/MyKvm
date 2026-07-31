@@ -15,9 +15,9 @@
 
 ## 当前实施状态
 
-截至 2026-07-31，`ipkvm-headless` 已提供库级 RFB TCP 与 WebSocket transport：`RfbTcpServer` 服务原生 TCP，`RfbWebSocketService` 提供可组合的 axum `/rfb` 路由。两者共用 `rfb_connection` 连接驱动、`RfbServerEvent` 事件模型和全局单活动 `RfbConnectionGate`；生产组装必须显式创建一个 gate，并把其 clone 分别传给两个服务。WebSocket 输入和输出承载连续 RFB 二进制字节流，不赋予 WebSocket 消息边界 RFB 语义。
+截至 2026-07-31，`ipkvm-headless` 已提供库级 RFB TCP 与 WebSocket 传输层：`RfbTcpServer` 服务原生 TCP，`RfbWebSocketService` 提供可组合的 axum `/rfb` 路由。两者共用 `rfb_connection` 连接驱动器、`RfbServerEvent` 事件模型和全局单活动 `RfbConnectionGate`；生产组装必须显式创建一个连接闸门，并把它的副本分别传给两个服务。WebSocket 输入和输出承载连续 RFB 二进制字节流，不赋予 WebSocket 消息边界 RFB 语义。
 
-`/rfb` 默认不要求子协议；请求包含 `binary` 时响应选择该子协议。单条 WebSocket message 和 frame 都限制为 `RfbProtocolLimits::max_buffered_input_bytes`，现有活动连接返回 `409 Conflict`，shutdown、事件接收端关闭或 client id 耗尽返回 `503 Service Unavailable`。锁定 noVNC 1.7.0 commit `63107bd06d9e1f6136ff21aeda8cd62cbf0d433e` 的线级初始化样本已验证 `Raw` 与 `DesktopSize` 兼容路径。
+`/rfb` 默认不要求子协议；请求包含 `binary` 时响应选择该子协议。单条 WebSocket 消息和帧都限制为 `RfbProtocolLimits::max_buffered_input_bytes`，现有活动连接返回 `409 Conflict`，关闭信号、事件接收端关闭或客户端标识耗尽返回 `503 Service Unavailable`。锁定 noVNC 1.7.0 提交 `63107bd06d9e1f6136ff21aeda8cd62cbf0d433e` 的线级初始化样本已验证 `Raw` 与 `DesktopSize` 兼容路径。
 
 上述实现不是完整网页产品：没有 noVNC 静态资源、真实浏览器闭环、真实视频采集、真实串口、鉴权、TLS 或可运行的 headless 二进制。以下无头网页和设备会话描述是目标形态，不能当作当前已交付能力。
 
@@ -98,7 +98,7 @@ I/O 运行时固定使用 tokio：
 - HTTP、RFB over TCP、RFB over WebSocket、串口任务、后台状态推送都按 tokio 生态实现。
 - 后续 HTTP 优先评估 axum，WebSocket 优先评估 tokio-tungstenite，串口优先评估 tokio-serial。
 - `ipkvm-core` 保持同步、无 tokio 依赖；它只定义协议、输入状态机、错误和串口写入队列接口。
-- `ipkvm-video` 可以暴露 tokio watch 订阅接口，用于多个消费者读取同一最新帧。
+- `ipkvm-video` 可以暴露 Tokio 的 `watch` 订阅接口，用于多个消费者读取同一最新帧。
 - 异步任务边界放在 `ipkvm-headless`、真实采集后端和真实串口后端，不把 async 签名扩散到纯协议类型。
 
 ## 架构
@@ -426,20 +426,20 @@ WebSocket 兼容：
 - `ClientCutText` 和桌面粘贴只做“文本转模拟键入”，不是双向剪贴板同步。
 - CH9329 `GetInfo` 可以读取目标机 Num Lock、Caps Lock、Scroll Lock LED 状态；文本键入前可以查询并据此选择修饰键。
 - 锁定键状态仍可能在查询后被目标机或其他键盘改变，因此文本键入必须保留“状态可能竞争”的限制说明。
-- RFB 的 `PointerEvent` 坐标直接对应帧缓冲像素坐标，由 core 按厂家公式 `floor(4096 * coordinate / extent)` 映射到 CH9329 的 0..4095 合法范围。
+- RFB 的 `PointerEvent` 坐标直接对应帧缓冲像素坐标，由协议核心按厂家公式 `floor(4096 * coordinate / extent)` 映射到 CH9329 的 0..4095 合法范围。
 - 当前已实现按钮 1 到 5：按钮 1、2、3 分别映射左键、中键、右键，按钮 4、5 的上升沿分别映射垂直滚轮向上、向下。
 - 水平滚轮和侧键对应的按钮位 5 到 7 当前不注入 CH9329，但映射结果会显式报告被忽略的位，避免静默误判为已支持。
 - 坐标超出当前帧缓冲或帧尺寸为零时拒绝整条消息，不裁剪到屏幕边缘，也不提交按钮、滚轮或 sink 状态。
 - 一条 RFB 指针消息中的移动、按钮差分和滚轮通过一个原子指针批次提交；映射器和 CH9329 sink 在校验或队列失败后均保持可重试状态。
-- Pointer 事件在 RFB 协议 core 中固化客户端输入坐标时期，不由事件泵读取最新视频尺寸；跨越 `DesktopSize` 的半包直到解码边界清空后才切换时期。
+- Pointer 事件在 RFB 协议核心中固化客户端输入坐标时期，不由事件泵读取最新视频尺寸；跨越 `DesktopSize` 的半包直到解码边界清空后才切换时期。
 - 不支持的 keysym 和 Shift 冲突产生可观测拒绝，事件泵继续处理后续输入和断线释放；sink 或生命周期错误则保留原事件并停止循环，调用方可以修复后重试。
 - 控制者断线或事件发送端关闭时调用 `release_all()`；只有释放成功后才清空控制者和两个 mapper，失败时保留完整软件状态。
 - 网页相对鼠标模式需要浏览器 Pointer Lock。若 noVNC 集成无法直接提供相对位移，则需要定制 noVNC 页面层；这项不假定 noVNC 原生完成。
 
 会话和并发：
 
-- 目标最小产品支持多个查看者观察同一帧缓冲，但当前已实现的 RFB TCP server 仍是顺序单活动连接，尚不支持并发查看者。
-- 当前事件泵把这条唯一活动 RFB 连接作为控制者，并严格拒绝不符合顺序 server 契约的第二控制者事件。
+- 目标最小产品支持多个查看者观察同一帧缓冲，但当前已实现的 RFB TCP 服务端仍是顺序单活动连接，尚不支持并发查看者。
+- 当前事件泵把这条唯一活动 RFB 连接作为控制者，并严格拒绝不符合顺序服务端契约的第二控制者事件。
 - 多查看者进入实现范围后，由 `ipkvm-session` 负责跨 RFB、Web 和桌面入口的控制权仲裁；不能把当前 RFB 事件泵当成完整会话仲裁器。
 - 控制者断开、事件源关闭或未来控制权切换时，必须先成功发送 `release_all()`。
 - 未来每个查看客户端有自己的帧更新节流和反压处理。慢客户端只拿最新帧，旧帧直接丢弃。
@@ -510,9 +510,9 @@ WebSocket 兼容：
 - 写鼠标状态机测试：按钮组合、绝对坐标、相对位移拆包、模式切换和释放。
 - 写坐标换算测试，覆盖厂家示例；桌面适配层后续覆盖非整数 DPI 缩放。
 - 写模拟视频源，支持尺寸变化事件。
-- 写 fake 命令队列和有序批次提交测试。
-- `ipkvm-video` 使用 `mock` feature 提供测试帧源。
-- `ipkvm-core` 使用 `mock` feature 提供 fake 命令队列。
+- 编写模拟命令队列和有序批次提交测试。
+- `ipkvm-video` 使用 `mock` 功能开关提供测试帧源。
+- `ipkvm-core` 使用 `mock` 功能开关提供模拟命令队列。
 - 将会话默认串口波特率设为 CH9329 出厂值 9600。
 - 完成传输无关的 RFB 3.8 `None` 握手、客户端消息增量解码、`Raw` 编码和 `DesktopSize` 伪编码，并覆盖协议金样、任意分片和性质测试。
 - 未知正数 encoding 和负数 pseudo-encoding 会被保留且不使连接失败；未知客户端消息类型因无法确定长度而进入失败终态，不尝试扫描重同步。
