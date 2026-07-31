@@ -7,7 +7,7 @@ my_ipkvm 是一个软件 IPKVM 项目：主控机通过 USB HDMI 采集卡读取
 ## 当前模块
 
 - `ipkvm-core`：CH9329 帧、HID 报告、坐标换算、输入状态机。
-- `ipkvm-video`：采集设备枚举、格式选择、视频帧流。
+- `ipkvm-video`：采集设备枚举、格式选择、共享视频帧流。
 - `ipkvm-session`：把视频帧源和输入接收端组合成一个控制台会话。
 - `ipkvm-rfb`：最小 VNC/RFB 服务，后续支持 TCP 和 WebSocket 传输。
 - `ipkvm-desktop`：本地图形界面入口。
@@ -22,6 +22,5 @@ my_ipkvm 是一个软件 IPKVM 项目：主控机通过 USB HDMI 采集卡读取
 
 ```powershell
 cargo fmt --all --check
-cargo test --workspace
+cargo test --workspace --all-features
 ```
-

@@ -8,5 +8,4 @@ rust-version.workspace = true
 
 [dependencies]
 ipkvm-core = { path = "../ipkvm-core" }
-ipkvm-session = { path = "../ipkvm-session" }
-
+ipkvm-video = { path = "../ipkvm-video" }

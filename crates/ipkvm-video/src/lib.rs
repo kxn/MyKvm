@@ -1,5 +1,10 @@
 //! 视频采集抽象。
 
+#[cfg(feature = "mock")]
+pub mod mock;
+
+use std::sync::Arc;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PixelFormat {
     Yuy2,
@@ -37,17 +42,56 @@ pub struct VideoDeviceInfo {
     pub supported_formats: Vec<VideoFormat>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct VideoFrame {
-    pub timestamp_millis: u64,
+    pub seq: u64,
+    pub timestamp: MonotonicTimestamp,
     pub width: u32,
     pub height: u32,
+    pub stride: u32,
     pub pixel_format: PixelFormat,
-    pub data: Vec<u8>,
+    pub data: Arc<[u8]>,
 }
 
+impl VideoFrame {
+    pub fn new(
+        seq: u64,
+        timestamp: MonotonicTimestamp,
+        width: u32,
+        height: u32,
+        stride: u32,
+        pixel_format: PixelFormat,
+        data: Arc<[u8]>,
+    ) -> Self {
+        Self {
+            seq,
+            timestamp,
+            width,
+            height,
+            stride,
+            pixel_format,
+            data,
+        }
+    }
+}
+
+pub type SharedVideoFrame = Arc<VideoFrame>;
+pub type FrameReceiver = tokio::sync::watch::Receiver<Option<SharedVideoFrame>>;
+
 pub trait FrameSource {
-    fn latest_frame(&self) -> Option<VideoFrame>;
+    fn latest_frame(&self) -> Option<SharedVideoFrame>;
+    fn subscribe(&self) -> FrameReceiver;
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
+pub struct MonotonicTimestamp {
+    pub nanos: u64,
+}
+
+impl MonotonicTimestamp {
+    pub fn from_nanos(nanos: u64) -> Self {
+        Self { nanos }
+    }
 }
 
 #[cfg(test)]
@@ -62,5 +106,48 @@ mod tests {
         assert_eq!(format.height, 1080);
         assert_eq!(format.frames_per_second, 60);
         assert_eq!(format.pixel_format, PixelFormat::Mjpeg);
+    }
+
+    #[test]
+    fn video_frame_records_sequence_stride_and_shared_bytes() {
+        let bytes: Arc<[u8]> = Arc::from(vec![1, 2, 3, 4].into_boxed_slice());
+
+        let frame = VideoFrame::new(
+            42,
+            MonotonicTimestamp::from_nanos(1_000),
+            2,
+            2,
+            8,
+            PixelFormat::Rgb,
+            Arc::clone(&bytes),
+        );
+
+        assert_eq!(frame.seq, 42);
+        assert_eq!(frame.timestamp, MonotonicTimestamp::from_nanos(1_000));
+        assert_eq!(frame.stride, 8);
+        assert!(Arc::ptr_eq(&frame.data, &bytes));
+    }
+
+    #[cfg(feature = "mock")]
+    #[test]
+    fn mock_frame_source_shares_latest_frame_with_subscribers() {
+        use crate::mock::MockFrameSource;
+
+        let source = MockFrameSource::new();
+        let receiver = source.subscribe();
+        let frame = Arc::new(VideoFrame::new(
+            7,
+            MonotonicTimestamp::from_nanos(700),
+            1,
+            1,
+            4,
+            PixelFormat::Rgb,
+            Arc::from(vec![0, 0, 0, 255].into_boxed_slice()),
+        ));
+
+        source.publish_frame(Arc::clone(&frame));
+
+        assert!(Arc::ptr_eq(&source.latest_frame().unwrap(), &frame));
+        assert!(Arc::ptr_eq(receiver.borrow().as_ref().unwrap(), &frame));
     }
 }

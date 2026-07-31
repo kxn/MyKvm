@@ -53,6 +53,9 @@
 - noVNC：https://github.com/novnc/noVNC
 - noVNC 接口文档：https://github.com/novnc/noVNC/blob/master/docs/API.md
 - noVNC 嵌入文档：https://github.com/novnc/noVNC/blob/master/docs/EMBEDDING.md
+- noVNC 服务端要求：https://novnc.com/noVNC/
+- WebSocket 子协议头说明：https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Sec-WebSocket-Protocol
+- libjpeg-turbo 许可证：https://github.com/libjpeg-turbo/libjpeg-turbo/blob/main/LICENSE.md
 - Windows Media Foundation 采集：https://learn.microsoft.com/en-us/windows/win32/medfound/audio-video-capture-in-media-foundation
 - Windows H.264 编码器：https://learn.microsoft.com/en-us/windows/win32/medfound/h-264-video-encoder
 - Linux V4L2 接口：https://docs.kernel.org/userspace-api/media/v4l/v4l2.html
