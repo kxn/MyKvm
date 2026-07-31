@@ -277,7 +277,7 @@ git commit -m "feat: add atomic keyboard input batches (#7)"
 - 产出：`RfbKeyboardError`
 - 内部产出：`MappedKey`、`ShiftRequirement` 和 `map_keysym`
 
-- [ ] **步骤 1：写入 ASCII 映射红灯测试**
+- [x] **步骤 1：写入 ASCII 映射红灯测试**
 
 在 `keymap.rs` 先写测试模块，调用尚不存在的 `map_keysym`：
 
@@ -340,7 +340,7 @@ fn rejects_non_ascii_character_keysyms() {
 }
 ```
 
-- [ ] **步骤 2：确认模块和映射红灯**
+- [x] **步骤 2：确认模块和映射红灯**
 
 运行：
 
@@ -350,7 +350,7 @@ cargo test -p ipkvm-headless maps_every_printable_ascii_key_for_en_us
 
 预期：编译失败，因为 `rfb_input`、`MappedKey` 和 `map_keysym` 尚不存在。
 
-- [ ] **步骤 3：增加直接依赖和公共模块**
+- [x] **步骤 3：增加直接依赖和公共模块**
 
 `Cargo.toml` 增加：
 
@@ -413,7 +413,7 @@ impl RfbKeyboardMapper {
 }
 ```
 
-- [ ] **步骤 4：实现 ASCII 纯映射**
+- [x] **步骤 4：实现 ASCII 纯映射**
 
 `keymap.rs` 定义：
 
@@ -455,7 +455,7 @@ pub(super) enum MappedKey {
 
 不得根据 Rust 字符大小写临时猜测标点位置。
 
-- [ ] **步骤 5：补齐 ASCII 全范围覆盖**
+- [x] **步骤 5：补齐 ASCII 全范围覆盖**
 
 测试遍历 `0x20..=0x7e`，断言每个值都返回 `Character`：
 
@@ -471,7 +471,7 @@ fn every_printable_ascii_value_is_supported() {
 }
 ```
 
-- [ ] **步骤 6：运行映射测试并确认绿灯**
+- [x] **步骤 6：运行映射测试并确认绿灯**
 
 ```powershell
 cargo test -p ipkvm-headless rfb_input::keymap
@@ -480,7 +480,7 @@ cargo clippy -p ipkvm-headless --all-targets --all-features -- -D warnings
 
 预期：全部通过。
 
-- [ ] **步骤 7：提交**
+- [x] **步骤 7：提交**
 
 ```powershell
 git add crates/ipkvm-headless
@@ -502,7 +502,7 @@ git commit -m "feat: add en-US RFB keysym table (#7)"
 - 消费：`map_keysym`
 - 完成：`RfbKeyboardMapper::handle_key`
 
-- [ ] **步骤 1：写入记录 sink 和 Shift 红灯测试**
+- [x] **步骤 1：写入记录 sink 和 Shift 红灯测试**
 
 在 `keyboard.rs` 测试模块定义：
 
@@ -568,7 +568,7 @@ fn lowercase_temporarily_suppresses_remote_shift() {
 }
 ```
 
-- [ ] **步骤 2：确认 mapper 红灯**
+- [x] **步骤 2：确认 mapper 红灯**
 
 ```powershell
 cargo test -p ipkvm-headless rfb_input::keyboard::tests::uppercase_without_remote_shift_is_one_atomic_batch -- --exact
@@ -576,7 +576,7 @@ cargo test -p ipkvm-headless rfb_input::keyboard::tests::uppercase_without_remot
 
 预期：编译失败，因为 `handle_key` 尚未定义。
 
-- [ ] **步骤 3：建立 mapper 状态和目标集合计算**
+- [x] **步骤 3：建立 mapper 状态和目标集合计算**
 
 `RfbKeyboardMapper`：
 
@@ -616,7 +616,7 @@ fn is_modifier(usage: KeyboardUsage) -> bool {
 
 `diff_usages` 严格按普通 Up、修饰 Up、修饰 Down、普通 Down 排序；同组按 usage 数值升序。
 
-- [ ] **步骤 4：实现事务化 handle_key**
+- [x] **步骤 4：实现事务化 handle_key**
 
 ```rust
 pub fn handle_key(
@@ -655,7 +655,7 @@ pub fn handle_key(
 }
 ```
 
-- [ ] **步骤 5：写入冲突和 sink 回滚测试**
+- [x] **步骤 5：写入冲突和 sink 回滚测试**
 
 ```rust
 #[test]
@@ -697,7 +697,7 @@ fn rejected_sink_batch_can_be_retried() {
 }
 ```
 
-- [ ] **步骤 6：运行状态测试并确认绿灯**
+- [x] **步骤 6：运行状态测试并确认绿灯**
 
 ```powershell
 cargo test -p ipkvm-headless rfb_input::keyboard
@@ -705,7 +705,7 @@ cargo test -p ipkvm-headless rfb_input::keyboard
 
 预期：全部通过。
 
-- [ ] **步骤 7：提交**
+- [x] **步骤 7：提交**
 
 ```powershell
 git add crates/ipkvm-headless/src/rfb_input

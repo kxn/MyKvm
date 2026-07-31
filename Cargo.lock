@@ -106,6 +106,7 @@ dependencies = [
 name = "ipkvm-headless"
 version = "0.1.0"
 dependencies = [
+ "ipkvm-core",
  "ipkvm-rfb",
  "ipkvm-session",
  "ipkvm-video",
