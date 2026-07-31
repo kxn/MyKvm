@@ -18,6 +18,13 @@ my_ipkvm 是一个软件 IPKVM 项目：主控机通过 USB HDMI 采集卡读取
 - `docs/ipkvm-coarse-design.md`
 - `docs/references/README.md`
 
+## 开发规范
+
+- `AGENTS.md`
+- `docs/development-guidelines.md`
+- `.gitea/ISSUE_TEMPLATE/`
+- `.gitea/PULL_REQUEST_TEMPLATE.md`
+
 ## 验证
 
 ```powershell
