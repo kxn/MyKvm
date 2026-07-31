@@ -9,7 +9,7 @@ use std::sync::Arc;
 pub enum PixelFormat {
     Yuy2,
     Nv12,
-    Rgb,
+    Bgra8888,
     Mjpeg,
     H264,
     Unknown,
@@ -78,7 +78,7 @@ impl VideoFrame {
 pub type SharedVideoFrame = Arc<VideoFrame>;
 pub type FrameReceiver = tokio::sync::watch::Receiver<Option<SharedVideoFrame>>;
 
-pub trait FrameSource {
+pub trait FrameSource: Send + Sync {
     fn latest_frame(&self) -> Option<SharedVideoFrame>;
     fn subscribe(&self) -> FrameReceiver;
 }
@@ -109,23 +109,32 @@ mod tests {
     }
 
     #[test]
-    fn video_frame_records_sequence_stride_and_shared_bytes() {
+    fn video_frame_records_explicit_bgra8888_layout() {
         let bytes: Arc<[u8]> = Arc::from(vec![1, 2, 3, 4].into_boxed_slice());
 
         let frame = VideoFrame::new(
             42,
             MonotonicTimestamp::from_nanos(1_000),
-            2,
-            2,
-            8,
-            PixelFormat::Rgb,
+            1,
+            1,
+            4,
+            PixelFormat::Bgra8888,
             Arc::clone(&bytes),
         );
 
         assert_eq!(frame.seq, 42);
         assert_eq!(frame.timestamp, MonotonicTimestamp::from_nanos(1_000));
-        assert_eq!(frame.stride, 8);
+        assert_eq!(frame.pixel_format, PixelFormat::Bgra8888);
+        assert_eq!(frame.stride, 4);
         assert!(Arc::ptr_eq(&frame.data, &bytes));
+    }
+
+    #[cfg(feature = "mock")]
+    #[test]
+    fn frame_sources_are_send_and_sync() {
+        fn assert_send_sync<T: FrameSource + Send + Sync>() {}
+
+        assert_send_sync::<crate::mock::MockFrameSource>();
     }
 
     #[cfg(feature = "mock")]
@@ -141,13 +150,35 @@ mod tests {
             1,
             1,
             4,
-            PixelFormat::Rgb,
+            PixelFormat::Bgra8888,
             Arc::from(vec![0, 0, 0, 255].into_boxed_slice()),
         ));
 
         source.publish_frame(Arc::clone(&frame));
 
         assert!(Arc::ptr_eq(&source.latest_frame().unwrap(), &frame));
+        assert!(Arc::ptr_eq(receiver.borrow().as_ref().unwrap(), &frame));
+    }
+
+    #[cfg(feature = "mock")]
+    #[test]
+    fn mock_frame_source_retains_frame_published_before_subscription() {
+        use crate::mock::MockFrameSource;
+
+        let source = MockFrameSource::new();
+        let frame = Arc::new(VideoFrame::new(
+            8,
+            MonotonicTimestamp::from_nanos(800),
+            1,
+            1,
+            4,
+            PixelFormat::Bgra8888,
+            Arc::from(vec![0, 0, 0, 0].into_boxed_slice()),
+        ));
+
+        source.publish_frame(Arc::clone(&frame));
+        let receiver = source.subscribe();
+
         assert!(Arc::ptr_eq(receiver.borrow().as_ref().unwrap(), &frame));
     }
 }

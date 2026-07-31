@@ -129,7 +129,8 @@ flowchart LR
 - `ipkvm-session` 组合视频帧源、尺寸变化事件和输入接收端。
 - `ipkvm-desktop` 使用会话，负责窗口、输入事件、视频显示、DPI 换算和桌面鼠标捕获。
 - `ipkvm-headless` 使用会话，负责后台进程生命周期、设备选择、HTTP/noVNC、RFB 监听、状态接口和快照接口。
-- `ipkvm-rfb` 是对外协议入口，不是内部核心；它只依赖 `ipkvm-core` 和 `ipkvm-video` 抽象，不依赖 `ipkvm-session`。
+- `ipkvm-rfb` 是传输无关的 RFB 协议核心，不依赖 Tokio、TCP、WebSocket 或应用生命周期。
+- RFB TCP 和 WebSocket 传输位于 `ipkvm-headless`，共用 `ipkvm-rfb` 的状态机和编码逻辑。
 - 所有输入事件进入同一个串口写入队列，避免来自多个入口的 CH9329 帧交错。
 
 建议模块拆分：
@@ -138,9 +139,9 @@ flowchart LR
 ipkvm-core       CH9329 帧、HID 报告、坐标换算、输入状态机、串口写入队列接口
 ipkvm-video      采集设备枚举、格式选择、视频帧流、尺寸变化事件
 ipkvm-session    把视频帧源、尺寸变化事件和输入接收端组合成控制台会话
-ipkvm-rfb        最小 VNC/RFB 服务，支持 TCP 和 WebSocket 传输
+ipkvm-rfb        RFB 握手、消息解码、像素转换和帧缓冲编码
 ipkvm-desktop    本地图形界面
-ipkvm-headless   后台进程、HTTP、noVNC 静态文件、状态接口、配置
+ipkvm-headless   RFB TCP/WebSocket、后台进程、HTTP、noVNC、状态接口、配置
 ```
 
 ## 核心接口
@@ -230,7 +231,7 @@ VideoFormat
   width
   height
   fps
-  pixel_format: YUY2 | NV12 | RGB | MJPEG | H264 | Unknown
+  pixel_format: YUY2 | NV12 | Bgra8888 | MJPEG | H264 | Unknown
 
 VideoFrame
   seq
@@ -498,11 +499,13 @@ WebSocket 兼容：
 - 将会话默认串口波特率设为 CH9329 出厂值 9600。
 - 完成传输无关的 RFB 3.8 `None` 握手、客户端消息增量解码、`Raw` 编码和 `DesktopSize` 伪编码，并覆盖协议金样、任意分片和性质测试。
 - 未知正数 encoding 和负数 pseudo-encoding 会被保留且不使连接失败；未知客户端消息类型因无法确定长度而进入失败终态，不尝试扫描重同步。
+- 完成使用模拟 BGRA8888 帧源的单活动客户端 RFB TCP 库闭环，并以真实回环 TCP 自动验证握手、Raw、DesktopSize、像素格式协商、输入事件、事件反压、关闭和断线后继续监听。
 
 待完成：
 
 - 写 HID 用法编号到桌面和 RFB 键值的映射基础表。
-- 用模拟帧缓冲跑通普通 VNC 客户端和 noVNC。
+- 使用锁定版本的第三方普通 VNC 客户端验证兼容性。
+- 完成 RFB WebSocket 传输并使用锁定版本的 noVNC 验证兼容性。
 - 确定依赖许可证白名单。
 - 有明确维护的可用 runner 后，再设计并启用 Gitea Actions；在此之前以本地自动化验证结果作为 PR 验收证据。
 
