@@ -135,7 +135,8 @@ fn usage(value: u8) -> KeyboardUsage {
 #[cfg(test)]
 mod tests {
     use ipkvm_core::{
-        InputError, InputResult, InputSink, KeyEvent, KeyboardUsage, MouseMode, PointerEvent,
+        Ch9329InputSink, InputError, InputResult, InputSink, KeyEvent, KeyboardUsage, MouseMode,
+        PointerEvent, fake_serial::FakeCommandQueue,
     };
 
     use super::*;
@@ -246,5 +247,92 @@ mod tests {
             Ok(RfbKeyboardOutcome::Applied)
         );
         assert_eq!(sink.batches, vec![vec![down(0xe1), down(0x04)]]);
+    }
+
+    #[test]
+    fn aliases_share_one_usage_until_the_last_release() {
+        let mut mapper = RfbKeyboardMapper::new();
+        let mut sink = RecordingSink::default();
+
+        mapper.handle_key(&mut sink, true, 0xffe7).unwrap();
+        mapper.handle_key(&mut sink, true, 0xffeb).unwrap();
+        assert_eq!(sink.batches, vec![vec![down(0xe3)]]);
+
+        mapper.handle_key(&mut sink, false, 0xffe7).unwrap();
+        assert_eq!(sink.batches.len(), 1);
+
+        mapper.handle_key(&mut sink, false, 0xffeb).unwrap();
+        assert_eq!(sink.batches[1], vec![up(0xe3)]);
+    }
+
+    #[test]
+    fn duplicate_down_and_unknown_up_are_deterministic() {
+        let mut mapper = RfbKeyboardMapper::new();
+        let mut sink = RecordingSink::default();
+
+        mapper.handle_key(&mut sink, true, 'a' as u32).unwrap();
+        assert_eq!(
+            mapper.handle_key(&mut sink, true, 'a' as u32),
+            Ok(RfbKeyboardOutcome::DuplicateDown)
+        );
+        assert_eq!(
+            mapper.handle_key(&mut sink, false, 0xdead_beef),
+            Ok(RfbKeyboardOutcome::UnknownRelease)
+        );
+        assert_eq!(sink.batches, vec![vec![down(0x04)]]);
+    }
+
+    #[test]
+    fn required_characters_share_synthesized_shift() {
+        let mut mapper = RfbKeyboardMapper::new();
+        let mut sink = RecordingSink::default();
+
+        mapper.handle_key(&mut sink, true, 'A' as u32).unwrap();
+        mapper.handle_key(&mut sink, true, 'B' as u32).unwrap();
+        mapper.handle_key(&mut sink, false, 'A' as u32).unwrap();
+        mapper.handle_key(&mut sink, false, 'B' as u32).unwrap();
+
+        assert_eq!(
+            sink.batches,
+            vec![
+                vec![down(0xe1), down(0x04)],
+                vec![down(0x05)],
+                vec![up(0x04)],
+                vec![up(0x05), up(0xe1)],
+            ]
+        );
+    }
+
+    #[test]
+    fn real_ch9329_sink_rejects_seventh_key_without_mapper_state_drift() {
+        let queue = FakeCommandQueue::new();
+        let mut sink = Ch9329InputSink::new(queue.clone(), 0, MouseMode::Absolute);
+        let mut mapper = RfbKeyboardMapper::new();
+
+        for character in 'a'..='f' {
+            assert_eq!(
+                mapper.handle_key(&mut sink, true, character as u32),
+                Ok(RfbKeyboardOutcome::Applied)
+            );
+        }
+        assert_eq!(
+            mapper.handle_key(&mut sink, true, 'g' as u32),
+            Err(RfbKeyboardError::Input(InputError::RolloverLimitExceeded))
+        );
+        assert_eq!(
+            mapper.handle_key(&mut sink, false, 'g' as u32),
+            Ok(RfbKeyboardOutcome::UnknownRelease)
+        );
+
+        for character in 'a'..='f' {
+            assert_eq!(
+                mapper.handle_key(&mut sink, false, character as u32),
+                Ok(RfbKeyboardOutcome::Applied)
+            );
+        }
+
+        let batches = queue.accepted_batches();
+        assert_eq!(batches.len(), 12);
+        assert_eq!(batches.last().unwrap().frames()[0].data(), &[0; 8]);
     }
 }

@@ -727,7 +727,7 @@ git commit -m "feat: map RFB character shift state atomically (#7)"
 - 完成：设计中承诺的 X11 特殊键范围
 - 保证：别名引用、锁定键忽略、6KRO 回滚和错误类型稳定
 
-- [ ] **步骤 1：建立公共 API 集成测试**
+- [x] **步骤 1：建立公共 API 集成测试**
 
 新建 `crates/ipkvm-headless/tests/rfb_keyboard.rs`，实现只依赖公共 API 的 `RecordingSink`，覆盖：
 
@@ -760,7 +760,7 @@ fn public_mapper_handles_modifiers_function_keys_and_keypad() {
 - CapsLock/NumLock down 和 up 返回 `IgnoredLock` 或 `UnknownRelease`，且不调用 sink。
 - F13、Unicode 和未知 down 返回 `UnsupportedKeysym`。
 
-- [ ] **步骤 2：确认特殊键红灯**
+- [x] **步骤 2：确认特殊键红灯**
 
 ```powershell
 cargo test -p ipkvm-headless --test rfb_keyboard
@@ -768,7 +768,7 @@ cargo test -p ipkvm-headless --test rfb_keyboard
 
 预期：测试失败，指出特殊 keysym 仍为 `UnsupportedKeysym`。
 
-- [ ] **步骤 3：实现特殊键映射表**
+- [x] **步骤 3：实现特殊键映射表**
 
 在 `map_keysym` 的 ASCII 分支之后增加显式 match，至少包含：
 
@@ -805,7 +805,7 @@ cargo test -p ipkvm-headless --test rfb_keyboard
 
 使用区间算术实现 F1-F12 和 KP 0-9；其他 KP 键显式 match。`0xfe20` 映射为需要 Shift 的 Tab。
 
-- [ ] **步骤 4：增加状态边界红灯测试**
+- [x] **步骤 4：增加状态边界红灯测试**
 
 在 `keyboard.rs` 增加：
 
@@ -815,7 +815,7 @@ cargo test -p ipkvm-headless --test rfb_keyboard
 - 两个同为 Required 的字符共享合成 Shift，释放一个时不释放 Shift。
 - 七个普通键中的第七个被真实 `Ch9329InputSink<FakeCommandQueue>` 拒绝，释放第七个返回 `UnknownRelease`，前六个仍可逐个释放。
 
-- [ ] **步骤 5：实现别名和边界所需修正**
+- [x] **步骤 5：实现别名和边界所需修正**
 
 只修正红灯暴露出的状态计算问题：
 
@@ -826,7 +826,7 @@ cargo test -p ipkvm-headless --test rfb_keyboard
 
 不得为测试增加生产环境状态读取方法。
 
-- [ ] **步骤 6：运行 headless 全量测试**
+- [x] **步骤 6：运行 headless 全量测试**
 
 ```powershell
 cargo test -p ipkvm-headless
@@ -835,7 +835,7 @@ cargo clippy -p ipkvm-headless --all-targets --all-features -- -D warnings
 
 预期：全部通过。
 
-- [ ] **步骤 7：提交**
+- [x] **步骤 7：提交**
 
 ```powershell
 git add crates/ipkvm-headless
