@@ -7,8 +7,9 @@ mod serial;
 pub mod fake_serial;
 
 pub use ch9329::{
-    AbsoluteMouseReport, Ch9329Command, Ch9329Frame, Ch9329FrameError, Ch9329ReportError,
-    KeyboardReport, MAX_DATA_LEN, RelativeMouseReport,
+    AbsoluteMouseReport, Ch9329Command, Ch9329DecodeError, Ch9329Decoder, Ch9329Frame,
+    Ch9329FrameError, Ch9329Info, Ch9329ReportError, Ch9329Response, Ch9329ResponseError,
+    CommandStatus, KeyboardReport, LockLedState, MAX_DATA_LEN, RelativeMouseReport,
 };
 pub use geometry::{Ch9329Point, Point, ViewRect, map_pointer_to_ch9329};
 pub use input::{
