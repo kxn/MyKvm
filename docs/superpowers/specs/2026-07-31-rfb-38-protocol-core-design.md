@@ -185,6 +185,7 @@ pub struct RfbProtocolLimits {
 
 - desktop name 使用 UTF-8 字节长度，不超过限制和 `u32::MAX`。
 - 所有限制必须大于零，`max_framebuffer_bytes` 至少为 4，保证可以表达一个 BGRA 像素。
+- 初始尺寸的最紧密 BGRA 帧 `width * height * 4` 必须不超过 `max_framebuffer_bytes`，避免创建一个永远无法发送初始帧的连接。
 - `max_buffered_input_bytes` 必须至少能容纳 `max_cut_text_bytes + 8`、`max_encodings * 4 + 4` 和 20 字节 `SetPixelFormat` 中的最大值。
 - `max_queued_output_bytes` 必须至少能容纳 `max_framebuffer_bytes + 16`，其中 16 字节是单矩形 Raw update 的消息头和 rectangle header。
 - `max_queued_output_bytes` 还必须能同时容纳完整握手期间的全部服务器输出：12 字节版本、2 字节安全类型列表、4 字节 `SecurityResult` 和 `24 + desktop_name.len()` 字节 `ServerInit`。这样即使调用者到握手结束才第一次取走输出，也不会因合法握手进入容量错误。
@@ -313,7 +314,7 @@ impl RfbPixelFormat {
 - 任意消息可以跨任意数量的输入块。
 - 一个输入块可以包含任意数量的完整消息和一个不完整尾部。
 - 不完整消息不返回错误，只保留必要字节。
-- 解析完整消息后立即移除对应字节。
+- 解析循环用游标累计已消费长度，循环结束后一次性移除已消费前缀，避免连续小消息触发反复搬移和平方级开销。
 - 追加新输入前先用检查加法验证 `现有缓存长度 + bytes.len()`；超限时不追加任何新字节，直接返回致命错误，禁止先分配再检查。
 - `SetEncodings` 在等待完整 body 前先检查数量上限和乘法溢出。
 - `ClientCutText` 在等待完整 body 前先检查长度上限和加法溢出。
@@ -489,6 +490,7 @@ pub enum FramebufferUpdateOutcome {
 - 输出限制无法容纳其声明允许的最大 framebuffer 加消息头。
 - 输出限制无法容纳构造参数对应的完整握手输出。
 - 限制为零或 framebuffer 限制小于一个 BGRA 像素。
+- 初始尺寸的最紧密 BGRA 帧超过 framebuffer 限制。
 - 限制计算溢出。
 
 构造连接失败，不创建半初始化状态机。
