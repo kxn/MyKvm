@@ -136,6 +136,7 @@ pub enum RfbFramebufferError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn size_rejects_zero_dimensions() {
@@ -206,5 +207,30 @@ mod tests {
             BgraFrameView::new(size, usize::MAX, &[]),
             Err(RfbFramebufferError::SizeOverflow)
         ));
+    }
+
+    proptest! {
+        #[test]
+        fn rectangle_intersection_stays_inside_frame(
+            frame_width in 1_u16..=u16::MAX,
+            frame_height in 1_u16..=u16::MAX,
+            x in any::<u16>(),
+            y in any::<u16>(),
+            width in any::<u16>(),
+            height in any::<u16>(),
+        ) {
+            let frame = RfbSize::new(frame_width, frame_height).unwrap();
+            let rectangle = RfbRectangle { x, y, width, height };
+            if let Some(intersection) = rectangle.intersection(frame) {
+                prop_assert!(
+                    u32::from(intersection.x) + u32::from(intersection.width)
+                        <= u32::from(frame_width)
+                );
+                prop_assert!(
+                    u32::from(intersection.y) + u32::from(intersection.height)
+                        <= u32::from(frame_height)
+                );
+            }
+        }
     }
 }

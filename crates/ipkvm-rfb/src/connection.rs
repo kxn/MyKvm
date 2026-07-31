@@ -378,6 +378,7 @@ fn validate_config(config: &RfbConnectionConfig) -> Result<(), RfbConfigError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     fn config() -> RfbConnectionConfig {
         RfbConnectionConfig {
@@ -907,5 +908,63 @@ mod tests {
             Ok(FramebufferUpdateOutcome::ResizeAnnounced { size })
                 if size == RfbSize::new(3, 2).unwrap()
         ));
+    }
+
+    #[test]
+    fn protocol_version_accepts_every_split_boundary() {
+        for split in 0..=12 {
+            let mut connection = RfbConnectionCore::new(config()).unwrap();
+            connection.take_output();
+            assert!(connection.push_input(&b"RFB 003.008\n"[..split]).is_empty());
+            assert!(connection.push_input(&b"RFB 003.008\n"[split..]).is_empty());
+            assert_eq!(
+                connection.state(),
+                RfbConnectionState::AwaitingSecuritySelection
+            );
+            assert_eq!(connection.take_output(), [1, 1]);
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn output_capacity_failure_keeps_first_update_and_connection_state(
+            pixels in prop::array::uniform16(any::<u8>())
+        ) {
+            let mut config = config_with_size(2, 2);
+            config.limits.max_framebuffer_bytes = 16;
+            config.limits.max_queued_output_bytes = 50;
+            let mut connection = complete(config);
+            let frame =
+                BgraFrameView::new(RfbSize::new(2, 2).unwrap(), 8, &pixels).unwrap();
+            let before_state = connection.state();
+            let before_format = connection.pixel_format();
+            let before_encodings = connection.encoding_preferences().to_vec();
+
+            queue_full_frame(&mut connection, frame).unwrap();
+            prop_assert_eq!(
+                queue_full_frame(&mut connection, frame),
+                Err(RfbEncodeError::OutputQueueFull {
+                    attempted: 64,
+                    maximum: 50,
+                })
+            );
+
+            let mut expected = vec![
+                0, 0, 0, 1,
+                0, 0, 0, 0, 0, 2, 0, 2, 0, 0, 0, 0,
+            ];
+            for pixel in pixels.chunks_exact(4) {
+                expected.extend_from_slice(&[pixel[0], pixel[1], pixel[2], 0]);
+            }
+            prop_assert_eq!(connection.take_output(), expected);
+            prop_assert_eq!(connection.state(), before_state);
+            prop_assert_eq!(connection.pixel_format(), before_format);
+            prop_assert_eq!(
+                connection.encoding_preferences(),
+                before_encodings.as_slice()
+            );
+
+            prop_assert!(queue_full_frame(&mut connection, frame).is_ok());
+        }
     }
 }

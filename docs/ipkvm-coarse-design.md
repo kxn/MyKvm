@@ -496,12 +496,12 @@ WebSocket 兼容：
 - `ipkvm-video` 使用 `mock` feature 提供测试帧源。
 - `ipkvm-core` 使用 `mock` feature 提供 fake 命令队列。
 - 将会话默认串口波特率设为 CH9329 出厂值 9600。
+- 完成传输无关的 RFB 3.8 `None` 握手、客户端消息增量解码、`Raw` 编码和 `DesktopSize` 伪编码，并覆盖协议金样、任意分片和性质测试。
+- 未知正数 encoding 和负数 pseudo-encoding 会被保留且不使连接失败；未知客户端消息类型因无法确定长度而进入失败终态，不尝试扫描重同步。
 
 待完成：
 
 - 写 HID 用法编号到桌面和 RFB 键值的映射基础表。
-- 写 RFB 3.8 握手、`Raw` 编码、`DesktopSize` 伪编码协议样例测试。
-- 写未知伪编码忽略测试。
 - 用模拟帧缓冲跑通普通 VNC 客户端和 noVNC。
 - 确定依赖许可证白名单。
 

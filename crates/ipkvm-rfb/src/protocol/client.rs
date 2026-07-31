@@ -291,6 +291,34 @@ fn read_rectangle(bytes: &[u8], offset: usize) -> Option<RfbRectangle> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    fn representative_client_messages() -> Vec<Vec<u8>> {
+        let mut pixel_format = vec![0, 9, 8, 7];
+        pixel_format.extend_from_slice(&RfbPixelFormat::default_bgrx8888().to_wire());
+
+        let mut encodings = vec![2, 0, 0, 3];
+        encodings.extend_from_slice(&0_i32.to_be_bytes());
+        encodings.extend_from_slice(&(-223_i32).to_be_bytes());
+        encodings.extend_from_slice(&12_345_i32.to_be_bytes());
+
+        vec![
+            pixel_format,
+            encodings,
+            vec![3, 1, 0, 1, 0, 2, 0, 3, 0, 4],
+            vec![4, 1, 0, 0, 0, 0, 0xff, 0x0d],
+            vec![5, 3, 0, 10, 0, 20],
+            vec![6, 0, 0, 0, 0, 0, 0, 2, 0x41, 0xff],
+            vec![150, 1, 0, 5, 0, 6, 0, 7, 0, 8],
+        ]
+    }
+
+    fn representative_client_message_stream() -> Vec<u8> {
+        representative_client_messages()
+            .into_iter()
+            .flatten()
+            .collect()
+    }
 
     #[test]
     fn decodes_fixed_messages_and_nonzero_booleans() {
@@ -500,5 +528,55 @@ mod tests {
             decoder.push(&[]),
             vec![Err(RfbProtocolError::ConnectionFailed)]
         );
+    }
+
+    #[test]
+    fn every_message_decodes_at_every_split_boundary() {
+        for bytes in representative_client_messages() {
+            let mut single = ClientMessageDecoder::new(RfbProtocolLimits::default());
+            let expected = single.push(&bytes);
+            for split in 0..=bytes.len() {
+                let mut chunked = ClientMessageDecoder::new(RfbProtocolLimits::default());
+                let mut actual = chunked.push(&bytes[..split]);
+                actual.extend(chunked.push(&bytes[split..]));
+                assert_eq!(actual, expected, "split={split}, bytes={bytes:?}");
+            }
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn arbitrary_chunking_matches_single_push(
+            chunks in proptest::collection::vec(1_usize..16, 1..64)
+        ) {
+            let bytes = representative_client_message_stream();
+            let mut single = ClientMessageDecoder::new(RfbProtocolLimits::default());
+            let expected = single.push(&bytes);
+
+            let mut chunked = ClientMessageDecoder::new(RfbProtocolLimits::default());
+            let mut actual = Vec::new();
+            let mut offset = 0;
+            for requested in chunks {
+                if offset == bytes.len() {
+                    break;
+                }
+                let end = offset.saturating_add(requested).min(bytes.len());
+                actual.extend(chunked.push(&bytes[offset..end]));
+                offset = end;
+            }
+            actual.extend(chunked.push(&bytes[offset..]));
+
+            prop_assert_eq!(actual, expected);
+        }
+
+        #[test]
+        fn random_client_bytes_never_panic(
+            bytes in proptest::collection::vec(any::<u8>(), 0..4096)
+        ) {
+            let limits = RfbProtocolLimits::default();
+            let mut decoder = ClientMessageDecoder::new(limits);
+            let _ = decoder.push(&bytes);
+            prop_assert!(decoder.buffered_len() <= limits.max_buffered_input_bytes);
+        }
     }
 }

@@ -263,6 +263,16 @@ fn scale_channel(value: u8, maximum: u16) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    fn supported_test_formats() -> [RfbPixelFormat; 4] {
+        [
+            RfbPixelFormat::default_bgrx8888(),
+            RfbPixelFormat::new(32, 24, true, 255, 255, 255, 16, 8, 0).unwrap(),
+            RfbPixelFormat::new(16, 16, false, 31, 63, 31, 11, 5, 0).unwrap(),
+            RfbPixelFormat::new(8, 8, false, 7, 7, 3, 5, 2, 0).unwrap(),
+        ]
+    }
 
     #[test]
     fn default_format_matches_bgrx8888_wire_layout() {
@@ -388,5 +398,20 @@ mod tests {
 
         assert_eq!(little_bytes, [0x00, 0x80]);
         assert_eq!(big_bytes, [0x80, 0x00]);
+    }
+
+    proptest! {
+        #[test]
+        fn encoded_pixel_length_matches_bits_per_pixel(
+            blue in any::<u8>(),
+            green in any::<u8>(),
+            red in any::<u8>(),
+        ) {
+            for format in supported_test_formats() {
+                let mut output = Vec::new();
+                format.write_bgr(&mut output, blue, green, red);
+                prop_assert_eq!(output.len(), format.bytes_per_pixel());
+            }
+        }
     }
 }
