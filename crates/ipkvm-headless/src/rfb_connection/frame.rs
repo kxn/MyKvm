@@ -1,7 +1,7 @@
 use ipkvm_rfb::{BgraFrameView, RfbSize};
 use ipkvm_video::{PixelFormat, VideoFrame};
 
-use crate::rfb_connection::RfbFrameError;
+use super::RfbFrameError;
 
 pub(super) fn frame_view(frame: &VideoFrame) -> Result<BgraFrameView<'_>, RfbFrameError> {
     if frame.pixel_format != PixelFormat::Bgra8888 {

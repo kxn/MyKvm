@@ -6,13 +6,10 @@ use tokio::{
     sync::{mpsc, watch},
 };
 
-use super::{
-    RfbTcpConfig, RfbTcpServerError,
-    connection::{ConnectionEnd, RfbTcpConnectionError, run_connection},
-};
+use super::{RfbTcpConfig, RfbTcpServerError, transport::TcpTransport};
 use crate::rfb_connection::{
-    RfbClientId, RfbConnectionGate, RfbConnectionGateError, RfbConnectionPermit,
-    RfbDisconnectReason, RfbServerEvent,
+    ConnectionEnd, RfbClientId, RfbConnectionGate, RfbConnectionGateError, RfbConnectionPermit,
+    RfbDisconnectReason, RfbServerEvent, run_connection,
 };
 
 pub struct RfbTcpServer<S> {
@@ -74,20 +71,14 @@ impl<S: FrameSource + 'static> RfbTcpServer<S> {
             let end = run_connection(
                 client_id,
                 peer_addr,
-                stream,
+                TcpTransport::new(stream, self.config.read_buffer_bytes),
                 self.frame_source.subscribe(),
                 self.event_tx.clone(),
-                self.config.clone(),
+                self.config.connection.clone(),
                 shutdown.clone(),
             )
             .await;
 
-            if matches!(
-                &end,
-                ConnectionEnd::Failed(RfbTcpConnectionError::EventChannelClosed)
-            ) {
-                return Err(RfbTcpServerError::EventChannelClosed);
-            }
             let reason = end.reason().ok_or(RfbTcpServerError::EventChannelClosed)?;
             self.finish_connection(permit, client_id, peer_addr, reason)
                 .await?;

@@ -1,4 +1,8 @@
+mod driver;
+mod frame;
 mod gate;
+mod pending;
+mod transport;
 
 use std::{io::ErrorKind, net::SocketAddr, time::Duration};
 
@@ -9,8 +13,10 @@ use ipkvm_rfb::{
 use ipkvm_video::PixelFormat;
 use thiserror::Error;
 
+pub(crate) use driver::{ConnectionEnd, run_connection};
 pub(crate) use gate::RfbConnectionPermit;
 pub use gate::{RfbConnectionGate, RfbConnectionGateError};
+pub(crate) use transport::{RfbTransport, RfbTransportError, RfbTransportRead};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RfbConnectionSettings {

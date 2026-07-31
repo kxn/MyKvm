@@ -1,7 +1,5 @@
-mod connection;
-mod frame;
-mod pending;
 mod server;
+mod transport;
 
 use std::io;
 
