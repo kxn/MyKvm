@@ -31,6 +31,7 @@ demo = ["ipkvm-core/mock", "ipkvm-video/mock"]
 [[bin]]
 name = "ipkvm-headless"
 path = "src/main.rs"
+required-features = ["demo"]
 
 [[bin]]
 name = "ipkvm-browser-fixture"
