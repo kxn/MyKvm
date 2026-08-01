@@ -13,7 +13,7 @@ use tokio::sync::{mpsc, watch};
 use super::{RfbWebSocketConfig, RfbWebSocketServiceError, transport::WebSocketTransport};
 use crate::rfb_connection::{
     RfbConnectionGate, RfbConnectionGateError, RfbConnectionReservation, RfbServerEvent,
-    finalize_connection, run_managed_connection,
+    RfbTransportKind, finalize_connection, run_managed_connection,
 };
 
 pub struct RfbWebSocketService<S> {
@@ -64,7 +64,10 @@ async fn handle_upgrade<S: FrameSource + 'static>(
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
 
-    let permit = match state.gate.try_acquire() {
+    let permit = match state
+        .gate
+        .try_acquire(RfbTransportKind::WebSocket, peer_addr)
+    {
         Ok(permit) => permit,
         Err(error) => return gate_error_status(error).into_response(),
     };

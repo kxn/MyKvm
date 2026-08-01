@@ -9,7 +9,7 @@ use tokio::{
 use super::{RfbTcpConfig, RfbTcpServerError, transport::TcpTransport};
 use crate::rfb_connection::{
     ConnectionEnd, RfbConnectionFinalizeError, RfbConnectionGate, RfbConnectionGateError,
-    RfbServerEvent, finalize_connection, run_managed_connection,
+    RfbServerEvent, RfbTransportKind, finalize_connection, run_managed_connection,
 };
 
 pub struct RfbTcpServer<S> {
@@ -66,7 +66,7 @@ impl<S: FrameSource + 'static> RfbTcpServer<S> {
                 let _ = notifier.send(peer_addr);
             }
             let reservation = tokio::select! {
-                result = self.gate.acquire() => {
+                result = self.gate.acquire(RfbTransportKind::Tcp, peer_addr) => {
                     result.map_err(|error| match error {
                         RfbConnectionGateError::ClientIdOverflow => RfbTcpServerError::ClientIdOverflow,
                         RfbConnectionGateError::Poisoned => RfbTcpServerError::ConnectionGatePoisoned,
@@ -235,7 +235,8 @@ mod tests {
         owner.abort();
         assert!(owner.await.unwrap_err().is_cancelled());
         assert_eq!(
-            gate.try_acquire().unwrap_err(),
+            gate.try_acquire(RfbTransportKind::Tcp, "127.0.0.1:5900".parse().unwrap())
+                .unwrap_err(),
             RfbConnectionGateError::Poisoned
         );
 
