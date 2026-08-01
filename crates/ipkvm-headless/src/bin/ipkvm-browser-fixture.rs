@@ -40,6 +40,7 @@ impl LineWriter {
     }
 }
 
+#[derive(Clone)]
 struct RecordingInputSink {
     output: LineWriter,
 }

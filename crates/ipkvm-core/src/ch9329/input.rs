@@ -245,7 +245,7 @@ impl MouseState {
     }
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Ch9329InputSink<Q> {
     queue: Q,
     address: u8,
