@@ -19,14 +19,20 @@
 #[cfg(all(unix, feature = "mf"))]
 pub use crate::camera_nokhwa::{CameraSource, list_cameras};
 
+// Windows 实现和「无相机后端」stub 都用到这些；Linux/macOS（nokhwa 后端接管）不需要。
+// 守卫条件：Windows 或 未启用 mf（stub 路径）。
+#[cfg(any(windows, not(feature = "mf")))]
 use std::sync::{Arc, RwLock};
 
 #[cfg(windows)]
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use thiserror::Error;
+
+#[cfg(any(windows, not(feature = "mf")))]
 use tokio::sync::watch;
 
+#[cfg(any(windows, not(feature = "mf")))]
 use crate::{FrameReceiver, FrameSource, SharedVideoFrame, VideoSourceInfo, VideoSourceKind};
 
 #[cfg(windows)]
