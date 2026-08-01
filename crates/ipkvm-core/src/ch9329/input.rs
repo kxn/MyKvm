@@ -32,10 +32,22 @@ impl KeyboardState {
                 }
             }
         }
-        if next == *self {
+        if next.has_same_pressed_state(self) {
             return Ok(None);
         }
         Ok(Some((next, next.report())))
+    }
+
+    /// 键盘报告语义是“修饰键位 + 普通键集合”，槽位排列顺序不参与比较。
+    fn has_same_pressed_state(&self, other: &KeyboardState) -> bool {
+        if self.modifiers != other.modifiers {
+            return false;
+        }
+        let mut self_keys = self.keys;
+        let mut other_keys = other.keys;
+        self_keys.sort_unstable();
+        other_keys.sort_unstable();
+        self_keys == other_keys
     }
 
     fn press(&mut self, usage: u8) -> InputResult<bool> {
@@ -394,13 +406,311 @@ fn split_relative(mut dx: i16, mut dy: i16, mut wheel: i16) -> Vec<(i8, i8, i8)>
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
     use crate::fake_serial::FakeCommandQueue;
     use crate::{
-        CommandQueueError, FramebufferSize, InputError, InputSink, KeyEvent, KeyboardUsage,
-        MouseMode, PointerButton, PointerEvent,
+        Ch9329Frame, CommandQueueError, FramebufferSize, InputError, InputSink, KeyEvent,
+        KeyboardUsage, MouseMode, PointerButton, PointerEvent,
     };
     use proptest::prelude::*;
+
+    fn expected_frame(command: u8, data: &[u8]) -> Vec<u8> {
+        let mut bytes = vec![0x57, 0xab, 0x00, command, data.len() as u8];
+        bytes.extend_from_slice(data);
+        let checksum = bytes.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte));
+        bytes.push(checksum);
+        bytes
+    }
+
+    fn new_batches(queue: &FakeCommandQueue, before: usize) -> Vec<Vec<u8>> {
+        queue.accepted_batches()[before..]
+            .iter()
+            .flat_map(|batch| batch.frames())
+            .map(|frame| frame.as_bytes().to_vec())
+            .collect()
+    }
+
+    fn test_modifier_mask(usage: u8) -> Option<u8> {
+        (0xe0..=0xe7)
+            .contains(&usage)
+            .then(|| 1u8 << (usage - 0xe0))
+    }
+
+    /// 独立参考模型：只按协议语义维护“修饰键位 + 普通键集合”，
+    /// 不依赖生产 `KeyboardState` 的槽位实现。
+    #[derive(Clone, Debug, Default, Eq, PartialEq)]
+    struct KeyboardModel {
+        modifiers: u8,
+        regular: BTreeSet<u8>,
+    }
+
+    impl KeyboardModel {
+        fn apply(&mut self, events: &[KeyEvent]) -> Result<bool, ()> {
+            let mut next = self.clone();
+            for event in events {
+                match *event {
+                    KeyEvent::Down { usage } => {
+                        let value = usage.get();
+                        if let Some(mask) = test_modifier_mask(value) {
+                            next.modifiers |= mask;
+                        } else if next.regular.len() >= 6 && !next.regular.contains(&value) {
+                            return Err(());
+                        } else {
+                            next.regular.insert(value);
+                        }
+                    }
+                    KeyEvent::Up { usage } => {
+                        let value = usage.get();
+                        if let Some(mask) = test_modifier_mask(value) {
+                            next.modifiers &= !mask;
+                        } else {
+                            next.regular.remove(&value);
+                        }
+                    }
+                }
+            }
+            let changed = next != *self;
+            *self = next;
+            Ok(changed)
+        }
+    }
+
+    /// 键盘报告的 6 个普通键槽位是无序集合：按集合和修饰键比较，
+    /// 不约束生产实现的槽位排列顺序。
+    fn assert_keyboard_frame_matches_model(frame_bytes: &[u8], model: &KeyboardModel) -> bool {
+        let Ok(frame) = Ch9329Frame::parse(frame_bytes) else {
+            return false;
+        };
+        let data = frame.data();
+        if data.len() != 8 || data[0] != model.modifiers || data[1] != 0 {
+            return false;
+        }
+        let keys: BTreeSet<u8> = data[2..].iter().copied().filter(|key| *key != 0).collect();
+        keys == model.regular
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    enum ExpectedPointerFrame {
+        Absolute {
+            buttons: u8,
+            x: u16,
+            y: u16,
+            wheel: i8,
+        },
+        Relative {
+            buttons: u8,
+            dx: i8,
+            dy: i8,
+            wheel: i8,
+        },
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    struct PointerModel {
+        mode: MouseMode,
+        buttons: u8,
+        last_absolute: Option<(u16, u16)>,
+    }
+
+    impl PointerModel {
+        fn new(mode: MouseMode) -> Self {
+            Self {
+                mode,
+                buttons: 0,
+                last_absolute: None,
+            }
+        }
+
+        fn apply(&mut self, events: &[PointerEvent]) -> Result<Vec<ExpectedPointerFrame>, ()> {
+            let mut next = *self;
+            let mut frames = Vec::new();
+            for event in events {
+                match *event {
+                    PointerEvent::AbsoluteMove {
+                        x,
+                        y,
+                        framebuffer_size,
+                    } => {
+                        if next.mode != MouseMode::Absolute
+                            || framebuffer_size.width == 0
+                            || framebuffer_size.height == 0
+                            || x >= framebuffer_size.width
+                            || y >= framebuffer_size.height
+                        {
+                            return Err(());
+                        }
+                        let mapped_x =
+                            (4096u64 * u64::from(x) / u64::from(framebuffer_size.width)) as u16;
+                        let mapped_y =
+                            (4096u64 * u64::from(y) / u64::from(framebuffer_size.height)) as u16;
+                        frames.push(ExpectedPointerFrame::Absolute {
+                            buttons: next.buttons,
+                            x: mapped_x,
+                            y: mapped_y,
+                            wheel: 0,
+                        });
+                        next.last_absolute = Some((mapped_x, mapped_y));
+                    }
+                    PointerEvent::RelativeMove { dx, dy } => {
+                        if next.mode != MouseMode::Relative {
+                            return Err(());
+                        }
+                        for (part_dx, part_dy, _) in test_split_delta(dx, dy, 0) {
+                            frames.push(ExpectedPointerFrame::Relative {
+                                buttons: next.buttons,
+                                dx: part_dx,
+                                dy: part_dy,
+                                wheel: 0,
+                            });
+                        }
+                    }
+                    PointerEvent::Button { button, down } => {
+                        let mask = button_mask(button);
+                        if (next.buttons & mask != 0) == down {
+                            continue;
+                        }
+                        if down {
+                            next.buttons |= mask;
+                        } else {
+                            next.buttons &= !mask;
+                        }
+                        match next.mode {
+                            MouseMode::Absolute => {
+                                let (x, y) = next.last_absolute.ok_or(())?;
+                                frames.push(ExpectedPointerFrame::Absolute {
+                                    buttons: next.buttons,
+                                    x,
+                                    y,
+                                    wheel: 0,
+                                });
+                            }
+                            MouseMode::Relative => {
+                                frames.push(ExpectedPointerFrame::Relative {
+                                    buttons: next.buttons,
+                                    dx: 0,
+                                    dy: 0,
+                                    wheel: 0,
+                                });
+                            }
+                        }
+                    }
+                    PointerEvent::Wheel { delta } => {
+                        let chunks = test_split_delta(0, 0, delta);
+                        if chunks.is_empty() {
+                            continue;
+                        }
+                        match next.mode {
+                            MouseMode::Absolute => {
+                                let (x, y) = next.last_absolute.ok_or(())?;
+                                for (_, _, wheel) in chunks {
+                                    frames.push(ExpectedPointerFrame::Absolute {
+                                        buttons: next.buttons,
+                                        x,
+                                        y,
+                                        wheel,
+                                    });
+                                }
+                            }
+                            MouseMode::Relative => {
+                                for (dx, dy, wheel) in chunks {
+                                    frames.push(ExpectedPointerFrame::Relative {
+                                        buttons: next.buttons,
+                                        dx,
+                                        dy,
+                                        wheel,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            *self = next;
+            Ok(frames)
+        }
+    }
+
+    fn test_split_delta(mut dx: i16, mut dy: i16, mut wheel: i16) -> Vec<(i8, i8, i8)> {
+        let mut chunks = Vec::new();
+        while dx != 0 || dy != 0 || wheel != 0 {
+            let part_dx = dx.clamp(-127, 127) as i8;
+            let part_dy = dy.clamp(-127, 127) as i8;
+            let part_wheel = wheel.clamp(-127, 127) as i8;
+            chunks.push((part_dx, part_dy, part_wheel));
+            dx -= i16::from(part_dx);
+            dy -= i16::from(part_dy);
+            wheel -= i16::from(part_wheel);
+        }
+        chunks
+    }
+
+    fn parse_pointer_frame(frame: &Ch9329Frame) -> ExpectedPointerFrame {
+        match frame.command() {
+            0x04 => ExpectedPointerFrame::Absolute {
+                buttons: frame.data()[1],
+                x: u16::from_le_bytes([frame.data()[2], frame.data()[3]]),
+                y: u16::from_le_bytes([frame.data()[4], frame.data()[5]]),
+                wheel: frame.data()[6] as i8,
+            },
+            0x05 => ExpectedPointerFrame::Relative {
+                buttons: frame.data()[1],
+                dx: frame.data()[2] as i8,
+                dy: frame.data()[3] as i8,
+                wheel: frame.data()[4] as i8,
+            },
+            other => panic!("unexpected pointer command: {other:#04x}"),
+        }
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum RawPointerEvent {
+        Move(i32, i32),
+        Button(u8, bool),
+        Wheel(i16),
+    }
+
+    fn raw_pointer_event() -> impl Strategy<Value = RawPointerEvent> {
+        prop_oneof![
+            (-1000i32..=1000, -1000i32..=1000).prop_map(|(dx, dy)| RawPointerEvent::Move(dx, dy)),
+            (0u8..=2, any::<bool>())
+                .prop_map(|(button, down)| RawPointerEvent::Button(button, down)),
+            (-64i16..=64).prop_map(RawPointerEvent::Wheel),
+        ]
+    }
+
+    fn pointer_button(index: u8) -> PointerButton {
+        match index {
+            0 => PointerButton::Left,
+            1 => PointerButton::Middle,
+            _ => PointerButton::Right,
+        }
+    }
+
+    fn decode_pointer_event(
+        event: RawPointerEvent,
+        absolute: bool,
+        width: u32,
+        height: u32,
+    ) -> PointerEvent {
+        match event {
+            RawPointerEvent::Move(dx, dy) if absolute => PointerEvent::AbsoluteMove {
+                x: dx.rem_euclid(i32::try_from(width).unwrap()) as u32,
+                y: dy.rem_euclid(i32::try_from(height).unwrap()) as u32,
+                framebuffer_size: FramebufferSize { width, height },
+            },
+            RawPointerEvent::Move(dx, dy) => PointerEvent::RelativeMove {
+                dx: dx as i16,
+                dy: dy as i16,
+            },
+            RawPointerEvent::Button(index, down) => PointerEvent::Button {
+                button: pointer_button(index),
+                down,
+            },
+            RawPointerEvent::Wheel(delta) => PointerEvent::Wheel { delta },
+        }
+    }
 
     #[test]
     fn keyboard_usage_rejects_reserved_zero() {
@@ -475,6 +785,36 @@ mod tests {
             .unwrap();
 
         assert!(queue.accepted_batches().is_empty());
+    }
+
+    #[test]
+    fn batch_that_only_reorders_slots_does_not_enqueue() {
+        let queue = FakeCommandQueue::new();
+        let mut sink = Ch9329InputSink::new(queue.clone(), 0, MouseMode::Absolute);
+        let a = KeyboardUsage::new(0x04).unwrap();
+        let other = KeyboardUsage::new(0x1b).unwrap();
+
+        sink.handle_key(KeyEvent::Down { usage: other }).unwrap();
+        sink.handle_key(KeyEvent::Down { usage: a }).unwrap();
+        let before = queue.accepted_batches().len();
+        assert_eq!(before, 2);
+
+        // 释放后在同一批内重按：按键集合不变，只是槽位顺序变化。
+        sink.handle_key_batch(&[
+            KeyEvent::Up { usage: other },
+            KeyEvent::Down { usage: other },
+        ])
+        .unwrap();
+
+        assert_eq!(queue.accepted_batches().len(), before);
+        let keys: BTreeSet<u8> = sink
+            .keyboard
+            .keys
+            .iter()
+            .copied()
+            .filter(|key| *key != 0)
+            .collect();
+        assert_eq!(keys, BTreeSet::from([0x04, 0x1b]));
     }
 
     #[test]
@@ -1055,6 +1395,303 @@ mod tests {
                 totals,
                 (i32::from(dx), i32::from(dy), i32::from(wheel))
             );
+        }
+    }
+
+    #[test]
+    fn mixed_input_transcript_matches_protocol_golden_frames() {
+        let queue = FakeCommandQueue::new();
+        let mut sink = Ch9329InputSink::new(queue.clone(), 0, MouseMode::Absolute);
+        let size = FramebufferSize {
+            width: 1280,
+            height: 720,
+        };
+        let a = KeyboardUsage::new(0x04).unwrap();
+        let shift = KeyboardUsage::new(0xe1).unwrap();
+
+        sink.handle_key(KeyEvent::Down { usage: a }).unwrap();
+        sink.handle_key(KeyEvent::Down { usage: shift }).unwrap();
+        sink.handle_key(KeyEvent::Up { usage: a }).unwrap();
+        sink.handle_pointer(PointerEvent::AbsoluteMove {
+            x: 100,
+            y: 100,
+            framebuffer_size: size,
+        })
+        .unwrap();
+        sink.handle_pointer(PointerEvent::Button {
+            button: PointerButton::Left,
+            down: true,
+        })
+        .unwrap();
+        sink.handle_pointer(PointerEvent::Button {
+            button: PointerButton::Left,
+            down: false,
+        })
+        .unwrap();
+        sink.release_all().unwrap();
+
+        let frames: Vec<Vec<u8>> = queue
+            .accepted_batches()
+            .iter()
+            .flat_map(|batch| batch.frames())
+            .map(|frame| frame.as_bytes().to_vec())
+            .collect();
+        let expected = vec![
+            expected_frame(0x02, &[0x00, 0x00, 0x04, 0, 0, 0, 0, 0]),
+            expected_frame(0x02, &[0x02, 0x00, 0x04, 0, 0, 0, 0, 0]),
+            expected_frame(0x02, &[0x02, 0x00, 0x00, 0, 0, 0, 0, 0]),
+            expected_frame(0x04, &[0x02, 0x00, 0x40, 0x01, 0x38, 0x02, 0x00]),
+            expected_frame(0x04, &[0x02, 0x01, 0x40, 0x01, 0x38, 0x02, 0x00]),
+            expected_frame(0x04, &[0x02, 0x00, 0x40, 0x01, 0x38, 0x02, 0x00]),
+            expected_frame(0x02, &[0x00, 0x00, 0x00, 0, 0, 0, 0, 0]),
+            expected_frame(0x04, &[0x02, 0x00, 0x40, 0x01, 0x38, 0x02, 0x00]),
+        ];
+
+        assert_eq!(frames, expected);
+        assert_eq!(queue.stats().batches_accepted, 7);
+        assert_eq!(queue.stats().frames_accepted, 8);
+    }
+
+    proptest! {
+        #[test]
+        fn keyboard_reports_match_independent_reference_model(
+            batches in proptest::collection::vec(
+                proptest::collection::vec((0x04u8..=0x20, any::<bool>()), 0..8),
+                0..32,
+            ),
+        ) {
+            let queue = FakeCommandQueue::new();
+            let mut sink = Ch9329InputSink::new(queue.clone(), 0, MouseMode::Absolute);
+            let mut model = KeyboardModel::default();
+
+            for raw_events in batches {
+                let events: Vec<KeyEvent> = raw_events
+                    .into_iter()
+                    .map(|(value, down)| {
+                        let usage = KeyboardUsage::new(value).unwrap();
+                        if down {
+                            KeyEvent::Down { usage }
+                        } else {
+                            KeyEvent::Up { usage }
+                        }
+                    })
+                    .collect();
+                let mut preview = model.clone();
+                let preview_result = preview.apply(&events);
+                let before = queue.accepted_batches().len();
+                let sink_result = sink.handle_key_batch(&events);
+
+                match preview_result {
+                    Ok(changed) => {
+                        prop_assert!(sink_result.is_ok());
+                        if changed {
+                            let frames = new_batches(&queue, before);
+                            prop_assert_eq!(frames.len(), 1);
+                            prop_assert!(assert_keyboard_frame_matches_model(
+                                &frames[0],
+                                &preview
+                            ));
+                        } else {
+                            prop_assert_eq!(queue.accepted_batches().len(), before);
+                        }
+                        model = preview;
+                    }
+                    Err(()) => {
+                        prop_assert!(sink_result.is_err());
+                        prop_assert_eq!(queue.accepted_batches().len(), before);
+                    }
+                }
+
+                prop_assert_eq!(sink.keyboard.modifiers, model.modifiers);
+                let occupied: BTreeSet<u8> = sink
+                    .keyboard
+                    .keys
+                    .iter()
+                    .copied()
+                    .filter(|key| *key != 0)
+                    .collect();
+                prop_assert!(occupied == model.regular);
+            }
+        }
+
+        #[test]
+        fn keyboard_failure_rolls_back_to_reference_model(
+            batches in proptest::collection::vec(
+                (
+                    proptest::collection::vec((0x04u8..=0x20, any::<bool>()), 0..8),
+                    any::<bool>(),
+                ),
+                0..24,
+            ),
+        ) {
+            let queue = FakeCommandQueue::new();
+            let mut sink = Ch9329InputSink::new(queue.clone(), 0, MouseMode::Absolute);
+            let mut model = KeyboardModel::default();
+
+            for (raw_events, fail_batch) in batches {
+                let events: Vec<KeyEvent> = raw_events
+                    .into_iter()
+                    .map(|(value, down)| {
+                        let usage = KeyboardUsage::new(value).unwrap();
+                        if down {
+                            KeyEvent::Down { usage }
+                        } else {
+                            KeyEvent::Up { usage }
+                        }
+                    })
+                    .collect();
+                let mut preview = model.clone();
+                let preview_result = preview.apply(&events);
+                let changed = preview_result.unwrap_or(false);
+                let before = queue.accepted_batches().len();
+
+                if fail_batch && changed {
+                    queue.fail_next(CommandQueueError::Closed);
+                }
+                let sink_result = sink.handle_key_batch(&events);
+
+                if fail_batch && changed {
+                    prop_assert!(sink_result.is_err());
+                    prop_assert_eq!(queue.accepted_batches().len(), before);
+                } else {
+                    match preview_result {
+                        Ok(true) => {
+                            prop_assert!(sink_result.is_ok());
+                            let frames = new_batches(&queue, before);
+                            prop_assert_eq!(frames.len(), 1);
+                            prop_assert!(assert_keyboard_frame_matches_model(
+                                &frames[0],
+                                &preview
+                            ));
+                            model = preview;
+                        }
+                        Ok(false) => {
+                            prop_assert!(sink_result.is_ok());
+                            prop_assert_eq!(queue.accepted_batches().len(), before);
+                        }
+                        Err(()) => {
+                            prop_assert!(sink_result.is_err());
+                            prop_assert_eq!(queue.accepted_batches().len(), before);
+                        }
+                    }
+                }
+
+                prop_assert_eq!(sink.keyboard.modifiers, model.modifiers);
+                let occupied: BTreeSet<u8> = sink
+                    .keyboard
+                    .keys
+                    .iter()
+                    .copied()
+                    .filter(|key| *key != 0)
+                    .collect();
+                prop_assert!(occupied == model.regular);
+            }
+        }
+
+        #[test]
+        fn pointer_reports_match_independent_reference_model(
+            absolute in any::<bool>(),
+            width in 1u32..=64,
+            height in 1u32..=64,
+            events in proptest::collection::vec(raw_pointer_event(), 0..32),
+        ) {
+            let queue = FakeCommandQueue::new();
+            let mode = if absolute {
+                MouseMode::Absolute
+            } else {
+                MouseMode::Relative
+            };
+            let mut sink = Ch9329InputSink::new(queue.clone(), 0, mode);
+            let mut model = PointerModel::new(mode);
+
+            for event in events {
+                let pointer_event = decode_pointer_event(event, absolute, width, height);
+                let mut preview = model;
+                let preview_frames = preview.apply(std::slice::from_ref(&pointer_event));
+                let before = queue.accepted_batches().len();
+                let sink_result = sink.handle_pointer(pointer_event);
+
+                match preview_frames {
+                    Ok(expected_frames) => {
+                        prop_assert!(sink_result.is_ok());
+                        let frames = new_batches(&queue, before);
+                        prop_assert_eq!(frames.len(), expected_frames.len());
+                        for (actual, expected) in frames.iter().zip(expected_frames.iter()) {
+                            let parsed = parse_pointer_frame(&Ch9329Frame::parse(actual).unwrap());
+                            prop_assert_eq!(&parsed, expected);
+                        }
+                        model = preview;
+                    }
+                    Err(()) => {
+                        prop_assert!(sink_result.is_err());
+                        prop_assert_eq!(queue.accepted_batches().len(), before);
+                    }
+                }
+
+                prop_assert_eq!(sink.mouse.buttons, model.buttons);
+                prop_assert_eq!(sink.mouse.last_absolute, model.last_absolute);
+            }
+        }
+
+        #[test]
+        fn pointer_failure_rolls_back_to_reference_model(
+            absolute in any::<bool>(),
+            width in 1u32..=64,
+            height in 1u32..=64,
+            events in proptest::collection::vec(
+                (raw_pointer_event(), any::<bool>()),
+                0..24,
+            ),
+        ) {
+            let queue = FakeCommandQueue::new();
+            let mode = if absolute {
+                MouseMode::Absolute
+            } else {
+                MouseMode::Relative
+            };
+            let mut sink = Ch9329InputSink::new(queue.clone(), 0, mode);
+            let mut model = PointerModel::new(mode);
+
+            for (event, fail_batch) in events {
+                let pointer_event = decode_pointer_event(event, absolute, width, height);
+                let mut preview = model;
+                let preview_frames = preview.apply(std::slice::from_ref(&pointer_event));
+                let should_enqueue = preview_frames
+                    .as_ref()
+                    .is_ok_and(|frames| !frames.is_empty());
+                let before = queue.accepted_batches().len();
+
+                if fail_batch && should_enqueue {
+                    queue.fail_next(CommandQueueError::Closed);
+                }
+                let sink_result = sink.handle_pointer(pointer_event);
+
+                if fail_batch && should_enqueue {
+                    prop_assert!(sink_result.is_err());
+                    prop_assert_eq!(queue.accepted_batches().len(), before);
+                } else {
+                    match preview_frames {
+                        Ok(expected_frames) => {
+                            prop_assert!(sink_result.is_ok());
+                            let frames = new_batches(&queue, before);
+                            prop_assert_eq!(frames.len(), expected_frames.len());
+                            for (actual, expected) in frames.iter().zip(expected_frames.iter()) {
+                                let parsed =
+                                    parse_pointer_frame(&Ch9329Frame::parse(actual).unwrap());
+                                prop_assert_eq!(&parsed, expected);
+                            }
+                            model = preview;
+                        }
+                        Err(()) => {
+                            prop_assert!(sink_result.is_err());
+                            prop_assert_eq!(queue.accepted_batches().len(), before);
+                        }
+                    }
+                }
+
+                prop_assert_eq!(sink.mouse.buttons, model.buttons);
+                prop_assert_eq!(sink.mouse.last_absolute, model.last_absolute);
+            }
         }
     }
 }

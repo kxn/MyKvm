@@ -1,0 +1,10 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc c2f23372662b18bf29d94494db4f90df8377ce616db6509c36543247a7bbd7d0 # shrinks to batches = [([(21, true), (4, true)], false)]
+cc 63cf83ef07cc0b2fc4f198e68e040095b7368f6424fa8addf6a23e2e70fc8dcc # shrinks to batches = [[(11, true), (4, true)]]
+cc d231ffec02920a69a25811ba6a494170da778e72b08da8ef0f1c02da7dd172bb # shrinks to batches = [[(27, true)], [(4, true)], [(27, false), (27, true)]]
+cc 599f4ca83ad004b3918206bbfc71a06d6ce2442f74e0717da1d6fcf3e2d0316b # shrinks to batches = [([(30, true), (20, true)], false), ([(30, false), (30, true)], false)]
