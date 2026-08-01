@@ -51,33 +51,43 @@ impl CameraSource {
             .ok_or_else(|| {
                 CameraSourceError::Open(device_id.to_owned(), "device not found".into())
             })?;
-        // 用 None 让 nokhwa 自动选择设备支持的格式（分辨率/帧率由驱动决定）；
-        // RgbAFormat 仅用于后续 decode 输出，不影响捕获格式协商。
-        let req = RequestedFormat::new::<RgbAFormat>(RequestedFormatType::None);
-        // CameraIndex 接受 Index 或 String（V4L2 设备路径如 /dev/video0）。我们的 id 形如
-        // "{index}:{name}"，取冒号前的数字部分作 index；解析失败则用完整字符串。
-        let cam_index = parse_camera_index(&chosen.id);
-        let mut camera = Camera::new(cam_index, req).map_err(|e| {
-            CameraSourceError::Open(chosen.display_name.clone(), format!("nokhwa open: {e}"))
-        })?;
         let name = chosen.display_name.clone();
-        camera
-            .open_stream()
-            .map_err(|e| CameraSourceError::Open(name.clone(), format!("open_stream: {e}")))?;
+        let cam_index = parse_camera_index(&chosen.id);
 
         let latest = Arc::new(RwLock::new(None));
         let (sender, _receiver) = watch::channel(None);
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
-        // 采集线程：frame() 阻塞直到驱动交付下一帧（事件驱动，无帧时线程睡眠）。
+        // nokhwa 的 Camera 内部持 Box<dyn CaptureBackendTrait>（非 Send），不能跨线程 move，
+        // 所以在采集线程内创建 + open_stream + 持续 frame()。用 sync_channel 把初始化结果
+        // 送回 open（失败则透传错误），open 返回后线程继续跑采集循环。
+        let (init_tx, init_rx) = std::sync::mpsc::sync_channel::<Result<(), String>>(1);
         let task_latest = Arc::clone(&latest);
         let task_sender = sender.clone();
         let task_stop = Arc::clone(&stop);
+        let init_name = name.clone();
         let handle = std::thread::Builder::new()
             .name("camera-nokhwa".into())
             .spawn(move || {
+                // 线程内创建相机：RequestedFormat::None 让驱动自选格式；RgbAFormat 仅用于
+                // 后续 decode 输出，不影响捕获协商。
+                let req = RequestedFormat::new::<RgbAFormat>(RequestedFormatType::None);
+                let mut camera = match Camera::new(cam_index, req) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        let _ = init_tx.send(Err(format!("nokhwa open: {e}")));
+                        return;
+                    }
+                };
+                if let Err(e) = camera.open_stream() {
+                    let _ = init_tx.send(Err(format!("open_stream: {e}")));
+                    return;
+                }
+                // 初始化成功：通知 open 可以返回了。
+                let _ = init_tx.send(Ok(()));
                 let started = std::time::Instant::now();
                 let mut seq = 0_u64;
+                let mut rgba_buf: Vec<u8> = Vec::new();
                 loop {
                     if task_stop.load(std::sync::atomic::Ordering::Relaxed) {
                         break;
@@ -92,14 +102,18 @@ impl CameraSource {
                         }
                     };
                     let res = frame.resolution();
-                    // 解码到 RGBA 缓冲（容量稳定后零分配）。
-                    let mut rgba = vec![0u8; (res.width_x as usize) * (res.height_y as usize) * 4];
-                    if let Err(_) = frame.decode_image_to_buffer::<RgbAFormat>(&mut rgba) {
+                    // 解码到复用缓冲（容量稳定后零分配）。
+                    rgba_buf.clear();
+                    rgba_buf.resize((res.width_x as usize) * (res.height_y as usize) * 4, 0);
+                    if frame
+                        .decode_image_to_buffer::<RgbAFormat>(&mut rgba_buf)
+                        .is_err()
+                    {
                         // 解码失败（罕见，如不支持的源格式）：丢弃这一帧。
                         continue;
                     }
                     // RGBA -> BGRA8888（R↔B 交换），alpha 保持 255。
-                    for px in rgba.chunks_exact_mut(4) {
+                    for px in rgba_buf.chunks_exact_mut(4) {
                         px.swap(0, 2);
                         px[3] = 255;
                     }
@@ -113,7 +127,7 @@ impl CameraSource {
                         res.height_y,
                         res.width_x * 4,
                         PixelFormat::Bgra8888,
-                        Arc::from(rgba),
+                        Arc::from(rgba_buf.as_slice()),
                     );
                     let shared = Arc::new(video_frame);
                     *task_latest.write().expect("camera lock poisoned") = Some(Arc::clone(&shared));
@@ -121,6 +135,32 @@ impl CameraSource {
                 }
             })
             .map_err(|e| CameraSourceError::Open(name.clone(), format!("spawn: {e}")))?;
+
+        // 等待线程内相机初始化完成（最多 5 秒）。
+        match init_rx.recv_timeout(std::time::Duration::from_secs(5)) {
+            Ok(Ok(())) => {}
+            Ok(Err(msg)) => {
+                // 让线程退出（stop 置位 + 等它结束）。
+                stop.store(true, std::sync::atomic::Ordering::Release);
+                let _ = handle.join();
+                return Err(CameraSourceError::Open(init_name, msg));
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                stop.store(true, std::sync::atomic::Ordering::Release);
+                let _ = handle.join();
+                return Err(CameraSourceError::Open(
+                    init_name,
+                    "camera initialization timed out".into(),
+                ));
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                let _ = handle.join();
+                return Err(CameraSourceError::Open(
+                    init_name,
+                    "camera thread exited during init".into(),
+                ));
+            }
+        }
 
         Ok(Self {
             latest,
