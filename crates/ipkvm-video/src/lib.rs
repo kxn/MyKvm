@@ -2,6 +2,9 @@
 
 #[cfg(feature = "mf")]
 pub mod camera;
+// Linux/macOS nokhwa 后端（Windows 不编译，Windows 用 DirectShow sink filter）。
+#[cfg(all(unix, feature = "mf"))]
+pub mod camera_nokhwa;
 #[cfg(feature = "mf")]
 pub mod dshow_sink;
 #[cfg(feature = "mock")]

@@ -22,13 +22,36 @@ windows-core = { version = "0.61", optional = true }
 windows-interface = { version = "0.59.3", optional = true }
 windows-implement = { version = "0.60.2", optional = true }
 
+# nokhwa：Linux(V4L2)/macOS(AVFoundation) 跨平台相机后端。仅在非 Windows 平台启用
+# （Windows 上 OBS 虚拟摄像头等列不出来，故 Windows 用自研 DirectShow sink filter）。
+# 关闭默认特性（decoding 含 mjpeg 解码），仅在目标平台按 backend feature 启用。
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+nokhwa = { version = "0.10", optional = true, default-features = false, features = [
+    "input-v4l",
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+nokhwa = { version = "0.10", optional = true, default-features = false, features = [
+    "input-avfoundation",
+] }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }
 
 [features]
 default = []
 mock = []
-mf = ["dep:windows", "dep:windows-core", "dep:windows-interface", "dep:windows-implement"]
+# 相机后端 feature（命名沿用历史 mf）：
+# - Windows：自研 DirectShow 纯 sink filter（windows crate）
+# - Linux：nokhwa V4L2 后端
+# - macOS：nokhwa AVFoundation 后端
+mf = [
+    "dep:windows",
+    "dep:windows-core",
+    "dep:windows-interface",
+    "dep:windows-implement",
+    "dep:nokhwa",
+]
 
 [[example]]
 name = "camera_probe"

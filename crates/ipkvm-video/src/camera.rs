@@ -1,22 +1,23 @@
-//! Windows 相机后端（DirectShow）。只支持 Windows；其他平台提供「不支持」stub。
+//! 相机后端公共入口与共享类型。
 //!
-//! 用 DirectShow 系统设备枚举器（`ICreateDevEnum` + `CLSID_VideoInputDeviceCategory`）
-//! 枚举——能看到 OBS 虚拟摄像头等 DirectShow 过滤器（MF 的 `MFEnumDeviceSources` 看不到）。
+//! 平台后端：
+//! - **Windows**：自研纯 DirectShow sink filter（本文件 `CameraSource` 实现 + `dshow_sink`）。
+//!   系统 Sample Grabber 与 OBS 虚拟摄像头不兼容；DirectShow 能枚举到 OBS 等设备。
+//! - **Linux/macOS**：nokhwa（见 `camera_nokhwa`），Linux 走 V4L2、macOS 走 AVFoundation，
+//!   这两个平台能原生枚举到虚拟摄像头。本文件下方的 `CameraSource` 仅 Windows 编译；
+//!   非 Windows 平台由 `camera_nokhwa` 提供 `CameraSource` 并在此 `pub use`。
 //!
-//! 打开用 Capture Graph Builder + 自研纯 sink filter（`dshow_sink::SinkFilter`），
-//! `RenderStream(NULL, NULL, device, NULL, sink)` 把 capture pin 直连到 sink 的输入 pin；
-//! sink 在 `IMemInputPin::Receive`（流线程回调）里拷帧到共享槽。这是唯一被验证能从 OBS
-//! 虚拟摄像头持续收帧的方式（系统 Sample Grabber 与 OBS 不兼容，回调只触发 1 帧）。
-//! 像素格式按 `ReceiveConnection` 协商到的真实 subtype 转换（NV12/YUY2/RGB24/ARGB32），
-//! 统一输出 BGRA8888。详见 `dshow_sink` 模块文档。
+//! 共享类型（所有平台）：`CameraDeviceInfo`、`CameraSourceError`。
 //!
-//! COM 初始化用 STA（`COINIT_APARTMENTTHREADED`，DirectShow 官方推荐），并保证
-//! 先释放所有 COM 对象再 `CoUninitialize`（MTA + 对象存活时反初始化会访问违例崩溃）。
-//!
-//! `CameraSource` 的采集线程独占 OS 线程（DirectShow 要求单线程串行 + COM 初始化）。
-//! 采集是**事件驱动**：采集线程在 `SinkFrameSlot::next_frame` 上**阻塞等待**
-//! （`Condvar`），DirectShow 流线程每来一帧（`Receive` 回调）写入并唤醒它；
-//! 被唤醒后做像素转换并发布到 `watch`。无帧时采集线程彻底睡眠，CPU 占用趋近于零。
+//! Windows DirectShow 实现要点：用 Capture Graph Builder + 自研 sink filter，
+//! `RenderStream(NULL, NULL, device, NULL, sink)` 直连；sink 在 `Receive`（流线程）拷帧到
+//! 共享槽，采集线程事件驱动（Condvar）转换发布。COM 初始化用 STA，同一线程串行使用。
+//! 像素格式按协商到的真实 subtype 转换（NV12/YUY2/RGB24/ARGB32），统一输出 BGRA8888。
+
+// 非 Windows 平台：CameraSource / list_cameras 由 nokhwa 后端提供，在此 re-export，
+// 使 `ipkvm_video::camera::CameraSource` 路径在所有平台一致（headless 无需改 import）。
+#[cfg(all(unix, feature = "mf"))]
+pub use crate::camera_nokhwa::{CameraSource, list_cameras};
 
 use std::sync::{Arc, RwLock};
 
@@ -62,42 +63,33 @@ pub enum CameraSourceError {
     ZeroFramesPerSecond,
 }
 
-/// DirectShow 相机帧源。`open` 成功后由后台采集线程持续发布帧。
-///
-/// 停止：`CameraSource` 被 drop 时调 `SinkFrameSlot::stop`（置位 + notify_all），
-/// 唤醒正阻塞在 `next_frame` 的采集线程使其立即返回 `Stopped` 并退出；线程退出前
-/// `control.Stop()` 停止图并 drop 所有 DirectShow 对象。
+// ============================================================================
+// Windows DirectShow 实现（CameraSource + list_cameras）。仅 Windows 编译。
+// 非 Windows + 无 mf feature 时返回 UnsupportedPlatform stub。
+// ============================================================================
+
+#[cfg(windows)]
 #[derive(Debug)]
 pub struct CameraSource {
     latest: Arc<RwLock<Option<SharedVideoFrame>>>,
     sender: watch::Sender<Option<SharedVideoFrame>>,
     name: String,
     /// 帧槽：drop 时 stop() 唤醒采集线程；事件驱动核心。
-    #[cfg(windows)]
     slot: Option<SinkFrameSlot>,
     /// 兼容停止信号（control.Stop 之前让采集循环退出）。
-    #[cfg(windows)]
     stop: Arc<AtomicBool>,
     /// 采集线程句柄。
-    #[cfg(windows)]
     _handle: Option<std::thread::JoinHandle<()>>,
 }
 
+#[cfg(windows)]
 impl CameraSource {
     pub fn open(device_id: &str, frames_per_second: u64) -> Result<Self, CameraSourceError> {
         if frames_per_second == 0 {
             return Err(CameraSourceError::ZeroFramesPerSecond);
         }
-        #[cfg(windows)]
-        {
-            let _ = frames_per_second;
-            Self::open_impl(device_id)
-        }
-        #[cfg(not(windows))]
-        {
-            let _ = (device_id, frames_per_second);
-            Err(CameraSourceError::UnsupportedPlatform)
-        }
+        let _ = frames_per_second;
+        Self::open_impl(device_id)
     }
 }
 
@@ -312,7 +304,6 @@ impl CameraSource {
                 unsafe {
                     let _ = control.Stop();
                 };
-                let _ = source;
                 Ok(())
             })
             .map_err(|e| {
@@ -333,20 +324,19 @@ impl CameraSource {
     }
 }
 
+#[cfg(windows)]
 impl Drop for CameraSource {
     fn drop(&mut self) {
         // 双路径停止：置位 stop 标志（Timeout 分支兜底退出）+ slot.stop() 唤醒
         // 阻塞在 next_frame 的采集线程，使其立即返回 Stopped 并退出。
-        #[cfg(windows)]
-        {
-            self.stop.store(true, Ordering::Release);
-            if let Some(slot) = &self.slot {
-                slot.stop();
-            }
+        self.stop.store(true, Ordering::Release);
+        if let Some(slot) = &self.slot {
+            slot.stop();
         }
     }
 }
 
+#[cfg(windows)]
 impl FrameSource for CameraSource {
     fn latest_frame(&self) -> Option<SharedVideoFrame> {
         self.latest
@@ -463,7 +453,38 @@ pub fn list_cameras() -> Result<Vec<CameraDeviceInfo>, CameraSourceError> {
         .collect())
 }
 
-#[cfg(not(windows))]
+// 非 Windows 且未启用 mf feature 的 stub（保持 API 完整性）。
+#[cfg(not(any(windows, all(unix, feature = "mf"))))]
+impl CameraSource {
+    pub fn open(_device_id: &str, _frames_per_second: u64) -> Result<Self, CameraSourceError> {
+        Err(CameraSourceError::UnsupportedPlatform)
+    }
+}
+
+#[cfg(not(any(windows, all(unix, feature = "mf"))))]
+#[derive(Debug)]
+pub struct CameraSource {
+    _private: (),
+}
+
+#[cfg(not(any(windows, all(unix, feature = "mf"))))]
+impl FrameSource for CameraSource {
+    fn latest_frame(&self) -> Option<SharedVideoFrame> {
+        None
+    }
+    fn subscribe(&self) -> FrameReceiver {
+        unreachable!("camera not supported on this platform/configuration")
+    }
+    fn source_info(&self) -> VideoSourceInfo {
+        VideoSourceInfo {
+            kind: VideoSourceKind::Camera,
+            device_name: String::new(),
+            is_loop: false,
+        }
+    }
+}
+
+#[cfg(not(any(windows, all(unix, feature = "mf"))))]
 pub fn list_cameras() -> Result<Vec<CameraDeviceInfo>, CameraSourceError> {
     Err(CameraSourceError::UnsupportedPlatform)
 }
@@ -521,7 +542,7 @@ mod tests {
 
     #[test]
     fn camera_open_with_zero_fps_rejected() {
-        #[cfg(windows)]
+        #[cfg(any(windows, all(unix, feature = "mf")))]
         {
             let err = CameraSource::open("nonexistent", 0).unwrap_err();
             assert!(matches!(err, CameraSourceError::ZeroFramesPerSecond));
