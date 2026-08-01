@@ -6,12 +6,12 @@ my_ipkvm 是一个软件 IPKVM 项目：主控机通过 USB HDMI 采集卡读取
 
 `ipkvm-headless` 已提供可供生产组装复用的嵌入式 Web 服务。它内置项目中文控制台页面和固定到 noVNC 1.7.0 提交 `63107bd06d9e1f6136ff21aeda8cd62cbf0d433e` 的完整 npm 发布资源，并通过同源 `/rfb` 建立连接。真实 Chrome 自动化已经证明模拟帧像素、桌面与窄视口等比缩放、键盘 HID、缩放后的绝对指针坐标、按键顺序、断开释放和重连全部穿过 noVNC、RFB 服务与 `RfbInputPump` 到达记录型 `InputSink`。
 
-当前正式 `ipkvm-headless` 二进制已能作为可运行后台进程提供完整的 RFB TCP（5900）+ noVNC 网页（6080）双传输服务。视频源通过 CLI 选择：`--camera` 打开 Windows 相机（按 id 或显示名，DirectShow 后端，含 OBS 虚拟摄像头）、`--assets` 使用 Y4M 文件伪设备、未指定时默认打开第一台相机、`--list-cameras` 只枚举设备并退出；键鼠事件进入模拟串口队列后被丢弃。真实 CH9329 串口、鉴权和 TLS 尚未实现。
+当前正式 `ipkvm-headless` 二进制已能作为可运行后台进程提供完整的 RFB TCP（5900）+ noVNC 网页（6080）双传输服务。视频源通过 CLI 选择：`--camera` 打开 Windows 相机（按 id 或显示名，DirectShow 后端，含 OBS 虚拟摄像头）、`--assets` 使用 Y4M 文件伪设备、未指定时默认优先打开 OBS 虚拟摄像头（找不到时退回第一台）、`--list-cameras` 只枚举设备并退出；键鼠事件进入模拟串口队列后被丢弃。真实 CH9329 串口、鉴权和 TLS 尚未实现。
 
 ## 当前模块
 
 - `ipkvm-core`：CH9329 命令帧和应答解析、串口字节流增量解帧、HID 报告、6KRO 键盘状态、原子键盘和指针批次、绝对和相对鼠标状态、有序命令批次及模拟队列。
-- `ipkvm-video`：采集设备枚举、格式选择、共享视频帧流与 `source_info` 元数据；`mock` 功能下提供 Y4M 循环播放帧源（可模拟不同分辨率素材顺序切换），`mf` 功能下提供 Windows DirectShow 相机后端（`list_cameras` 枚举、`CameraSource` 采集与 `camera_probe` 示例，含 OBS 虚拟摄像头），`file_source` 提供 Y4M 文件伪设备。
+- `ipkvm-video`：采集设备枚举、格式选择、共享视频帧流与 `source_info` 元数据；`mock` 功能下提供 Y4M 循环播放帧源（可模拟不同分辨率素材顺序切换），`mf` 功能下提供 Windows DirectShow 相机后端（`list_cameras` 枚举、`CameraSource` 采集与 `camera_probe` 示例，含 OBS 虚拟摄像头）——采用自研纯 sink filter（不依赖系统的 Sample Grabber，因其与 OBS 虚拟摄像头不兼容）+ 事件驱动（Condvar 阻塞等待，无帧时零轮询），`file_source` 提供 Y4M 文件伪设备。
 - `ipkvm-session`：把视频帧源和输入接收端组合成一个控制台会话。
 - `ipkvm-rfb`：传输无关的 RFB 3.8 `None` 握手、客户端消息增量解码、真彩像素转换、`Raw` 更新、`DesktopSize` 和指针输入坐标时期。
 - `ipkvm-desktop`：本地图形界面入口。
@@ -69,7 +69,7 @@ cargo install --locked --version 0.20.2 cargo-deny
 
 ## 运行无头后台进程
 
-正式 `ipkvm-headless` 二进制同时提供 RFB TCP（供标准 VNC 客户端）和嵌入式 noVNC 网页 + RFB WebSocket（供浏览器），两个入口共享同一个单活动控制者连接闸门。视频源按 CLI 参数选择：`--camera <名称>` 打开 Windows 相机（按 id 或显示名，DirectShow 后端，含 OBS 虚拟摄像头），`--assets <目录>` 使用目录内 Y4M 文件伪设备（按文件名排序循环播放），未指定任何视频参数时默认打开枚举到的第一台相机；`--list-cameras` 只枚举设备并退出。真实 CH9329 串口尚未接入，键鼠事件进入模拟队列后被丢弃。
+正式 `ipkvm-headless` 二进制同时提供 RFB TCP（供标准 VNC 客户端）和嵌入式 noVNC 网页 + RFB WebSocket（供浏览器），两个入口共享同一个单活动控制者连接闸门。视频源按 CLI 参数选择：`--camera <名称>` 打开 Windows 相机（按 id 或显示名，DirectShow 后端，含 OBS 虚拟摄像头），`--assets <目录>` 使用目录内 Y4M 文件伪设备（按文件名排序循环播放），未指定任何视频参数时默认优先打开 OBS 虚拟摄像头（找不到时退回第一台，避免在多虚拟摄像头并存时误选 ToDesk 等其它设备）；`--list-cameras` 只枚举设备并退出。真实 CH9329 串口尚未接入，键鼠事件进入模拟队列后被丢弃。
 
 ```bash
 ./scripts/fetch-demo-assets.sh   # 首次运行下载 Y4M 素材

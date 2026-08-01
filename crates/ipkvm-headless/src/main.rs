@@ -213,16 +213,20 @@ fn build_source(options: &Options) -> Result<std::sync::Arc<dyn FrameSource>, St
         (None, None) => {
             let cameras = ipkvm_video::camera::list_cameras()
                 .map_err(|error| format!("枚举相机失败：{error}"))?;
-            let first = cameras
-                .first()
+            // 默认优先 OBS 虚拟摄像头，否则退回第一台。多虚拟摄像头并存时
+            //（如 ToDesk Camera + OBS Virtual Camera），枚举顺序不保证 OBS 在前。
+            let chosen = cameras
+                .iter()
+                .find(|camera| camera.display_name.contains("OBS"))
+                .or_else(|| cameras.first())
                 .ok_or_else(|| "未找到任何相机，请用 --assets 指定素材目录".to_string())?;
             println!(
-                "未指定视频源，默认使用第一台相机：{}（{}）",
-                first.display_name, first.id
+                "未指定视频源，默认使用相机：{}（{}）",
+                chosen.display_name, chosen.id
             );
             std::sync::Arc::new(
-                CameraSource::open(&first.id, options.frames_per_second)
-                    .map_err(|error| format!("无法打开相机 {}：{error}", first.id))?,
+                CameraSource::open(&chosen.id, options.frames_per_second)
+                    .map_err(|error| format!("无法打开相机 {}：{error}", chosen.id))?,
             )
         }
     };
