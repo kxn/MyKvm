@@ -52,5 +52,23 @@ mod tests {
                 map_framebuffer_axis(coordinate, u32::from(extent)).unwrap() <= 4095
             );
         }
+
+        #[test]
+        fn mapped_axis_is_monotonic_bounded_and_zero_at_origin(
+            extent in 1u32..=4096,
+            first in 0..4096u32,
+            second in 0..4096u32,
+        ) {
+            let first = first % extent;
+            let second = second % extent;
+            let low = first.min(second);
+            let high = first.max(second);
+            let low_mapped = map_framebuffer_axis(low, extent).unwrap();
+            let high_mapped = map_framebuffer_axis(high, extent).unwrap();
+
+            prop_assert!(low_mapped <= high_mapped);
+            prop_assert!(high_mapped <= 4095);
+            prop_assert_eq!(map_framebuffer_axis(0, extent).unwrap(), 0);
+        }
     }
 }
