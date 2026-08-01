@@ -27,14 +27,14 @@ use crate::{
 const CONTENT_TYPE_OPTIONS: &str = "x-content-type-options";
 const JPEG_QUALITY: u8 = 85;
 
-pub struct HeadlessWebService<S> {
+pub struct HeadlessWebService<S: ?Sized> {
     rfb: RfbWebSocketService<S>,
     api: Arc<ApiState<S>>,
     shutdown: watch::Receiver<bool>,
 }
 
 /// `/api` 路由共享的服务状态：帧源元数据与连接闸门状态。
-struct ApiState<S> {
+struct ApiState<S: ?Sized> {
     frame_source: Arc<S>,
     gate: RfbConnectionGate,
 }
@@ -47,7 +47,7 @@ pub enum HeadlessWebServiceError {
     Serve(#[source] std::io::Error),
 }
 
-impl<S: FrameSource + 'static> HeadlessWebService<S> {
+impl<S: FrameSource + ?Sized + 'static> HeadlessWebService<S> {
     pub fn new(
         frame_source: Arc<S>,
         event_tx: mpsc::Sender<RfbServerEvent>,
@@ -89,7 +89,7 @@ fn static_router() -> Router {
         .route("/vendor/novnc/{*path}", get(serve_asset))
 }
 
-fn api_router<S: FrameSource + 'static>(api: Arc<ApiState<S>>) -> Router {
+fn api_router<S: FrameSource + ?Sized + 'static>(api: Arc<ApiState<S>>) -> Router {
     Router::new()
         .route("/api/status", get(api_status::<S>))
         .route("/api/screenshot", get(api_screenshot::<S>))
@@ -152,7 +152,9 @@ struct ControllerStatus {
     connected_since_ms: Option<u64>,
 }
 
-async fn api_status<S: FrameSource + 'static>(State(state): State<Arc<ApiState<S>>>) -> Response {
+async fn api_status<S: FrameSource + ?Sized + 'static>(
+    State(state): State<Arc<ApiState<S>>>,
+) -> Response {
     let source = state.frame_source.source_info();
     let frame = state.frame_source.latest_frame();
     let controller = match state.gate.active_controller() {
@@ -199,7 +201,7 @@ async fn api_status<S: FrameSource + 'static>(State(state): State<Arc<ApiState<S
         .expect("status response headers are valid")
 }
 
-async fn api_screenshot<S: FrameSource + 'static>(
+async fn api_screenshot<S: FrameSource + ?Sized + 'static>(
     State(state): State<Arc<ApiState<S>>>,
 ) -> Response {
     let Some(frame) = state.frame_source.latest_frame() else {

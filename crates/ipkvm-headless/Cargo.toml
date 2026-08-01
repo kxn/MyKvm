@@ -31,7 +31,10 @@ zune-jpeg.workspace = true
 [features]
 default = []
 browser-fixture = ["ipkvm-video/mock"]
-demo = ["ipkvm-core/mock", "ipkvm-video/mock"]
+# demo 联动 ipkvm-video/mf：相机后端对非 Windows 提供 UnsupportedPlatform stub，
+# windows crate 本身可在任意平台编译（内部绑定按 cfg(windows) 生成），因此
+# 在 Linux 上启用 mf 不影响构建，仅相机路径在运行时返回"不支持"错误。
+demo = ["ipkvm-core/mock", "ipkvm-video/mock", "ipkvm-video/mf"]
 
 [[bin]]
 name = "ipkvm-headless"

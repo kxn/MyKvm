@@ -1,8 +1,11 @@
 //! 正式无头后台进程入口：同时提供 RFB TCP（标准 VNC 客户端）和嵌入式
 //! noVNC 网页 + RFB WebSocket（浏览器）。
 //!
-//! 硬件未到货前使用 Y4M 循环播放模拟帧源和 `FakeCommandQueue`：画面是真实
-//! 视频文件，键鼠事件进入模拟队列后被丢弃，不注入真实串口。
+//! 视频源按 CLI 参数选择：`--camera <名称>` 打开 Windows 相机（id 或显示名），
+//! `--assets <目录>` 使用目录内 Y4M 文件伪设备（按文件名排序循环播放），
+//! 未指定任何视频参数时默认打开枚举到的第一台相机。`--list-cameras` 只枚举
+//! 设备并退出。相机未就绪时可用 `--assets` 的 Y4M 模拟帧源和 `FakeCommandQueue`
+//! 验证画面与键鼠链路（键鼠事件进入模拟队列后被丢弃，不注入真实串口）。
 //!
 //! 用法：
 //!
@@ -10,6 +13,8 @@
 //! ./scripts/fetch-demo-assets.sh   # 首次运行下载 Y4M 素材
 //! cargo run -p ipkvm-headless --features demo --bin ipkvm-headless \
 //!     --assets .cache/demo-assets --tcp 5900 --http 6080 --fps 10
+//! cargo run -p ipkvm-headless --features demo --bin ipkvm-headless \
+//!     --camera "OBS Virtual Camera" --tcp 5900 --http 6080
 //! ```
 //!
 //! 启动后用浏览器打开 `http://127.0.0.1:6080`，或用标准 VNC 客户端连接
@@ -25,7 +30,9 @@ use ipkvm_headless::rfb_input::{RfbInputPump, RfbInputRunError};
 use ipkvm_headless::rfb_tcp::{RfbTcpConfig, RfbTcpServer, RfbTcpServerError};
 use ipkvm_headless::rfb_ws::RfbWebSocketConfig;
 use ipkvm_headless::web::{HeadlessWebService, HeadlessWebServiceError};
-use ipkvm_video::looping::LoopingVideoSource;
+use ipkvm_video::FrameSource;
+use ipkvm_video::camera::CameraSource;
+use ipkvm_video::file_source::FileVideoSource;
 use ipkvm_video::y4m::Y4mAsset;
 use thiserror::Error;
 use tokio::{
@@ -38,7 +45,12 @@ use tokio::{
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 struct Options {
-    assets_dir: PathBuf,
+    /// 显式 --assets：文件伪设备目录。
+    assets_dir: Option<PathBuf>,
+    /// 显式 --camera：按 id 或显示名打开的相机。
+    camera_name: Option<String>,
+    /// --list-cameras：枚举设备后立即退出。
+    list_cameras: bool,
     bind_address: String,
     tcp_port: u16,
     http_port: u16,
@@ -46,19 +58,24 @@ struct Options {
 }
 
 const USAGE: &str = "\
-用法：ipkvm-headless [--assets <目录>] [--bind <地址>] [--tcp <端口>] \
-[--http <端口>] [--fps <帧率>]
+用法：ipkvm-headless [--list-cameras] [--camera <名称>|--assets <目录>] \
+[--bind <地址>] [--tcp <端口>] [--http <端口>] [--fps <帧率>]
 
-  --assets <目录>   存放 *.y4m 素材的目录，默认 .cache/demo-assets
-  --bind <地址>     监听地址，默认 127.0.0.1
-  --tcp <端口>      RFB TCP 监听端口，默认 5900
-  --http <端口>     HTTP/noVNC 监听端口，默认 6080
-  --fps <帧率>      播放帧率，默认 10
+  --list-cameras   枚举视频采集设备并退出
+  --camera <名称>  按名称（id 或显示名）打开相机；与 --assets 互斥
+  --assets <目录>  存放 *.y4m 素材的目录（文件伪设备，按文件名排序循环）
+  --bind <地址>    监听地址，默认 127.0.0.1
+  --tcp <端口>     RFB TCP 监听端口，默认 5900
+  --http <端口>    HTTP/noVNC 监听端口，默认 6080
+  --fps <帧率>     播放帧率，默认 10
 ";
 
+/// 未指定任何视频参数时默认打开枚举到的第一台相机。
 fn parse_args() -> Result<Options, String> {
     let mut options = Options {
-        assets_dir: PathBuf::from(".cache/demo-assets"),
+        assets_dir: None,
+        camera_name: None,
+        list_cameras: false,
         bind_address: "127.0.0.1".to_string(),
         tcp_port: 5900,
         http_port: 6080,
@@ -68,11 +85,18 @@ fn parse_args() -> Result<Options, String> {
     let mut args = std::env::args().skip(1);
     while let Some(argument) = args.next() {
         match argument.as_str() {
+            "--list-cameras" => options.list_cameras = true,
+            "--camera" => {
+                options.camera_name = Some(
+                    args.next()
+                        .ok_or_else(|| "--camera 需要一个名称参数".to_string())?,
+                );
+            }
             "--assets" => {
-                options.assets_dir = PathBuf::from(
+                options.assets_dir = Some(PathBuf::from(
                     args.next()
                         .ok_or_else(|| "--assets 需要一个目录参数".to_string())?,
-                );
+                ));
             }
             "--bind" => {
                 options.bind_address = args
@@ -106,6 +130,10 @@ fn parse_args() -> Result<Options, String> {
             }
             other => return Err(format!("未知参数：{other}")),
         }
+    }
+
+    if options.assets_dir.is_some() && options.camera_name.is_some() {
+        return Err("--assets 与 --camera 互斥，只能指定其中一个".to_string());
     }
     Ok(options)
 }
@@ -149,6 +177,59 @@ fn load_assets(directory: &PathBuf) -> Result<Vec<Y4mAsset>, String> {
     Ok(assets)
 }
 
+/// 枚举视频采集设备并打印（格式同 `camera_probe` 示例）。
+/// 枚举成功即返回 Ok(())，即使一台设备都没有；枚举失败（如非 Windows
+/// 平台的 UnsupportedPlatform stub）由调用方报错退出。
+fn print_cameras() -> Result<(), String> {
+    let cameras =
+        ipkvm_video::camera::list_cameras().map_err(|error| format!("枚举相机失败：{error}"))?;
+    println!("{} camera(s):", cameras.len());
+    for (index, camera) in cameras.iter().enumerate() {
+        println!(
+            "  [{index}] id={:?} display_name={:?}",
+            camera.id, camera.display_name
+        );
+    }
+    Ok(())
+}
+
+/// 按 CLI 参数选择视频源并统一包装成 `Arc<dyn FrameSource>`。
+///
+/// 优先级：`--assets`（文件伪设备）> `--camera`（按名打开）> 默认第一台相机。
+fn build_source(options: &Options) -> Result<std::sync::Arc<dyn FrameSource>, String> {
+    let source: std::sync::Arc<dyn FrameSource> = match (&options.assets_dir, &options.camera_name)
+    {
+        (Some(directory), _) => {
+            let assets = load_assets(directory)?;
+            std::sync::Arc::new(
+                FileVideoSource::new(assets, options.frames_per_second)
+                    .map_err(|error| format!("无法启动文件视频源：{error}"))?,
+            )
+        }
+        (None, Some(name)) => std::sync::Arc::new(
+            CameraSource::open(name, options.frames_per_second)
+                .map_err(|error| format!("无法打开相机 {name}：{error}"))?,
+        ),
+        (None, None) => {
+            let cameras = ipkvm_video::camera::list_cameras()
+                .map_err(|error| format!("枚举相机失败：{error}"))?;
+            let first = cameras
+                .first()
+                .ok_or_else(|| "未找到任何相机，请用 --assets 指定素材目录".to_string())?;
+            println!(
+                "未指定视频源，默认使用第一台相机：{}（{}）",
+                first.display_name, first.id
+            );
+            std::sync::Arc::new(
+                CameraSource::open(&first.id, options.frames_per_second)
+                    .map_err(|error| format!("无法打开相机 {}：{error}", first.id))?,
+            )
+        }
+    };
+    println!("视频源：{:?}", source.source_info());
+    Ok(source)
+}
+
 #[derive(Debug, Error)]
 enum HeadlessRunError {
     #[error("I/O 失败")]
@@ -185,17 +266,20 @@ async fn main() {
         }
     };
 
-    let loaded = match load_assets(&options.assets_dir) {
-        Ok(loaded) => loaded,
+    if options.list_cameras {
+        match print_cameras() {
+            Ok(()) => std::process::exit(0),
+            Err(error) => {
+                eprintln!("{error}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    let source = match build_source(&options) {
+        Ok(source) => source,
         Err(error) => {
             eprintln!("{error}");
-            std::process::exit(1);
-        }
-    };
-    let source = match LoopingVideoSource::new(loaded, options.frames_per_second) {
-        Ok(source) => std::sync::Arc::new(source),
-        Err(error) => {
-            eprintln!("无法启动循环视频源：{error}");
             std::process::exit(1);
         }
     };
@@ -207,7 +291,7 @@ async fn main() {
 }
 
 async fn run(
-    source: std::sync::Arc<LoopingVideoSource>,
+    source: std::sync::Arc<dyn FrameSource>,
     options: Options,
 ) -> Result<(), HeadlessRunError> {
     let tcp_listener = TcpListener::bind((options.bind_address.as_str(), options.tcp_port)).await?;

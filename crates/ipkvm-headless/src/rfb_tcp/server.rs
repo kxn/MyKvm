@@ -12,7 +12,7 @@ use crate::rfb_connection::{
     RfbServerEvent, RfbTransportKind, finalize_connection, run_managed_connection,
 };
 
-pub struct RfbTcpServer<S> {
+pub struct RfbTcpServer<S: ?Sized> {
     listener: TcpListener,
     frame_source: Arc<S>,
     event_tx: mpsc::Sender<RfbServerEvent>,
@@ -22,7 +22,7 @@ pub struct RfbTcpServer<S> {
     gate_wait_notifier: Option<mpsc::UnboundedSender<std::net::SocketAddr>>,
 }
 
-impl<S: FrameSource + 'static> RfbTcpServer<S> {
+impl<S: FrameSource + ?Sized + 'static> RfbTcpServer<S> {
     pub fn new(
         listener: TcpListener,
         frame_source: Arc<S>,

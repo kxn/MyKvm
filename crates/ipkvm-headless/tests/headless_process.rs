@@ -244,3 +244,60 @@ async fn shutdown_stops_both_transports_cleanly() {
 
 // re-export 用于 write_all 的 trait。
 use tokio::io::AsyncWriteExt;
+
+/// `--list-cameras` 枚举成功即退出 0，即使枚举到 0 台设备（避免依赖 OBS 是否在运行）。
+/// 仅 Windows 断言：非 Windows 的 stub 返回 UnsupportedPlatform、退出非 0，属预期行为。
+#[test]
+fn headless_list_cameras_succeeds_on_windows() {
+    #[cfg(windows)]
+    {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_ipkvm-headless"))
+            .arg("--list-cameras")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "--list-cameras failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("camera(s)"),
+            "--list-cameras should report camera count, got: {stdout}"
+        );
+    }
+}
+
+/// `--camera <不存在的设备>`：Windows 上设备未找到、非 Windows 上
+/// UnsupportedPlatform——两种情况都应非 0 退出（跨平台可测）。
+#[test]
+fn headless_camera_with_unknown_device_fails() {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_ipkvm-headless"))
+        .arg("--camera")
+        .arg("0:no-such-camera")
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "--camera with an unknown device should fail, stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+/// `--assets` 与 `--camera` 互斥：参数错误退出码 2。
+#[test]
+fn headless_assets_and_camera_are_mutually_exclusive() {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_ipkvm-headless"))
+        .arg("--assets")
+        .arg("some/dir")
+        .arg("--camera")
+        .arg("OBS Virtual Camera")
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "--assets with --camera should exit 2, stdout: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}

@@ -16,11 +16,11 @@ use crate::rfb_connection::{
     RfbTransportKind, finalize_connection, run_managed_connection,
 };
 
-pub struct RfbWebSocketService<S> {
+pub struct RfbWebSocketService<S: ?Sized> {
     state: Arc<ServiceState<S>>,
 }
 
-struct ServiceState<S> {
+struct ServiceState<S: ?Sized> {
     frame_source: Arc<S>,
     event_tx: mpsc::Sender<RfbServerEvent>,
     config: RfbWebSocketConfig,
@@ -28,7 +28,7 @@ struct ServiceState<S> {
     gate: RfbConnectionGate,
 }
 
-impl<S: FrameSource + 'static> RfbWebSocketService<S> {
+impl<S: FrameSource + ?Sized + 'static> RfbWebSocketService<S> {
     pub fn new(
         frame_source: Arc<S>,
         event_tx: mpsc::Sender<RfbServerEvent>,
@@ -55,7 +55,7 @@ impl<S: FrameSource + 'static> RfbWebSocketService<S> {
     }
 }
 
-async fn handle_upgrade<S: FrameSource + 'static>(
+async fn handle_upgrade<S: FrameSource + ?Sized + 'static>(
     State(state): State<Arc<ServiceState<S>>>,
     ConnectInfo(peer_addr): ConnectInfo<SocketAddr>,
     ws: WebSocketUpgrade,
@@ -84,7 +84,7 @@ async fn handle_upgrade<S: FrameSource + 'static>(
         .into_response()
 }
 
-async fn run_upgraded_connection<S: FrameSource + 'static>(
+async fn run_upgraded_connection<S: FrameSource + ?Sized + 'static>(
     state: Arc<ServiceState<S>>,
     socket: WebSocket,
     peer_addr: SocketAddr,
