@@ -533,6 +533,7 @@ WebSocket 兼容：
 - 完成嵌入式 HTTP 服务，固定并分发 noVNC 1.7.0 资源。
 - 使用真实 Chrome 自动验证 noVNC 页面、模拟帧像素、两种视口等比缩放、键盘、绝对指针、按钮、释放和重连闭环。
 - 建立 noVNC 来源、逐文件完整性、许可证与浏览器依赖锁文件的自动门禁。
+- 完成正式 `ipkvm-headless` 后台进程：同时提供 RFB TCP（5900）和嵌入式 noVNC 网页 + RFB WebSocket（6080），共享单活动控制者连接闸门；硬件到货前使用 Y4M 循环播放模拟帧源和 `FakeCommandQueue`，`headless_process` 集成测试覆盖 TCP banner、WS 握手、静态资源、gate 互斥和干净关闭。
 
 待完成：
 
