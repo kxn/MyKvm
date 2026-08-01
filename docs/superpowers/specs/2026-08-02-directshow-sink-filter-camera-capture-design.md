@@ -1,8 +1,26 @@
-# DirectShow 纯 sink filter 相机采集（OBS 虚拟摄像头）—— 设计与决策记录
+# 跨平台相机采集（Windows DirectShow sink filter + Linux/macOS nokhwa）—— 设计与决策记录
 
 日期：2026-08-02
-关联模块：`crates/ipkvm-video`（`camera`、`dshow_sink`）
-背景：阶段 2 把相机后端从 Media Foundation 切到 DirectShow 后，OBS 虚拟摄像头能枚举但无法持续采集——Sample Grabber 回调只触发 1 帧，自研 sink filter 在 `RenderStream` 阶段段错误崩溃。
+关联模块：`crates/ipkvm-video`（`camera`、`camera_nokhwa`、`dshow_sink`）
+背景：阶段 2 把相机后端从 Media Foundation 切到 DirectShow 后，OBS 虚拟摄像头能枚举但无法持续采集——Sample Grabber 回调只触发 1 帧，自研 sink filter 在 `RenderStream` 阶段段错误崩溃。修复 Windows 后，补齐 Linux/macOS 后端。
+
+## 0. 跨平台总览
+
+| 平台 | 后端 | 依赖 | 选型理由 |
+|------|------|------|---------|
+| Windows | 自研 DirectShow 纯 sink filter | `windows` crate（target-specific，仅 Windows） | 系统 Sample Grabber 与 OBS 不兼容；Media Foundation 枚举不到 OBS 虚拟摄像头 |
+| Linux | nokhwa 0.10（V4L2） | `nokhwa`（`input-v4l`） | V4L2 能原生枚举虚拟摄像头（OBS、v4l2loopback） |
+| macOS | nokhwa 0.10（AVFoundation） | `nokhwa`（`input-avfoundation`） | AVFoundation 是 macOS 标准相机 API |
+
+`mf` feature 统一表示「启用平台相机后端」。各依赖声明为 target-specific optional（windows 仅 Windows、nokhwa 仅 Linux/macOS），由 Cargo 按当前 target 自动选择，`mf` feature 列出所有 `dep:` 名（非该 target 的会被忽略）。`ipkvm_video::camera::CameraSource` 在所有平台同路径（Unix 上 `pub use` 自 `camera_nokhwa`），headless 无需改 import。
+
+**为什么 Windows 不直接用 nokhwa**：nokhwa 在 Windows 上的后端是 Media Foundation，同样枚举不到 OBS 虚拟摄像头——这正是当初放弃 MF 的原因。故 Windows 单独走 DirectShow。
+
+**Linux/macOS 编译验证**：在 Debian 13（Rust 1.97）上 `cargo test -p ipkvm-video --features mf`（6 测试全过）+ `cargo check --workspace --features demo`（含 headless）编译通过。该机器无视频设备，未做运行时采集验证（Linux/macOS 的实际设备验证留待目标平台执行）。
+
+---
+
+（以下章节聚焦 Windows DirectShow 实现；Linux/macOS 见末尾「第 8 节」。）
 
 ## 1. 问题与根因
 
@@ -85,14 +103,42 @@ headless 默认（用户不指定 `--camera`）**优先 OBS 虚拟摄像头**（
 
 ## 6. 关键文件
 
-- `crates/ipkvm-video/src/dshow_sink.rs`：纯 sink filter + COM 实现 + 事件驱动帧槽 + 像素转换。
-- `crates/ipkvm-video/src/camera.rs`：`CameraSource`（建图、采集线程、FrameSource 实现）、设备枚举、COM 初始化守卫。
+- `crates/ipkvm-video/src/dshow_sink.rs`：纯 sink filter + COM 实现 + 事件驱动帧槽 + 像素转换（Windows）。
+- `crates/ipkvm-video/src/camera.rs`：共享类型（`CameraDeviceInfo`/`CameraSourceError`）+ Windows `CameraSource`（建图、采集线程、FrameSource 实现）、设备枚举、COM 初始化守卫；Unix 上 `pub use` `camera_nokhwa::CameraSource`。
+- `crates/ipkvm-video/src/camera_nokhwa.rs`：Linux/macOS `CameraSource`（nokhwa 后端，仅 Unix 编译）。
 - `crates/ipkvm-video/examples/camera_probe.rs`：枚举 + 打开 + 采帧验证。
-- `crates/ipkvm-video/examples/camera_perf.rs`：帧率与 CPU 性能探测。
+- `crates/ipkvm-video/examples/camera_perf.rs`：帧率与 CPU 性能探测（Windows）。
 
 ## 7. 验证证据
 
-- `camera_probe`：成功从 OBS 虚拟摄像头采集 1920×1080 BGRA8888，持续多帧、checksum 各异、无黑屏、不崩溃（exit 0）。
-- `cargo test --workspace --all-features`：全部通过（含 sink filter COM 行为的单元测试）。
-- headless `--list-cameras`：枚举到 ToDesk Camera + OBS Virtual Camera。
-- headless 默认启动：日志确认 `默认使用相机：OBS Virtual Camera（1:OBS Virtual Camera）`。
+- **Windows** `camera_probe`：成功从 OBS 虚拟摄像头采集 1920×1080 BGRA8888，持续多帧、checksum 各异、无黑屏、不崩溃（exit 0）；release 达 30fps 满帧。
+- **Windows** `cargo test --workspace --all-features`：317 测试全部通过。
+- **Windows** headless `--list-cameras`：枚举到 ToDesk Camera + OBS Virtual Camera；默认启动确认选 OBS。
+- **Linux**（Debian 13，无视频设备）：`cargo test -p ipkvm-video --features mf` 6 测试全过；`cargo check --workspace --features demo`（含 headless）编译通过。
+- **macOS**：未验证（无设备）；API 与 Linux 共用 nokhwa 顶层抽象，AVFoundation 后端由 nokhwa `input-avfoundation` feature 提供。
+
+## 8. Linux/macOS 实现（nokhwa）
+
+### 8.1 选型
+
+nokhwa 0.10 是跨平台相机库，Linux 走 V4L2、macOS 走 AVFoundation。这两个平台能**原生枚举到虚拟摄像头**（OBS Linux 版注册 V4L2 设备、v4l2loopback 等），不像 Windows 的 Media Foundation 列不出 OBS——所以 Linux/macOS 直接用 nokhwa 即可，无需自研后端。
+
+### 8.2 API 用法（经 Linux 编译验证）
+
+- 枚举：`nokhwa::query(ApiBackend::Auto) -> Result<Vec<CameraInfo>>`
+- 打开：`Camera::new(CameraIndex, RequestedFormat::new::<RgbAFormat>(RequestedFormatType::None))`
+- 读帧：`open_stream()` → `frame() -> Buffer`（`frame()` 阻塞直到驱动交付下一帧，天然事件驱动）
+- 转码：`Buffer::decode_image_to_buffer::<RgbAFormat>(&mut [u8])` 转成 RGBA
+
+### 8.3 关键约束：Camera 非 Send
+
+nokhwa 的 `Camera` 内部持 `Box<dyn CaptureBackendTrait>`，该 trait 对象**非 Send**，不能跨线程 move。故 `Camera::new` + `open_stream` 必须在采集线程**内部**执行，用 `sync_channel` 把初始化结果（成功/失败消息）送回 `open`，与 Windows 后端的「线程内初始化 + channel 回传」模式同构。
+
+### 8.4 像素格式
+
+nokhwa 解码输出 RGBA（`RgbAFormat`），后端再 `swap(0,2)`（R↔B）+ alpha 置 255 转成 BGRA8888，与 Windows 后端输出格式一致，上层（编码/传输）无需区分平台。
+
+### 8.5 id 约定
+
+`list_cameras` 返回 `id = "{index}:{human_name}"`（与 Windows 后端一致），`open` 时取冒号前的数字作 `CameraIndex::Index`，解析失败则用完整字符串（V4L2 也接受 `/dev/videoN` 路径）。
+
