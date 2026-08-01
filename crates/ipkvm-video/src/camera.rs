@@ -9,6 +9,9 @@
 
 use std::sync::{Arc, RwLock};
 
+#[cfg(windows)]
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use thiserror::Error;
 use tokio::sync::watch;
 
@@ -71,13 +74,21 @@ unsafe impl Send for SourceReader {}
 
 /// MF 相机帧源。`open` 成功后由后台采集线程持续发布帧。
 ///
-/// 结构上不持有采集线程句柄（线程 detach）：`FrameSource` 要求 `Send + Sync`，
-/// `std::thread::JoinHandle` 不是 `Sync`。线程的存活由 MF 资源与 Arc 引用维持。
+/// 停止：`CameraSource` 被 drop 时置位共享停止标志，采集线程在下一帧读取返回后
+/// 退出（延迟 ≤ 一帧周期），reader 随线程内变量 drop，MF 资源随之释放。
+/// `JoinHandle` 仅用于配合停止机制（`JoinHandle<()>` 是 `Send + Sync`，
+/// 不违反 `FrameSource` 的 `Send + Sync` 约束）。
 #[derive(Debug)]
 pub struct CameraSource {
     latest: Arc<RwLock<Option<SharedVideoFrame>>>,
     sender: watch::Sender<Option<SharedVideoFrame>>,
     name: String,
+    /// 停止标志：drop 时置位，采集线程检测到后退出。
+    #[cfg(windows)]
+    stop: Arc<AtomicBool>,
+    /// 采集线程句柄。drop 置位停止标志后线程自行退出，句柄随之释放。
+    #[cfg(windows)]
+    _handle: Option<std::thread::JoinHandle<()>>,
 }
 
 impl CameraSource {
@@ -189,16 +200,23 @@ impl CameraSource {
         let task_latest = Arc::clone(&latest);
         let task_sender = sender.clone();
         let started = std::time::Instant::now();
+        let stop = Arc::new(AtomicBool::new(false));
+        let task_stop = Arc::clone(&stop);
 
         // 采集线程。ReadSample 在实时源上会阻塞到下一帧到达，天然按设备帧率驱动，
         // 因此不再额外 sleep（额外 sleep 会让实际帧率降到请求值的一半以下）。
-        std::thread::spawn(move || {
+        let handle = std::thread::spawn(move || {
             // 整体捕获 SourceReader（Send 包装）而不是字段 reader.0：Rust 的
             // disjoint closure capture 会只捕获 `.0` 字段（IMFSourceReader，!Send）。
             let reader = reader;
             let _com = ComInit::init();
             let mut seq = 0_u64;
             loop {
+                // 停止检查：drop 置位后尽快退出，让 reader 随本线程 drop、MF 资源释放。
+                // 检查延迟 ≤ 一帧周期（ReadSample 阻塞时长）。
+                if task_stop.load(Ordering::Relaxed) {
+                    break;
+                }
                 // MF 文档要求每次 ReadSample 前把 *pSample 置 NULL；每轮新建即可。
                 let mut sample: Option<IMFSample> = None;
                 let mut stream_flags = 0_u32;
@@ -260,7 +278,18 @@ impl CameraSource {
             latest,
             sender,
             name,
+            stop,
+            _handle: Some(handle),
         })
+    }
+}
+
+impl Drop for CameraSource {
+    fn drop(&mut self) {
+        // 置位停止标志；采集线程在下一帧读取返回后退出并释放 MF 资源。
+        // 不 join：ReadSample 最长阻塞一帧周期，join 会在异常设备上无限等待。
+        #[cfg(windows)]
+        self.stop.store(true, Ordering::Relaxed);
     }
 }
 
@@ -430,5 +459,14 @@ mod tests {
             let err = CameraSource::open("nonexistent", 0).unwrap_err();
             assert!(matches!(err, CameraSourceError::ZeroFramesPerSecond));
         }
+    }
+
+    /// 编译期回归：`CameraSource` 含 `JoinHandle<()>` 与停止标志后仍满足
+    /// `FrameSource` 的 `Send + Sync` 约束（`JoinHandle<T: Send>` 是 Send + Sync）。
+    #[test]
+    fn camera_source_is_send_and_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<CameraSource>();
+        assert_send_sync::<std::thread::JoinHandle<()>>();
     }
 }
