@@ -2,6 +2,8 @@
 
 #[cfg(feature = "mf")]
 pub mod camera;
+#[cfg(feature = "mf")]
+pub mod directshow_grabber;
 #[cfg(feature = "mock")]
 pub mod file_source;
 #[cfg(feature = "mock")]

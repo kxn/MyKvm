@@ -411,6 +411,9 @@ dependencies = [
  "thiserror",
  "tokio",
  "windows",
+ "windows-core",
+ "windows-implement",
+ "windows-interface",
 ]
 
 [[package]]
