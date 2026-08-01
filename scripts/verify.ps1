@@ -23,7 +23,7 @@ function Invoke-CheckedCommand {
 function Test-TrackedTextEncoding {
     $strictUtf8 = [System.Text.UTF8Encoding]::new($false, $true)
     $trackedFiles = @(
-        & git ls-files -- "*.json" "*.md" "*.ps1" "*.psm1" "*.rs" "*.toml" "*.yaml" "*.yml" "AGENTS.md" "Cargo.lock"
+        & git ls-files -- "*.json" "*.md" "*.ps1" "*.psm1" "*.py" "*.rs" "*.sh" "*.toml" "*.yaml" "*.yml" "AGENTS.md" "Cargo.lock"
     )
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to list tracked text files, exit code: $LASTEXITCODE"
