@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>第三方组件与许可证</title>
+    <link rel="stylesheet" href="/assets/app.css">
+  </head>
+  <body class="licenses-page">
+    <header class="licenses-header">
+      <h1>第三方组件与许可证</h1>
+      <a href="/">返回控制台</a>
+    </header>
+    <main class="licenses-content">
+      <section>
+        <h2>noVNC 1.7.0</h2>
+        <p>
+          浏览器 RFB 客户端固定为 noVNC 1.7.0，上游提交
+          <code>63107bd06d9e1f6136ff21aeda8cd62cbf0d433e</code>。
+          核心 JavaScript 使用 MPL-2.0。
+        </p>
+        <p>
+          <a href="/vendor/novnc/LICENSE.txt">顶层许可证说明</a>
+          ·
+          <a href="/vendor/novnc/docs/LICENSE.MPL-2.0">MPL-2.0 全文</a>
+          ·
+          <a href="/vendor/novnc/AUTHORS">作者列表</a>
+          ·
+          <a href="/vendor/novnc/package.json">发布包元数据</a>
+        </p>
+      </section>
+      <section>
+        <h2>pako</h2>
+        <p>
+          noVNC 发布包内的 pako 使用 MIT 许可证，源码与声明均按上游原样提供。
+        </p>
+        <p>
+          <a href="/vendor/novnc/vendor/pako/LICENSE">pako 许可证</a>
+          ·
+          <a href="/vendor/novnc/vendor/pako/README.md">pako 源码说明</a>
+        </p>
+      </section>
+      <section>
+        <h2>DES 实现</h2>
+        <p>
+          noVNC 的 DES 实现文件内保留独立的 BSD 风格版权与许可声明。
+        </p>
+        <p>
+          <a href="/vendor/novnc/core/crypto/des.js">查看原始源码和声明</a>
+        </p>
+      </section>
+      <section>
+        <h2>项目边界</h2>
+        <p>
+          本项目没有修改上述第三方文件。项目自写的页面、样式、Rust 服务和测试继续使用
+          仓库许可证。固定 noVNC 完整源码也保存在仓库
+          <code>third_party/novnc/1.7.0/</code>。
+        </p>
+      </section>
+    </main>
+  </body>
+</html>

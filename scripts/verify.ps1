@@ -23,7 +23,7 @@ function Invoke-CheckedCommand {
 function Test-TrackedTextEncoding {
     $strictUtf8 = [System.Text.UTF8Encoding]::new($false, $true)
     $trackedFiles = @(
-        & git ls-files -- "*.json" "*.md" "*.ps1" "*.psm1" "*.py" "*.rs" "*.sh" "*.toml" "*.yaml" "*.yml" "AGENTS.md" "Cargo.lock"
+        & git ls-files -- "*.css" "*.html" "*.js" "*.json" "*.md" "*.mjs" "*.ps1" "*.psm1" "*.py" "*.rs" "*.sha256" "*.sh" "*.toml" "*.yaml" "*.yml" "AGENTS.md" "Cargo.lock"
     )
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to list tracked text files, exit code: $LASTEXITCODE"
@@ -63,6 +63,12 @@ try {
     Write-Host "==> Check text encoding"
     Test-TrackedTextEncoding
 
+    Invoke-CheckedCommand "Test web asset policy" {
+        & (Join-Path $PSScriptRoot "test-web-assets.ps1")
+    }
+    Invoke-CheckedCommand "Check web assets and browser dependency lock" {
+        & (Join-Path $PSScriptRoot "verify-web-assets.ps1")
+    }
     Invoke-CheckedCommand "Test dependency license policy" {
         & (Join-Path $PSScriptRoot "test-license-policy.ps1")
     }
@@ -99,6 +105,9 @@ try {
     }
     Invoke-CheckedCommand "Check staged diff" {
         git diff --cached --check
+    }
+    Invoke-CheckedCommand "Run real browser verification" {
+        & (Join-Path $PSScriptRoot "verify-browser.ps1")
     }
 }
 finally {

@@ -22,7 +22,14 @@ cargo install --locked --version 0.20.2 cargo-deny
 .\scripts\verify-licenses.ps1
 ```
 
-统一验收 `.\scripts\verify.ps1` 已包含以上两项。工具缺失或版本不符时必须失败，不能自动安装或跳过。
+独立检查非 Cargo 网页资源：
+
+```powershell
+.\scripts\test-web-assets.ps1
+.\scripts\verify-web-assets.ps1
+```
+
+统一验收 `.\scripts\verify.ps1` 已包含以上各项。工具缺失或版本不符时必须失败，不能自动安装或跳过。
 
 ## 许可证分级
 
@@ -122,7 +129,8 @@ Cargo 门禁不完整覆盖以下内容：
 
 当前已知原则：
 
-- noVNC 核心是 MPL-2.0，可以作为网页前端组件；修改 noVNC 自身文件时，修改文件继续按 MPL-2.0 提供。其应用资源还包含其他许可证，必须随锁定版本逐项保留。
+- noVNC 已固定为 `@novnc/novnc` 1.7.0、上游提交 `63107bd06d9e1f6136ff21aeda8cd62cbf0d433e`。完整 npm 发布包嵌入 Rust 二进制并原样提供，核心文件按 MPL-2.0 分发，pako 文件保留 MIT 许可证，DES 文件保留 BSD 声明；项目页面与第三方目录严格分离。修改 noVNC 自身文件或升级版本时必须重新审查并继续提供适用源码与许可证。
+- `playwright-core` 1.62.1 仅用于本地真实浏览器验收，采用 Apache-2.0，不进入生产二进制或发布物。`package-lock.json` 固定版本、npm registry 来源和 integrity。
 - Qt 的 LGPL 版本可以评估动态链接分发，必须保留替换动态库的能力和相应许可证材料。PyQt 免费版是 GPL/商业双许可，不采用。
 - LGPL 构建的 FFmpeg 或 GStreamer 可以评估动态链接或独立进程使用，实际构建选项和附带组件必须单独核对。
 - libjpeg-turbo 可以进入候选方案，但 Rust 绑定和最终分发内容仍需在引入时审查。
@@ -148,3 +156,5 @@ Cargo 门禁不完整覆盖以下内容：
 - 未批准且未固定 `rev` 的本地 Git 依赖同时产生来源拒绝和提交规格拒绝。
 
 夹具只使用系统临时目录和本地 `file://` Git 仓库，不访问远端。清理前会验证路径仍位于系统临时目录，避免递归删除越界。
+
+`scripts/test-web-assets.ps1` 使用隔离副本证明 noVNC 文件被篡改、缺失、额外增加，固定元数据或许可证缺失，浏览器锁文件出现未批准包、浮动版本、非 npm registry 来源或缺少 integrity 时都会失败。正常验证不下载 noVNC；只有显式运行 `scripts/update-novnc.ps1` 才访问固定 tarball 来源。

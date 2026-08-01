@@ -1,6 +1,7 @@
 /target/
 /.cache/
 /.worktrees/
+/browser-tests/node_modules/
 /.research/
 *.pdb
 *.log

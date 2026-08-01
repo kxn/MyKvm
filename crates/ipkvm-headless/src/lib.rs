@@ -4,6 +4,7 @@ pub mod rfb_connection;
 pub mod rfb_input;
 pub mod rfb_tcp;
 pub mod rfb_ws;
+pub mod web;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HeadlessConfig {

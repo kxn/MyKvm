@@ -8,6 +8,7 @@ rust-version.workspace = true
 
 [dependencies]
 axum.workspace = true
+include_dir.workspace = true
 ipkvm-core = { path = "../ipkvm-core" }
 ipkvm-rfb = { path = "../ipkvm-rfb" }
 ipkvm-session = { path = "../ipkvm-session" }
@@ -19,16 +20,22 @@ tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-mu
 futures-util.workspace = true
 ipkvm-core = { path = "../ipkvm-core", features = ["mock"] }
 ipkvm-video = { path = "../ipkvm-video", features = ["mock"] }
-tokio = { workspace = true, features = ["test-util"] }
+tokio = { workspace = true, features = ["process", "test-util"] }
 tokio-tungstenite.workspace = true
+
+[features]
+default = []
+browser-fixture = ["ipkvm-video/mock"]
+demo = ["ipkvm-core/mock", "ipkvm-video/mock"]
 
 [[bin]]
 name = "ipkvm-headless"
 path = "src/main.rs"
 
-[features]
-default = []
-demo = ["ipkvm-core/mock", "ipkvm-video/mock"]
+[[bin]]
+name = "ipkvm-browser-fixture"
+path = "src/bin/ipkvm-browser-fixture.rs"
+required-features = ["browser-fixture"]
 
 [[bin]]
 name = "ipkvm-demo"

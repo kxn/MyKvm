@@ -1,0 +1,233 @@
+:root {
+  color-scheme: light;
+  font-family:
+    "Segoe UI",
+    "Microsoft YaHei UI",
+    sans-serif;
+  letter-spacing: 0;
+  background: #050505;
+  color: #202322;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+body {
+  background: #050505;
+}
+
+button,
+a {
+  font: inherit;
+  letter-spacing: 0;
+}
+
+#console {
+  display: grid;
+  grid-template-rows: 48px minmax(0, 1fr);
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+.status-bar {
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-width: 0;
+  padding: 0 12px;
+  border-bottom: 1px solid #c7cbc8;
+  background: #f3f5f3;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 28%);
+}
+
+.identity,
+.session-actions {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.identity {
+  gap: 8px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.identity strong {
+  flex: 0 0 auto;
+  font-size: 14px;
+  font-weight: 650;
+}
+
+#connection-status {
+  overflow: hidden;
+  color: #5c625f;
+  font-size: 13px;
+  text-overflow: ellipsis;
+}
+
+.status-indicator {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #c69119;
+  box-shadow: 0 0 0 2px #fff;
+}
+
+#console[data-connection-state="connected"] .status-indicator {
+  background: #16834b;
+}
+
+#console[data-connection-state="disconnected"] .status-indicator,
+#console[data-connection-state="failed"] .status-indicator {
+  background: #bd3c33;
+}
+
+.session-actions {
+  flex: 0 0 auto;
+  gap: 6px;
+  margin-left: 12px;
+}
+
+.session-actions button,
+.session-actions a {
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid #aeb4b0;
+  border-radius: 4px;
+  background: #fff;
+  color: #202322;
+  font-size: 13px;
+  line-height: 28px;
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.session-actions button {
+  cursor: pointer;
+}
+
+.session-actions button:hover:not(:disabled),
+.session-actions a:hover {
+  border-color: #4e6b5b;
+  background: #e9efeb;
+}
+
+.session-actions button:focus-visible,
+.session-actions a:focus-visible {
+  outline: 2px solid #267452;
+  outline-offset: 1px;
+}
+
+.session-actions button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+#screen {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: #050505;
+}
+
+#screen:focus-within {
+  outline: 2px solid #3d9b68;
+  outline-offset: -2px;
+}
+
+.licenses-page {
+  min-height: 100%;
+  overflow: auto;
+  background: #f3f5f3;
+  color: #202322;
+}
+
+.licenses-header {
+  border-bottom: 1px solid #c7cbc8;
+  background: #fff;
+}
+
+.licenses-header,
+.licenses-content {
+  padding: 20px max(20px, calc((100% - 880px) / 2));
+}
+
+.licenses-header h1 {
+  margin: 0 0 8px;
+  font-size: 24px;
+  line-height: 1.25;
+}
+
+.licenses-header a,
+.licenses-content a {
+  color: #17603d;
+}
+
+.licenses-content {
+  padding-top: 12px;
+  padding-bottom: 40px;
+}
+
+.licenses-content section {
+  padding: 14px 0;
+  border-bottom: 1px solid #d5d9d6;
+}
+
+.licenses-content h2 {
+  margin: 0 0 6px;
+  font-size: 17px;
+}
+
+.licenses-content p {
+  max-width: 75ch;
+  margin: 6px 0;
+  line-height: 1.65;
+}
+
+@media (max-width: 520px) {
+  #console {
+    grid-template-rows: 52px minmax(0, 1fr);
+  }
+
+  .status-bar {
+    padding: 0 8px;
+  }
+
+  .identity {
+    gap: 6px;
+  }
+
+  #connection-status {
+    max-width: 74px;
+  }
+
+  .session-actions {
+    gap: 4px;
+    margin-left: 6px;
+  }
+
+  .session-actions button,
+  .session-actions a {
+    height: 30px;
+    padding: 0 7px;
+    font-size: 12px;
+    line-height: 28px;
+  }
+}
