@@ -1,6 +1,8 @@
 //! 视频采集抽象。
 
 #[cfg(feature = "mock")]
+pub mod file_source;
+#[cfg(feature = "mock")]
 pub mod looping;
 #[cfg(feature = "mock")]
 pub mod mock;
