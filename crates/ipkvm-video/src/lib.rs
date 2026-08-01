@@ -1,7 +1,11 @@
 //! 视频采集抽象。
 
 #[cfg(feature = "mock")]
+pub mod looping;
+#[cfg(feature = "mock")]
 pub mod mock;
+#[cfg(feature = "mock")]
+pub mod y4m;
 
 use std::sync::Arc;
 

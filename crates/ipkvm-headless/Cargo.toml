@@ -13,7 +13,7 @@ ipkvm-rfb = { path = "../ipkvm-rfb" }
 ipkvm-session = { path = "../ipkvm-session" }
 ipkvm-video = { path = "../ipkvm-video" }
 thiserror.workspace = true
-tokio = { workspace = true, features = ["io-util", "macros", "net", "rt"] }
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "signal"] }
 
 [dev-dependencies]
 futures-util.workspace = true
@@ -25,3 +25,12 @@ tokio-tungstenite.workspace = true
 [[bin]]
 name = "ipkvm-headless"
 path = "src/main.rs"
+
+[features]
+default = []
+demo = ["ipkvm-core/mock", "ipkvm-video/mock"]
+
+[[bin]]
+name = "ipkvm-demo"
+path = "src/bin/ipkvm-demo.rs"
+required-features = ["demo"]

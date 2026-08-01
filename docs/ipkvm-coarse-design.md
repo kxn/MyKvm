@@ -524,11 +524,11 @@ WebSocket 兼容：
 - 完成 RFB 指针输入坐标时期：动态尺寸和跨半包输入使用客户端已公告尺寸，不读取最新视频尺寸补算。
 - 完成单活动 RFB 控制者事件泵，覆盖输入拒绝、生命周期错误、原事件返还、断线和事件源关闭释放。
 - 使用真实回环 TCP、模拟 BGRA 帧和 `Ch9329InputSink<FakeCommandQueue>` 自动验证键盘、指针与最终释放闭环。
+- 完成双分辨率 Y4M 循环播放 mock 帧源（`ipkvm-video` 的 `mock` 功能）与 `ipkvm-demo` 演示二进制，并用独立第三方 VNC 客户端 vncdotool 1.3.0 验证 RFB TCP 画面和 `DesktopSize` 动态分辨率切换；自动化回归测试见 `crates/ipkvm-headless/tests/rfb_dynamic_resolution.rs`。
+- 完成 RFB WebSocket 传输：axum `/rfb` 入口、可选 `binary` 子协议、锁定 noVNC 1.7.0 提交的线级初始化样本、TCP/WS 跨传输互斥与取消安全连接闸门。
 
 待完成：
 
-- 使用锁定版本的第三方普通 VNC 客户端验证兼容性。
-- 完成 RFB WebSocket 传输并使用锁定版本的 noVNC 验证兼容性。
 - 有明确维护的可用 runner 后，再设计并启用 Gitea Actions；在此之前以本地自动化验证结果作为 PR 验收证据。
 
 ### 阶段 1：桌面本地最小版本
