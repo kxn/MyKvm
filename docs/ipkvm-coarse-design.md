@@ -488,7 +488,7 @@ WebSocket 兼容：
 
 1. Windows 主控机最小版本
    - 当前开发环境在 Windows。
-   - Media Foundation 是新代码推荐路径。
+   - 视频采集用 DirectShow（2026-08-01 实测：MF 的 `MFEnumDeviceSources` 枚举不到 OBS 虚拟摄像头等 DirectShow 过滤器，OBS 官方 issue #13439 确认不计划支持 MF FrameServer；DirectShow 枚举覆盖 OBS/腾讯会议/飞书/ffmpeg 全部可见设备）。
    - CH340 串口验证方便。
 
 2. 无头 VNC/网页最小版本
@@ -648,7 +648,7 @@ WebSocket 兼容：
 仍需硬件验证的问题：
 
 - 廉价 HDMI 采集卡实际支持的格式、帧率、MJPEG 行为和延迟。
-- Windows Media Foundation 对真实采集卡的枚举、格式选择和帧读取行为（MF 枚举与 BGRA8888 采集代码路径已实现，真实采集卡硬件到货后验证）。
+- DirectShow 对真实采集卡（真实 USB/HDMI 摄像头）的枚举、格式选择和帧读取行为（DirectShow 路径已实现，OBS 虚拟摄像头实测通过，真实硬件到货后验证）。
 - 目标机 BIOS/UEFI/引导菜单对 CH9329 绝对鼠标的支持情况，相对模式回退是否必要。
 - CH9329 成品线默认波特率、工作模式、命令应答、读信息命令和 115200 支持情况。
 - 目标机从 BIOS 到 OS 全过程中采集卡输出分辨率的变化序列。
