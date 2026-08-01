@@ -53,7 +53,7 @@ pub enum TextInputNotice {
 #[derive(Debug)]
 pub struct TextInputService<S: InputSink> {
     tx: mpsc::UnboundedSender<TextInputCommand>,
-    // 持有任务句柄避免提前 drop（JoinHandle drop 仅分离，任务仍运行）。
+    // 持有任务句柄以便 task 存活，任务终止依赖命令通道关闭。
     _task: Option<tokio::task::JoinHandle<()>>,
     marker: PhantomData<S>,
 }

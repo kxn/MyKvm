@@ -201,6 +201,7 @@ pub struct RfbInputPump<S: InputSink> {
 
 impl<S: InputSink> RfbInputPump<S> {
     /// 创建输入泵；内部以 `sink` 的克隆启动独立文本键入服务（见 `TextInputService`）。
+    /// 调用方必须运行在 tokio runtime 上下文中（内部 `tokio::spawn`）。
     pub fn new(sink: S) -> Self
     where
         S: Clone + Send + 'static,

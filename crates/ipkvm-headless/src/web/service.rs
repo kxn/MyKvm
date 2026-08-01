@@ -245,6 +245,9 @@ fn packed_bgra(frame: &VideoFrame) -> Option<Cow<'_, [u8]>> {
         return Some(Cow::Borrowed(&frame.data));
     }
     let stride = frame.stride as usize;
+    if frame.data.len() < stride * frame.height as usize {
+        return None;
+    }
     let mut packed = Vec::with_capacity(row_bytes * frame.height as usize);
     for y in 0..frame.height as usize {
         let start = y * stride;
@@ -335,6 +338,7 @@ mod tests {
                 0, 0, 255, 255, 0, 255, 0, 255, // 第 0 行
                 1, 1, 1, 1, // 行填充
                 3, 3, 3, 3, 4, 4, 4, 4, // 第 1 行
+                2, 2, 2, 2, // 行填充
             ],
         );
 
@@ -348,6 +352,24 @@ mod tests {
     #[test]
     fn packed_bgra_rejects_truncated_data() {
         let frame = bgra_frame(4, 1, 20, vec![0; 4]);
+
+        assert!(packed_bgra(&frame).is_none());
+    }
+
+    #[test]
+    fn packed_bgra_rejects_data_shorter_than_stride_times_height() {
+        // 像素行与行间填充齐备、仅末行填充缺失：数据短于 stride*height，
+        // 视为畸形帧拒绝（行校验先于按元数据分配，避免畸形帧触发大分配）。
+        let frame = bgra_frame(
+            2,
+            2,
+            12,
+            vec![
+                0, 0, 255, 255, 0, 255, 0, 255, // 第 0 行
+                1, 1, 1, 1, // 行填充
+                3, 3, 3, 3, 4, 4, 4, 4, // 第 1 行
+            ],
+        );
 
         assert!(packed_bgra(&frame).is_none());
     }

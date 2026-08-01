@@ -542,7 +542,7 @@ WebSocket 兼容：
 - 完成正式 `ipkvm-headless` 后台进程：同时提供 RFB TCP（5900）和嵌入式 noVNC 网页 + RFB WebSocket（6080），共享单活动控制者连接闸门；硬件到货前使用 Y4M 循环播放模拟帧源和 `FakeCommandQueue`，`headless_process` 集成测试覆盖 TCP banner、WS 握手、静态资源、gate 互斥和干净关闭。
 - 完成视频源能力：`FrameSource::source_info` 元数据接口（类型、显示名、来源标识）覆盖模拟帧源、文件伪设备和相机源；Y4M 文件伪设备 `FileVideoSource` 按文件名排序循环播放并支持分辨率切换；Windows Media Foundation 相机后端（`mf` 功能）提供 `list_cameras` 枚举与 `CameraSource::open` 采集循环，`camera_probe` 示例自动化执行设计文档手工验证步骤（枚举、打开、帧输出、fps）。
 - 完成门闸控制器状态：连接闸门暴露活动 RFB 控制器标识与连接时间，供 `/api/status` 使用。
-- 完成独立文本键入服务 `TextInputService`：RFB `ClientCutText` 文本经键盘映射器转为模拟键入序列，与物理 `InputSink` 解耦，键入前读取锁定键状态并保留状态竞争说明。
+- 完成独立文本键入服务 `TextInputService`：RFB `ClientCutText` 文本经键盘映射器转为模拟键入序列，与物理 `InputSink` 解耦；当前假设锁定键未按下，锁定键状态源为注入点，待硬件接入后实现 GetInfo 查询。
 - 完成 HTTP 状态与快照接口：`GET /api/status` 输出帧源、控制器与错误状态；`GET /api/screenshot` 输出最新帧 JPEG（质量 85）；`jpeg-encoder` 的 IJG 例外按许可证策略完整记录。headless CLI 提供 `--list-cameras`、`--camera <名称>`、`--assets <目录>`，未指定视频参数时默认打开第一台相机。
 
 待完成：
@@ -711,6 +711,6 @@ WebSocket 兼容：
 - 第一版桌面图形界面不做全屏，只保留后续扩展位。
 - 多个 VNC 客户端同时连接时，第一个连接者获得输入控制权；其他客户端只读观看。
 - 鼠标默认使用绝对模式；BIOS/启动菜单不兼容时切到相对模式。
-- 文本转模拟键入只承诺 `en_US` 可映射字符；键入前读取锁定键 LED，但不承诺查询后无状态竞争。
+- 文本转模拟键入只承诺 `en_US` 可映射字符；当前假设锁定键未按下，锁定键状态源为注入点，待硬件接入后实现 GetInfo 查询。
 - CH9329 串口默认使用 9600；115200 只在硬件诊断确认后考虑自动启用。
 - RFB 性能优化先做脏块检测，再评估 `ZRLE` 或 `Tight/JPEG`。
