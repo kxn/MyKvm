@@ -1,4 +1,4 @@
-//! 相机探测示例：枚举 Windows Media Foundation 相机，打开第一台（优先 OBS 虚拟摄像头）
+//! 相机探测示例：枚举 DirectShow 相机，打开第一台（优先 OBS 虚拟摄像头）
 //! 并采集若干帧 BGRA8888 数据验证采集循环。
 //!
 //! 用法：`cargo run -p ipkvm-video --example camera_probe --features mf`
@@ -84,11 +84,23 @@ fn main() {
 
     let window_start = Instant::now();
     let mut frames = 1_u64;
+    let mut last_seq = first.seq;
+    // 用 subscribe 监听采集线程发布的新帧（事件驱动：每来一帧发布一次）。
+    // borrow_and_update 既取最新值又标记已读（重置 has_changed）。
+    let mut rx = source.subscribe();
     while window_start.elapsed() < Duration::from_secs(2) {
-        if wait_for_frame(&source, Duration::from_millis(200)).is_none() {
-            break;
+        if rx.has_changed().unwrap_or(false) {
+            let current = rx
+                .borrow_and_update()
+                .as_ref()
+                .map(|f| f.seq)
+                .unwrap_or(last_seq);
+            if current != last_seq {
+                frames += 1;
+                last_seq = current;
+            }
         }
-        frames += 1;
+        std::thread::sleep(Duration::from_millis(5));
     }
     println!("[capture] received {frames} frames in ~2s");
     println!("[capture] OK");

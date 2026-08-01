@@ -1,33 +1,45 @@
-//! Windows 相机后端（DirectShow）。只支持 Windows；其他平台提供「不支持」stub。
+//! 相机后端公共入口与共享类型。
 //!
-//! 用 DirectShow 系统设备枚举器（`ICreateDevEnum` + `CLSID_VideoInputDeviceCategory`）
-//! 枚举——能看到 OBS 虚拟摄像头等 DirectShow 过滤器（MF 的 `MFEnumDeviceSources` 看不到）。
-//! 打开用 Capture Graph Builder + Sample Grabber（锁 NV12 输出）+ Null Renderer，
-//! 读帧用回调模式（BufferCB），NV12 → BGRA8888 用官方 BT.601 公式转换；
-//! 对外始终发布 BGRA8888 帧。
+//! 平台后端：
+//! - **Windows**：自研纯 DirectShow sink filter（本文件 `CameraSource` 实现 + `dshow_sink`）。
+//!   系统 Sample Grabber 与 OBS 虚拟摄像头不兼容；DirectShow 能枚举到 OBS 等设备。
+//! - **Linux/macOS**：nokhwa（见 `camera_nokhwa`），Linux 走 V4L2、macOS 走 AVFoundation，
+//!   这两个平台能原生枚举到虚拟摄像头。本文件下方的 `CameraSource` 仅 Windows 编译；
+//!   非 Windows 平台由 `camera_nokhwa` 提供 `CameraSource` 并在此 `pub use`。
 //!
-//! COM 初始化用 STA（`COINIT_APARTMENTTHREADED`，DirectShow 官方推荐），并保证
-//! 先释放所有 COM 对象再 `CoUninitialize`（MTA + 对象存活时反初始化会访问违例崩溃）。
+//! 共享类型（所有平台）：`CameraDeviceInfo`、`CameraSourceError`。
 //!
-//! `CameraSource` 的采集线程独占 OS 线程（DirectShow 要求单线程串行 + COM 初始化），
-//! 采集循环 `BufferCB 回调 → NV12→BGRA → 填 VideoFrame → RwLock + watch`
-//! 与 `LoopingVideoSource` 同构：`latest_frame()` 返回最新帧，`subscribe()` 订阅帧流。
+//! Windows DirectShow 实现要点：用 Capture Graph Builder + 自研 sink filter，
+//! `RenderStream(NULL, NULL, device, NULL, sink)` 直连；sink 在 `Receive`（流线程）拷帧到
+//! 共享槽，采集线程事件驱动（Condvar）转换发布。COM 初始化用 STA，同一线程串行使用。
+//! 像素格式按协商到的真实 subtype 转换（NV12/YUY2/RGB24/ARGB32），统一输出 BGRA8888。
 
+// 非 Windows 平台：CameraSource / list_cameras 由 nokhwa 后端提供，在此 re-export，
+// 使 `ipkvm_video::camera::CameraSource` 路径在所有平台一致（headless 无需改 import）。
+#[cfg(all(unix, feature = "mf"))]
+pub use crate::camera_nokhwa::{CameraSource, list_cameras};
+
+// Windows 实现和「无相机后端」stub 都用到这些；Linux/macOS（nokhwa 后端接管）不需要。
+// 守卫条件：Windows 或 未启用 mf（stub 路径）。
+#[cfg(any(windows, not(feature = "mf")))]
 use std::sync::{Arc, RwLock};
 
 #[cfg(windows)]
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use thiserror::Error;
+
+#[cfg(any(windows, not(feature = "mf")))]
 use tokio::sync::watch;
 
+#[cfg(any(windows, not(feature = "mf")))]
 use crate::{FrameReceiver, FrameSource, SharedVideoFrame, VideoSourceInfo, VideoSourceKind};
 
 #[cfg(windows)]
 use crate::{MonotonicTimestamp, PixelFormat, VideoFrame};
 
 #[cfg(windows)]
-use crate::directshow_grabber::nv12_to_bgra;
+use crate::dshow_sink::{SinkFilter, SinkFrameSlot, convert_to_bgra};
 #[cfg(windows)]
 use windows::Win32::System::Com::{
     COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize, IEnumMoniker, IMoniker,
@@ -57,46 +69,41 @@ pub enum CameraSourceError {
     ZeroFramesPerSecond,
 }
 
-/// DirectShow 相机帧源。`open` 成功后由后台采集线程持续发布帧。
-///
-/// 停止：`CameraSource` 被 drop 时置位共享停止标志，采集线程在下一帧读取返回后
-/// 退出（延迟 ≤ 一帧周期），图对象随线程内变量 drop，DirectShow 资源随之释放。
+// ============================================================================
+// Windows DirectShow 实现（CameraSource + list_cameras）。仅 Windows 编译。
+// 非 Windows + 无 mf feature 时返回 UnsupportedPlatform stub。
+// ============================================================================
+
+#[cfg(windows)]
 #[derive(Debug)]
 pub struct CameraSource {
     latest: Arc<RwLock<Option<SharedVideoFrame>>>,
     sender: watch::Sender<Option<SharedVideoFrame>>,
     name: String,
-    /// 停止标志：drop 时置位，采集线程检测到后退出。
-    #[cfg(windows)]
+    /// 帧槽：drop 时 stop() 唤醒采集线程；事件驱动核心。
+    slot: Option<SinkFrameSlot>,
+    /// 兼容停止信号（control.Stop 之前让采集循环退出）。
     stop: Arc<AtomicBool>,
-    /// 采集线程句柄。drop 置位停止标志后线程自行退出，句柄随之释放。
-    #[cfg(windows)]
+    /// 采集线程句柄。
     _handle: Option<std::thread::JoinHandle<()>>,
 }
 
+#[cfg(windows)]
 impl CameraSource {
     pub fn open(device_id: &str, frames_per_second: u64) -> Result<Self, CameraSourceError> {
         if frames_per_second == 0 {
             return Err(CameraSourceError::ZeroFramesPerSecond);
         }
-        #[cfg(windows)]
-        {
-            let _ = frames_per_second;
-            Self::open_impl(device_id)
-        }
-        #[cfg(not(windows))]
-        {
-            let _ = (device_id, frames_per_second);
-            Err(CameraSourceError::UnsupportedPlatform)
-        }
+        let _ = frames_per_second;
+        Self::open_impl(device_id)
     }
 }
 
-/// 初始化结果：CameraSource + 采集循环所需变量（grabber/control/stop/started/latest/sender）。
+/// 初始化结果：CameraSource + 采集循环所需变量（slot/control/stop/started/latest/sender）。
 #[cfg(windows)]
 type InitResult = (
     CameraSource,
-    crate::directshow_grabber::SampleGrabberFilter,
+    SinkFrameSlot,
     windows::Win32::Media::DirectShow::IMediaControl,
     Arc<AtomicBool>,
     std::time::Instant,
@@ -107,12 +114,11 @@ type InitResult = (
 #[cfg(windows)]
 impl CameraSource {
     fn open_impl(device_id: &str) -> Result<Self, CameraSourceError> {
-        use crate::directshow_grabber::{CLSID_NullRenderer, SampleGrabberFilter};
         use windows::Win32::Media::DirectShow::{
-            IBaseFilter, ICaptureGraphBuilder2, IGraphBuilder, IMediaControl, IPin, PIN_DIRECTION,
+            IBaseFilter, ICaptureGraphBuilder2, IGraphBuilder, IMediaControl,
         };
         use windows::Win32::Media::MediaFoundation::{
-            CLSID_CaptureGraphBuilder2, CLSID_FilterGraph, PIN_CATEGORY_CAPTURE,
+            CLSID_CaptureGraphBuilder2, CLSID_FilterGraph,
         };
         use windows::Win32::System::Com::CLSCTX;
 
@@ -186,109 +192,30 @@ impl CameraSource {
                             )
                         },
                     )?;
-                    // Sample Grabber + Null Renderer
-                    let mut grabber = SampleGrabberFilter::new().map_err(|e| {
-                        CameraSourceError::Open(
-                            device_id.to_owned(),
-                            format!("create grabber: {e}"),
-                        )
+                    // 纯 sink filter（FFmpeg 同款）：capture pin → sink filter 输入 pin。
+                    let slot = SinkFrameSlot::new();
+                    let sink_filter = windows::core::ComObject::new(SinkFilter::new(slot.clone()));
+                    let sink: IBaseFilter = sink_filter.clone().into_interface();
+                    unsafe { graph.AddFilter(&sink, windows::core::w!("Sink")) }.map_err(|e| {
+                        CameraSourceError::Open(device_id.to_owned(), format!("add sink: {e}"))
                     })?;
-                    let null_renderer: IBaseFilter = unsafe {
-                        windows::Win32::System::Com::CoCreateInstance(
-                            &CLSID_NullRenderer,
+                    // 把 filter 引用注入 pin：图管理器连接协商时调 pin.QueryPinInfo，
+                    // 期望拿到所属 filter 的 AddRef 副本；返回 NULL 会导致崩溃。
+                    sink_filter.get().attach_filter_reference(sink.clone());
+                    // RenderStream(NULL, NULL, source, NULL, sink) —— FFmpeg 同款：
+                    // 从 capture filter 的输出 pin 直接连到我们的 sink（无中间 filter）。
+                    // sink 的 ReceiveConnection 会校验并接受协商到的视频媒体类型。
+                    unsafe {
+                        builder.RenderStream(
                             None,
-                            CLSCTX(1),
-                        )
-                    }
-                    .map_err(|e| {
-                        CameraSourceError::Open(
-                            device_id.to_owned(),
-                            format!("create null renderer: {e}"),
-                        )
-                    })?;
-                    // 请求 NV12 输出（OBS 默认偏好 NV12）；SetMediaType 在 AddFilter 前调用
-                    grabber.request_nv12().map_err(|e| {
-                        CameraSourceError::Open(
-                            device_id.to_owned(),
-                            format!("set grabber media type: {e}"),
-                        )
-                    })?;
-                    unsafe { graph.AddFilter(grabber.as_filter(), windows::core::w!("Grabber")) }
-                        .map_err(|e| {
-                        CameraSourceError::Open(device_id.to_owned(), format!("add grabber: {e}"))
-                    })?;
-                    unsafe { graph.AddFilter(&null_renderer, windows::core::w!("NullRenderer")) }
-                        .map_err(|e| {
-                        CameraSourceError::Open(
-                            device_id.to_owned(),
-                            format!("add null renderer: {e}"),
-                        )
-                    })?;
-                    // 手动两步连接（IGraphBuilder::Connect 智能连接，处理 transform filter 协商）
-                    // 1. capture filter 的 capture 输出 pin → grabber 输入 pin
-                    let cap_out: IPin = unsafe {
-                        builder.FindPin(
+                            std::ptr::null(),
                             &source,
-                            PIN_DIRECTION(1),
-                            Some(&PIN_CATEGORY_CAPTURE),
-                            None,
-                            true,
-                            0,
+                            None::<&windows::Win32::Media::DirectShow::IBaseFilter>,
+                            &sink,
                         )
                     }
                     .map_err(|e| {
-                        CameraSourceError::Open(
-                            device_id.to_owned(),
-                            format!("find capture pin: {e}"),
-                        )
-                    })?;
-                    let grab_in: IPin = unsafe {
-                        builder.FindPin(grabber.as_filter(), PIN_DIRECTION(0), None, None, false, 0)
-                    }
-                    .map_err(|e| {
-                        CameraSourceError::Open(
-                            device_id.to_owned(),
-                            format!("find grabber input pin: {e}"),
-                        )
-                    })?;
-                    unsafe { graph.Connect(&cap_out, &grab_in) }.map_err(|e| {
-                        CameraSourceError::Open(
-                            device_id.to_owned(),
-                            format!("connect capture-grabber: {e}"),
-                        )
-                    })?;
-                    // 2. grabber 输出 pin → null renderer 输入 pin
-                    let grab_out: IPin = unsafe {
-                        builder.FindPin(grabber.as_filter(), PIN_DIRECTION(1), None, None, true, 0)
-                    }
-                    .map_err(|e| {
-                        CameraSourceError::Open(
-                            device_id.to_owned(),
-                            format!("find grabber output pin: {e}"),
-                        )
-                    })?;
-                    let null_in: IPin = unsafe {
-                        builder.FindPin(&null_renderer, PIN_DIRECTION(0), None, None, true, 0)
-                    }
-                    .map_err(|e| {
-                        CameraSourceError::Open(
-                            device_id.to_owned(),
-                            format!("find null renderer input pin: {e}"),
-                        )
-                    })?;
-                    unsafe { graph.Connect(&grab_out, &null_in) }.map_err(|e| {
-                        CameraSourceError::Open(
-                            device_id.to_owned(),
-                            format!("connect grabber-null: {e}"),
-                        )
-                    })?;
-                    // 注册 BufferCB 回调
-                    grabber.set_callback().map_err(|e| {
-                        CameraSourceError::Open(device_id.to_owned(), format!("set callback: {e}"))
-                    })?;
-                    // 协商尺寸
-                    grabber.negotiated_size().ok_or_else(|| {
-                        CameraSourceError::Open(device_id.to_owned(), "no negotiated size".into())
+                        CameraSourceError::Open(device_id.to_owned(), format!("render stream: {e}"))
                     })?;
                     let control: IMediaControl = graph.cast().map_err(|e| {
                         CameraSourceError::Open(device_id.to_owned(), format!("cast control: {e}"))
@@ -306,16 +233,17 @@ impl CameraSource {
                     } else {
                         display_name
                     };
-                    // CameraSource 持 latest/sender/stop 的 clone，采集循环也持有 clone。
+                    // CameraSource 持 slot 的 clone（drop 时 stop() 唤醒采集线程）。
                     Ok((
                         CameraSource {
                             latest: Arc::clone(&latest),
                             sender: sender.clone(),
                             name,
+                            slot: Some(slot.clone()),
                             stop: Arc::clone(&stop),
                             _handle: None,
                         },
-                        grabber,
+                        slot,
                         control,
                         stop,
                         started,
@@ -324,8 +252,7 @@ impl CameraSource {
                     ))
                 })();
                 // 初始化完成：把 CameraSource 发给主线程（open 返回），然后本线程跑采集循环。
-                let (source, grabber, control, stop, started, task_latest, task_sender) = match init
-                {
+                let (source, slot, control, stop, started, task_latest, task_sender) = match init {
                     Ok(v) => v,
                     Err(e) => {
                         // 错误路径：把错误转成字符串经 channel 送出（CameraSourceError 不 Clone）。
@@ -336,39 +263,53 @@ impl CameraSource {
                     }
                 };
                 let _ = init_tx.send(Ok(source));
-                // 读帧循环：回调模式非阻塞读共享槽，无新帧则稍等重试。
+                // 事件驱动采集循环：阻塞等待 next_frame_into，被 Receive 唤醒后处理一帧。
+                // 无帧时彻底睡眠（Condvar::wait），CPU 趋近于零；来一帧处理一帧，无需去重。
+                // raw_buf 复用：next_frame_into 把帧数据拷进它（复用容量，稳定后零分配）。
                 let mut seq = 0_u64;
+                let mut raw_buf: Vec<u8> = Vec::new();
                 loop {
-                    if stop.load(Ordering::Relaxed) {
-                        break;
+                    // 等下一帧；长超时只是兜底（防极端情况下永远等不到帧的死锁），
+                    // 正常路径由 Receive 的 notify_one 立即唤醒，drop 时 stop() 返回 Stopped。
+                    match slot.next_frame_into(std::time::Duration::from_secs(1), &mut raw_buf) {
+                        crate::dshow_sink::NextFrame::Frame {
+                            len,
+                            media_type: mt,
+                        } => {
+                            // 按协商到的真实 subtype 转 BGRA8888（NV12/YUY2/RGB24/ARGB32）。
+                            let Some((bgra, w, h)) = convert_to_bgra(&raw_buf[..len], &mt) else {
+                                continue;
+                            };
+                            seq = seq.saturating_add(1);
+                            let frame = VideoFrame::new(
+                                seq,
+                                MonotonicTimestamp::from_nanos(
+                                    started.elapsed().as_nanos().try_into().unwrap_or(u64::MAX),
+                                ),
+                                w,
+                                h,
+                                w * 4,
+                                PixelFormat::Bgra8888,
+                                Arc::from(bgra),
+                            );
+                            let shared = Arc::new(frame);
+                            *task_latest.write().expect("camera lock poisoned") =
+                                Some(Arc::clone(&shared));
+                            task_sender.send_replace(Some(shared));
+                        }
+                        crate::dshow_sink::NextFrame::Timeout => {
+                            // 兜底超时：检查是否应退出（停止主要由 slot.stop() 触发 Stopped）。
+                            if stop.load(Ordering::Relaxed) {
+                                break;
+                            }
+                        }
+                        crate::dshow_sink::NextFrame::Stopped => break,
                     }
-                    if let Some((nv12, w, h)) = grabber.current_buffer() {
-                        let mut bgra = vec![0_u8; (w as usize) * (h as usize) * 4];
-                        nv12_to_bgra(&nv12, w as usize, h as usize, false, &mut bgra);
-                        seq = seq.saturating_add(1);
-                        let frame = VideoFrame::new(
-                            seq,
-                            MonotonicTimestamp::from_nanos(
-                                started.elapsed().as_nanos().try_into().unwrap_or(u64::MAX),
-                            ),
-                            w,
-                            h,
-                            w * 4,
-                            PixelFormat::Bgra8888,
-                            Arc::from(bgra),
-                        );
-                        let shared = Arc::new(frame);
-                        *task_latest.write().expect("camera lock poisoned") =
-                            Some(Arc::clone(&shared));
-                        task_sender.send_replace(Some(shared));
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(16));
                 }
                 // 停止图：同步等待流线程退出，之后才能释放对象。
                 unsafe {
                     let _ = control.Stop();
                 };
-                let _ = source;
                 Ok(())
             })
             .map_err(|e| {
@@ -389,15 +330,19 @@ impl CameraSource {
     }
 }
 
+#[cfg(windows)]
 impl Drop for CameraSource {
     fn drop(&mut self) {
-        // 置位停止标志；采集线程在下一帧读取返回后退出并释放 DirectShow 资源。
-        // 不 join：GetCurrentBuffer 最长阻塞一帧周期，join 会在异常设备上无限等待。
-        #[cfg(windows)]
-        self.stop.store(true, Ordering::Relaxed);
+        // 双路径停止：置位 stop 标志（Timeout 分支兜底退出）+ slot.stop() 唤醒
+        // 阻塞在 next_frame 的采集线程，使其立即返回 Stopped 并退出。
+        self.stop.store(true, Ordering::Release);
+        if let Some(slot) = &self.slot {
+            slot.stop();
+        }
     }
 }
 
+#[cfg(windows)]
 impl FrameSource for CameraSource {
     fn latest_frame(&self) -> Option<SharedVideoFrame> {
         self.latest
@@ -514,7 +459,38 @@ pub fn list_cameras() -> Result<Vec<CameraDeviceInfo>, CameraSourceError> {
         .collect())
 }
 
-#[cfg(not(windows))]
+// 非 Windows 且未启用 mf feature 的 stub（保持 API 完整性）。
+#[cfg(not(any(windows, all(unix, feature = "mf"))))]
+impl CameraSource {
+    pub fn open(_device_id: &str, _frames_per_second: u64) -> Result<Self, CameraSourceError> {
+        Err(CameraSourceError::UnsupportedPlatform)
+    }
+}
+
+#[cfg(not(any(windows, all(unix, feature = "mf"))))]
+#[derive(Debug)]
+pub struct CameraSource {
+    _private: (),
+}
+
+#[cfg(not(any(windows, all(unix, feature = "mf"))))]
+impl FrameSource for CameraSource {
+    fn latest_frame(&self) -> Option<SharedVideoFrame> {
+        None
+    }
+    fn subscribe(&self) -> FrameReceiver {
+        unreachable!("camera not supported on this platform/configuration")
+    }
+    fn source_info(&self) -> VideoSourceInfo {
+        VideoSourceInfo {
+            kind: VideoSourceKind::Camera,
+            device_name: String::new(),
+            is_loop: false,
+        }
+    }
+}
+
+#[cfg(not(any(windows, all(unix, feature = "mf"))))]
 pub fn list_cameras() -> Result<Vec<CameraDeviceInfo>, CameraSourceError> {
     Err(CameraSourceError::UnsupportedPlatform)
 }
@@ -572,7 +548,7 @@ mod tests {
 
     #[test]
     fn camera_open_with_zero_fps_rejected() {
-        #[cfg(windows)]
+        #[cfg(any(windows, all(unix, feature = "mf")))]
         {
             let err = CameraSource::open("nonexistent", 0).unwrap_err();
             assert!(matches!(err, CameraSourceError::ZeroFramesPerSecond));
