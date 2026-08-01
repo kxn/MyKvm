@@ -19,7 +19,7 @@ pub(crate) use finalize::{
     RfbConnectionFinalizeError, finalize_connection, run_managed_connection,
 };
 pub(crate) use gate::RfbConnectionReservation;
-pub use gate::{RfbConnectionGate, RfbConnectionGateError};
+pub use gate::{ActiveController, RfbConnectionGate, RfbConnectionGateError, RfbTransportKind};
 pub(crate) use transport::{RfbTransport, RfbTransportError, RfbTransportRead};
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -13,6 +13,9 @@ ipkvm-core = { path = "../ipkvm-core" }
 ipkvm-rfb = { path = "../ipkvm-rfb" }
 ipkvm-session = { path = "../ipkvm-session" }
 ipkvm-video = { path = "../ipkvm-video" }
+jpeg-encoder.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "signal"] }
 
@@ -20,13 +23,18 @@ tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-mu
 futures-util.workspace = true
 ipkvm-core = { path = "../ipkvm-core", features = ["mock"] }
 ipkvm-video = { path = "../ipkvm-video", features = ["mock"] }
+serde_json.workspace = true
 tokio = { workspace = true, features = ["process", "test-util"] }
 tokio-tungstenite.workspace = true
+zune-jpeg.workspace = true
 
 [features]
 default = []
 browser-fixture = ["ipkvm-video/mock"]
-demo = ["ipkvm-core/mock", "ipkvm-video/mock"]
+# demo 联动 ipkvm-video/mf：相机后端对非 Windows 提供 UnsupportedPlatform stub，
+# windows crate 本身可在任意平台编译（内部绑定按 cfg(windows) 生成），因此
+# 在 Linux 上启用 mf 不影响构建，仅相机路径在运行时返回"不支持"错误。
+demo = ["ipkvm-core/mock", "ipkvm-video/mock", "ipkvm-video/mf"]
 
 [[bin]]
 name = "ipkvm-headless"

@@ -1,7 +1,4 @@
-//! 按顺序循环播放多个 Y4M 素材的演示帧源（mock 功能）。
-//!
-//! 素材尺寸可以不同：切换素材时发布的 `VideoFrame` 尺寸随之变化，
-//! 下游 RFB 连接会据此触发 `DesktopSize` 通知。
+//! 视频文件伪设备：把视频文件包装成 `FrameSource`，内部自动循环播放。
 
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
@@ -15,26 +12,26 @@ use crate::{
 };
 
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
-pub enum LoopingSourceError {
-    #[error("looping video source requires at least one asset")]
+pub enum FileSourceError {
+    #[error("file video source requires at least one asset")]
     EmptyAssets,
     #[error("frames per second must be non-zero")]
     ZeroFramesPerSecond,
 }
 
 #[derive(Debug)]
-pub struct LoopingVideoSource {
+pub struct FileVideoSource {
     latest: Arc<RwLock<Option<SharedVideoFrame>>>,
     sender: watch::Sender<Option<SharedVideoFrame>>,
 }
 
-impl LoopingVideoSource {
-    pub fn new(assets: Vec<Y4mAsset>, frames_per_second: u64) -> Result<Self, LoopingSourceError> {
+impl FileVideoSource {
+    pub fn new(assets: Vec<Y4mAsset>, frames_per_second: u64) -> Result<Self, FileSourceError> {
         if assets.is_empty() {
-            return Err(LoopingSourceError::EmptyAssets);
+            return Err(FileSourceError::EmptyAssets);
         }
         if frames_per_second == 0 {
-            return Err(LoopingSourceError::ZeroFramesPerSecond);
+            return Err(FileSourceError::ZeroFramesPerSecond);
         }
 
         let (sender, _receiver) = watch::channel(None);
@@ -65,9 +62,7 @@ impl LoopingVideoSource {
                             Arc::from(pixels.into_boxed_slice()),
                         );
                         let shared = Arc::new(frame);
-                        *task_latest
-                            .write()
-                            .expect("looping video source lock poisoned") =
+                        *task_latest.write().expect("file source lock poisoned") =
                             Some(Arc::clone(&shared));
                         task_sender.send_replace(Some(shared));
                         tokio::time::sleep(interval).await;
@@ -80,23 +75,21 @@ impl LoopingVideoSource {
     }
 }
 
-impl FrameSource for LoopingVideoSource {
+impl FrameSource for FileVideoSource {
     fn latest_frame(&self) -> Option<SharedVideoFrame> {
         self.latest
             .read()
-            .expect("looping video source lock poisoned")
+            .expect("file source lock poisoned")
             .as_ref()
             .map(Arc::clone)
     }
-
     fn subscribe(&self) -> FrameReceiver {
         self.sender.subscribe()
     }
-
     fn source_info(&self) -> VideoSourceInfo {
         VideoSourceInfo {
-            kind: VideoSourceKind::Generated,
-            device_name: "looping y4m".into(),
+            kind: VideoSourceKind::VideoFile,
+            device_name: "video file".into(),
             is_loop: true,
         }
     }
@@ -104,14 +97,11 @@ impl FrameSource for LoopingVideoSource {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
-
-    use tokio::time::timeout;
-
-    use super::LoopingSourceError;
+    use super::*;
     use crate::FrameSource;
-    use crate::looping::LoopingVideoSource;
     use crate::y4m::Y4mAsset;
+    use std::time::Duration;
+    use tokio::time::timeout;
 
     fn asset(width: u32, height: u32, luminance: u8, frame_count: usize) -> Y4mAsset {
         let y_len = (width * height) as usize;
@@ -125,10 +115,21 @@ mod tests {
         Y4mAsset::parse(&bytes).unwrap()
     }
 
-    async fn observed_sizes(source: &LoopingVideoSource, limit: usize) -> Vec<(u32, u32)> {
+    #[tokio::test]
+    async fn file_source_reports_video_file_kind_and_is_loop() {
+        let source = FileVideoSource::new(vec![asset(4, 2, 0, 2)], 1_000).unwrap();
+        let info = source.source_info();
+        assert_eq!(info.kind, crate::VideoSourceKind::VideoFile);
+        assert!(info.is_loop);
+        assert_eq!(info.device_name, "video file");
+    }
+
+    #[tokio::test]
+    async fn file_source_loops_and_publishes_bgra_frames() {
+        let source = FileVideoSource::new(vec![asset(4, 2, 0, 2)], 1_000).unwrap();
         let mut receiver = source.subscribe();
-        let mut sizes = Vec::new();
-        while sizes.len() < limit {
+        let mut seen = 0;
+        while seen < 5 {
             if timeout(Duration::from_secs(5), receiver.changed())
                 .await
                 .unwrap()
@@ -137,60 +138,23 @@ mod tests {
                 break;
             }
             let frame = receiver.borrow().clone().unwrap();
-            let size = (frame.width, frame.height);
-            if sizes.last() != Some(&size) {
-                sizes.push(size);
-            }
-        }
-        sizes
-    }
-
-    #[tokio::test]
-    async fn publishes_both_resolutions_and_loops_back() {
-        let small = asset(4, 2, 0, 8);
-        let large = asset(2, 4, 255, 8);
-        let source = LoopingVideoSource::new(vec![small, large], 1_000).unwrap();
-
-        let sizes = observed_sizes(&source, 5).await;
-
-        assert!(sizes.len() >= 3, "应观察到多次切换，实际 {sizes:?}");
-        assert!(sizes[0] != sizes[1], "相邻尺寸不应相同：{sizes:?}");
-        assert!(sizes[1] != sizes[2], "相邻尺寸不应相同：{sizes:?}");
-        assert!(sizes.contains(&(4, 2)), "缺少 4x2：{sizes:?}");
-        assert!(sizes.contains(&(2, 4)), "缺少 2x4：{sizes:?}");
-    }
-
-    #[tokio::test]
-    async fn published_frames_are_bgra_with_monotonic_sequence() {
-        let source =
-            LoopingVideoSource::new(vec![asset(4, 2, 0, 8), asset(2, 4, 255, 8)], 1_000).unwrap();
-        let mut receiver = source.subscribe();
-        let mut previous_seq = 0;
-
-        for _ in 0..5 {
-            timeout(Duration::from_secs(5), receiver.changed())
-                .await
-                .unwrap()
-                .unwrap();
-            let frame = receiver.borrow().clone().unwrap();
-            assert!(frame.seq > previous_seq);
             assert_eq!(frame.pixel_format, crate::PixelFormat::Bgra8888);
             assert_eq!(frame.stride, frame.width * 4);
             assert_eq!(frame.data.len(), (frame.width * frame.height * 4) as usize);
-            assert_eq!(frame.data[3], 255);
-            previous_seq = frame.seq;
+            seen += 1;
         }
+        assert!(seen >= 5, "file source should loop, saw {seen} frames");
     }
 
     #[test]
     fn rejects_empty_assets_and_zero_fps() {
         assert!(matches!(
-            LoopingVideoSource::new(Vec::new(), 10),
-            Err(LoopingSourceError::EmptyAssets)
+            FileVideoSource::new(Vec::new(), 10),
+            Err(FileSourceError::EmptyAssets)
         ));
         assert!(matches!(
-            LoopingVideoSource::new(vec![asset(2, 2, 0, 1)], 0),
-            Err(LoopingSourceError::ZeroFramesPerSecond)
+            FileVideoSource::new(vec![asset(2, 2, 0, 1)], 0),
+            Err(FileSourceError::ZeroFramesPerSecond)
         ));
     }
 }

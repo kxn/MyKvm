@@ -2,6 +2,7 @@ mod keyboard;
 mod keymap;
 mod pointer;
 mod pump;
+mod text;
 
 use ipkvm_core::InputError;
 use thiserror::Error;
@@ -13,6 +14,7 @@ pub use pump::{
     RfbInputLifecycleError, RfbInputNotice, RfbInputOperation, RfbInputPump, RfbInputRunError,
     RfbKeyboardRejection,
 };
+pub use text::{TextInputConfig, TextInputNotice, TextInputService};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RfbKeyboardOutcome {

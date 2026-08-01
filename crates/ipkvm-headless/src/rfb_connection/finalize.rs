@@ -85,15 +85,22 @@ mod tests {
     use super::*;
     use crate::rfb_connection::{
         RfbClientId, RfbConnectionGate, RfbConnectionGateError, RfbDisconnectReason,
-        RfbServerEvent, driver::RfbConnectionError,
+        RfbServerEvent, RfbTransportKind, driver::RfbConnectionError,
     };
+
+    fn peer() -> SocketAddr {
+        "127.0.0.1:5900".parse().unwrap()
+    }
 
     fn completion(
         gate: &RfbConnectionGate,
         peer_addr: SocketAddr,
         end: ConnectionEnd,
     ) -> RfbConnectionCompletion {
-        let lease = gate.try_acquire().unwrap().activate();
+        let lease = gate
+            .try_acquire(RfbTransportKind::Tcp, peer_addr)
+            .unwrap()
+            .activate();
         RfbConnectionCompletion {
             end,
             lease,
@@ -124,7 +131,7 @@ mod tests {
         })
         .await;
         assert_eq!(
-            gate.try_acquire().unwrap_err(),
+            gate.try_acquire(RfbTransportKind::Tcp, peer()).unwrap_err(),
             RfbConnectionGateError::Busy
         );
 
@@ -142,9 +149,9 @@ mod tests {
             }) if actual_client_id == client_id && actual_peer_addr == peer_addr
         ));
 
-        let next = gate.try_acquire().unwrap();
+        let next = gate.try_acquire(RfbTransportKind::Tcp, peer()).unwrap();
         assert_eq!(
-            gate.try_acquire().unwrap_err(),
+            gate.try_acquire(RfbTransportKind::Tcp, peer()).unwrap_err(),
             RfbConnectionGateError::Busy
         );
         drop(next);
@@ -177,7 +184,7 @@ mod tests {
         drop(finalizer);
 
         assert_eq!(
-            gate.try_acquire().unwrap_err(),
+            gate.try_acquire(RfbTransportKind::Tcp, peer()).unwrap_err(),
             RfbConnectionGateError::Poisoned
         );
     }
@@ -201,7 +208,7 @@ mod tests {
             Err(mpsc::error::TryRecvError::Empty)
         ));
         assert_eq!(
-            gate.try_acquire().unwrap_err(),
+            gate.try_acquire(RfbTransportKind::Tcp, peer()).unwrap_err(),
             RfbConnectionGateError::Poisoned
         );
     }
@@ -222,7 +229,7 @@ mod tests {
             Err(RfbConnectionFinalizeError::EventChannelClosed)
         ));
         assert_eq!(
-            gate.try_acquire().unwrap_err(),
+            gate.try_acquire(RfbTransportKind::Tcp, peer()).unwrap_err(),
             RfbConnectionGateError::Poisoned
         );
     }

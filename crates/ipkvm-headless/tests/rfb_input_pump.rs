@@ -150,8 +150,9 @@ async fn real_tcp_client_drives_ch9329_input_and_disconnect_release() {
     client.send_pointer(1, 1, 0).await;
     drop(client);
 
+    // 键盘、指针、pump 释放、文本服务取消时的释放，共 4 个批次。
     tokio::time::timeout(Duration::from_secs(1), async {
-        while queue.stats().batches_accepted < 3 {
+        while queue.stats().batches_accepted < 4 {
             tokio::task::yield_now().await;
         }
     })
@@ -163,7 +164,7 @@ async fn real_tcp_client_drives_ch9329_input_and_disconnect_release() {
     let (notices, active_client) = pump_task.await.unwrap();
 
     assert_eq!(active_client, None);
-    assert_eq!(queue.accepted_batches().len(), 3);
+    assert_eq!(queue.accepted_batches().len(), 4);
     assert!(matches!(
         notices.as_slice(),
         [

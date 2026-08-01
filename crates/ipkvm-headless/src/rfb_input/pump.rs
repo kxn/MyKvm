@@ -5,6 +5,7 @@ use ipkvm_rfb::RfbRectangle;
 use thiserror::Error;
 use tokio::sync::mpsc;
 
+use super::text::{TextInputConfig, TextInputNotice, TextInputService};
 use super::{
     RfbKeyboardError, RfbKeyboardMapper, RfbKeyboardOutcome, RfbPointerError, RfbPointerMapper,
     RfbPointerOutcome,
@@ -43,9 +44,18 @@ pub enum RfbInputNotice {
         client_id: RfbClientId,
         outcome: RfbPointerOutcome,
     },
-    CutTextIgnored {
+    TextDispatched {
         client_id: RfbClientId,
-        byte_count: usize,
+        char_count: usize,
+    },
+    TextTyped {
+        client_id: RfbClientId,
+        chars_typed: usize,
+        chars_skipped: usize,
+    },
+    TextInputFailed {
+        client_id: RfbClientId,
+        error: String,
     },
     ContinuousUpdatesIgnored {
         client_id: RfbClientId,
@@ -62,6 +72,25 @@ pub enum RfbInputNotice {
         peer_addr: SocketAddr,
         reason: RfbControllerReleaseReason,
     },
+}
+
+impl From<TextInputNotice> for RfbInputNotice {
+    fn from(notice: TextInputNotice) -> Self {
+        match notice {
+            TextInputNotice::Typed {
+                client_id,
+                chars_typed,
+                chars_skipped,
+            } => RfbInputNotice::TextTyped {
+                client_id,
+                chars_typed,
+                chars_skipped,
+            },
+            TextInputNotice::Error { client_id, error } => {
+                RfbInputNotice::TextInputFailed { client_id, error }
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -120,6 +149,8 @@ pub enum RfbInputError {
         #[source]
         source: InputError,
     },
+    #[error("text input service is unavailable for RFB client {client_id:?}")]
+    TextInputUnavailable { client_id: RfbClientId },
 }
 
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
@@ -159,20 +190,30 @@ struct ActiveController {
 }
 
 #[derive(Debug)]
-pub struct RfbInputPump<S> {
+pub struct RfbInputPump<S: InputSink> {
     sink: S,
     active: Option<ActiveController>,
     keyboard: RfbKeyboardMapper,
     pointer: RfbPointerMapper,
+    text: TextInputService<S>,
+    text_notices: mpsc::Receiver<TextInputNotice>,
 }
 
 impl<S: InputSink> RfbInputPump<S> {
-    pub fn new(sink: S) -> Self {
+    /// 创建输入泵；内部以 `sink` 的克隆启动独立文本键入服务（见 `TextInputService`）。
+    /// 调用方必须运行在 tokio runtime 上下文中（内部 `tokio::spawn`）。
+    pub fn new(sink: S) -> Self
+    where
+        S: Clone + Send + 'static,
+    {
+        let (text, text_notices) = TextInputService::new(sink.clone(), TextInputConfig::default());
         Self {
             sink,
             active: None,
             keyboard: RfbKeyboardMapper::new(),
             pointer: RfbPointerMapper::new(),
+            text,
+            text_notices,
         }
     }
 
@@ -209,7 +250,19 @@ impl<S: InputSink> RfbInputPump<S> {
     where
         F: FnMut(&RfbInputNotice),
     {
-        while let Some(event) = receiver.recv().await {
+        loop {
+            let event = tokio::select! {
+                event = receiver.recv() => event,
+                notice = self.text_notices.recv() => {
+                    if let Some(notice) = notice {
+                        observe(&RfbInputNotice::from(notice));
+                    }
+                    continue;
+                }
+            };
+            let Some(event) = event else {
+                break;
+            };
             let notice = self.handle_event(event)?;
             observe(&notice);
         }
@@ -255,9 +308,16 @@ impl<S: InputSink> RfbInputPump<S> {
             ),
             RfbServerEvent::CutText { client_id, bytes } => {
                 self.require_active(*client_id, RfbInputEventKind::CutText)?;
-                Ok(RfbInputNotice::CutTextIgnored {
+                let text = String::from_utf8_lossy(bytes).into_owned();
+                let char_count = text.chars().count();
+                self.text.try_type_text(*client_id, text).map_err(|_| {
+                    RfbInputError::TextInputUnavailable {
+                        client_id: *client_id,
+                    }
+                })?;
+                Ok(RfbInputNotice::TextDispatched {
                     client_id: *client_id,
-                    byte_count: bytes.len(),
+                    char_count,
                 })
             }
             RfbServerEvent::ContinuousUpdates {
@@ -420,6 +480,8 @@ impl<S: InputSink> RfbInputPump<S> {
                 operation: RfbInputOperation::Release,
                 source,
             })?;
+        // 取消进行中的文本键入（服务内部 release_all 复位其 sink）。
+        let _ = self.text.try_cancel(active.client_id);
         self.active = None;
         self.keyboard = RfbKeyboardMapper::new();
         self.pointer = RfbPointerMapper::new();
@@ -433,6 +495,8 @@ impl<S: InputSink> RfbInputPump<S> {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use ipkvm_core::{
         Ch9329InputSink, CommandQueueError, FramebufferSize, InputResult, KeyEvent, MouseMode,
         PointerButton, PointerEvent, fake_serial::FakeCommandQueue,
@@ -441,7 +505,7 @@ mod tests {
 
     use super::*;
 
-    #[derive(Debug, Default)]
+    #[derive(Clone, Debug, Default)]
     struct RecordingSink {
         key_batches: Vec<Vec<KeyEvent>>,
         pointer_batches: Vec<Vec<PointerEvent>>,
@@ -497,8 +561,8 @@ mod tests {
         }
     }
 
-    #[test]
-    fn routes_controller_keyboard_and_pointer_events() {
+    #[tokio::test]
+    async fn routes_controller_keyboard_and_pointer_events() {
         let client_id = client(1);
         let peer_addr = peer(5900);
         let mut pump = RfbInputPump::new(RecordingSink::default());
@@ -559,8 +623,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn reports_client_rejections_and_ignored_events_without_stopping() {
+    #[tokio::test]
+    async fn reports_client_rejections_and_ignored_events_without_stopping() {
         let client_id = client(2);
         let peer_addr = peer(5901);
         let mut pump = RfbInputPump::new(RecordingSink::default());
@@ -604,9 +668,9 @@ mod tests {
                 client_id,
                 bytes: b"abc".to_vec(),
             }),
-            Ok(RfbInputNotice::CutTextIgnored {
+            Ok(RfbInputNotice::TextDispatched {
                 client_id,
-                byte_count: 3,
+                char_count: 3,
             })
         );
         let rectangle = RfbRectangle {
@@ -629,8 +693,126 @@ mod tests {
         );
     }
 
-    #[test]
-    fn sink_failures_return_the_original_event_and_can_be_retried() {
+    #[tokio::test]
+    async fn cut_text_typing_result_is_reported_as_a_notice() {
+        let client_id = client(17);
+        let peer_addr = peer(5916);
+        let (tx, mut rx) = mpsc::channel(2);
+        let mut pump = RfbInputPump::new(RecordingSink::default());
+        let mut notices = Vec::new();
+        let driver = tokio::spawn(async move {
+            tx.send(connected(client_id, peer_addr)).await.unwrap();
+            tx.send(RfbServerEvent::CutText {
+                client_id,
+                bytes: b"ab".to_vec(),
+            })
+            .await
+            .unwrap();
+            // 默认 30ms/字符，两个字符约 120ms；留足余量再关闭事件通道。
+            tokio::time::sleep(Duration::from_millis(500)).await;
+            drop(tx);
+        });
+        pump.run(&mut rx, |notice| notices.push(notice.clone()))
+            .await
+            .unwrap();
+        driver.await.unwrap();
+
+        let dispatched = notices
+            .iter()
+            .position(|notice| {
+                matches!(
+                    notice,
+                    RfbInputNotice::TextDispatched {
+                        client_id: found,
+                        char_count: 2,
+                    } if *found == client_id
+                )
+            })
+            .expect("text dispatch notice");
+        let typed = notices
+            .iter()
+            .position(|notice| {
+                matches!(
+                    notice,
+                    RfbInputNotice::TextTyped {
+                        client_id: found,
+                        chars_typed: 2,
+                        chars_skipped: 0,
+                    } if *found == client_id
+                )
+            })
+            .expect("text typed notice");
+        assert!(dispatched < typed);
+        assert_eq!(pump.sink().release_count, 1);
+        // 键入走服务自己的 sink 副本，不触碰 pump 的 sink。
+        assert!(pump.sink().key_batches.is_empty());
+        assert_eq!(pump.active_client(), None);
+    }
+
+    #[tokio::test]
+    async fn disconnect_cancels_in_flight_text_typing() {
+        let client_id = client(18);
+        let peer_addr = peer(5917);
+        let (tx, mut rx) = mpsc::channel(4);
+        let mut pump = RfbInputPump::new(RecordingSink::default());
+        let mut notices = Vec::new();
+        // 100 个字符按默认 30ms/字符约 6s，断开发生在键入中途。
+        let long_text = "x".repeat(100);
+        let driver = tokio::spawn(async move {
+            tx.send(connected(client_id, peer_addr)).await.unwrap();
+            tx.send(RfbServerEvent::CutText {
+                client_id,
+                bytes: long_text.into_bytes(),
+            })
+            .await
+            .unwrap();
+            tokio::time::sleep(Duration::from_millis(80)).await;
+            tx.send(RfbServerEvent::Disconnected {
+                client_id,
+                peer_addr,
+                reason: RfbDisconnectReason::ClientClosed,
+            })
+            .await
+            .unwrap();
+            // 留足余量让取消后的部分键入结果通知到达 pump。
+            tokio::time::sleep(Duration::from_millis(150)).await;
+            drop(tx);
+        });
+        pump.run(&mut rx, |notice| notices.push(notice.clone()))
+            .await
+            .unwrap();
+        driver.await.unwrap();
+
+        assert!(matches!(
+            notices.as_slice(),
+            [
+                RfbInputNotice::ControllerAcquired { .. },
+                RfbInputNotice::TextDispatched { .. },
+                ..
+            ]
+        ));
+        let (typed, skipped) = notices
+            .iter()
+            .find_map(|notice| match notice {
+                RfbInputNotice::TextTyped {
+                    client_id: found,
+                    chars_typed,
+                    chars_skipped,
+                } if *found == client_id => Some((*chars_typed, *chars_skipped)),
+                _ => None,
+            })
+            .expect("partial typing result notice after disconnect");
+        assert_eq!(skipped, 0);
+        assert!(
+            typed < 100,
+            "disconnect should cancel typing mid-flight, typed {typed}"
+        );
+        assert_eq!(pump.sink().release_count, 1);
+        assert_eq!(pump.active_client(), None);
+    }
+
+    #[tokio::test]
+    async fn sink_failures_return_the_original_event_and_can_be_retried() {
         let client_id = client(3);
         let peer_addr = peer(5902);
         let mut pump = RfbInputPump::new(RecordingSink {
@@ -685,8 +867,8 @@ mod tests {
         assert_eq!(pump.active_client(), Some(client_id));
     }
 
-    #[test]
-    fn rejects_events_that_break_the_single_controller_lifecycle() {
+    #[tokio::test]
+    async fn rejects_events_that_break_the_single_controller_lifecycle() {
         let first = client(4);
         let second = client(5);
         let first_peer = peer(5903);
@@ -770,8 +952,8 @@ mod tests {
         assert_eq!(pump.sink().release_count, 0);
     }
 
-    #[test]
-    fn pre_handshake_disconnect_does_not_release_input() {
+    #[tokio::test]
+    async fn pre_handshake_disconnect_does_not_release_input() {
         let client_id = client(6);
         let peer_addr = peer(5905);
         let mut pump = RfbInputPump::new(RecordingSink::default());
@@ -792,8 +974,8 @@ mod tests {
         assert_eq!(pump.sink().release_count, 0);
     }
 
-    #[test]
-    fn disconnect_releases_input_and_resets_mappers_for_the_next_controller() {
+    #[tokio::test]
+    async fn disconnect_releases_input_and_resets_mappers_for_the_next_controller() {
         let first = client(7);
         let second = client(8);
         let first_peer = peer(5906);
@@ -851,8 +1033,8 @@ mod tests {
         assert_eq!(pump.sink().pointer_batches.len(), 2);
     }
 
-    #[test]
-    fn failed_disconnect_release_keeps_the_event_and_controller_for_retry() {
+    #[tokio::test]
+    async fn failed_disconnect_release_keeps_the_event_and_controller_for_retry() {
         let client_id = client(9);
         let peer_addr = peer(5908);
         let mut pump = RfbInputPump::new(RecordingSink {
@@ -1017,8 +1199,8 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn real_ch9329_sink_orders_input_and_final_release_batches() {
+    #[tokio::test]
+    async fn real_ch9329_sink_orders_input_and_final_release_batches() {
         let client_id = client(13);
         let peer_addr = peer(5912);
         let queue = FakeCommandQueue::new();
@@ -1062,8 +1244,8 @@ mod tests {
         assert_eq!(pump.active_client(), None);
     }
 
-    #[test]
-    fn real_ch9329_release_failure_rolls_back_sink_and_pump_together() {
+    #[tokio::test]
+    async fn real_ch9329_release_failure_rolls_back_sink_and_pump_together() {
         let client_id = client(14);
         let peer_addr = peer(5913);
         let queue = FakeCommandQueue::new();
@@ -1113,8 +1295,8 @@ mod tests {
         assert_eq!(pump.active_client(), Some(second));
     }
 
-    #[test]
-    fn real_ch9329_pointer_uses_the_size_carried_by_the_tcp_event() {
+    #[tokio::test]
+    async fn real_ch9329_pointer_uses_the_size_carried_by_the_tcp_event() {
         let client_id = client(16);
         let queue = FakeCommandQueue::new();
         let sink = Ch9329InputSink::new(queue.clone(), 0, MouseMode::Absolute);

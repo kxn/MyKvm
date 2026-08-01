@@ -21,7 +21,9 @@
 
 `HeadlessWebService` 已把项目自有中文控制台页面、固定 noVNC 1.7.0 资源和现有 `/rfb` 组装为单一嵌入式 HTTP 服务。真实 Chrome 自动化已经证明模拟帧像素、桌面与窄视口等比缩放、键盘 HID、缩放后的绝对坐标、按钮顺序、断开释放和重连到达 `RfbInputPump` 后的 `InputSink`。资源来源、逐文件哈希、许可证和浏览器测试依赖也进入统一本机门禁。
 
-上述实现仍不是可控制真实机器的完整无头产品：正式二进制尚未组装真实视频、真实串口、设备选择和进程生命周期，鉴权与 TLS 也未实现。以下设备会话、状态接口和生产启动描述仍是目标形态，不能当作当前已交付能力。
+正式 `ipkvm-headless` 二进制已通过 CLI 组装真实视频与设备选择：`--camera <名称>` 按 id 或显示名打开 Windows Media Foundation 相机，`--list-cameras` 枚举设备后退出，`--assets <目录>` 使用 Y4M 文件伪设备（与 `--camera` 互斥），未指定视频参数时默认打开枚举到的第一台相机。`FrameSource` 暴露 `source_info` 元数据，`/api/status` 报告帧源与活动控制器状态，`/api/screenshot` 用 `jpeg-encoder` 把最新 BGRA8888 帧编码为 JPEG 快照，RFB `ClientCutText` 通过独立 `TextInputService` 转模拟键入。
+
+上述实现仍不是可控制真实机器的完整无头产品：真实 CH9329 串口尚未实现，键鼠事件进入 `FakeCommandQueue` 后被丢弃；鉴权与 TLS 也未实现。以下设备会话和生产启动描述仍是目标形态，不能当作当前已交付能力。
 
 当前不做完整安全子系统。鉴权、TLS、访问控制、审计、公网暴露、反向代理、VPN、会话权限等都视为后续可叠加层；但默认监听地址固定为 `127.0.0.1`，只有显式配置才允许监听其他地址。
 
@@ -56,6 +58,10 @@ Go 可用于无头后台进程，但不推荐作为桌面主实现。Go 的网�
 - 内置 noVNC 网页。
 - 剪贴板文本转模拟键入。
 - 设备枚举和手动选择。
+- 视频源元数据接口（`FrameSource::source_info`）。
+- Y4M 文件伪设备（硬件到货前验证视频链路）。
+- Windows Media Foundation 相机后端（`mf` 功能）。
+- 门闸活动控制器状态。
 - 单目标机、单采集卡、单串口会话。
 - 状态接口和快照接口。
 
@@ -368,8 +374,8 @@ HTTP 6080      设备选择页、noVNC 静态页面、RFB WebSocket 入口
 GET  /                  设置页
 GET  /api/devices       视频和串口设备列表
 POST /api/session       启动或重启会话
-GET  /api/status        当前帧率、串口统计、最后输入时间、丢帧计数、活动客户端数
-GET  /api/screenshot    最新帧 JPEG 快照
+GET  /api/status        当前帧率、串口统计、最后输入时间、丢帧计数、活动客户端数（已实现：帧源与控制器状态）
+GET  /api/screenshot    最新帧 JPEG 快照（已实现，`jpeg-encoder` 编码质量 85）
 GET  /vendor/novnc/...  noVNC 静态资源
 GET  /rfb               基于 WebSocket 的 RFB
 GET  /licenses/         第三方许可证与源码入口
@@ -482,7 +488,7 @@ WebSocket 兼容：
 
 1. Windows 主控机最小版本
    - 当前开发环境在 Windows。
-   - Media Foundation 是新代码推荐路径。
+   - 视频采集用 DirectShow（2026-08-01 实测：MF 的 `MFEnumDeviceSources` 枚举不到 OBS 虚拟摄像头等 DirectShow 过滤器，OBS 官方 issue #13439 确认不计划支持 MF FrameServer；DirectShow 枚举覆盖 OBS/腾讯会议/飞书/ffmpeg 全部可见设备）。
    - CH340 串口验证方便。
 
 2. 无头 VNC/网页最小版本
@@ -534,6 +540,10 @@ WebSocket 兼容：
 - 使用真实 Chrome 自动验证 noVNC 页面、模拟帧像素、两种视口等比缩放、键盘、绝对指针、按钮、释放和重连闭环。
 - 建立 noVNC 来源、逐文件完整性、许可证与浏览器依赖锁文件的自动门禁。
 - 完成正式 `ipkvm-headless` 后台进程：同时提供 RFB TCP（5900）和嵌入式 noVNC 网页 + RFB WebSocket（6080），共享单活动控制者连接闸门；硬件到货前使用 Y4M 循环播放模拟帧源和 `FakeCommandQueue`，`headless_process` 集成测试覆盖 TCP banner、WS 握手、静态资源、gate 互斥和干净关闭。
+- 完成视频源能力：`FrameSource::source_info` 元数据接口（类型、显示名、来源标识）覆盖模拟帧源、文件伪设备和相机源；Y4M 文件伪设备 `FileVideoSource` 按文件名排序循环播放并支持分辨率切换；Windows Media Foundation 相机后端（`mf` 功能）提供 `list_cameras` 枚举与 `CameraSource::open` 采集循环，`camera_probe` 示例自动化执行设计文档手工验证步骤（枚举、打开、帧输出、fps）。
+- 完成门闸控制器状态：连接闸门暴露活动 RFB 控制器标识与连接时间，供 `/api/status` 使用。
+- 完成独立文本键入服务 `TextInputService`：RFB `ClientCutText` 文本经键盘映射器转为模拟键入序列，与物理 `InputSink` 解耦；当前假设锁定键未按下，锁定键状态源为注入点，待硬件接入后实现 GetInfo 查询。
+- 完成 HTTP 状态与快照接口：`GET /api/status` 输出帧源、控制器与错误状态；`GET /api/screenshot` 输出最新帧 JPEG（质量 85）；`jpeg-encoder` 的 IJG 例外按许可证策略完整记录。headless CLI 提供 `--list-cameras`、`--camera <名称>`、`--assets <目录>`，未指定视频参数时默认打开第一台相机。
 
 待完成：
 
@@ -571,12 +581,12 @@ WebSocket 兼容：
 - `DesktopSize` 伪编码。
 - RFB `KeyEvent` 到 HID 映射。
 - RFB `PointerEvent` 到 CH9329 绝对鼠标。
-- RFB `ClientCutText` 转模拟键入。
+- RFB `ClientCutText` 转模拟键入（阶段 0 已由 `TextInputService` 完成）。
 - 网页特殊按键和基础屏幕键盘。
 - 单控制者策略。
 - 慢客户端丢帧策略。
-- `/api/status` 状态接口。
-- `/api/screenshot` 最新帧 JPEG 快照接口。
+- `/api/status` 状态接口（阶段 0 已完成）。
+- `/api/screenshot` 最新帧 JPEG 快照接口（阶段 0 已完成）。
 
 ### 阶段 3：Linux 主控机
 
@@ -638,7 +648,7 @@ WebSocket 兼容：
 仍需硬件验证的问题：
 
 - 廉价 HDMI 采集卡实际支持的格式、帧率、MJPEG 行为和延迟。
-- Windows Media Foundation 对目标采集卡的枚举、格式选择和帧读取行为。
+- DirectShow 对真实采集卡（真实 USB/HDMI 摄像头）的枚举、格式选择和帧读取行为（DirectShow 路径已实现，OBS 虚拟摄像头实测通过，真实硬件到货后验证）。
 - 目标机 BIOS/UEFI/引导菜单对 CH9329 绝对鼠标的支持情况，相对模式回退是否必要。
 - CH9329 成品线默认波特率、工作模式、命令应答、读信息命令和 115200 支持情况。
 - 目标机从 BIOS 到 OS 全过程中采集卡输出分辨率的变化序列。
@@ -701,6 +711,6 @@ WebSocket 兼容：
 - 第一版桌面图形界面不做全屏，只保留后续扩展位。
 - 多个 VNC 客户端同时连接时，第一个连接者获得输入控制权；其他客户端只读观看。
 - 鼠标默认使用绝对模式；BIOS/启动菜单不兼容时切到相对模式。
-- 文本转模拟键入只承诺 `en_US` 可映射字符；键入前读取锁定键 LED，但不承诺查询后无状态竞争。
+- 文本转模拟键入只承诺 `en_US` 可映射字符；当前假设锁定键未按下，锁定键状态源为注入点，待硬件接入后实现 GetInfo 查询。
 - CH9329 串口默认使用 9600；115200 只在硬件诊断确认后考虑自动启用。
 - RFB 性能优化先做脏块检测，再评估 `ZRLE` 或 `Tight/JPEG`。

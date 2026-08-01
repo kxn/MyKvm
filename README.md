@@ -6,16 +6,16 @@ my_ipkvm 是一个软件 IPKVM 项目：主控机通过 USB HDMI 采集卡读取
 
 `ipkvm-headless` 已提供可供生产组装复用的嵌入式 Web 服务。它内置项目中文控制台页面和固定到 noVNC 1.7.0 提交 `63107bd06d9e1f6136ff21aeda8cd62cbf0d433e` 的完整 npm 发布资源，并通过同源 `/rfb` 建立连接。真实 Chrome 自动化已经证明模拟帧像素、桌面与窄视口等比缩放、键盘 HID、缩放后的绝对指针坐标、按键顺序、断开释放和重连全部穿过 noVNC、RFB 服务与 `RfbInputPump` 到达记录型 `InputSink`。
 
-当前正式 `ipkvm-headless` 二进制已能在硬件到货前作为可运行后台进程提供完整的 RFB TCP（5900）+ noVNC 网页（6080）双传输服务，使用 Y4M 循环播放模拟帧源和模拟串口队列；真实视频采集、真实 CH9329 串口、设备选择、鉴权和 TLS 尚未实现。
+当前正式 `ipkvm-headless` 二进制已能作为可运行后台进程提供完整的 RFB TCP（5900）+ noVNC 网页（6080）双传输服务。视频源通过 CLI 选择：`--camera` 打开 Windows 相机（按 id 或显示名，DirectShow 后端，含 OBS 虚拟摄像头）、`--assets` 使用 Y4M 文件伪设备、未指定时默认打开第一台相机、`--list-cameras` 只枚举设备并退出；键鼠事件进入模拟串口队列后被丢弃。真实 CH9329 串口、鉴权和 TLS 尚未实现。
 
 ## 当前模块
 
 - `ipkvm-core`：CH9329 命令帧和应答解析、串口字节流增量解帧、HID 报告、6KRO 键盘状态、原子键盘和指针批次、绝对和相对鼠标状态、有序命令批次及模拟队列。
-- `ipkvm-video`：采集设备枚举、格式选择、共享视频帧流；`mock` 功能下提供 Y4M 循环播放帧源，可模拟不同分辨率素材顺序切换。
+- `ipkvm-video`：采集设备枚举、格式选择、共享视频帧流与 `source_info` 元数据；`mock` 功能下提供 Y4M 循环播放帧源（可模拟不同分辨率素材顺序切换），`mf` 功能下提供 Windows DirectShow 相机后端（`list_cameras` 枚举、`CameraSource` 采集与 `camera_probe` 示例，含 OBS 虚拟摄像头），`file_source` 提供 Y4M 文件伪设备。
 - `ipkvm-session`：把视频帧源和输入接收端组合成一个控制台会话。
 - `ipkvm-rfb`：传输无关的 RFB 3.8 `None` 握手、客户端消息增量解码、真彩像素转换、`Raw` 更新、`DesktopSize` 和指针输入坐标时期。
 - `ipkvm-desktop`：本地图形界面入口。
-- `ipkvm-headless`：RFB TCP 与 WebSocket 传输层、共享连接驱动器、单控制者连接闸门、en-US 键盘映射器、绝对指针映射器、输入事件泵，以及内嵌中文 noVNC 页面的 HTTP 服务；`demo` 功能下提供 `ipkvm-headless` 正式后台进程和 `ipkvm-demo` 演示二进制。真实视频采集、真实串口和设备会话组装尚未实现。
+- `ipkvm-headless`：RFB TCP 与 WebSocket 传输层、共享连接驱动器、单活动控制者连接闸门（含控制器状态）、en-US 键盘映射器、绝对指针映射器、输入事件泵、`TextInputService` 文本键入服务，以及内嵌中文 noVNC 页面的 HTTP 服务（含 `/api/status` 状态接口与 `/api/screenshot` JPEG 快照接口）；`demo` 功能下提供 `ipkvm-headless` 正式后台进程和 `ipkvm-demo` 演示二进制。真实 CH9329 串口和设备会话组装尚未实现。
 
 `ipkvm-session` 当前默认按 CH9329 出厂波特率 9600 配置串口。硬件到货前不自动改写芯片参数，也不假定成品线支持 115200。
 
@@ -69,15 +69,22 @@ cargo install --locked --version 0.20.2 cargo-deny
 
 ## 运行无头后台进程
 
-正式 `ipkvm-headless` 二进制同时提供 RFB TCP（供标准 VNC 客户端）和嵌入式 noVNC 网页 + RFB WebSocket（供浏览器），两个入口共享同一个单活动控制者连接闸门。硬件到货前使用 Y4M 循环播放模拟帧源，键鼠事件进入模拟队列后被丢弃。
+正式 `ipkvm-headless` 二进制同时提供 RFB TCP（供标准 VNC 客户端）和嵌入式 noVNC 网页 + RFB WebSocket（供浏览器），两个入口共享同一个单活动控制者连接闸门。视频源按 CLI 参数选择：`--camera <名称>` 打开 Windows 相机（按 id 或显示名，DirectShow 后端，含 OBS 虚拟摄像头），`--assets <目录>` 使用目录内 Y4M 文件伪设备（按文件名排序循环播放），未指定任何视频参数时默认打开枚举到的第一台相机；`--list-cameras` 只枚举设备并退出。真实 CH9329 串口尚未接入，键鼠事件进入模拟队列后被丢弃。
 
 ```bash
 ./scripts/fetch-demo-assets.sh   # 首次运行下载 Y4M 素材
 cargo run -p ipkvm-headless --features demo --bin ipkvm-headless \
     --assets .cache/demo-assets --tcp 5900 --http 6080 --fps 10
+
+# Windows：使用 OBS 虚拟摄像头或其他相机（无需 --assets）
+cargo run -p ipkvm-headless --features demo --bin ipkvm-headless \
+    --camera "OBS Virtual Camera" --tcp 5900 --http 6080
+
+# 只枚举相机设备
+cargo run -p ipkvm-headless --features demo --bin ipkvm-headless --list-cameras
 ```
 
-启动后用浏览器打开 `http://127.0.0.1:6080`，或用标准 VNC 客户端连接 `127.0.0.1:5900`。素材按文件名排序循环播放，切换分辨率时已连接客户端收到 `DesktopSize` 更新。`--bind` 可指定监听地址（默认 `127.0.0.1`）。
+启动后用浏览器打开 `http://127.0.0.1:6080`，或用标准 VNC 客户端连接 `127.0.0.1:5900`。素材按文件名排序循环播放，切换分辨率时已连接客户端收到 `DesktopSize` 更新。`--bind` 可指定监听地址（默认 `127.0.0.1`）。`--camera` 与 `--assets` 互斥；相机未就绪时可用 `--assets` 的 Y4M 模拟帧源验证画面与键鼠链路。
 
 ## 演示：双分辨率视频 mock 源
 
