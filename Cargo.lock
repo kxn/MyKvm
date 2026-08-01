@@ -384,6 +384,7 @@ dependencies = [
 name = "ipkvm-video"
 version = "0.1.0"
 dependencies = [
+ "thiserror",
  "tokio",
 ]
 
