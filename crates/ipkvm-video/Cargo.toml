@@ -9,6 +9,10 @@ rust-version.workspace = true
 [dependencies]
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt"] }
+
+# Windows DirectShow 后端依赖。仅在 Windows target 启用（windows crate 在非 Windows
+# 平台编译会失败：windows-future 引用了仅 Windows 生成的 IMarshal 符号）。
+[target.'cfg(windows)'.dependencies]
 windows = { workspace = true, optional = true, features = [
     "Win32_Media_MediaFoundation",
     "Win32_Media_DirectShow",
@@ -45,6 +49,7 @@ mock = []
 # - Windows：自研 DirectShow 纯 sink filter（windows crate）
 # - Linux：nokhwa V4L2 后端
 # - macOS：nokhwa AVFoundation 后端
+# 各平台只拉自己 target-specific 的可选依赖；非该平台的 dep: 名被 Cargo 自动忽略。
 mf = [
     "dep:windows",
     "dep:windows-core",
