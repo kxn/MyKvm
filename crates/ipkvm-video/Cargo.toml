@@ -8,7 +8,8 @@ rust-version.workspace = true
 
 [dependencies]
 thiserror.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["rt"] }
+windows = { workspace = true, optional = true, features = ["Win32_Media_MediaFoundation", "Win32_System_Com"] }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt"] }
@@ -16,3 +17,8 @@ tokio = { workspace = true, features = ["macros", "rt"] }
 [features]
 default = []
 mock = []
+mf = ["dep:windows"]
+
+[[example]]
+name = "camera_probe"
+required-features = ["mf"]

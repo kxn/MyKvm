@@ -1,5 +1,7 @@
 //! 视频采集抽象。
 
+#[cfg(feature = "mf")]
+pub mod camera;
 #[cfg(feature = "mock")]
 pub mod file_source;
 #[cfg(feature = "mock")]
