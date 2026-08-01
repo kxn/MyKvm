@@ -67,6 +67,15 @@ Cargo 依赖只有在完成独立 issue 和中文合规记录后，才能通过 
 
 LGPL Rust 代码不是绝对禁止，但普通 Cargo 依赖通常会静态链接。只有具体方案说明如何满足适用版本的重新链接和分发义务后才能批准。优先选择动态库或独立进程边界，不能只因为上游标注 LGPL 就直接加入白名单。
 
+当前已批准的按包例外：
+
+- `jpeg-encoder` 0.6.x（`deny.toml` 例外 `allow = ["MIT", "Apache-2.0", "IJG"]`）：
+  1. 引入目的：`ipkvm-headless` 的 `GET /api/screenshot` 把最新 BGRA8888 帧编码为 JPEG（质量 85）。备选的 `image` 等编码器依赖树大且引入大量转码路径，纯 Rust 的 `jpeg-encoder` 是最小实现。
+  2. 上游声明：0.6.1 起许可证表达式为 `(MIT OR Apache-2.0) AND IJG`；0.6.0 及更早版本未声明 IJG 部分，但其 DCT 实现同样移植自 mozjpeg/IJG jpeglib（`src/fdct.rs` 带 IJG 许可头），故按 0.6.1 的如实声明批准。
+  3. 链接方式：纯 Rust 静态链接进 `ipkvm-headless` 二进制（`/api/screenshot` 处理程序直接调用）。
+  4. 发布义务：发布清单需附 MIT 与 Apache-2.0 许可证文本，并因 IJG 条款在产品文档中致谢使用 IJG 代码（「Conditions of distribution and use」要求 acknowledgment）。
+  5. 重新审查条件：升级到 0.7.x 或更高、或上游修改许可证表达式/源码来源时重新审查（0.7 已切换 edition 2024 与 rust-version 1.87，行为差异需另行核对）。
+
 ### 默认拒绝
 
 以下情况默认使验证失败：

@@ -131,12 +131,13 @@ impl RfbConnectionGate {
         })
     }
 
+    // 当前仅被本模块的 cfg(test) 测试消费；`/api/status` 读取 active_controller()
+    // 获取实时时长。未来轮询式 UI（如网页推送状态）需要订阅时再移除。
     #[allow(dead_code)]
     pub(crate) fn controller_status(&self) -> watch::Receiver<Option<ActiveController>> {
         self.inner.status.subscribe()
     }
 
-    #[allow(dead_code)]
     pub(crate) fn active_controller(&self) -> Option<ActiveController> {
         let mut active = self.inner.status.borrow().clone();
         if let Some(controller) = &mut active {

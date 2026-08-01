@@ -6,7 +6,9 @@ use ipkvm_headless::{
     rfb_ws::RfbWebSocketConfig,
     web::{HeadlessWebService, HeadlessWebServiceError},
 };
-use ipkvm_video::{MonotonicTimestamp, PixelFormat, VideoFrame, mock::MockFrameSource};
+use ipkvm_video::{
+    MonotonicTimestamp, PixelFormat, SharedVideoFrame, VideoFrame, mock::MockFrameSource,
+};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -27,6 +29,7 @@ struct HttpResponse {
 
 struct TestWebServer {
     address: SocketAddr,
+    source: Arc<MockFrameSource>,
     shutdown: watch::Sender<bool>,
     task: JoinHandle<Result<(), HeadlessWebServiceError>>,
     _events: mpsc::Receiver<RfbServerEvent>,
@@ -34,14 +37,20 @@ struct TestWebServer {
 
 impl TestWebServer {
     async fn start() -> Self {
+        Self::start_with_frame(Some(test_frame())).await
+    }
+
+    async fn start_with_frame(frame: Option<SharedVideoFrame>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let source = Arc::new(MockFrameSource::new());
-        source.publish_frame(test_frame());
+        if let Some(frame) = frame {
+            source.publish_frame(frame);
+        }
         let (event_tx, events) = mpsc::channel(32);
         let (shutdown, shutdown_rx) = watch::channel(false);
         let service = HeadlessWebService::new(
-            source,
+            Arc::clone(&source),
             event_tx,
             RfbWebSocketConfig::default(),
             shutdown_rx,
@@ -51,6 +60,7 @@ impl TestWebServer {
         let task = tokio::spawn(service.serve(listener));
         Self {
             address,
+            source,
             shutdown,
             task,
             _events: events,
@@ -188,6 +198,106 @@ async fn static_routes_preserve_the_single_active_rfb_gate() {
 
     first.close(None).await.unwrap();
     server.stop().await;
+}
+
+#[tokio::test]
+async fn api_status_reports_video_and_controller() {
+    let server = TestWebServer::start().await;
+
+    let response = server.request("GET", "/api/status").await;
+
+    assert_eq!(response.status, 200);
+    assert!(
+        response
+            .headers
+            .get("content-type")
+            .is_some_and(|value| value.starts_with("application/json"))
+    );
+    let status: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
+    assert_eq!(status["service"]["name"], "ipkvm-headless");
+    assert_eq!(status["service"]["version"], env!("CARGO_PKG_VERSION"));
+    assert_eq!(status["video"]["source"]["kind"], "generated");
+    assert_eq!(status["video"]["source"]["device_name"], "mock");
+    assert_eq!(status["video"]["source"]["is_loop"], false);
+    assert_eq!(status["video"]["frame"]["width"], 2);
+    assert_eq!(status["video"]["frame"]["height"], 1);
+    assert_eq!(status["video"]["frame"]["pixel_format"], "bgra8888");
+    assert_eq!(status["video"]["frame"]["seq"], 1);
+    assert_eq!(status["controller"]["active"], false);
+    assert!(status["controller"]["client_id"].is_null());
+    assert!(status["controller"]["transport"].is_null());
+    assert!(status["controller"]["peer_addr"].is_null());
+    assert!(status["controller"]["connected_since_ms"].is_null());
+
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn api_screenshot_returns_red_jpeg_when_bgra_frame_available() {
+    let server = TestWebServer::start().await;
+    // 纯红 BGRA 像素 [B,G,R,A] = [0,0,255,255]：B/R 顺序错换会解码成蓝色
+    server.source.publish_frame(red_frame());
+
+    let response = server.request("GET", "/api/screenshot").await;
+
+    assert_eq!(response.status, 200);
+    assert_eq!(
+        response.headers.get("content-type").map(String::as_str),
+        Some("image/jpeg")
+    );
+    assert_eq!(
+        response.headers.get("cache-control").map(String::as_str),
+        Some("no-store")
+    );
+    assert_eq!(&response.body[..2], &[0xFF, 0xD8]);
+
+    // 解码 JPEG 验证 B/R 通道：纯红帧必须解码为红色而非蓝色
+    let mut decoder = zune_jpeg::JpegDecoder::new(std::io::Cursor::new(&response.body));
+    let pixels = decoder.decode().unwrap();
+    let info = decoder.info().unwrap();
+    assert_eq!((info.width, info.height), (RED_FRAME_SIZE, RED_FRAME_SIZE));
+    assert!(
+        pixels[0] > 100,
+        "red channel of decoded pixel, got {}",
+        pixels[0]
+    );
+    assert!(
+        pixels[2] < 100,
+        "blue channel of decoded pixel, got {}",
+        pixels[2]
+    );
+    assert!(pixels[0] > pixels[2]);
+
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn api_screenshot_503_when_no_frame() {
+    let server = TestWebServer::start_with_frame(None).await;
+
+    let response = server.request("GET", "/api/screenshot").await;
+
+    assert_eq!(response.status, 503);
+    assert!(response.body.is_empty());
+
+    server.stop().await;
+}
+
+const RED_FRAME_SIZE: u16 = 8;
+
+fn red_frame() -> Arc<VideoFrame> {
+    let width = RED_FRAME_SIZE as u32;
+    let height = RED_FRAME_SIZE as u32;
+    let red_bgra = [0, 0, 255, 255].repeat((width * height) as usize);
+    Arc::new(VideoFrame::new(
+        2,
+        MonotonicTimestamp::from_nanos(2),
+        width,
+        height,
+        width * 4,
+        PixelFormat::Bgra8888,
+        Arc::from(red_bgra.into_boxed_slice()),
+    ))
 }
 
 fn test_frame() -> Arc<VideoFrame> {
