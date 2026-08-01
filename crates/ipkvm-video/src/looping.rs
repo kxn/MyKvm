@@ -11,7 +11,7 @@ use tokio::sync::watch;
 
 use crate::{
     FrameReceiver, FrameSource, MonotonicTimestamp, PixelFormat, SharedVideoFrame, VideoFrame,
-    y4m::Y4mAsset,
+    VideoSourceInfo, VideoSourceKind, y4m::Y4mAsset,
 };
 
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
@@ -91,6 +91,14 @@ impl FrameSource for LoopingVideoSource {
 
     fn subscribe(&self) -> FrameReceiver {
         self.sender.subscribe()
+    }
+
+    fn source_info(&self) -> VideoSourceInfo {
+        VideoSourceInfo {
+            kind: VideoSourceKind::Generated,
+            device_name: "looping y4m".into(),
+            is_loop: true,
+        }
     }
 }
 

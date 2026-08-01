@@ -79,12 +79,27 @@ impl VideoFrame {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum VideoSourceKind {
+    Camera,
+    VideoFile,
+    Generated,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VideoSourceInfo {
+    pub kind: VideoSourceKind,
+    pub device_name: String,
+    pub is_loop: bool,
+}
+
 pub type SharedVideoFrame = Arc<VideoFrame>;
 pub type FrameReceiver = tokio::sync::watch::Receiver<Option<SharedVideoFrame>>;
 
 pub trait FrameSource: Send + Sync {
     fn latest_frame(&self) -> Option<SharedVideoFrame>;
     fn subscribe(&self) -> FrameReceiver;
+    fn source_info(&self) -> VideoSourceInfo;
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -162,6 +177,16 @@ mod tests {
 
         assert!(Arc::ptr_eq(&source.latest_frame().unwrap(), &frame));
         assert!(Arc::ptr_eq(receiver.borrow().as_ref().unwrap(), &frame));
+    }
+
+    #[cfg(feature = "mock")]
+    #[test]
+    fn mock_frame_source_reports_generated_kind() {
+        use crate::mock::MockFrameSource;
+
+        let info = MockFrameSource::new().source_info();
+
+        assert_eq!(info.kind, crate::VideoSourceKind::Generated);
     }
 
     #[cfg(feature = "mock")]

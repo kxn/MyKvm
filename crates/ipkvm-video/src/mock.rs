@@ -2,7 +2,7 @@ use std::sync::{Arc, RwLock};
 
 use tokio::sync::watch;
 
-use crate::{FrameReceiver, FrameSource, SharedVideoFrame};
+use crate::{FrameReceiver, FrameSource, SharedVideoFrame, VideoSourceInfo, VideoSourceKind};
 
 #[derive(Debug)]
 pub struct MockFrameSource {
@@ -42,5 +42,13 @@ impl FrameSource for MockFrameSource {
 
     fn subscribe(&self) -> FrameReceiver {
         self.sender.subscribe()
+    }
+
+    fn source_info(&self) -> VideoSourceInfo {
+        VideoSourceInfo {
+            kind: VideoSourceKind::Generated,
+            device_name: "mock".into(),
+            is_loop: false,
+        }
     }
 }
