@@ -86,6 +86,8 @@ PR 描述必须说明是否修改文档。如果不修改文档，应写明原�
 1. 单元测试：协议帧、状态机、坐标换算、配置选择、错误处理。
 2. 集成测试：mock 视频源、fake serial、RFB 协议样例、headless 闭环。
 3. 命令级验证：运行 `.\scripts\verify.ps1`，统一检查许可证策略、锁定依赖来源、文本编码、Rust 格式、全工作区测试、Clippy、Rust 文档和 Git 差异。
+   - Windows PowerShell：`.\scripts\verify.ps1`
+   - Linux/macOS：`./scripts/verify.sh`（与 PowerShell 版本逻辑一致）
 4. 人工验证：真实采集卡、真实 CH9329/CH340 线、BIOS 行为、操作系统全局快捷键、真实 VNC 客户端兼容性。
 
 人工验证只有在满足以下条件时才允许作为主要证据：
@@ -163,6 +165,12 @@ PR 描述必须包含：
 
 ```powershell
 .\scripts\verify.ps1
+```
+
+Linux/macOS 使用：
+
+```bash
+./scripts/verify.sh
 ```
 
 如果改动不涉及 Rust 代码，也应运行适合范围的检查，例如 Markdown 冲突标记扫描或模板渲染检查。

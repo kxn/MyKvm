@@ -9,11 +9,11 @@ my_ipkvm 是一个软件 IPKVM 项目：主控机通过 USB HDMI 采集卡读取
 ## 当前模块
 
 - `ipkvm-core`：CH9329 命令帧和应答解析、串口字节流增量解帧、HID 报告、6KRO 键盘状态、原子键盘和指针批次、绝对和相对鼠标状态、有序命令批次及模拟队列。
-- `ipkvm-video`：采集设备枚举、格式选择、共享视频帧流。
+- `ipkvm-video`：采集设备枚举、格式选择、共享视频帧流；`mock` 功能下提供 Y4M 循环播放帧源，可模拟不同分辨率素材顺序切换。
 - `ipkvm-session`：把视频帧源和输入接收端组合成一个控制台会话。
 - `ipkvm-rfb`：传输无关的 RFB 3.8 `None` 握手、客户端消息增量解码、真彩像素转换、`Raw` 更新、`DesktopSize` 和指针输入坐标时期。
 - `ipkvm-desktop`：本地图形界面入口。
-- `ipkvm-headless`：RFB TCP 与 WebSocket 传输层、共享连接驱动器、单控制者连接闸门、en-US 键盘映射器、绝对指针映射器和输入事件泵；完整 HTTP 页面、noVNC 静态资源、设备会话组装和可运行后台进程尚未实现。
+- `ipkvm-headless`：RFB TCP 与 WebSocket 传输层、共享连接驱动器、单控制者连接闸门、en-US 键盘映射器、绝对指针映射器和输入事件泵；`demo` 功能下提供 `ipkvm-demo` 演示二进制。完整 HTTP 页面、noVNC 静态资源、设备会话组装和可运行后台进程尚未实现。
 
 `ipkvm-session` 当前默认按 CH9329 出厂波特率 9600 配置串口。硬件到货前不自动改写芯片参数，也不假定成品线支持 115200。
 
@@ -46,4 +46,30 @@ cargo install --locked --version 0.20.2 cargo-deny
 .\scripts\verify.ps1
 ```
 
+Linux/macOS 使用对应的 sh 版本：
+
+```bash
+cargo install --locked --version 0.20.2 cargo-deny
+./scripts/verify.sh
+```
+
 脚本会检查文本 UTF-8 编码，用临时负向夹具验证许可证策略，再检查当前锁定依赖图的许可证和来源，随后检查 Rust 格式、全工作区测试、Clippy、Rust 文档和 Git 差异。固定工具版本、许可证分级和非 Cargo 组件边界见 `docs/dependency-license-policy.md`。
+
+## 演示：双分辨率视频 mock 源
+
+不依赖真实采集卡，可以用真实视频文件验证 RFB 画面与动态分辨率切换：
+
+```bash
+./scripts/fetch-demo-assets.sh   # 下载并转换 640x360 与 1280x720 两个 Y4M 素材
+cargo run -p ipkvm-headless --features demo --bin ipkvm-demo \
+    --assets .cache/demo-assets --tcp 5900 --fps 10
+```
+
+素材按文件名排序循环播放，切换分辨率时已连接客户端会收到 `DesktopSize` 更新。用独立的 vncdotool 客户端验证：
+
+```bash
+python3 -m venv .venv && .venv/bin/pip install vncdotool
+.venv/bin/python scripts/vnc-dynamic-resolution-check.py --port 5900
+```
+
+仓库内自动化测试已覆盖同一条路径：`rfb_dynamic_resolution` 通过真实 TCP 连接断言 `DesktopSize` 与切换后的 Raw 帧。
