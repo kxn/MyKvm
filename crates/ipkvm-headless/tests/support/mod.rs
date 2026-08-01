@@ -111,6 +111,28 @@ impl TestRfbClient {
         }
     }
 
+    /// 读取一条更新，Raw 按 4 字节像素、`DesktopSize` 按 0 像素读取。
+    pub async fn read_update_any(&mut self) -> FramebufferUpdate {
+        let header = self.read_exact(16).await;
+        assert_eq!(&header[..4], &[0, 0, 0, 1]);
+        let width = u16::from_be_bytes([header[8], header[9]]);
+        let height = u16::from_be_bytes([header[10], header[11]]);
+        let encoding = i32::from_be_bytes([header[12], header[13], header[14], header[15]]);
+        let pixel_bytes = if encoding == 0 {
+            usize::from(width) * usize::from(height) * 4
+        } else {
+            0
+        };
+        FramebufferUpdate {
+            x: u16::from_be_bytes([header[4], header[5]]),
+            y: u16::from_be_bytes([header[6], header[7]]),
+            width,
+            height,
+            encoding,
+            pixels: self.read_exact(pixel_bytes).await,
+        }
+    }
+
     pub async fn send_key(&mut self, down: bool, keysym: u32) {
         let mut message = vec![4, u8::from(down), 0, 0];
         message.extend_from_slice(&keysym.to_be_bytes());
