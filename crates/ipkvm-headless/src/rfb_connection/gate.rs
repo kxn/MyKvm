@@ -23,7 +23,14 @@ pub struct ActiveController {
     pub client_id: RfbClientId,
     pub transport: RfbTransportKind,
     pub peer_addr: SocketAddr,
+    /// 自连接建立（acquire）起经过的单调毫秒，采样于激活时刻。
+    ///
+    /// `controller_status()` 订阅者收到的快照在状态发布（激活/释放）时采样；
+    /// `active_controller()` 读取时则基于锚点实时计算。消费方（如 `/api/status`）
+    /// 如需实时时长，应读取 `active_controller()`。
     pub connected_since_ms: u64,
+    /// 锚点：本控制器接入闸门的单调时钟时刻，供读取时计算实时时长。
+    connected_since: Instant,
 }
 
 #[derive(Clone)]
@@ -36,7 +43,6 @@ pub(super) struct GateInner {
     semaphore: Arc<Semaphore>,
     pub(super) next_client_id: AtomicU64,
     pub(super) status: watch::Sender<Option<ActiveController>>,
-    started_at: Instant,
 }
 
 #[derive(Debug, Error, Eq, PartialEq)]
@@ -56,6 +62,7 @@ pub(crate) struct RfbConnectionReservation {
     client_id: RfbClientId,
     transport: RfbTransportKind,
     peer_addr: SocketAddr,
+    acquired_at: Instant,
 }
 
 #[derive(Debug)]
@@ -72,7 +79,6 @@ impl RfbConnectionGate {
                 semaphore: Arc::new(Semaphore::new(1)),
                 next_client_id: AtomicU64::new(1),
                 status,
-                started_at: Instant::now(),
             }),
         }
     }
@@ -96,6 +102,7 @@ impl RfbConnectionGate {
             client_id,
             transport,
             peer_addr,
+            acquired_at: Instant::now(),
         })
     }
 
@@ -120,6 +127,7 @@ impl RfbConnectionGate {
             client_id,
             transport,
             peer_addr,
+            acquired_at: Instant::now(),
         })
     }
 
@@ -130,7 +138,11 @@ impl RfbConnectionGate {
 
     #[allow(dead_code)]
     pub(crate) fn active_controller(&self) -> Option<ActiveController> {
-        self.inner.status.borrow().clone()
+        let mut active = self.inner.status.borrow().clone();
+        if let Some(controller) = &mut active {
+            controller.connected_since_ms = controller.connected_since.elapsed().as_millis() as u64;
+        }
+        active
     }
 
     fn allocate_client_id(&self) -> Result<RfbClientId, RfbConnectionGateError> {
@@ -174,7 +186,8 @@ impl RfbConnectionReservation {
             client_id: self.client_id,
             transport: self.transport,
             peer_addr: self.peer_addr,
-            connected_since_ms: self.inner.started_at.elapsed().as_millis() as u64,
+            connected_since_ms: self.acquired_at.elapsed().as_millis() as u64,
+            connected_since: self.acquired_at,
         }));
         RfbConnectionLease {
             inner: Some(Arc::clone(&self.inner)),
@@ -324,6 +337,25 @@ mod tests {
         assert!(gate.active_controller().is_none());
         rx.changed().await.unwrap();
         assert!(rx.borrow().is_none());
+    }
+
+    #[tokio::test]
+    async fn controller_duration_counts_from_acquire_not_gate_creation() {
+        let gate = RfbConnectionGate::new();
+        // 闸门（服务器启动）先存活一段时间：修复前锚定于创建时刻，时长会虚高
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let reservation = gate
+            .try_acquire(RfbTransportKind::Tcp, peer_addr())
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let lease = reservation.activate();
+        let active = gate.active_controller().unwrap();
+        assert!(
+            active.connected_since_ms < 50,
+            "duration must count from acquire, not gate creation: {} ms",
+            active.connected_since_ms
+        );
+        drop(lease);
     }
 
     #[tokio::test]
