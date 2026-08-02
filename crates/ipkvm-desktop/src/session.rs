@@ -178,6 +178,14 @@ where
         self.event_tx.is_some() && self.is_running()
     }
 
+    /// 输入泵离线原因（串口写失败等；离线时用于状态栏诊断）。
+    pub fn input_offline_reason(&self) -> Option<String> {
+        self.manager
+            .session()
+            .and_then(|session| session.stats().input_offline.clone())
+            .map(|info| info.reason)
+    }
+
     /// 发送键盘事件（内存直喂输入泵，不经网络）。
     pub fn send_key(&self, down: bool, keysym: u32) -> Result<(), DesktopSessionError> {
         self.send_event(RfbServerEvent::Key {

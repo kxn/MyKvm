@@ -59,8 +59,8 @@ struct DesktopApp {
     last_modifiers: egui::Modifiers,
     cursor_grabbed: bool,
     relative_remainder: (f32, f32),
+    relative_wheel: i8,
     pending_pointer: Option<(u8, u16, u16)>,
-    pending_relative: (i16, i16, i8),
     last_pointer_sent: Option<(u8, u16, u16)>,
     last_pointer_sent_at: Option<Instant>,
     frame_repaint_task: Option<tokio::task::JoinHandle<()>>,
@@ -98,8 +98,8 @@ impl DesktopApp {
             last_modifiers: egui::Modifiers::NONE,
             cursor_grabbed: false,
             relative_remainder: (0.0, 0.0),
+            relative_wheel: 0,
             pending_pointer: None,
-            pending_relative: (0, 0, 0),
             last_pointer_sent: None,
             last_pointer_sent_at: None,
             frame_repaint_task: None,
@@ -139,10 +139,14 @@ impl DesktopApp {
             self.cursor_grabbed = false;
             self.relative_remainder = (0.0, 0.0);
             self.pending_pointer = None;
-            self.pending_relative = (0, 0, 0);
+            self.relative_wheel = 0;
             self.last_pointer_sent = None;
             self.last_pointer_sent_at = None;
-            self.status_message = Some("控制设备离线，请刷新检测后重连".into());
+            let message = match self.session.input_offline_reason() {
+                Some(reason) => format!("控制设备离线：{reason}"),
+                None => "控制设备离线，请刷新检测后重连".into(),
+            };
+            self.status_message = Some(message);
         }
     }
 
@@ -393,7 +397,7 @@ impl DesktopApp {
                 self.last_pointer = None;
                 self.relative_remainder = (0.0, 0.0);
                 self.pending_pointer = None;
-                self.pending_relative = (0, 0, 0);
+                self.relative_wheel = 0;
                 self.last_pointer_sent = None;
                 self.last_pointer_sent_at = None;
                 if let Some(task) = self.frame_repaint_task.take() {
@@ -566,7 +570,7 @@ impl DesktopApp {
             self.last_pointer = None;
             self.relative_remainder = (0.0, 0.0);
             self.pending_pointer = None;
-            self.pending_relative = (0, 0, 0);
+            self.relative_wheel = 0;
             self.last_pointer_sent = None;
             self.last_pointer_sent_at = None;
         }
@@ -649,14 +653,15 @@ impl DesktopApp {
             let dy_points = raw_dy / pixels_per_point * sensitivity;
             let dx = dx_points * (frame.width as f32 / video_rect.width());
             let dy = dy_points * (frame.height as f32 / video_rect.height());
-            let (dx, dy) = crate::input::accumulate_delta(&mut self.relative_remainder, dx, dy);
-            let wheel = self.wheel_steps_from_events(response);
-            self.pending_relative.0 = self.pending_relative.0.saturating_add(dx);
-            self.pending_relative.1 = self.pending_relative.1.saturating_add(dy);
-            self.pending_relative.2 = self.pending_relative.2.saturating_add(wheel);
+            // 固定间隔采样：位移持续累积到余数，每 33ms（或按键变化时）取一次
+            // 整量发送，位移大小不决定发送次数。
+            self.relative_remainder.0 += dx;
+            self.relative_remainder.1 += dy;
+            self.relative_wheel = self
+                .relative_wheel
+                .saturating_add(self.wheel_steps_from_events(response));
             let now = Instant::now();
             let mask_changed = mask != self.pointer_mask;
-            let (pending_dx, pending_dy, pending_wheel) = self.pending_relative;
             if mask_changed
                 || crate::input::throttle_elapsed(
                     now,
@@ -664,19 +669,16 @@ impl DesktopApp {
                     POINTER_MIN_INTERVAL,
                 )
             {
-                if pending_dx != 0 || pending_dy != 0 || pending_wheel != 0 || mask_changed {
-                    if let Err(error) = self.session.send_pointer_relative(
-                        mask,
-                        pending_dx,
-                        pending_dy,
-                        pending_wheel,
-                    ) {
+                let (dx, dy) = crate::input::sample_delta(&mut self.relative_remainder);
+                let wheel = self.relative_wheel;
+                if dx != 0 || dy != 0 || wheel != 0 || mask_changed {
+                    if let Err(error) = self.session.send_pointer_relative(mask, dx, dy, wheel) {
                         self.status_message = Some(format!("指针发送失败：{error}"));
                     }
                     self.last_pointer_sent = Some((mask, u16::MAX, u16::MAX));
                     self.last_pointer_sent_at = Some(now);
                 }
-                self.pending_relative = (0, 0, 0);
+                self.relative_wheel = 0;
             }
             self.pointer_mask = mask;
         } else if pointer_active(self.video_focused, mask, self.pointer_mask)
@@ -844,7 +846,7 @@ impl DesktopApp {
         self.cursor_grabbed = false;
         self.relative_remainder = (0.0, 0.0);
         self.pending_pointer = None;
-        self.pending_relative = (0, 0, 0);
+        self.relative_wheel = 0;
         self.last_pointer_sent = None;
         self.last_pointer_sent_at = None;
         if let Some(task) = self.frame_repaint_task.take() {
