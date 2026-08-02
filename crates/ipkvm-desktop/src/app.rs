@@ -19,6 +19,11 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 const NO_SIGNAL_TIMEOUT: Duration = Duration::from_secs(2);
 /// 菜单栏 + 状态栏占用的窗口内容区高度估算（ResizeWindowToVideo 用）。
 const FOLLOW_CHROME: f32 = 48.0;
+/// 视频画面外留白（信箱/黑边区域）的填充色：与黑色视频内容可区分，
+/// 便于判断真实屏幕边界。
+const LETTERBOX_COLOR: egui::Color32 = egui::Color32::from_rgb(24, 32, 48);
+/// 视频画面描边色：进一步标出真实屏幕边界。
+const VIDEO_BORDER_COLOR: egui::Color32 = egui::Color32::from_gray(110);
 
 pub fn run() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
@@ -373,7 +378,7 @@ impl DesktopApp {
             self.update_texture(ctx);
             let available = ui.available_size();
             let (response, painter) = ui.allocate_painter(available, egui::Sense::click_and_drag());
-            painter.rect_filled(response.rect, 0.0, egui::Color32::from_gray(20));
+            painter.rect_filled(response.rect, 0.0, LETTERBOX_COLOR);
             if response.clicked() {
                 response.request_focus();
             }
@@ -400,6 +405,12 @@ impl DesktopApp {
                     egui::Color32::WHITE,
                 );
             }
+            painter.rect_stroke(
+                video_rect,
+                0.0,
+                egui::Stroke::new(1.0, VIDEO_BORDER_COLOR),
+                egui::StrokeKind::Outside,
+            );
             if self.latest_frame.is_none() || self.no_signal_elapsed() {
                 painter.text(
                     video_rect.center(),
