@@ -11,22 +11,6 @@ use crate::console_session::{ConsoleSession, SessionError, SessionHandle};
 use crate::rfb_connection::RfbConnectionGate;
 use crate::rfb_input::RfbInputRunError;
 
-/// 会话管理器配置：帧率与串口波特率等运行时参数（#31 配置层消费）。
-#[derive(Clone, Debug)]
-pub struct SessionManagerConfig {
-    pub fps: u32,
-    pub baud: u32,
-}
-
-impl Default for SessionManagerConfig {
-    fn default() -> Self {
-        Self {
-            fps: 10,
-            baud: 9600,
-        }
-    }
-}
-
 /// 会话状态：从实际会话的 `is_running()` 推断，不复制维护。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SessionState {
@@ -40,7 +24,6 @@ pub enum SessionState {
 /// 句柄保存在 `pending_stop`，`wait_stopped()` await 后构成「释放完成」
 /// 屏障，供组装层在重启前等待旧泵收尾。
 pub struct SessionManager<S: InputSink + Clone + Send + 'static> {
-    config: SessionManagerConfig,
     session: Option<ConsoleSession<S>>,
     /// 上次 `stop()` 委托返回的旧泵任务句柄（await 前存在）。
     pending_stop: Option<tokio::task::JoinHandle<Result<(), RfbInputRunError>>>,
@@ -48,14 +31,8 @@ pub struct SessionManager<S: InputSink + Clone + Send + 'static> {
 
 impl<S: InputSink + Clone + Send + 'static> SessionManager<S> {
     /// 组装会话管理器：调用方构造帧源与 sink（设备选择由调用方/配置层完成）。
-    pub fn new(
-        config: SessionManagerConfig,
-        frame_source: Arc<dyn FrameSource>,
-        sink: S,
-        gate: RfbConnectionGate,
-    ) -> Self {
+    pub fn new(frame_source: Arc<dyn FrameSource>, sink: S, gate: RfbConnectionGate) -> Self {
         Self {
-            config,
             session: Some(ConsoleSession::new(frame_source, sink, gate)),
             pending_stop: None,
         }
@@ -68,11 +45,6 @@ impl<S: InputSink + Clone + Send + 'static> SessionManager<S> {
         } else {
             SessionState::Stopped
         }
-    }
-
-    /// 管理器配置引用（fps/baud 由 #31 配置层消费）。
-    pub fn config(&self) -> &SessionManagerConfig {
-        &self.config
     }
 
     /// 底层真实会话引用（传输层事件发送端等经此获取）。
@@ -111,11 +83,13 @@ impl<S: InputSink + Clone + Send + 'static> SessionManager<S> {
         let _ = handle.await;
     }
 
-    /// 重启会话：同步接口下旧泵收尾是异步的，旧泵收尾与新泵启动短暂并存；
-    /// 生产组装（#31）如需无竞态重启，应先 `stop()` 后 `wait_stopped().await`
-    /// 再 `start()`。对已停止会话返回 `NotRunning`；#31 接线时决定语义。
-    pub fn restart(&mut self) -> Result<(), SessionError> {
+    /// 无竞态重启：`stop()` → 等待旧泵收尾（释放屏障）→ `start()`。
+    ///
+    /// 返回时旧泵已释放、新泵已启动。对已停止会话返回 `NotRunning`（委托
+    /// `stop()` 的语义）。帧源/串口设备重建属于 #31 配置层接线，不在此范围。
+    pub async fn restart(&mut self) -> Result<(), SessionError> {
         self.stop()?;
+        self.wait_stopped().await;
         self.start()?;
         Ok(())
     }
@@ -124,6 +98,7 @@ impl<S: InputSink + Clone + Send + 'static> SessionManager<S> {
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     use ipkvm_core::{InputResult, KeyEvent, MouseMode, PointerEvent};
     use ipkvm_video::mock::MockFrameSource;
@@ -171,12 +146,7 @@ mod tests {
     fn session_manager_fixture() -> (SessionManager<RecordingSink>, RecordingSink) {
         let frame_source: Arc<dyn FrameSource> = Arc::new(MockFrameSource::new());
         let sink = RecordingSink::default();
-        let manager = SessionManager::new(
-            SessionManagerConfig::default(),
-            frame_source,
-            sink.clone(),
-            RfbConnectionGate::new(),
-        );
+        let manager = SessionManager::new(frame_source, sink.clone(), RfbConnectionGate::new());
         (manager, sink)
     }
 
@@ -200,11 +170,135 @@ mod tests {
         assert_eq!(manager.state(), SessionState::Stopped);
         manager.start().unwrap();
         assert_eq!(manager.state(), SessionState::Running);
-        manager.restart().unwrap();
+        manager.restart().await.unwrap();
         assert_eq!(manager.state(), SessionState::Running);
         manager.stop().unwrap();
         assert_eq!(manager.state(), SessionState::Stopped);
         manager.wait_stopped().await;
+    }
+
+    /// 重启必须等旧泵收尾（release 屏障完成）后才启动新泵；返回时 release_all
+    /// 已执行。若 restart 退化为「不等屏障直接 start」，该断言会失败。
+    #[tokio::test]
+    async fn restart_waits_for_old_pump_release_before_starting_new() {
+        let (mut manager, sink) = session_manager_fixture();
+
+        manager.start().unwrap();
+        let event_tx = manager.session().unwrap().event_tx().clone();
+        let client_id = RfbClientId::for_test(1);
+        let peer_addr = "127.0.0.1:5900".parse().unwrap();
+        event_tx
+            .send(RfbServerEvent::Connected {
+                client_id,
+                peer_addr,
+                shared: true,
+            })
+            .await
+            .unwrap();
+        event_tx
+            .send(RfbServerEvent::Key {
+                client_id,
+                down: true,
+                keysym: 0x61,
+            })
+            .await
+            .unwrap();
+        assert!(
+            yield_until(|| sink.recorded.lock().unwrap().key_batches == 1).await,
+            "键盘事件未到达输入泵"
+        );
+
+        manager.restart().await.unwrap();
+        assert_eq!(manager.state(), SessionState::Running);
+        assert!(
+            sink.recorded.lock().unwrap().release_count >= 1,
+            "restart 返回时旧泵必须已释放"
+        );
+
+        drop(event_tx);
+        manager.stop().unwrap();
+        manager.wait_stopped().await;
+    }
+
+    /// 对已停止的会话 restart 返回 NotRunning（文档语义）。
+    #[tokio::test]
+    async fn restart_on_stopped_session_returns_not_running() {
+        let (mut manager, _sink) = session_manager_fixture();
+
+        assert!(matches!(
+            manager.restart().await,
+            Err(SessionError::NotRunning)
+        ));
+    }
+
+    /// 连续两次 stop：第二次报告 NotRunning。
+    #[tokio::test]
+    async fn second_stop_returns_not_running() {
+        let (mut manager, _sink) = session_manager_fixture();
+
+        manager.start().unwrap();
+        manager.stop().unwrap();
+        manager.wait_stopped().await;
+        assert!(matches!(manager.stop(), Err(SessionError::NotRunning)));
+    }
+
+    /// 无 pending stop 时 wait_stopped 立即返回（不阻塞）。
+    #[tokio::test]
+    async fn wait_stopped_without_pending_returns_immediately() {
+        let (mut manager, _sink) = session_manager_fixture();
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), manager.wait_stopped())
+                .await
+                .is_ok(),
+            "无 pending stop 时 wait_stopped 应立即返回"
+        );
+    }
+
+    /// 传输层仍持有事件发送端克隆时，stop + wait_stopped 仍必须构成释放屏障
+    /// （停止不能依赖发送端全部释放）。
+    #[tokio::test]
+    async fn wait_stopped_completes_while_event_sender_clone_is_held() {
+        let (mut manager, sink) = session_manager_fixture();
+
+        manager.start().unwrap();
+        let event_tx = manager.session().unwrap().event_tx().clone();
+        let client_id = RfbClientId::for_test(1);
+        let peer_addr = "127.0.0.1:5900".parse().unwrap();
+        event_tx
+            .send(RfbServerEvent::Connected {
+                client_id,
+                peer_addr,
+                shared: true,
+            })
+            .await
+            .unwrap();
+        event_tx
+            .send(RfbServerEvent::Key {
+                client_id,
+                down: true,
+                keysym: 0x61,
+            })
+            .await
+            .unwrap();
+        assert!(
+            yield_until(|| sink.recorded.lock().unwrap().key_batches == 1).await,
+            "键盘事件未到达输入泵"
+        );
+
+        manager.stop().unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), manager.wait_stopped())
+                .await
+                .is_ok(),
+            "外部持有发送端克隆时 wait_stopped 仍应在超时内完成"
+        );
+        assert!(
+            sink.recorded.lock().unwrap().release_count >= 1,
+            "屏障返回时 pump 自身 release_all 必须已完成"
+        );
+
+        drop(event_tx);
     }
 
     /// 停泵屏障：stop() 委托的泵任务句柄经 wait_stopped() await 后，旧 pump

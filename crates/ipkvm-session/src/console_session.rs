@@ -1,11 +1,14 @@
 //! 控制台会话组装：把帧源、输入 sink、连接闸门和输入泵组装成可运行的会话。
 
-use std::sync::{Arc, Mutex};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 
 use ipkvm_core::{InputSink, QueueStats};
 use ipkvm_video::FrameSource;
 use thiserror::Error;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 use crate::rfb_connection::{RfbConnectionGate, RfbServerEvent};
 use crate::rfb_input::{RfbInputNotice, RfbInputPump, RfbInputRunError};
@@ -77,6 +80,11 @@ pub struct ConsoleSession<S: InputSink + Clone + Send + 'static> {
     gate: RfbConnectionGate,
     event_tx: mpsc::Sender<RfbServerEvent>,
     pump_task: Option<tokio::task::JoinHandle<Result<(), RfbInputRunError>>>,
+    /// 停止信号：`stop()` 置 true，泵任务 `run_until_stopped` 收到后自然退出。
+    stop_tx: watch::Sender<bool>,
+    /// 泵任务真实存活标志：任务自行退出（错误/异常）时由任务包装置 false，
+    /// 避免 `pump_task` 残留导致 `is_running()` 与实际情况漂移。
+    running: Arc<AtomicBool>,
     /// 会话统计：泵任务（输入计数/最后输入时间）与会话侧共享，Mutex 内部可变。
     stats: Arc<Mutex<SessionStats>>,
 }
@@ -84,6 +92,7 @@ pub struct ConsoleSession<S: InputSink + Clone + Send + 'static> {
 impl<S: InputSink + Clone + Send + 'static> ConsoleSession<S> {
     /// 组装会话。事件通道由 `start()` 在启动时重建，因此这里不接收发送端。
     pub fn new(frame_source: Arc<dyn FrameSource>, sink: S, gate: RfbConnectionGate) -> Self {
+        let (stop_tx, _) = watch::channel(false);
         Self {
             frame_source,
             sink,
@@ -91,6 +100,8 @@ impl<S: InputSink + Clone + Send + 'static> ConsoleSession<S> {
             // 占位发送端（无接收端）：与 stop() 停泵后的事件出口语义一致。
             event_tx: mpsc::channel(1).0,
             pump_task: None,
+            stop_tx,
+            running: Arc::new(AtomicBool::new(false)),
             stats: Arc::new(Mutex::new(SessionStats::default())),
         }
     }
@@ -131,7 +142,7 @@ impl<S: InputSink + Clone + Send + 'static> ConsoleSession<S> {
 
     /// 会话是否已启动（输入泵任务在运行）。
     pub fn is_running(&self) -> bool {
-        self.pump_task.is_some()
+        self.running.load(Ordering::SeqCst)
     }
 
     /// 启动输入泵：重建事件 channel，spawn 泵任务消费事件并驱动 sink。
@@ -147,38 +158,53 @@ impl<S: InputSink + Clone + Send + 'static> ConsoleSession<S> {
         if self.is_running() {
             return Err(SessionError::AlreadyRunning);
         }
+        // 复位上一次 stop 留下的停止信号，再订阅新接收端。
+        let _ = self.stop_tx.send(false);
+        let stop_rx = self.stop_tx.subscribe();
         let (event_tx, mut event_rx) = mpsc::channel(64);
         self.event_tx = event_tx;
         let mut pump = RfbInputPump::new(self.sink.clone());
         let stats = Arc::clone(&self.stats);
+        let running = Arc::clone(&self.running);
+        self.running.store(true, Ordering::SeqCst);
         let task = tokio::spawn(async move {
-            pump.run(&mut event_rx, |notice: &RfbInputNotice| {
-                if matches!(
-                    notice,
-                    RfbInputNotice::Keyboard { .. } | RfbInputNotice::Pointer { .. }
-                ) {
-                    stats.lock().unwrap().observe_input();
-                }
-            })
-            .await
+            let result = pump
+                .run_until_stopped(&mut event_rx, stop_rx, |notice: &RfbInputNotice| {
+                    if matches!(
+                        notice,
+                        RfbInputNotice::Keyboard { .. } | RfbInputNotice::Pointer { .. }
+                    ) {
+                        stats.lock().unwrap().observe_input();
+                    }
+                })
+                .await;
+            // 无论正常退出还是错误退出，都让会话状态回到未运行。
+            running.store(false, Ordering::SeqCst);
+            result
         });
         self.pump_task = Some(task);
         Ok(SessionHandle)
     }
 
-    /// 停止会话：用新 channel 的发送端覆盖旧发送端，若没有其他 clone（传输层），
-    /// 旧 channel 关闭 → pump 的 `receiver.recv()` 返回 None → 自然退出并
-    /// `release_all`。
+    /// 停止会话：发送停止信号，泵任务收到后自然退出并执行 `release_all`。
     ///
-    /// 不 abort：abort 会在 release_all 执行前终止任务。停泵依赖 channel 关闭
-    /// 自然退出；本方法返回旧泵任务的 join handle（`#[must_use]`），供调用方
-    /// 在 async 上下文中 join，构成「释放完成」屏障——方法返回时 pump 可能
-    /// 仍在收尾，join（await handle）之后才保证 release_all 已执行。不需要
-    /// 屏障的调用方需显式丢弃（`drop(handle)`）。
+    /// 不 abort、不依赖事件发送端全部释放——传输层可能长期持有 `event_tx`
+    /// 克隆，channel 关闭无法作为停泵依据。本方法返回旧泵任务的 join handle
+    /// （`#[must_use]`），供调用方在 async 上下文中 join，构成「释放完成」
+    /// 屏障——方法返回时 pump 可能仍在收尾，join（await handle）之后才保证
+    /// `release_all` 已执行。不需要屏障的调用方需显式丢弃（`drop(handle)`）。
+    ///
+    /// 泵已因错误自行退出时返回 `NotRunning`（旧任务句柄被丢弃，仅用于观测）。
     pub fn stop(
         &mut self,
     ) -> Result<tokio::task::JoinHandle<Result<(), RfbInputRunError>>, SessionError> {
         let task = self.pump_task.take().ok_or(SessionError::NotRunning)?;
+        if !self.is_running() {
+            return Err(SessionError::NotRunning);
+        }
+        self.running.store(false, Ordering::SeqCst);
+        let _ = self.stop_tx.send(true);
+        // 覆盖旧发送端，使 start() 重建事件出口前的 event_tx() 保持「无接收端」语义。
         self.event_tx = mpsc::channel(1).0;
         Ok(task)
     }
@@ -187,8 +213,9 @@ impl<S: InputSink + Clone + Send + 'static> ConsoleSession<S> {
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
-    use ipkvm_core::{InputResult, KeyEvent, MouseMode, PointerEvent, QueueStats};
+    use ipkvm_core::{InputError, InputResult, KeyEvent, MouseMode, PointerEvent, QueueStats};
     use ipkvm_video::mock::MockFrameSource;
     use ipkvm_video::{MonotonicTimestamp, PixelFormat, VideoFrame};
 
@@ -209,6 +236,7 @@ mod tests {
         key_batches: usize,
         pointer_batches: usize,
         release_count: usize,
+        fail_next_key: bool,
     }
 
     impl InputSink for RecordingSink {
@@ -217,7 +245,11 @@ mod tests {
         }
 
         fn handle_key_batch(&mut self, _events: &[KeyEvent]) -> InputResult<()> {
-            self.recorded.lock().unwrap().key_batches += 1;
+            let mut recorded = self.recorded.lock().unwrap();
+            if std::mem::take(&mut recorded.fail_next_key) {
+                return Err(InputError::RolloverLimitExceeded);
+            }
+            recorded.key_batches += 1;
             Ok(())
         }
 
@@ -251,6 +283,20 @@ mod tests {
             tokio::task::yield_now().await;
         }
         condition()
+    }
+
+    /// 带真实时间上限的轮询（用于依赖节流/文本服务的异步收尾）。
+    async fn wait_for(mut condition: impl FnMut() -> bool, what: &str) {
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while !condition() {
+                    tokio::time::sleep(Duration::from_millis(5)).await;
+                }
+            })
+            .await
+            .is_ok(),
+            "{what}"
+        );
     }
 
     #[test]
@@ -336,6 +382,88 @@ mod tests {
         let _ = handle;
     }
 
+    #[tokio::test]
+    async fn stop_finishes_even_while_event_sender_clone_is_held() {
+        let (mut session, sink) = console_session_fixture();
+        session.start().unwrap();
+
+        let event_tx = session.event_tx().clone();
+        let client_id = RfbClientId::for_test(1);
+        let peer_addr = "127.0.0.1:5900".parse().unwrap();
+        event_tx
+            .send(RfbServerEvent::Connected {
+                client_id,
+                peer_addr,
+                shared: true,
+            })
+            .await
+            .unwrap();
+        event_tx
+            .send(RfbServerEvent::Key {
+                client_id,
+                down: true,
+                keysym: 0x61,
+            })
+            .await
+            .unwrap();
+        assert!(
+            yield_until(|| sink.recorded.lock().unwrap().key_batches == 1).await,
+            "键盘事件未到达输入泵"
+        );
+
+        // 关键：模拟传输层仍持有旧 channel 的发送端克隆，stop 不能依赖发送端全部释放。
+        let join = session.stop().unwrap();
+        let pump_result = tokio::time::timeout(Duration::from_secs(1), join)
+            .await
+            .expect("stop 后泵任务应在超时内退出")
+            .expect("泵任务不应 panic");
+        pump_result.expect("泵应正常退出");
+        assert!(!session.is_running());
+        assert!(
+            sink.recorded.lock().unwrap().release_count >= 1,
+            "stop 后必须已执行 release_all"
+        );
+
+        drop(event_tx);
+    }
+
+    #[tokio::test]
+    async fn pump_error_marks_session_stopped() {
+        let (mut session, sink) = console_session_fixture();
+        sink.recorded.lock().unwrap().fail_next_key = true;
+        session.start().unwrap();
+
+        let event_tx = session.event_tx().clone();
+        let client_id = RfbClientId::for_test(1);
+        let peer_addr = "127.0.0.1:5900".parse().unwrap();
+        event_tx
+            .send(RfbServerEvent::Connected {
+                client_id,
+                peer_addr,
+                shared: true,
+            })
+            .await
+            .unwrap();
+        event_tx
+            .send(RfbServerEvent::Key {
+                client_id,
+                down: true,
+                keysym: 0x61,
+            })
+            .await
+            .unwrap();
+        assert!(
+            yield_until(|| !session.is_running()).await,
+            "泵失败后会话应自动转为未运行"
+        );
+        assert!(
+            matches!(session.stop(), Err(SessionError::NotRunning)),
+            "泵已失败时 stop 应报告 NotRunning"
+        );
+
+        drop(event_tx);
+    }
+
     #[test]
     fn gate_is_exposed_for_the_transport_layer() {
         let (session, _sink) = console_session_fixture();
@@ -361,6 +489,15 @@ mod tests {
         assert_eq!(stats.dropped_frames, 1, "seq 回退不计数");
         stats.observe_frame_seq(2);
         assert_eq!(stats.dropped_frames, 1, "seq 重复不计数");
+    }
+
+    /// 大跨度跳跃（1→5）按缺失帧数累计（3 帧），不是只计 1。
+    #[test]
+    fn large_frame_seq_jump_counts_each_missing_frame() {
+        let mut stats = SessionStats::default();
+        stats.observe_frame_seq(1);
+        stats.observe_frame_seq(5);
+        assert_eq!(stats.dropped_frames, 3);
     }
 
     /// 输入事件计数与最后时间更新。
@@ -417,6 +554,44 @@ mod tests {
             session.stats().last_input_ns.is_some(),
             "最后输入时间未记录"
         );
+
+        drop(event_tx);
+        drop(session.stop().unwrap());
+    }
+
+    /// 文本键入（CutText/TextTyped）走独立 notice，不计入键盘/指针输入统计。
+    #[tokio::test]
+    async fn text_events_do_not_count_as_input_stats() {
+        let (mut session, sink) = console_session_fixture();
+        session.start().unwrap();
+
+        let event_tx = session.event_tx().clone();
+        let client_id = RfbClientId::for_test(1);
+        let peer_addr = "127.0.0.1:5900".parse().unwrap();
+        event_tx
+            .send(RfbServerEvent::Connected {
+                client_id,
+                peer_addr,
+                shared: true,
+            })
+            .await
+            .unwrap();
+        event_tx
+            .send(RfbServerEvent::CutText {
+                client_id,
+                bytes: b"ab".to_vec(),
+            })
+            .await
+            .unwrap();
+        // 等文本服务实际键入完成（2 字符 → 4 批按键），证明 TextTyped 通知已到达。
+        wait_for(
+            || sink.recorded.lock().unwrap().key_batches >= 4,
+            "文本键入未完成",
+        )
+        .await;
+
+        assert_eq!(session.stats().input_events, 0, "文本键入不应计入输入统计");
+        assert!(session.stats().last_input_ns.is_none());
 
         drop(event_tx);
         drop(session.stop().unwrap());
