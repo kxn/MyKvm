@@ -33,6 +33,8 @@ cargo run -p ipkvm-desktop --all-features
 - 底部状态栏显示控制设备、键盘输入、鼠标坐标和视频状态（无信号/断流/分辨率）。
 - 视频断流连续 2 秒显示「无信号」，app 不退出；CH9329 掉线后输入进入「控制设备离线」，刷新检测重新探测后可手动重新连接（自动恢复见 issue #37）。
 
+界面字体优先加载系统字体；找不到系统字体时使用内置 Roboto-Regular（Apache-2.0）兜底，许可证文本见 `crates/ipkvm-desktop/assets/ROBOTO-LICENSE.txt`。
+
 ## 设计文档
 
 - `docs/ipkvm-coarse-design.md`

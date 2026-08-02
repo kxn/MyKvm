@@ -30,7 +30,7 @@
 
 **修复设计：** `fonts.rs` 拆出纯函数 `resolve_font_bytes(candidates) -> Option<Vec<u8>>`（按候选顺序读第一个可读字体）；找不到时返回内置 `fallback_font_bytes()`（Roboto-Regular，Apache-2.0，随二进制分发）。`install()` 永远至少装一个字体。
 
-- [ ] **步骤 1：准备内置字体资产**
+- [x] **步骤 1：准备内置字体资产**
 
 ```powershell
 Invoke-WebRequest -Uri "https://github.com/google/fonts/raw/main/apache/roboto/static/Roboto-Regular.ttf" -OutFile "crates\ipkvm-desktop\assets\Roboto-Regular.ttf"
@@ -39,7 +39,7 @@ Invoke-WebRequest -Uri "https://www.apache.org/licenses/LICENSE-2.0.txt" -OutFil
 
 校验：文件头 4 字节为 `\x00\x01\x00\x00`（TrueType）或 `OTTO`（CFF），大小 > 100KB。
 
-- [ ] **步骤 2：写红灯测试**
+- [x] **步骤 2：写红灯测试**
 
 在 `fonts.rs` tests 加入：
 
@@ -66,7 +66,7 @@ fn resolve_font_bytes_prefers_first_readable_candidate() {
 }
 ```
 
-- [ ] **步骤 3：运行测试确认红灯**
+- [x] **步骤 3：运行测试确认红灯**
 
 ```powershell
 cargo test -p ipkvm-desktop --all-features fonts::tests -- --nocapture
@@ -74,7 +74,7 @@ cargo test -p ipkvm-desktop --all-features fonts::tests -- --nocapture
 
 Expected: `fallback_font_bytes`/`resolve_font_bytes` 未定义，编译失败。
 
-- [ ] **步骤 4：实现**
+- [x] **步骤 4：实现**
 
 ```rust
 pub fn fallback_font_bytes() -> &'static [u8] {
@@ -95,7 +95,7 @@ pub fn install(ctx: &eframe::egui::Context) {
 }
 ```
 
-- [ ] **步骤 5：绿灯 + 提交**
+- [x] **步骤 5：绿灯 + 提交**
 
 ```powershell
 cargo test -p ipkvm-desktop --all-features fonts::tests -- --nocapture
@@ -112,7 +112,7 @@ git commit -m "fix: guarantee a bundled fallback font"
 
 **修复设计：** 状态栏作为唯一错误出口：`status_bar` 增加第五段"状态"，渲染 `status_message`（着色）；把状态栏文案抽成可测纯函数 `status_bar_texts()`。
 
-- [ ] **步骤 1：红灯测试**
+- [x] **步骤 1：红灯测试**
 
 ```rust
 #[test]
@@ -133,11 +133,11 @@ fn status_texts_include_message_and_offline_state() {
 
 `DesktopApp::test_instance()` 为 `#[cfg(test)]` 构造器（跳过启动设备枚举）。
 
-- [ ] **步骤 2：实现**
+- [x] **步骤 2：实现**
 
 `status_bar` 渲染改为从 `status_bar_texts()` 取字符串；状态段顺序：控制设备 / 键盘 / 鼠标 / 视频 / 状态（message 为 `None` 时省略该段）。
 
-- [ ] **步骤 3：验证 + 提交**
+- [x] **步骤 3：验证 + 提交**
 
 ```powershell
 cargo test -p ipkvm-desktop --all-features app::tests
@@ -154,7 +154,7 @@ git commit -m "fix: surface desktop status messages in status bar"
 
 **修复设计：** 抽出 `pointer_active(focused, mask, previous_mask) -> bool`：聚焦即活跃；未聚焦时只有按住（mask/previous_mask 非零，拖出窗口或松开在窗口外）才继续发送。
 
-- [ ] **步骤 1：红灯测试**（`input.rs`）
+- [x] **步骤 1：红灯测试**（`input.rs`）
 
 ```rust
 #[test]
@@ -166,11 +166,11 @@ fn pointer_active_requires_focus_or_held_button() {
 }
 ```
 
-- [ ] **步骤 2：实现 + 接入**
+- [x] **步骤 2：实现 + 接入**
 
 `handle_input` 中指针分支条件由 `response.hovered() || ...` 改为 `pointer_active(focused, mask, self.pointer_mask)`；点击获得焦点后当帧 `has_focus()` 为 true，按下/抬起仍会发送。
 
-- [ ] **步骤 3：验证 + 提交**
+- [x] **步骤 3：验证 + 提交**
 
 ```powershell
 cargo test -p ipkvm-desktop --all-features input::tests
@@ -186,7 +186,7 @@ git commit -m "fix: gate desktop pointer input on video focus"
 
 **修复设计：** 连接视为事务：工厂成功后先不落状态；`replace_and_start` 与 `Connected` 发送任一失败即调用 `rollback()`（`stop_and_destroy` 释放已组装会话 + 清空 `event_tx/frame_source` + 换新 `notice_rx`），再返回错误。
 
-- [ ] **步骤 1：红灯测试**
+- [x] **步骤 1：红灯测试**
 
 ```rust
 #[test]
@@ -204,11 +204,11 @@ fn failed_connect_rolls_back_controller_state() {
 
 （`controller_with_failing_factory` 用返回 `Err(DesktopSessionError::Build("boom".into()))` 的工厂。）
 
-- [ ] **步骤 2：实现**
+- [x] **步骤 2：实现**
 
 `connect()` 改为：工厂 → 建 notice 通道并设 mirror → `block_on(replace_and_start)`，失败走 `rollback` → 成功后写 `frame_source/notice_rx` → 取 sender 并 `try_send(Connected)`，失败同样 `rollback`。
 
-- [ ] **步骤 3：验证 + 提交**
+- [x] **步骤 3：验证 + 提交**
 
 ```powershell
 cargo test -p ipkvm-desktop --all-features session::tests
@@ -224,7 +224,7 @@ git commit -m "fix: roll back desktop session state on connect failure"
 
 **修复设计：** 抽 `sync_control_state()`：`!showing_device_dialog && !is_control_online()` 时标记控制离线并复位 `paste_busy/video_focused/pointer_mask/last_pointer/last_modifiers`；`stop_session()` 同样复位。`update_impl` 每帧调用。
 
-- [ ] **步骤 1：红灯测试**
+- [x] **步骤 1：红灯测试**
 
 ```rust
 #[test]
@@ -244,7 +244,7 @@ fn offline_sync_resets_paste_and_focus_state() {
 }
 ```
 
-- [ ] **步骤 2：实现 + 验证 + 提交**
+- [x] **步骤 2：实现 + 验证 + 提交**
 
 ```powershell
 cargo test -p ipkvm-desktop --all-features app::tests
@@ -260,7 +260,7 @@ git commit -m "fix: reset desktop input state on session lifecycle changes"
 
 **修复设计：** 转换前校验 `data.len() >= stride*(height-1) + width*4`（`height == 0` 时按 0 处理），不足返回 `Err`。
 
-- [ ] **步骤 1：红灯测试**
+- [x] **步骤 1：红灯测试**
 
 ```rust
 #[test]
@@ -270,7 +270,7 @@ fn bgra_to_rgba_rejects_truncated_data() {
 }
 ```
 
-- [ ] **步骤 2：实现 + 验证 + 提交**
+- [x] **步骤 2：实现 + 验证 + 提交**
 
 ```powershell
 cargo test -p ipkvm-desktop --all-features frame::tests
@@ -287,7 +287,7 @@ git commit -m "fix: validate frame length before pixel conversion"
 
 **修复设计：** `refresh_detection` 返回 `Result<(), ProbeError>`：任一列表枚举失败即返回错误且**不替换**旧列表、不重探；app 把错误写入 `status_message`（dialog 与状态栏均可见）。启动时首轮枚举失败只告警不阻塞。
 
-- [ ] **步骤 1：红灯测试**（`probe.rs`）
+- [x] **步骤 1：红灯测试**（`probe.rs`）
 
 ```rust
 #[test]
@@ -302,7 +302,7 @@ fn refresh_detection_propagates_list_errors_without_replacing_state() {
 }
 ```
 
-- [ ] **步骤 2：实现 + 接入 + 验证 + 提交**
+- [x] **步骤 2：实现 + 接入 + 验证 + 提交**
 
 ```powershell
 cargo test -p ipkvm-desktop --all-features probe::tests
@@ -318,7 +318,7 @@ git commit -m "fix: surface desktop device enumeration errors"
 
 **修复设计：** 连接控制台且缩放模式为 `ResizeWindowToVideo` 时，分辨率变化后向视口发送 `ViewportCommand::InnerSize(视频尺寸 + 菜单/状态栏高度)`；渲染逻辑保持 fit（窗口尺寸跟随视频后 fit≈1:1）。抽 `desired_window_inner_size(frame, chrome)` 纯函数并测试。
 
-- [ ] **步骤 1：红灯测试**
+- [x] **步骤 1：红灯测试**
 
 ```rust
 #[test]
@@ -328,7 +328,7 @@ fn desired_window_inner_size_adds_chrome() {
 }
 ```
 
-- [ ] **步骤 2：实现 + 验证 + 提交**
+- [x] **步骤 2：实现 + 验证 + 提交**
 
 ```powershell
 cargo test -p ipkvm-desktop --all-features app::tests
