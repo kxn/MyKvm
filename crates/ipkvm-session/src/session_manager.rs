@@ -248,12 +248,21 @@ mod tests {
         manager.stop().unwrap();
         assert_eq!(manager.state(), SessionState::Stopped);
 
-        // 屏障：wait_stopped() 返回时旧泵任务已收尾（pump 自身 release_all
-        // 必然已完成；文本键入服务对 sink 克隆的 release 在其后异步到达）。
+        // 屏障：wait_stopped() 返回时旧泵任务已收尾。join handle 解析时
+        // pump 的同步 release_all（第一次释放）已执行，该断言确定性成立；
+        // 若 wait_stopped 退化为 no-op，pump 尚未收尾时此处即读到 0 而失败，
+        // 保证本测试对屏障具有判别力。
         manager.wait_stopped().await;
         assert!(
+            sink.recorded.lock().unwrap().release_count >= 1,
+            "wait_stopped 返回时 pump 自身 release_all 必须已完成"
+        );
+
+        // 文本键入服务对 sink 克隆的第二次 release 在 pump 收尾后异步到达，
+        // 用轮询观察（纯轮询断言不足以判别屏障，仅覆盖异步收尾本身）。
+        assert!(
             yield_until(|| sink.recorded.lock().unwrap().release_count == 2).await,
-            "wait_stopped 后 release_all 未执行完成（屏障失效）"
+            "wait_stopped 后文本服务 release_all 未执行完成"
         );
     }
 }
