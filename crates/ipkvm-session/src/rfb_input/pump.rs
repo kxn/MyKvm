@@ -143,7 +143,7 @@ pub enum RfbInputLifecycleError {
 pub enum RfbInputError {
     #[error("invalid RFB controller lifecycle: {0}")]
     Lifecycle(#[from] RfbInputLifecycleError),
-    #[error("input sink rejected {operation:?} for RFB client {client_id:?}")]
+    #[error("input sink rejected {operation:?} for RFB client {client_id:?}: {source}")]
     Sink {
         client_id: RfbClientId,
         operation: RfbInputOperation,
