@@ -39,9 +39,9 @@ pub fn list_video_devices() -> Result<Vec<VideoDevice>, DeviceListError> {
 
 /// 枚举串口设备（serialport::available_ports）。
 ///
-/// 测试里无条件调用本函数，因此不做 `#[cfg(feature = "serial")]` 门控；
-/// 依赖 serialport 为可选依赖时，串口枚举随 feature 联动（无 feature 时
-/// 返回空列表，不 panic）。
+/// 测试无条件调用本函数，因此提供无 feature 空实现（返回空列表）而非
+/// 门控整个函数；依赖 serialport 为可选依赖时，串口枚举随 feature 联动
+/// （无 feature 时返回空列表，不 panic）。
 #[cfg(feature = "serial")]
 pub fn list_serial_devices() -> Result<Vec<SerialDevice>, DeviceListError> {
     let ports =

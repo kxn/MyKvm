@@ -2,7 +2,7 @@
 
 my_ipkvm 是一个软件 IPKVM 项目：主控机通过 USB HDMI 采集卡读取目标机控制台画面，并通过 CH9329 + CH340 串口线向目标机注入 USB HID 键盘鼠标事件。
 
-当前工程已完成 CH9329 协议与输入核心和传输无关的 RFB 3.8 协议核心；连接驱动器、`RfbServerEvent` 事件模型、`RfbConnectionGate` 仲裁、en-US 键盘和绝对指针映射、输入事件泵等会话核心已在 `ipkvm-session`。RFB 已有 TCP 与 WebSocket 两个库级传输层：`RfbTcpServer` 和可组合的 axum `/rfb` `RfbWebSocketService`。两者共用 `ipkvm-session` 的连接驱动器与全局 `RfbConnectionGate`；生产组装必须向两个服务显式传入同一个连接闸门。
+当前工程已完成 CH9329 协议与输入核心、传输无关的 RFB 3.8 协议核心；连接驱动器、`RfbServerEvent` 事件模型、`RfbConnectionGate` 仲裁、en-US 键盘和绝对指针映射、输入事件泵等会话核心已在 `ipkvm-session`。RFB 已有 TCP 与 WebSocket 两个库级传输层：`RfbTcpServer` 和可组合的 axum `/rfb` `RfbWebSocketService`。两者共用 `ipkvm-session` 的连接驱动器与全局 `RfbConnectionGate`；生产组装必须向两个服务显式传入同一个连接闸门。
 
 `ipkvm-headless` 已提供可供生产组装复用的嵌入式 Web 服务。它内置项目中文控制台页面和固定到 noVNC 1.7.0 提交 `63107bd06d9e1f6136ff21aeda8cd62cbf0d433e` 的完整 npm 发布资源，并通过同源 `/rfb` 建立连接。真实 Chrome 自动化已经证明模拟帧像素、桌面与窄视口等比缩放、键盘 HID、缩放后的绝对指针坐标、按键顺序、断开释放和重连全部穿过 noVNC、RFB 服务与 `RfbInputPump` 到达记录型 `InputSink`。
 

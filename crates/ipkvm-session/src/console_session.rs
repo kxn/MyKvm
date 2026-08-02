@@ -61,7 +61,7 @@ pub enum SessionError {
     Input(#[from] RfbInputRunError),
 }
 
-/// 运行中会话句柄：可 Clone，调用方持有即可请求停止。
+/// 预留句柄标记，供未来句柄式控制（#31/#32）。
 #[derive(Clone, Debug)]
 pub struct SessionHandle;
 
@@ -107,6 +107,9 @@ impl<S: InputSink + Clone + Send + 'static> ConsoleSession<S> {
 
     /// 会话统计访问：返回互斥锁守卫——泵任务并发写入输入计数/最后输入时间，
     /// 读方短暂持锁读取（守卫可解引用为 `&SessionStats`）。
+    ///
+    /// 警告：`SessionStats` 由泵线程与调用方经内部互斥共享，std Mutex 非
+    /// 重入——勿同线程同时持多个守卫，勿跨 await 持有守卫。
     pub fn stats(&self) -> std::sync::MutexGuard<'_, SessionStats> {
         self.stats.lock().unwrap()
     }
@@ -346,13 +349,18 @@ mod tests {
 
     // ---- T8 会话状态统计 ----
 
-    /// 帧 seq 跳跃（1→3，缺 2）→ dropped_frames 计数 1；首帧初始化基准不计数。
+    /// 帧 seq 跳跃（1→3，缺 2）→ dropped_frames 计数 1；首帧初始化基准
+    /// 不计数；seq 回退（3→2）与重复（2→2）视为重置，不计数。
     #[test]
     fn frame_seq_jump_counts_dropped_frame() {
         let mut stats = SessionStats::default();
         stats.observe_frame_seq(1);
         stats.observe_frame_seq(3);
         assert_eq!(stats.dropped_frames, 1);
+        stats.observe_frame_seq(2);
+        assert_eq!(stats.dropped_frames, 1, "seq 回退不计数");
+        stats.observe_frame_seq(2);
+        assert_eq!(stats.dropped_frames, 1, "seq 重复不计数");
     }
 
     /// 输入事件计数与最后时间更新。

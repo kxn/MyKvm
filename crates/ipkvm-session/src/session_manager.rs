@@ -102,8 +102,8 @@ impl<S: InputSink + Clone + Send + 'static> SessionManager<S> {
     ///
     /// 无 pending（未 stop 或已等待过）时立即返回。旧泵正常退出时内部结果
     /// 必为 Ok；若任务异常终止（join 失败，如泵 panic），任务本身已结束、
-    /// 屏障目的（收尾完成）已达成，内部结果在此不传播——泵运行错误的
-    /// 错误面由后续会话统计（T8）承担。
+    /// 屏障目的（收尾完成）已达成——泵任务内部错误（panic/Err）不在此
+    /// 传播；错误面观测留给 #31。
     pub async fn wait_stopped(&mut self) {
         let Some(handle) = self.pending_stop.take() else {
             return;
@@ -111,8 +111,9 @@ impl<S: InputSink + Clone + Send + 'static> SessionManager<S> {
         let _ = handle.await;
     }
 
-    /// 重启会话：同步接口下旧泵收尾是异步的；生产组装（#31）如需无竞态
-    /// 重启，应先 `stop()` 后 `wait_stopped().await` 再 `start()`。
+    /// 重启会话：同步接口下旧泵收尾是异步的，旧泵收尾与新泵启动短暂并存；
+    /// 生产组装（#31）如需无竞态重启，应先 `stop()` 后 `wait_stopped().await`
+    /// 再 `start()`。对已停止会话返回 `NotRunning`；#31 接线时决定语义。
     pub fn restart(&mut self) -> Result<(), SessionError> {
         self.stop()?;
         self.start()?;
