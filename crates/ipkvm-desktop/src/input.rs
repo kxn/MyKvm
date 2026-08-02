@@ -177,6 +177,12 @@ pub fn pointer_button_mask(response: &eframe::egui::Response, previous_mask: u8)
     mask
 }
 
+/// 指针输入是否活跃：视频区聚焦即活跃；未聚焦时只有按住（拖出窗口或
+/// 松开在窗口外）才继续发送，避免悬停误动目标机鼠标。
+pub fn pointer_active(focused: bool, mask: u8, previous_mask: u8) -> bool {
+    focused || mask != 0 || previous_mask != 0
+}
+
 #[cfg(test)]
 mod tests {
     use eframe::egui;
@@ -312,5 +318,13 @@ mod tests {
         });
         let _ = ctx.run(released, |_| {});
         assert_eq!(pointer_button_mask(&response, 1), 0);
+    }
+
+    #[test]
+    fn pointer_active_requires_focus_or_held_button() {
+        assert!(!pointer_active(false, 0, 0));
+        assert!(pointer_active(true, 0, 0));
+        assert!(pointer_active(false, 1, 0));
+        assert!(pointer_active(false, 0, 1));
     }
 }

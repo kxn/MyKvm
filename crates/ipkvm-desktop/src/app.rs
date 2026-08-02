@@ -7,7 +7,7 @@ use ipkvm_session::rfb_input::RfbInputNotice;
 use crate::clipboard::{ClipboardService, save_jpeg};
 use crate::frame::bgra_to_rgba;
 use crate::input::{
-    KeyAction, SpecialKey, egui_key_to_keysym, modifier_diff, pointer_button_mask,
+    KeyAction, SpecialKey, egui_key_to_keysym, modifier_diff, pointer_active, pointer_button_mask,
     special_key_sequence,
 };
 use crate::probe::{ProbeBackend, ProductionProbeBackend, refresh_detection};
@@ -429,7 +429,7 @@ impl DesktopApp {
 
         // 指针：悬停或拖动中发送坐标；点击视频区会先获得焦点。
         let mask = pointer_button_mask(response, self.pointer_mask);
-        if (response.hovered() || self.pointer_mask != 0 || mask != 0)
+        if pointer_active(focused, mask, self.pointer_mask)
             && let Some(position) = response.ctx.input(|input| input.pointer.latest_pos())
             && let Some((x, y)) = VideoViewport::map_pointer(position, video_rect, frame)
         {
