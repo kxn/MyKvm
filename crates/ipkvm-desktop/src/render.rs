@@ -56,7 +56,7 @@ impl VideoViewport {
 
 #[cfg(test)]
 mod tests {
-    use eframe::egui::{pos2, Rect};
+    use eframe::egui::{Rect, pos2};
 
     use super::*;
     use crate::state::VideoScaleMode;

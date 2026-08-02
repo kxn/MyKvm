@@ -92,12 +92,8 @@ impl<S: InputSink + Clone + Send + 'static> SessionManager<S> {
         if self.session.is_some() {
             return Err(SessionError::AlreadyCreated);
         }
-        let mut session = ConsoleSession::new(
-            frame_source,
-            sink,
-            gate,
-            self.event_publisher.clone(),
-        );
+        let mut session =
+            ConsoleSession::new(frame_source, sink, gate, self.event_publisher.clone());
         session.set_notice_mirror(self.notice_mirror.clone());
         self.session = Some(session);
         Ok(())
@@ -197,12 +193,8 @@ impl<S: InputSink + Clone + Send + 'static> SessionManager<S> {
             self.stop()?;
         }
         self.wait_stopped().await;
-        let mut session = ConsoleSession::new(
-            frame_source,
-            sink,
-            gate,
-            self.event_publisher.clone(),
-        );
+        let mut session =
+            ConsoleSession::new(frame_source, sink, gate, self.event_publisher.clone());
         session.set_notice_mirror(self.notice_mirror.clone());
         self.session = Some(session);
         self.start()?;

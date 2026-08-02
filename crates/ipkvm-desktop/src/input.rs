@@ -100,9 +100,7 @@ pub fn egui_key_to_keysym(
         ArrowRight => Some(XK_RIGHT),
         ArrowUp => Some(XK_UP),
         ArrowDown => Some(XK_DOWN),
-        k if (eframe::egui::Key::A as u32..=eframe::egui::Key::Z as u32)
-            .contains(&(k as u32)) =>
-        {
+        k if (eframe::egui::Key::A as u32..=eframe::egui::Key::Z as u32).contains(&(k as u32)) => {
             let index = k as u32 - eframe::egui::Key::A as u32;
             Some(if modifiers.shift {
                 'A' as u32 + index
@@ -161,10 +159,10 @@ pub fn pointer_button_mask(response: &eframe::egui::Response, previous_mask: u8)
     {
         mask |= 0b001;
     }
-    if response
-        .ctx
-        .input(|i| i.pointer.button_down(eframe::egui::PointerButton::Secondary))
-    {
+    if response.ctx.input(|i| {
+        i.pointer
+            .button_down(eframe::egui::PointerButton::Secondary)
+    }) {
         mask |= 0b010;
     }
     if response

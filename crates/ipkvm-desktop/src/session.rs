@@ -51,6 +51,7 @@ where
     factory: F,
     notice_rx: mpsc::UnboundedReceiver<RfbInputNotice>,
     event_tx: Option<mpsc::Sender<RfbServerEvent>>,
+    frame_source: Option<Arc<dyn FrameSource>>,
 }
 
 impl<S, F> DesktopSessionController<S, F>
@@ -72,6 +73,7 @@ where
             factory,
             notice_rx,
             event_tx: None,
+            frame_source: None,
         }
     }
 
@@ -79,6 +81,7 @@ where
     /// 发送 `Connected` 成为当前唯一活动控制器。
     pub fn connect(&mut self, request: ConnectRequest) -> Result<(), DesktopSessionError> {
         let (frame_source, sink, gate) = (self.factory)(&request)?;
+        self.frame_source = Some(Arc::clone(&frame_source));
         // 先建 notice 镜像再启动，避免错过泵的早期 notice；unbounded 通道缓冲
         // 到本控制器持有 receiver 为止。
         let (notice_tx, notice_rx) = mpsc::unbounded_channel();
@@ -108,9 +111,17 @@ where
     /// 停止连接并销毁会话组件（释放相机/串口），之后可重新连接。
     pub fn stop(&mut self) -> Result<(), DesktopSessionError> {
         self.event_tx = None;
+        self.frame_source = None;
         self.runtime
             .block_on(self.manager.stop_and_destroy())
             .map_err(|error| DesktopSessionError::Session(error.to_string()))
+    }
+
+    /// 当前会话帧源的最新帧（渲染与控制台无信号检测用）。
+    pub fn latest_frame(&self) -> Option<ipkvm_video::SharedVideoFrame> {
+        self.frame_source
+            .as_ref()
+            .and_then(|source| source.latest_frame())
     }
 
     /// 发送键盘事件（内存直喂输入泵，不经网络）。
@@ -188,10 +199,8 @@ where
     }
 }
 
-const LOCAL_PEER: SocketAddr = SocketAddr::new(
-    std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST),
-    0,
-);
+const LOCAL_PEER: SocketAddr =
+    SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 0);
 
 /// 生产组件工厂：相机帧源 + CH9329 串口 sink + 新连接闸门。
 pub fn production_parts(
@@ -207,14 +216,15 @@ pub fn production_parts(
     Ok((frame_source, sink, RfbConnectionGate::new()))
 }
 
-pub type ProductionSessionFactory = fn(
-    &ConnectRequest,
-) -> Result<
-    SessionParts<Ch9329InputSink<SerialCommandQueue>>,
-    DesktopSessionError,
->;
+pub type ProductionSessionFactory =
+    fn(
+        &ConnectRequest,
+    ) -> Result<SessionParts<Ch9329InputSink<SerialCommandQueue>>, DesktopSessionError>;
 
-impl DesktopSessionController<Ch9329InputSink<SerialCommandQueue>, ProductionSessionFactory> {
+pub type ProductionDesktopSessionController =
+    DesktopSessionController<Ch9329InputSink<SerialCommandQueue>, ProductionSessionFactory>;
+
+impl ProductionDesktopSessionController {
     /// 生产控制器：相机 + CH9329 串口。
     pub fn production() -> Self {
         Self::with_factory(production_parts)
@@ -276,8 +286,13 @@ mod tests {
         }
     }
 
-    fn controller_with_sink() -> (DesktopSessionController<RecordingSink, impl FnMut(&ConnectRequest) -> Result<SessionParts<RecordingSink>, DesktopSessionError>>, RecordingSink)
-    {
+    fn controller_with_sink() -> (
+        DesktopSessionController<
+            RecordingSink,
+            impl FnMut(&ConnectRequest) -> Result<SessionParts<RecordingSink>, DesktopSessionError>,
+        >,
+        RecordingSink,
+    ) {
         let sink = RecordingSink::default();
         let sink_for_factory = sink.clone();
         let controller = DesktopSessionController::with_factory(move |_request| {
@@ -306,10 +321,15 @@ mod tests {
         controller.connect(request()).unwrap();
         controller.send_key(true, 0x61).unwrap();
         controller
-            .send_pointer(1, 100, 50, FrameSize {
-                width: 1920,
-                height: 1080,
-            })
+            .send_pointer(
+                1,
+                100,
+                50,
+                FrameSize {
+                    width: 1920,
+                    height: 1080,
+                },
+            )
             .unwrap();
 
         wait_until(

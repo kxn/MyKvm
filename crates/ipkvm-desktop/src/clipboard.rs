@@ -61,12 +61,7 @@ pub fn save_jpeg(path: &Path, frame: &RgbaFrame) -> Result<(), ClipboardError> {
     let file = std::fs::File::create(path)?;
     let encoder = jpeg_encoder::Encoder::new(file, 85);
     encoder
-        .encode(
-            &frame.pixels,
-            width,
-            height,
-            jpeg_encoder::ColorType::Rgba,
-        )
+        .encode(&frame.pixels, width, height, jpeg_encoder::ColorType::Rgba)
         .map_err(|error| ClipboardError::Jpeg(error.to_string()))?;
     Ok(())
 }
@@ -80,10 +75,7 @@ mod tests {
 
     #[test]
     fn save_jpeg_writes_non_empty_file() {
-        let path = std::env::temp_dir().join(format!(
-            "my_ipkvm-test-{}.jpg",
-            std::process::id()
-        ));
+        let path = std::env::temp_dir().join(format!("my_ipkvm-test-{}.jpg", std::process::id()));
         let frame = RgbaFrame {
             width: 1,
             height: 1,
@@ -99,10 +91,7 @@ mod tests {
 
     #[test]
     fn save_jpeg_rejects_empty_frame() {
-        let path = std::env::temp_dir().join(format!(
-            "my_ipkvm-empty-{}.jpg",
-            std::process::id()
-        ));
+        let path = std::env::temp_dir().join(format!("my_ipkvm-empty-{}.jpg", std::process::id()));
         let frame = RgbaFrame {
             width: 0,
             height: 0,

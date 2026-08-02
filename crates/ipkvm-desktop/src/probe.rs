@@ -20,12 +20,7 @@ pub enum ProbeError {
 pub trait ProbeBackend {
     fn list_video_devices(&mut self) -> Result<Vec<DeviceOption>, ProbeError>;
     fn list_control_devices(&mut self) -> Result<Vec<DeviceOption>, ProbeError>;
-    fn preview_video(
-        &mut self,
-        device_id: &str,
-        fps: u64,
-        timeout: Duration,
-    ) -> VideoProbeStatus;
+    fn preview_video(&mut self, device_id: &str, fps: u64, timeout: Duration) -> VideoProbeStatus;
     fn probe_control(
         &mut self,
         device_id: &str,
@@ -45,12 +40,10 @@ pub fn refresh_detection(
     state.refresh_devices(video, control);
 
     if let Some(device_id) = state.selected_video_id.clone() {
-        state.video_status =
-            backend.preview_video(&device_id, state.advanced.preview_fps, timeout);
+        state.video_status = backend.preview_video(&device_id, state.advanced.preview_fps, timeout);
     }
     if let Some(device_id) = state.selected_control_id.clone() {
-        state.control_status =
-            backend.probe_control(&device_id, state.advanced.baud_rate, timeout);
+        state.control_status = backend.probe_control(&device_id, state.advanced.baud_rate, timeout);
     }
 }
 
@@ -86,12 +79,7 @@ impl ProbeBackend for ProductionProbeBackend {
             .map_err(|error| ProbeError::ControlList(error.to_string()))
     }
 
-    fn preview_video(
-        &mut self,
-        device_id: &str,
-        fps: u64,
-        timeout: Duration,
-    ) -> VideoProbeStatus {
+    fn preview_video(&mut self, device_id: &str, fps: u64, timeout: Duration) -> VideoProbeStatus {
         capture_preview(device_id, fps, timeout)
     }
 

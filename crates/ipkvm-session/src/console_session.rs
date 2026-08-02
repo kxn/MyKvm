@@ -396,11 +396,10 @@ mod tests {
 
         let mut seen_text_typed = false;
         for _ in 0..8 {
-            let notice =
-                tokio::time::timeout(std::time::Duration::from_secs(1), notice_rx.recv())
-                    .await
-                    .unwrap()
-                    .unwrap();
+            let notice = tokio::time::timeout(std::time::Duration::from_secs(1), notice_rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
             if matches!(notice, crate::rfb_input::RfbInputNotice::TextTyped { .. }) {
                 seen_text_typed = true;
                 break;
