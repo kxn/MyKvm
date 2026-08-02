@@ -2,6 +2,7 @@ mod app;
 mod fonts;
 mod frame;
 mod probe;
+mod render;
 mod state;
 
 use thiserror::Error;
