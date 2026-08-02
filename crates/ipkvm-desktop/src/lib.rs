@@ -1,4 +1,5 @@
 mod app;
+mod clipboard;
 mod fonts;
 mod frame;
 mod input;
