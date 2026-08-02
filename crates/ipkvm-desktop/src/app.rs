@@ -448,8 +448,7 @@ impl DesktopApp {
                 && let Some(actual) = self.frame_size
                 && self.last_follow_resize != Some(actual)
             {
-                let size =
-                    desired_window_inner_size(actual, FOLLOW_CHROME, ctx.pixels_per_point());
+                let size = desired_window_inner_size(actual, FOLLOW_CHROME, ctx.pixels_per_point());
                 ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
                 self.last_follow_resize = Some(actual);
             }
@@ -622,9 +621,9 @@ impl DesktopApp {
             self.pending_relative.1 = self.pending_relative.1.saturating_add(dy);
             self.pending_relative.2 = self.pending_relative.2.saturating_add(wheel);
             let now = Instant::now();
-            let mask_changed =
-                self.last_pointer_sent
-                    .is_some_and(|(last_mask, _, _)| last_mask != mask);
+            let mask_changed = self
+                .last_pointer_sent
+                .is_some_and(|(last_mask, _, _)| last_mask != mask);
             let (pending_dx, pending_dy, pending_wheel) = self.pending_relative;
             if mask_changed
                 || crate::input::throttle_elapsed(
@@ -634,10 +633,12 @@ impl DesktopApp {
                 )
             {
                 if pending_dx != 0 || pending_dy != 0 || pending_wheel != 0 || mask_changed {
-                    if let Err(error) = self
-                        .session
-                        .send_pointer_relative(mask, pending_dx, pending_dy, pending_wheel)
-                    {
+                    if let Err(error) = self.session.send_pointer_relative(
+                        mask,
+                        pending_dx,
+                        pending_dy,
+                        pending_wheel,
+                    ) {
                         self.status_message = Some(format!("指针发送失败：{error}"));
                     }
                     self.last_pointer_sent = Some((mask, u16::MAX, u16::MAX));
@@ -652,9 +653,9 @@ impl DesktopApp {
         {
             self.pending_pointer = Some((mask, x, y));
             let now = Instant::now();
-            let mask_changed =
-                self.last_pointer_sent
-                    .is_some_and(|(last_mask, _, _)| last_mask != mask);
+            let mask_changed = self
+                .last_pointer_sent
+                .is_some_and(|(last_mask, _, _)| last_mask != mask);
             if mask_changed
                 || crate::input::throttle_elapsed(
                     now,
@@ -1033,10 +1034,7 @@ fn control_status_text(status: &ControlProbeStatus) -> String {
 /// pixels_per_point 换算 + 菜单/状态栏高度。
 fn desired_window_inner_size(frame: FrameSize, chrome: f32, pixels_per_point: f32) -> egui::Vec2 {
     let ppp = pixels_per_point.max(1.0);
-    egui::vec2(
-        frame.width as f32 / ppp,
-        frame.height as f32 / ppp + chrome,
-    )
+    egui::vec2(frame.width as f32 / ppp, frame.height as f32 / ppp + chrome)
 }
 
 fn mouse_mode_label(mode: MouseMode) -> &'static str {
