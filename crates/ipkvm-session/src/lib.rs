@@ -1,5 +1,7 @@
 //! 控制台会话抽象。
 
+pub mod rfb_connection;
+
 use ipkvm_core::MouseMode;
 use ipkvm_video::{PixelFormat, VideoFormat};
 

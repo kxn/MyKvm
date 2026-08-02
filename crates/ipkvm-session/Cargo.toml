@@ -8,5 +8,8 @@ rust-version.workspace = true
 
 [dependencies]
 ipkvm-core = { path = "../ipkvm-core" }
+ipkvm-rfb = { path = "../ipkvm-rfb" }
 ipkvm-video = { path = "../ipkvm-video" }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync"] }
 
