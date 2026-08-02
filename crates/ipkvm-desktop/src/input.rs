@@ -222,14 +222,14 @@ pub fn is_mode_toggle_combo(event: &eframe::egui::Event) -> bool {
     )
 }
 
-/// 把浮点增量累积到余数并返回可发送的整数增量（避免亚像素漂移）。
-pub fn accumulate_delta(remainder: &mut (f32, f32), dx: f32, dy: f32) -> (i16, i16) {
-    remainder.0 += dx;
-    remainder.1 += dy;
+/// 固定间隔采样：取走余数中的整数增量作为一次采样值，小数部分保留。
+///
+/// 采样频率由调用方（固定间隔定时器）控制，位移大小不决定发送次数。
+pub fn sample_delta(remainder: &mut (f32, f32)) -> (i16, i16) {
     let ix = remainder.0.trunc().clamp(i16::MIN as f32, i16::MAX as f32) as i16;
     let iy = remainder.1.trunc().clamp(i16::MIN as f32, i16::MAX as f32) as i16;
-    remainder.0 -= ix as f32;
-    remainder.1 -= iy as f32;
+    remainder.0 -= f32::from(ix);
+    remainder.1 -= f32::from(iy);
     (ix, iy)
 }
 
@@ -498,14 +498,28 @@ mod tests {
     }
 
     #[test]
-    fn accumulate_delta_sends_integer_parts_and_keeps_remainder() {
+    fn sample_delta_takes_integer_parts_and_keeps_remainder() {
         let mut remainder = (0.0, 0.0);
-        assert_eq!(accumulate_delta(&mut remainder, 1.6, 2.4), (1, 2));
+        remainder.0 += 1.6;
+        remainder.1 += 2.4;
+        assert_eq!(sample_delta(&mut remainder), (1, 2));
         assert!((remainder.0 - 0.6).abs() < 1e-6);
         assert!((remainder.1 - 0.4).abs() < 1e-6);
-        assert_eq!(accumulate_delta(&mut remainder, 0.4, 0.6), (1, 1));
+        remainder.0 += 0.4;
+        remainder.1 += 0.6;
+        assert_eq!(sample_delta(&mut remainder), (1, 1));
         assert!((remainder.0 - 0.0).abs() < 1e-6);
         assert!((remainder.1 - 0.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn sample_delta_handles_large_and_negative_values() {
+        let mut remainder = (0.0, 0.0);
+        remainder.0 += 300.6;
+        remainder.1 += -200.0;
+        assert_eq!(sample_delta(&mut remainder), (300, -200));
+        assert!((remainder.0 - 0.6).abs() < 1e-3);
+        assert!(remainder.1.abs() < 1e-3);
     }
 
     #[test]
