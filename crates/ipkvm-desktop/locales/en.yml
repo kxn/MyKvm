@@ -1,0 +1,124 @@
+_version: 1
+
+common:
+  not_selected: "Not selected"
+  close: "Close"
+
+menu:
+  control: "Control"
+  device: "Device"
+  reselect_device: "Reselect device"
+  stop_connection: "Stop connection"
+  advanced: "Advanced settings…"
+  paste_text: "Paste text"
+  release_keys: "Release all keys"
+  copy_screenshot: "Copy screenshot to clipboard"
+  save_screenshot: "Save screenshot as JPEG…"
+  save_screenshot_unsupported: "Save screenshot (file dialog not supported on this platform)"
+  send_special_keys: "Send special keys…"
+
+device:
+  title: "Select device"
+  video: "Video device"
+  control: "Control device (CH9329)"
+  advanced: "Advanced"
+  refresh: "Refresh detection"
+  connect: "Connect"
+  preview: "Video preview"
+  no_preview: "No preview"
+
+special_keys:
+  title: "Send special keys"
+  hint: "Other keys can be sent directly from the keyboard."
+  ctrl_alt_del: "Ctrl+Alt+Del"
+  esc: "Esc"
+
+advanced:
+  title: "Advanced settings"
+
+settings:
+  baud_rate: "Baud rate"
+  auto_baud: "Auto-detect baud rate on connect"
+  preview_fps: "Preview FPS"
+  mouse_mode: "Mouse mode"
+  relative_sensitivity: "Relative sensitivity"
+  scale_mode: "Scaling"
+  language: "Language"
+
+language:
+  system: "Follow system"
+  chinese: "中文"
+  english: "English"
+
+mouse_mode:
+  absolute: "Absolute"
+  relative: "Relative"
+
+scale_mode:
+  fit_window: "Fit window"
+  actual_size: "Actual size"
+  resize_to_video: "Resize window to video"
+
+status:
+  control_device: "Control device: %{value}"
+  keyboard: "Keyboard: %{value}"
+  pointer: "Mouse: %{value}"
+  video: "Video: %{value}"
+  message: "Status: %{message}"
+  offline: "Offline"
+  pasting: "Pasting"
+  remote_input: "Remote input · Ctrl+Alt+K to exit"
+  keyboard_lost: "No focus"
+  relative_mode: "Relative mode"
+  pointer_outside: "Outside window"
+  video_no_signal: "No signal"
+  video_stalled: "Stalled / no signal"
+
+control_status:
+  not_selected: "Not selected"
+  checking: "Rechecking"
+  ready: "CH9329(%{port})"
+  not_ch9329: "Not a CH9329 (%{reason})"
+  no_response: "No response"
+  open_failed: "Open failed (%{error})"
+  offline: "Offline"
+
+video_status:
+  not_selected: "Video: not selected"
+  checking: "Video: checking…"
+  ready: "Video: preview available %{width}×%{height} (%{label})"
+  no_signal: "Video: no signal"
+  open_failed: "Video: open failed %{error}"
+  disconnected: "Video: device disconnected"
+
+control_status_label:
+  not_selected: "Control: not selected"
+  checking: "Control: probing…"
+  ready: "Control: CH9329(%{port})"
+  not_ch9329: "Control: not a valid CH9329 (%{reason})"
+  no_response: "Control: no response"
+  open_failed: "Control: open failed %{error}"
+  disconnected: "Control: device disconnected"
+
+message:
+  offline_with_reason: "Control device offline: %{reason}"
+  offline_reconnect: "Control device offline; refresh detection and reconnect"
+  input_rejected: "Input rejected"
+  enumeration_failed: "Device enumeration failed: %{error}"
+  connect_failed: "Connection failed: %{error}"
+  baud_selected: "Auto-selected baud rate %{baud}"
+  mouse_mode_switched: "Switched to %{mode} mouse"
+  mouse_mode_switch_failed: "Failed to switch mouse mode: %{error}"
+  pointer_send_failed: "Pointer send failed: %{error}"
+  keyboard_send_failed: "Keyboard send failed: %{error}"
+  unsupported_key: "Unsupported key"
+  clipboard_empty: "Clipboard is empty"
+  clipboard_read_failed: "Failed to read clipboard: %{error}"
+  no_frame_screenshot: "No frame available for screenshot"
+  screenshot_copied: "Screenshot copied to clipboard"
+  screenshot_copy_failed: "Screenshot copy failed: %{error}"
+  screenshot_saved: "Screenshot saved to %{path}"
+  screenshot_save_failed: "Screenshot save failed: %{error}"
+
+dialog:
+  jpeg_filter: "JPEG image"

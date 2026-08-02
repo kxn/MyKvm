@@ -14,7 +14,9 @@ ipkvm-rfb = { path = "../ipkvm-rfb" }
 ipkvm-session = { path = "../ipkvm-session", features = ["serial"] }
 ipkvm-video = { path = "../ipkvm-video", features = ["mf"] }
 jpeg-encoder.workspace = true
+rust-i18n = "4.2.1"
 serialport.workspace = true
+sys-locale = "0.3.2"
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"] }
 # eframe 的 wgpu 依赖只开 std，不会启用任何图形后端；这里显式开启
@@ -31,3 +33,8 @@ ipkvm-video = { path = "../ipkvm-video", features = ["mock"] }
 [[bin]]
 name = "ipkvm-desktop"
 path = "src/main.rs"
+
+[package.metadata.i18n]
+available-locales = ["zh-CN", "en"]
+default-locale = "zh-CN"
+load-path = "locales"
