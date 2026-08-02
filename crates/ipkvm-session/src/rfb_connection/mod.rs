@@ -65,6 +65,11 @@ impl RfbClientId {
         self.0
     }
 
+    /// 桌面本地控制器专用保留 id（不经过网络连接闸门分配）。
+    pub fn local_desktop() -> Self {
+        Self(u64::MAX)
+    }
+
     #[cfg(test)]
     pub(crate) fn for_test(value: u64) -> Self {
         Self(value)
@@ -151,6 +156,11 @@ mod tests {
         assert_eq!(settings.desktop_name, "my_ipkvm");
         assert_eq!(settings.handshake_timeout, Duration::from_secs(10));
         assert!(settings.validate().is_ok());
+    }
+
+    #[test]
+    fn local_desktop_client_id_is_reserved() {
+        assert_eq!(RfbClientId::local_desktop().get(), u64::MAX);
     }
 
     #[test]

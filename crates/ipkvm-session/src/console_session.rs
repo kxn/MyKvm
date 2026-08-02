@@ -93,6 +93,8 @@ pub struct ConsoleSession<S: InputSink + Clone + Send + 'static> {
     /// `None`。由 `SessionManager` 持有原始 sender，会话持有 clone——两者共享
     /// 同一 watch channel，使传输层订阅端在会话重建后仍能拿到新发送端。
     event_publisher: watch::Sender<Option<mpsc::Sender<RfbServerEvent>>>,
+    /// 可选 notice 镜像：把输入泵每条 notice 转发给桌面本地控制器等观察者。
+    notice_mirror: Option<mpsc::UnboundedSender<RfbInputNotice>>,
 }
 
 impl<S: InputSink + Clone + Send + 'static> ConsoleSession<S> {
@@ -119,6 +121,7 @@ impl<S: InputSink + Clone + Send + 'static> ConsoleSession<S> {
             running: Arc::new(AtomicBool::new(false)),
             stats: Arc::new(Mutex::new(SessionStats::default())),
             event_publisher,
+            notice_mirror: None,
         }
     }
 
@@ -139,6 +142,14 @@ impl<S: InputSink + Clone + Send + 'static> ConsoleSession<S> {
     /// 后能拿到新 channel。
     pub fn event_publisher(&self) -> watch::Receiver<Option<mpsc::Sender<RfbServerEvent>>> {
         self.event_publisher.subscribe()
+    }
+
+    /// 设置 notice 镜像发送端；`None` 关闭镜像。
+    pub fn set_notice_mirror(
+        &mut self,
+        notice_mirror: Option<mpsc::UnboundedSender<RfbInputNotice>>,
+    ) {
+        self.notice_mirror = notice_mirror;
     }
 
     /// 会话统计访问：返回互斥锁守卫——泵任务并发写入输入计数/最后输入时间，
@@ -202,6 +213,7 @@ impl<S: InputSink + Clone + Send + 'static> ConsoleSession<S> {
         let mut pump = RfbInputPump::new(self.sink.clone());
         let stats = Arc::clone(&self.stats);
         let running = Arc::clone(&self.running);
+        let notice_mirror = self.notice_mirror.clone();
         self.running.store(true, Ordering::SeqCst);
         let task = tokio::spawn(async move {
             let result = pump
@@ -211,6 +223,9 @@ impl<S: InputSink + Clone + Send + 'static> ConsoleSession<S> {
                         RfbInputNotice::Keyboard { .. } | RfbInputNotice::Pointer { .. }
                     ) {
                         stats.lock().unwrap().observe_input();
+                    }
+                    if let Some(tx) = &notice_mirror {
+                        let _ = tx.send(notice.clone());
                     }
                 })
                 .await;
@@ -351,6 +366,50 @@ mod tests {
         let (mut session, _sink) = console_session_fixture();
 
         assert!(matches!(session.stop(), Err(SessionError::NotRunning)));
+    }
+
+    #[tokio::test]
+    async fn notice_mirror_receives_input_and_text_notices() {
+        let (mut session, _sink) = console_session_fixture();
+        let (notice_tx, mut notice_rx) = tokio::sync::mpsc::unbounded_channel();
+        session.set_notice_mirror(Some(notice_tx));
+        session.start().unwrap();
+
+        let event_tx = session.event_tx().clone();
+        let client_id = RfbClientId::for_test(1);
+        let peer_addr = "127.0.0.1:5900".parse().unwrap();
+        event_tx
+            .send(RfbServerEvent::Connected {
+                client_id,
+                peer_addr,
+                shared: true,
+            })
+            .await
+            .unwrap();
+        event_tx
+            .send(RfbServerEvent::CutText {
+                client_id,
+                bytes: b"a".to_vec(),
+            })
+            .await
+            .unwrap();
+
+        let mut seen_text_typed = false;
+        for _ in 0..8 {
+            let notice =
+                tokio::time::timeout(std::time::Duration::from_secs(1), notice_rx.recv())
+                    .await
+                    .unwrap()
+                    .unwrap();
+            if matches!(notice, crate::rfb_input::RfbInputNotice::TextTyped { .. }) {
+                seen_text_typed = true;
+                break;
+            }
+        }
+        assert!(seen_text_typed);
+
+        drop(event_tx);
+        drop(session.stop().unwrap());
     }
 
     #[tokio::test]
