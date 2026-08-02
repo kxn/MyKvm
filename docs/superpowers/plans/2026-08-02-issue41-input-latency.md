@@ -1,6 +1,6 @@
 # Issue #41 输入延迟实现计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 降低桌面 app 输入延迟：指针去重/限频降低串口占用，波特率连接时自动扫描（115200 优先），视频新帧触发重绘，并顺手修正窗口跟随视频模式的高 DPI 尺寸换算。
 
@@ -36,7 +36,7 @@
 **Interfaces:**
 - Produces: `pub fn pointer_changed(current: (u8, u16, u16), last: Option<(u8, u16, u16)>) -> bool`；`pub fn throttle_elapsed(now: std::time::Instant, last: Option<std::time::Instant>, interval: std::time::Duration) -> bool`
 
-- [ ] **Step 1: 写失败测试**（追加到 `input.rs` 测试模块）
+- [x] **Step 1: 写失败测试**（追加到 `input.rs` 测试模块）
 
 ```rust
     #[test]
@@ -66,12 +66,12 @@
     }
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `cargo test -p ipkvm-desktop input::tests::pointer_changed_detects`
 Expected: 编译失败，函数未定义。
 
-- [ ] **Step 3: 实现**（`wheel_steps` 之后追加）
+- [x] **Step 3: 实现**（`wheel_steps` 之后追加）
 
 ```rust
 /// 指针位置或按钮掩码是否变化（位置未变且掩码未变时不需重发）。
@@ -91,12 +91,12 @@ pub fn throttle_elapsed(
 
 （`is_none_or` 需 Rust 1.82+；若工具链较旧改用 `last.map_or(true, |last| ...)`。）
 
-- [ ] **Step 4: 运行确认通过**
+- [x] **Step 4: 运行确认通过**
 
 Run: `cargo test -p ipkvm-desktop input::tests::`
 Expected: 全部 PASS。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add crates/ipkvm-desktop/src/input.rs
@@ -114,7 +114,7 @@ git commit -m "test: cover pointer dedupe and throttle helpers"
 - Consumes: `pointer_changed`、`throttle_elapsed`。
 - Produces: `DesktopApp::refresh_video(&mut self, ctx: &egui::Context)`；`POINTER_MIN_INTERVAL` 常量。
 
-- [ ] **Step 1: 写失败测试**（`app.rs` 测试模块）
+- [x] **Step 1: 写失败测试**（`app.rs` 测试模块）
 
 ```rust
     #[test]
@@ -132,12 +132,12 @@ git commit -m "test: cover pointer dedupe and throttle helpers"
     }
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `cargo test -p ipkvm-desktop app::tests::desired_window_inner_size_scales_physical_pixels_to_points`
 Expected: 编译失败，函数签名不匹配。
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 新增常量与字段：
 
@@ -289,12 +289,12 @@ fn desired_window_inner_size(frame: FrameSize, chrome: f32, pixels_per_point: f3
 
 现有 `desired_window_inner_size_adds_chrome` 测试改为传 `1.0`。
 
-- [ ] **Step 4: 运行确认通过**
+- [x] **Step 4: 运行确认通过**
 
 Run: `cargo test -p ipkvm-desktop`
 Expected: 全部 PASS。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add crates/ipkvm-desktop/src/app.rs crates/ipkvm-desktop/src/input.rs
@@ -313,7 +313,7 @@ git commit -m "perf: throttle and dedupe pointer sends with repaint on new frame
 **Interfaces:**
 - Produces: `pub const BAUD_CANDIDATES: [u32; 5]`；`pub fn detect_baud_rate(path: &str, timeout: Duration) -> Option<u32>`；`AdvancedSettings::auto_baud: bool`。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `probe.rs` 测试模块追加：
 
@@ -332,12 +332,12 @@ git commit -m "perf: throttle and dedupe pointer sends with repaint on new frame
         assert!(advanced.auto_baud);
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `cargo test -p ipkvm-desktop probe::tests::baud_candidates_prefer`、`cargo test -p ipkvm-desktop state::tests::advanced_defaults_use_absolute_mouse`
 Expected: 编译失败，`BAUD_CANDIDATES`/`auto_baud` 不存在。
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `probe.rs` 顶部追加：
 
@@ -390,12 +390,12 @@ pub fn detect_baud_rate(path: &str, timeout: Duration) -> Option<u32> {
         ui.checkbox(&mut self.selection.advanced.auto_baud, "连接时自动检测波特率");
 ```
 
-- [ ] **Step 4: 运行确认通过**
+- [x] **Step 4: 运行确认通过**
 
 Run: `cargo test -p ipkvm-desktop`
 Expected: 全部 PASS。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add crates/ipkvm-desktop/src/probe.rs crates/ipkvm-desktop/src/state.rs crates/ipkvm-desktop/src/app.rs
@@ -409,7 +409,7 @@ git commit -m "feat: auto-detect CH9329 baud rate on connect"
 **Files:**
 - Modify: `docs/ipkvm-coarse-design.md`
 
-- [ ] **Step 1: 更新设计文档**（“默认决策”与“桌面远程输入模式”相关处追加）
+- [x] **Step 1: 更新设计文档**（“默认决策”与“桌面远程输入模式”相关处追加）
 
 ```markdown
 - 串口波特率连接时自动扫描（115200→57600→38400→19200→9600，GetInfo 应答即用），
@@ -418,21 +418,21 @@ git commit -m "feat: auto-detect CH9329 baud rate on connect"
 - 视频新帧到达时请求重绘，空闲无输入时画面保持刷新。
 ```
 
-- [ ] **Step 2: 提交**
+- [x] **Step 2: 提交**
 
 ```bash
 git add docs/ipkvm-coarse-design.md
 git commit -m "docs: document baud auto-detect and pointer throttling"
 ```
 
-- [ ] **Step 3: 全量验证**
+- [x] **Step 3: 全量验证**
 
 Run: `cargo fmt --all --check`、`cargo test --workspace --all-features`
 Expected: 全部通过。
 
-- [ ] **Step 4: 自审**：指针按键不延迟、限频不影响点击、自动扫描失败回退、重绘不空转（新帧才请求）。
+- [x] **Step 4: 自审**：指针按键不延迟、限频不影响点击、自动扫描失败回退、重绘不空转（新帧才请求）。
 
-- [ ] **Step 5: 推送、PR、合并、关闭 issue #41**（按用户既定流程）。
+- [x] **Step 5: 推送、PR、合并、关闭 issue #41**（按用户既定流程）。
 
 ---
 
