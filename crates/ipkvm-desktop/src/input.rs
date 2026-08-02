@@ -183,6 +183,31 @@ pub fn pointer_active(focused: bool, mask: u8, previous_mask: u8) -> bool {
     focused || mask != 0 || previous_mask != 0
 }
 
+/// 远程输入模式下的 egui 焦点锁：Tab/方向键/Esc 都留在视频面板，
+/// 不参与 egui 焦点导航（防止方向键把焦点移到菜单栏导致输入中断）。
+pub fn remote_focus_filter() -> eframe::egui::EventFilter {
+    eframe::egui::EventFilter {
+        tab: true,
+        horizontal_arrows: true,
+        vertical_arrows: true,
+        escape: true,
+    }
+}
+
+/// Ctrl+Alt+K：本地退出远程输入模式的组合键（本地拦截，不转发远端）。
+pub fn is_remote_exit_combo(event: &eframe::egui::Event) -> bool {
+    matches!(
+        event,
+        eframe::egui::Event::Key {
+            key: eframe::egui::Key::K,
+            pressed: true,
+            repeat: false,
+            modifiers,
+            ..
+        } if modifiers.ctrl && modifiers.alt
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use eframe::egui;
@@ -326,5 +351,70 @@ mod tests {
         assert!(pointer_active(true, 0, 0));
         assert!(pointer_active(false, 1, 0));
         assert!(pointer_active(false, 0, 1));
+    }
+
+    #[test]
+    fn remote_focus_filter_keeps_navigation_keys_in_remote_mode() {
+        let filter = remote_focus_filter();
+        for key in [
+            egui::Key::Tab,
+            egui::Key::ArrowLeft,
+            egui::Key::ArrowRight,
+            egui::Key::ArrowUp,
+            egui::Key::ArrowDown,
+            egui::Key::Escape,
+        ] {
+            let event = egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: egui::Modifiers::NONE,
+            };
+            assert!(
+                filter.matches(&event),
+                "navigation key {key:?} must stay in remote mode"
+            );
+        }
+    }
+
+    #[test]
+    fn remote_exit_combo_requires_ctrl_alt_k_pressed_once() {
+        let combo = |key: egui::Key, pressed: bool, repeat: bool, modifiers: egui::Modifiers| {
+            is_remote_exit_combo(&egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat,
+                modifiers,
+            })
+        };
+        let ctrl_alt = egui::Modifiers {
+            ctrl: true,
+            alt: true,
+            ..Default::default()
+        };
+        assert!(combo(egui::Key::K, true, false, ctrl_alt));
+        assert!(!combo(egui::Key::K, false, false, ctrl_alt));
+        assert!(!combo(egui::Key::K, true, true, ctrl_alt));
+        assert!(!combo(
+            egui::Key::K,
+            true,
+            false,
+            egui::Modifiers {
+                ctrl: true,
+                ..Default::default()
+            }
+        ));
+        assert!(!combo(
+            egui::Key::K,
+            true,
+            false,
+            egui::Modifiers {
+                alt: true,
+                ..Default::default()
+            }
+        ));
+        assert!(!combo(egui::Key::A, true, false, ctrl_alt));
     }
 }
