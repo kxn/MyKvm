@@ -77,7 +77,9 @@ impl Default for AdvancedSettings {
     fn default() -> Self {
         Self {
             baud_rate: ipkvm_core::DEFAULT_BAUD_RATE,
-            mouse_mode: ipkvm_core::MouseMode::Absolute,
+            // BIOS/启动菜单把绝对 HID 固定映射到 1024×768，绝对模式无法覆盖
+            // 全屏；默认相对模式保证开箱可用，进系统后 Ctrl+Alt+M 切绝对。
+            mouse_mode: ipkvm_core::MouseMode::Relative,
             preview_fps: 30,
             scale_mode: VideoScaleMode::FitWindow,
             relative_sensitivity: 1.0,
@@ -205,9 +207,9 @@ mod tests {
     }
 
     #[test]
-    fn advanced_defaults_use_absolute_mouse_and_unity_sensitivity() {
+    fn advanced_defaults_use_relative_mouse_and_unity_sensitivity() {
         let advanced = AdvancedSettings::default();
-        assert_eq!(advanced.mouse_mode, MouseMode::Absolute);
+        assert_eq!(advanced.mouse_mode, MouseMode::Relative);
         assert_eq!(advanced.relative_sensitivity, 1.0);
         assert!(advanced.auto_baud);
     }
