@@ -2,7 +2,7 @@
 
 my_ipkvm 是一个软件 IPKVM 项目：主控机通过 USB HDMI 采集卡读取目标机控制台画面，并通过 CH9329 + CH340 串口线向目标机注入 USB HID 键盘鼠标事件。
 
-当前工程已完成 CH9329 协议与输入核心、传输无关的 RFB 3.8 协议核心、en-US 键盘和绝对指针映射，以及单活动 RFB 控制者输入事件泵。RFB 已有 TCP 与 WebSocket 两个库级传输层：`RfbTcpServer` 和可组合的 axum `/rfb` `RfbWebSocketService`。两者共用连接驱动器、`RfbServerEvent` 事件模型和全局 `RfbConnectionGate`；生产组装必须向两个服务显式传入同一个连接闸门。
+当前工程已完成 CH9329 协议与输入核心、传输无关的 RFB 3.8 协议核心；连接驱动器、`RfbServerEvent` 事件模型、`RfbConnectionGate` 仲裁、en-US 键盘和绝对指针映射、输入事件泵等会话核心已在 `ipkvm-session`。RFB 已有 TCP 与 WebSocket 两个库级传输层：`RfbTcpServer` 和可组合的 axum `/rfb` `RfbWebSocketService`。两者共用 `ipkvm-session` 的连接驱动器与全局 `RfbConnectionGate`；生产组装必须向两个服务显式传入同一个连接闸门。
 
 `ipkvm-headless` 已提供可供生产组装复用的嵌入式 Web 服务。它内置项目中文控制台页面和固定到 noVNC 1.7.0 提交 `63107bd06d9e1f6136ff21aeda8cd62cbf0d433e` 的完整 npm 发布资源，并通过同源 `/rfb` 建立连接。真实 Chrome 自动化已经证明模拟帧像素、桌面与窄视口等比缩放、键盘 HID、缩放后的绝对指针坐标、按键顺序、断开释放和重连全部穿过 noVNC、RFB 服务与 `RfbInputPump` 到达记录型 `InputSink`。
 
@@ -12,10 +12,10 @@ my_ipkvm 是一个软件 IPKVM 项目：主控机通过 USB HDMI 采集卡读取
 
 - `ipkvm-core`：CH9329 命令帧和应答解析、串口字节流增量解帧、HID 报告、6KRO 键盘状态、原子键盘和指针批次、绝对和相对鼠标状态、有序命令批次及模拟队列；`serial` 功能下提供真实串口命令队列 `SerialCommandQueue`（9600 8N1，跨平台 COMx / ttyUSBn，帧间延时防丢帧）。
 - `ipkvm-video`：采集设备枚举、格式选择、共享视频帧流与 `source_info` 元数据；`mock` 功能下提供 Y4M 循环播放帧源（可模拟不同分辨率素材顺序切换），`mf` 功能下提供 Windows DirectShow 相机后端（`list_cameras` 枚举、`CameraSource` 采集与 `camera_probe` 示例，含 OBS 虚拟摄像头）——采用自研纯 sink filter（不依赖系统的 Sample Grabber，因其与 OBS 虚拟摄像头不兼容）+ 事件驱动（Condvar 阻塞等待，无帧时零轮询），`file_source` 提供 Y4M 文件伪设备。
-- `ipkvm-session`：把视频帧源和输入接收端组合成一个控制台会话。
+- `ipkvm-session`：真实会话核心——连接驱动与事件模型（`RfbConnectionGate` 仲裁）、输入泵与映射器、设备枚举（`devices`）、`ConsoleSession` 组装与 `SessionManager` 生命周期管理、会话状态统计。
 - `ipkvm-rfb`：传输无关的 RFB 3.8 `None` 握手、客户端消息增量解码、真彩像素转换、`Raw` 更新、`DesktopSize` 和指针输入坐标时期。
 - `ipkvm-desktop`：本地图形界面入口。
-- `ipkvm-headless`：RFB TCP 与 WebSocket 传输层、共享连接驱动器、单活动控制者连接闸门（含控制器状态）、en-US 键盘映射器、绝对指针映射器、输入事件泵、`TextInputService` 文本键入服务，以及内嵌中文 noVNC 页面的 HTTP 服务（含 `/api/status` 状态接口与 `/api/screenshot` JPEG 快照接口）；`demo` 功能下提供 `ipkvm-headless` 正式后台进程（`--serial`/`--baud` 真实 CH9329 串口注入）和 `ipkvm-demo` 演示二进制。鉴权和 TLS 尚未实现。
+- `ipkvm-headless`：RFB TCP 与 WebSocket 传输适配层，以及内嵌中文 noVNC 页面的 HTTP 服务（含 `/api/status` 状态接口与 `/api/screenshot` JPEG 快照接口）；`demo` 功能下提供 `ipkvm-headless` 正式后台进程（`--serial`/`--baud` 真实 CH9329 串口注入）和 `ipkvm-demo` 演示二进制。鉴权和 TLS 尚未实现。
 
 `ipkvm-session` 当前默认按 CH9329 出厂波特率 9600 配置串口。硬件到货前不自动改写芯片参数，也不假定成品线支持 115200。
 

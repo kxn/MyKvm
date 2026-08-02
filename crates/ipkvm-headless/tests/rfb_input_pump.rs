@@ -90,6 +90,9 @@ impl InputSink for NoopSink {
 
 #[test]
 fn public_input_pump_contract_types_are_available() {
+    // 契约可用性由上方 `use ipkvm_headless::rfb_input::…` 成功编译证明（headless
+    // 重新导出 ipkvm_session 的类型）。std::any::type_name 返回类型**定义处**路径，
+    // 因此断言前缀为 ipkvm_session::rfb_input，证明重新导出指向搬移后的类型。
     let names = [
         type_name::<RfbControllerReleaseReason>(),
         type_name::<RfbInputError>(),
@@ -103,7 +106,11 @@ fn public_input_pump_contract_types_are_available() {
         type_name::<RfbKeyboardRejection>(),
     ];
 
-    assert!(names.iter().all(|name| name.starts_with("ipkvm_headless")));
+    assert!(
+        names
+            .iter()
+            .all(|name| name.starts_with("ipkvm_session::rfb_input"))
+    );
 }
 
 #[tokio::test]

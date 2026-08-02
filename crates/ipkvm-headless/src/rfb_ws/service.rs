@@ -11,7 +11,7 @@ use ipkvm_video::FrameSource;
 use tokio::sync::{mpsc, watch};
 
 use super::{RfbWebSocketConfig, RfbWebSocketServiceError, transport::WebSocketTransport};
-use crate::rfb_connection::{
+use ipkvm_session::rfb_connection::{
     RfbConnectionGate, RfbConnectionGateError, RfbConnectionReservation, RfbServerEvent,
     RfbTransportKind, finalize_connection, run_managed_connection,
 };

@@ -3,7 +3,7 @@ use std::{error::Error, io};
 use thiserror::Error;
 
 #[allow(dead_code)]
-pub(crate) enum RfbTransportRead {
+pub enum RfbTransportRead {
     Data,
     Continue,
     Closed,
@@ -11,7 +11,7 @@ pub(crate) enum RfbTransportRead {
 
 #[allow(dead_code)]
 #[derive(Debug, Error)]
-pub(crate) enum RfbTransportError {
+pub enum RfbTransportError {
     #[error("TCP I/O error: {0}")]
     Io(#[from] io::Error),
     #[error("WebSocket transport error")]
@@ -24,7 +24,7 @@ pub(crate) enum RfbTransportError {
 }
 
 impl RfbTransportError {
-    pub(crate) fn websocket(error: impl Error + Send + Sync + 'static) -> Self {
+    pub fn websocket(error: impl Error + Send + Sync + 'static) -> Self {
         Self::WebSocket {
             source: Box::new(error),
         }
@@ -36,7 +36,13 @@ impl RfbTransportError {
 /// Each receive clears `buffer` before returning. `Data` requires a non-empty
 /// buffer; `Continue` and `Closed` require an empty buffer. Message boundaries
 /// are transport details and do not delimit RFB protocol input.
-pub(crate) trait RfbTransport {
+///
+/// 迁入 ipkvm-session 前该 trait 在 headless 内为 `pub(crate)`，`async_fn_in_trait`
+/// lint 不生效；迁入后为供 headless 重新导出的 `pub` 契约，但消费者只有 headless
+/// 一个内部 crate。实际 Send 约束由 driver 的 `tokio::spawn(run_connection(..))`
+/// 编译期保证，与迁移前一致，因此显式豁免该 lint（行为不变）。
+#[allow(async_fn_in_trait)]
+pub trait RfbTransport {
     async fn receive_into(
         &mut self,
         buffer: &mut Vec<u8>,

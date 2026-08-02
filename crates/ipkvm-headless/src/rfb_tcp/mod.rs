@@ -5,7 +5,7 @@ use std::io;
 
 use thiserror::Error;
 
-use crate::rfb_connection::{RfbConnectionSettings, RfbConnectionSettingsError};
+use ipkvm_session::rfb_connection::{RfbConnectionSettings, RfbConnectionSettingsError};
 
 pub use server::RfbTcpServer;
 

@@ -1,7 +1,25 @@
 //! 控制台会话抽象。
 
+pub mod console_session;
+pub mod devices;
+pub mod rfb_connection;
+pub mod rfb_input;
+pub mod serial_stats;
+pub mod session_manager;
+
 use ipkvm_core::MouseMode;
 use ipkvm_video::{PixelFormat, VideoFormat};
+
+/// 单调时钟纳秒（`std::time::Instant::now()` 的时间差）——用于「最后输入
+/// 时间」这类相对时间戳。零点为进程启动，不可跨进程比较；`Instant` 不可
+/// 直接序列化，此函数供 `/api/status` 计算相对时长。
+pub fn now_ns() -> u64 {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    START
+        .get_or_init(std::time::Instant::now)
+        .elapsed()
+        .as_nanos() as u64
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConsoleSessionConfig {
@@ -74,21 +92,6 @@ impl ConsoleSessionConfig {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum KeyboardLayout {
     EnUs,
-}
-
-#[derive(Debug)]
-pub struct ConsoleSession {
-    config: ConsoleSessionConfig,
-}
-
-impl ConsoleSession {
-    pub fn new(config: ConsoleSessionConfig) -> Self {
-        Self { config }
-    }
-
-    pub fn config(&self) -> &ConsoleSessionConfig {
-        &self.config
-    }
 }
 
 #[cfg(test)]

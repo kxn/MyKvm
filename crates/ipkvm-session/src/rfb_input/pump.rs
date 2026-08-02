@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use ipkvm_core::{FramebufferSize, InputError, InputSink};
 use ipkvm_rfb::RfbRectangle;
 use thiserror::Error;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 use super::text::{TextInputConfig, TextInputNotice, TextInputService};
 use super::{
@@ -181,6 +181,8 @@ pub enum RfbInputRunError {
     Event(#[from] RfbInputEventError),
     #[error("failed to release RFB input after the event source closed")]
     SourceClosedRelease(#[source] RfbInputError),
+    #[error("failed to release RFB input after the session stopped")]
+    StopRelease(#[source] RfbInputError),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -266,10 +268,71 @@ impl<S: InputSink> RfbInputPump<S> {
             let notice = self.handle_event(event)?;
             observe(&notice);
         }
-        if let Some(notice) = self
-            .release_with_reason(RfbControllerReleaseReason::EventSourceClosed)
-            .map_err(RfbInputRunError::SourceClosedRelease)?
-        {
+        self.finish_run(
+            RfbControllerReleaseReason::EventSourceClosed,
+            RfbInputRunError::SourceClosedRelease,
+            &mut observe,
+        )
+    }
+
+    /// 运行输入泵直到收到停止信号或事件源关闭。
+    ///
+    /// 与会话生命周期配套：`ConsoleSession::stop()` 通过 watch 停止信号停泵，
+    /// 不依赖事件发送端全部释放（传输层可能长期持有 `event_tx` 克隆）。
+    /// 停止信号触发时以 `Explicit` 原因释放活动控制器，channel 关闭路径仍
+    /// 保持 `EventSourceClosed` 语义。
+    pub async fn run_until_stopped<F>(
+        &mut self,
+        receiver: &mut mpsc::Receiver<RfbServerEvent>,
+        mut stop: watch::Receiver<bool>,
+        mut observe: F,
+    ) -> Result<(), RfbInputRunError>
+    where
+        F: FnMut(&RfbInputNotice),
+    {
+        loop {
+            if *stop.borrow() {
+                break;
+            }
+            tokio::select! {
+                event = receiver.recv() => {
+                    let Some(event) = event else { break };
+                    let notice = self.handle_event(event)?;
+                    observe(&notice);
+                }
+                notice = self.text_notices.recv() => {
+                    if let Some(notice) = notice {
+                        observe(&RfbInputNotice::from(notice));
+                    }
+                }
+                _ = stop.changed() => break,
+            }
+        }
+        let (reason, on_release_error) = if *stop.borrow() {
+            (
+                RfbControllerReleaseReason::Explicit,
+                RfbInputRunError::StopRelease as fn(RfbInputError) -> RfbInputRunError,
+            )
+        } else {
+            (
+                RfbControllerReleaseReason::EventSourceClosed,
+                RfbInputRunError::SourceClosedRelease as fn(RfbInputError) -> RfbInputRunError,
+            )
+        };
+        self.finish_run(reason, on_release_error, &mut observe)
+    }
+
+    /// 收尾：释放活动控制器（如有）并把 release 通知交给 observe。
+    fn finish_run<F>(
+        &mut self,
+        reason: RfbControllerReleaseReason,
+        on_release_error: fn(RfbInputError) -> RfbInputRunError,
+        observe: &mut F,
+    ) -> Result<(), RfbInputRunError>
+    where
+        F: FnMut(&RfbInputNotice),
+    {
+        if let Some(notice) = self.release_with_reason(reason).map_err(on_release_error)? {
             observe(&notice);
         }
         Ok(())
@@ -495,6 +558,8 @@ impl<S: InputSink> RfbInputPump<S> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
     use ipkvm_core::{
@@ -1197,6 +1262,82 @@ mod tests {
                 },
             ]
         ));
+    }
+
+    #[tokio::test]
+    async fn run_until_stopped_exits_and_releases_on_stop_signal() {
+        let client_id = client(19);
+        let peer_addr = peer(5918);
+        let sink = RecordingSink::default();
+        let mut pump = RfbInputPump::new(sink.clone());
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        // 测试 sink 是值拷贝，driver 无法直接观察到 pump 的写入，用共享标志
+        // 表示「键盘事件已被 pump 处理」。
+        let key_seen = Arc::new(AtomicBool::new(false));
+
+        let driver = tokio::spawn({
+            let key_seen = Arc::clone(&key_seen);
+            async move {
+                tx.send(connected(client_id, peer_addr)).await.unwrap();
+                tx.send(RfbServerEvent::Key {
+                    client_id,
+                    down: true,
+                    keysym: 0x61,
+                })
+                .await
+                .unwrap();
+                // 事件到达后再触发停止；发送端保持存活，证明停止不依赖 channel 关闭。
+                loop {
+                    if key_seen.load(Ordering::SeqCst) {
+                        break;
+                    }
+                    tokio::task::yield_now().await;
+                }
+                stop_tx.send(true).unwrap();
+            }
+        });
+
+        let mut notices = Vec::new();
+        pump.run_until_stopped(&mut rx, stop_rx, {
+            let key_seen = Arc::clone(&key_seen);
+            let notices = &mut notices;
+            move |notice: &RfbInputNotice| {
+                notices.push(notice.clone());
+                if matches!(notice, RfbInputNotice::Keyboard { .. }) {
+                    key_seen.store(true, Ordering::SeqCst);
+                }
+            }
+        })
+        .await
+        .unwrap();
+        driver.await.unwrap();
+
+        assert_eq!(pump.active_client(), None);
+        assert_eq!(pump.sink().release_count, 1);
+        assert!(matches!(
+            notices.last(),
+            Some(RfbInputNotice::ControllerReleased {
+                reason: RfbControllerReleaseReason::Explicit,
+                ..
+            })
+        ));
+    }
+
+    #[tokio::test]
+    async fn run_until_stopped_with_pre_set_stop_signal_returns_without_events() {
+        let mut pump = RfbInputPump::new(RecordingSink::default());
+        let (_tx, mut rx) = tokio::sync::mpsc::channel(1);
+        let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+        stop_tx.send(true).unwrap();
+
+        let mut notices = Vec::new();
+        pump.run_until_stopped(&mut rx, stop_rx, |notice| notices.push(notice.clone()))
+            .await
+            .unwrap();
+
+        assert!(notices.is_empty());
+        assert_eq!(pump.sink().release_count, 0);
     }
 
     #[tokio::test]

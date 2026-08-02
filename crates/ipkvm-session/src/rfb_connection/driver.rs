@@ -18,7 +18,7 @@ use super::{
 };
 
 #[derive(Debug, Error)]
-pub(crate) enum RfbConnectionError {
+pub enum RfbConnectionError {
     #[error("RFB handshake timed out")]
     HandshakeTimeout,
     #[error("invalid RFB connection configuration: {0}")]
@@ -36,7 +36,7 @@ pub(crate) enum RfbConnectionError {
 }
 
 #[derive(Debug)]
-pub(crate) enum ConnectionEnd {
+pub enum ConnectionEnd {
     ClientClosed,
     ServerShutdown,
     Failed(RfbConnectionError),

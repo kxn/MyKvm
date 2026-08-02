@@ -6,7 +6,19 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[features]
+serial = ["dep:serialport"]
+
 [dependencies]
 ipkvm-core = { path = "../ipkvm-core" }
-ipkvm-video = { path = "../ipkvm-video" }
+ipkvm-rfb = { path = "../ipkvm-rfb" }
+ipkvm-video = { path = "../ipkvm-video", features = ["mf"] }
+serialport = { workspace = true, optional = true }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync"] }
+
+[dev-dependencies]
+ipkvm-core = { path = "../ipkvm-core", features = ["mock"] }
+ipkvm-video = { path = "../ipkvm-video", features = ["mock"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
 

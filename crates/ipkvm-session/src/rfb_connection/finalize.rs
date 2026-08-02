@@ -11,19 +11,19 @@ use super::{
 };
 
 #[derive(Debug)]
-pub(crate) struct RfbConnectionCompletion {
+pub struct RfbConnectionCompletion {
     end: ConnectionEnd,
     lease: RfbConnectionLease,
     peer_addr: SocketAddr,
 }
 
 #[derive(Debug, Error, Eq, PartialEq)]
-pub(crate) enum RfbConnectionFinalizeError {
+pub enum RfbConnectionFinalizeError {
     #[error("RFB event receiver is closed")]
     EventChannelClosed,
 }
 
-pub(crate) async fn run_managed_connection<T: RfbTransport>(
+pub async fn run_managed_connection<T: RfbTransport>(
     reservation: RfbConnectionReservation,
     peer_addr: SocketAddr,
     transport: T,
@@ -50,7 +50,7 @@ pub(crate) async fn run_managed_connection<T: RfbTransport>(
     }
 }
 
-pub(crate) async fn finalize_connection(
+pub async fn finalize_connection(
     event_tx: &mpsc::Sender<RfbServerEvent>,
     completion: RfbConnectionCompletion,
 ) -> Result<ConnectionEnd, RfbConnectionFinalizeError> {

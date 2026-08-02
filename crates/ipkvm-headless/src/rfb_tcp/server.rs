@@ -7,7 +7,7 @@ use tokio::{
 };
 
 use super::{RfbTcpConfig, RfbTcpServerError, transport::TcpTransport};
-use crate::rfb_connection::{
+use ipkvm_session::rfb_connection::{
     ConnectionEnd, RfbConnectionFinalizeError, RfbConnectionGate, RfbConnectionGateError,
     RfbServerEvent, RfbTransportKind, finalize_connection, run_managed_connection,
 };
