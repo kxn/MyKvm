@@ -697,7 +697,10 @@ name = "ipkvm-session"
 version = "0.1.0"
 dependencies = [
  "ipkvm-core",
+ "ipkvm-rfb",
  "ipkvm-video",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]
