@@ -13,6 +13,13 @@ use tokio::sync::{mpsc, watch};
 use crate::rfb_connection::{RfbConnectionGate, RfbServerEvent};
 use crate::rfb_input::{RfbInputNotice, RfbInputPump, RfbInputRunError};
 
+/// 输入离线信息：泵因错误退出后的原因与时间。
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InputOfflineInfo {
+    pub reason: String,
+    pub since_ns: u64,
+}
+
 /// 会话统计：输入事件计数、最后输入时间、丢帧计数、串口统计。
 ///
 /// 输入事件计数与最后输入时间由输入泵 notice 回调（`start()` 的 observe
@@ -29,6 +36,10 @@ pub struct SessionStats {
     pub dropped_frames: u64,
     /// 串口批次/帧统计（`record_serial_stats` 从 `CommandQueue::stats` 映射）。
     pub serial: Option<crate::serial_stats::SerialStats>,
+    /// 最后观察到帧的时间（`observe_frame` 写入；None 表示从未出帧）。
+    pub last_frame_ns: Option<u64>,
+    /// 输入泵失败离线信息（串口写失败等）；恢复/重启后清空。
+    pub input_offline: Option<InputOfflineInfo>,
     /// 上次观察的帧 seq（丢帧检测内部状态）。
     last_seq: Option<u64>,
 }
@@ -166,7 +177,9 @@ impl<S: InputSink + Clone + Send + 'static> ConsoleSession<S> {
     /// 由调用方显式调用（桌面渲染循环或 headless 快照前），不在内部自动轮询。
     pub fn observe_frame(&mut self) {
         if let Some(frame) = self.frame_source.latest_frame() {
-            self.stats.lock().unwrap().observe_frame_seq(frame.seq);
+            let mut stats = self.stats.lock().unwrap();
+            stats.observe_frame_seq(frame.seq);
+            stats.last_frame_ns = Some(crate::now_ns());
         }
     }
 
@@ -215,6 +228,7 @@ impl<S: InputSink + Clone + Send + 'static> ConsoleSession<S> {
         let running = Arc::clone(&self.running);
         let notice_mirror = self.notice_mirror.clone();
         self.running.store(true, Ordering::SeqCst);
+        stats.lock().unwrap().input_offline = None;
         let task = tokio::spawn(async move {
             let result = pump
                 .run_until_stopped(&mut event_rx, stop_rx, |notice: &RfbInputNotice| {
@@ -229,6 +243,12 @@ impl<S: InputSink + Clone + Send + 'static> ConsoleSession<S> {
                     }
                 })
                 .await;
+            if let Err(error) = &result {
+                stats.lock().unwrap().input_offline = Some(InputOfflineInfo {
+                    reason: error.to_string(),
+                    since_ns: crate::now_ns(),
+                });
+            }
             // 无论正常退出还是错误退出，都让会话状态回到未运行。
             running.store(false, Ordering::SeqCst);
             result
@@ -564,6 +584,19 @@ mod tests {
         assert!(
             matches!(session.stop(), Err(SessionError::NotRunning)),
             "泵已失败时 stop 应报告 NotRunning"
+        );
+        assert!(
+            session.stats().input_offline.is_some(),
+            "泵失败后必须记录 input_offline"
+        );
+        assert!(
+            !session
+                .stats()
+                .input_offline
+                .as_ref()
+                .unwrap()
+                .reason
+                .is_empty()
         );
 
         drop(event_tx);
