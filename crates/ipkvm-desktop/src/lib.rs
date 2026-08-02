@@ -1,6 +1,7 @@
 mod app;
 mod fonts;
 mod frame;
+mod input;
 mod probe;
 mod render;
 mod session;
