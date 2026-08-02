@@ -1,3 +1,6 @@
 fn main() {
-    println!("ipkvm-desktop scaffold");
+    if let Err(error) = ipkvm_desktop::run() {
+        eprintln!("{error}");
+        std::process::exit(1);
+    }
 }
