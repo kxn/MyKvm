@@ -242,6 +242,20 @@ pub fn wheel_steps(unit: eframe::egui::MouseWheelUnit, delta_y: f32) -> i8 {
     steps.round().clamp(i8::MIN as f32, i8::MAX as f32) as i8
 }
 
+/// 指针位置或按钮掩码是否变化（位置未变且掩码未变时不需重发）。
+pub fn pointer_changed(current: (u8, u16, u16), last: Option<(u8, u16, u16)>) -> bool {
+    last != Some(current)
+}
+
+/// 距上次发送是否已超过最小间隔（限频用；从未发送过且有待发数据时立即发送）。
+pub fn throttle_elapsed(
+    now: std::time::Instant,
+    last: Option<std::time::Instant>,
+    interval: std::time::Duration,
+) -> bool {
+    last.map_or(true, |last| now.duration_since(last) >= interval)
+}
+
 #[cfg(test)]
 mod tests {
     use eframe::egui;
@@ -499,5 +513,35 @@ mod tests {
         assert_eq!(wheel_steps(egui::MouseWheelUnit::Line, 2.0), 2);
         assert_eq!(wheel_steps(egui::MouseWheelUnit::Point, -100.0), -2);
         assert_eq!(wheel_steps(egui::MouseWheelUnit::Page, 1.0), 1);
+    }
+
+    #[test]
+    fn pointer_changed_detects_position_or_mask_changes() {
+        let last = Some((0, 100, 100));
+        assert!(!pointer_changed((0, 100, 100), last));
+        assert!(pointer_changed((1, 100, 100), last));
+        assert!(pointer_changed((0, 101, 100), last));
+        assert!(pointer_changed((0, 100, 101), last));
+        assert!(pointer_changed((0, 100, 100), None));
+    }
+
+    #[test]
+    fn throttle_elapsed_requires_interval_to_pass() {
+        let start = std::time::Instant::now();
+        assert!(!throttle_elapsed(
+            start,
+            None,
+            std::time::Duration::from_millis(33)
+        ));
+        assert!(throttle_elapsed(
+            start + std::time::Duration::from_millis(34),
+            Some(start),
+            std::time::Duration::from_millis(33)
+        ));
+        assert!(!throttle_elapsed(
+            start + std::time::Duration::from_millis(32),
+            Some(start),
+            std::time::Duration::from_millis(33)
+        ));
     }
 }
