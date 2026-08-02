@@ -252,6 +252,23 @@ fn key_message(down: bool, keysym: u32) -> Vec<u8> {
     message
 }
 
+/// 独立实现 VNC 密码响应（RFC 6143 §7.2 + Erratum 4951），交叉验证服务器
+/// 校验逻辑：密钥 = 密码补零到 8 字节后每字节位反转，DES-ECB 逐块加密。
+/// 不调用产品 `vnc_key`，避免测试自证。
+fn vnc_response(password: &[u8; 8], challenge: &[u8; 16]) -> [u8; 16] {
+    use des::cipher::{BlockEncrypt, KeyInit, generic_array::GenericArray};
+    let mut key = [0_u8; 8];
+    for (index, byte) in password.iter().copied().enumerate() {
+        key[index] = byte.reverse_bits();
+    }
+    let cipher = des::Des::new_from_slice(&key).unwrap();
+    let mut response = *challenge;
+    for chunk in response.chunks_exact_mut(8) {
+        cipher.encrypt_block(GenericArray::from_mut_slice(chunk));
+    }
+    response
+}
+
 fn parse_http_response_headers(response: &[u8]) -> (StatusCode, HeaderMap) {
     let response = std::str::from_utf8(response).unwrap();
     let response = response.strip_suffix("\r\n\r\n").unwrap();
@@ -629,4 +646,41 @@ async fn oversized_websocket_message_disconnects_with_websocket_reason() {
         client.read_message().await,
         Ok(Message::Close(_)) | Err(_)
     ));
+}
+
+#[tokio::test]
+async fn vnc_password_handshake_succeeds_over_websocket() {
+    let config = RfbWebSocketConfig {
+        connection: RfbConnectionSettings {
+            security: ipkvm_rfb::RfbSecurity::Vnc {
+                password: *b"12345678",
+            },
+            ..RfbConnectionSettings::default()
+        },
+    };
+    let mut server = TestWebSocketServer::start_with_config(config).await;
+
+    // 升级成功后，RFB 握手跑在 WS 二进制消息上（与 TCP 同一路径）：
+    // banner → [1,2] → 选 2 → challenge → 响应 → OK → ServerInit。
+    let (socket, _) = server.connect_without_protocol().await;
+    let mut client = TestWebSocketRfbClient::new(socket);
+    assert_eq!(client.read_banner().await, *b"RFB 003.008\n");
+    client.send_binary(b"RFB 003.008\n").await;
+    assert_eq!(client.read_binary().await, [1, 2]);
+    client.send_binary(&[2]).await;
+    let challenge: [u8; 16] = client.read_binary().await.try_into().unwrap();
+    client
+        .send_binary(&vnc_response(b"12345678", &challenge))
+        .await;
+    assert_eq!(client.read_binary().await, [0, 0, 0, 0]);
+    client.send_binary(&[1]).await;
+    assert!(client.read_binary().await.len() >= 24);
+    // RfbClientId 的元组字段是 pub(crate)，集成测试无法用 `RfbClientId(_)`
+    // 模式匹配，改为直接断言 Connected 事件（与 rfb_tcp.rs 的断言一致）。
+    assert!(matches!(
+        server.events.recv().await,
+        Some(RfbServerEvent::Connected { .. })
+    ));
+
+    server.stop().await;
 }

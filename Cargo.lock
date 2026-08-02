@@ -719,6 +719,7 @@ name = "ipkvm-headless"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "des",
  "futures-util",
  "include_dir",
  "ipkvm-core",

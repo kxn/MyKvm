@@ -4,15 +4,17 @@ use std::{io, sync::Arc};
 
 use ipkvm_headless::{
     rfb_connection::{
-        RfbClientId, RfbConnectionGate, RfbDisconnectReason, RfbFrameError, RfbServerEvent,
+        RfbClientId, RfbConnectionGate, RfbConnectionSettings, RfbDisconnectReason, RfbFrameError,
+        RfbServerEvent,
     },
     rfb_tcp::{RfbTcpConfig, RfbTcpServer, RfbTcpServerError},
 };
-use ipkvm_rfb::{RfbProtocolError, RfbSize};
+use ipkvm_rfb::{RfbProtocolError, RfbSecurity, RfbSize};
 use ipkvm_video::{MonotonicTimestamp, PixelFormat, VideoFrame, mock::MockFrameSource};
 use support::TestRfbClient;
 use tokio::{
-    net::TcpListener,
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::{TcpListener, TcpStream},
     sync::{mpsc, watch},
 };
 
@@ -38,6 +40,14 @@ struct ServerFixture {
 
 impl ServerFixture {
     async fn start(event_capacity: usize, initial_frame: Option<Arc<VideoFrame>>) -> Self {
+        Self::start_with_security(event_capacity, initial_frame, RfbSecurity::None).await
+    }
+
+    async fn start_with_security(
+        event_capacity: usize,
+        initial_frame: Option<Arc<VideoFrame>>,
+        security: RfbSecurity,
+    ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let source = Arc::new(MockFrameSource::new());
@@ -50,7 +60,13 @@ impl ServerFixture {
             listener,
             Arc::clone(&source),
             event_tx,
-            RfbTcpConfig::default(),
+            RfbTcpConfig {
+                connection: RfbConnectionSettings {
+                    security,
+                    ..RfbConnectionSettings::default()
+                },
+                ..RfbTcpConfig::default()
+            },
             RfbConnectionGate::new(),
         )
         .unwrap();
@@ -97,6 +113,43 @@ fn default_frame() -> Arc<VideoFrame> {
         PixelFormat::Bgra8888,
         &[0, 0, 255, 0, 0, 255, 0, 0],
     )
+}
+
+/// 独立实现 VNC 密码响应（RFC 6143 §7.2 + Erratum 4951），交叉验证服务器
+/// 校验逻辑：密钥 = 密码补零到 8 字节后每字节位反转，DES-ECB 逐块加密。
+/// 不调用产品 `vnc_key`，避免测试自证。
+fn vnc_response(password: &[u8; 8], challenge: &[u8; 16]) -> [u8; 16] {
+    use des::cipher::{BlockEncrypt, KeyInit, generic_array::GenericArray};
+    let mut key = [0_u8; 8];
+    for (index, byte) in password.iter().copied().enumerate() {
+        key[index] = byte.reverse_bits();
+    }
+    let cipher = des::Des::new_from_slice(&key).unwrap();
+    let mut response = *challenge;
+    for chunk in response.chunks_exact_mut(8) {
+        cipher.encrypt_block(GenericArray::from_mut_slice(chunk));
+    }
+    response
+}
+
+async fn complete_vnc_handshake(stream: &mut TcpStream, password: &[u8; 8], expect_success: bool) {
+    let mut banner = [0_u8; 12];
+    stream.read_exact(&mut banner).await.unwrap();
+    assert_eq!(&banner, b"RFB 003.008\n");
+    stream.write_all(b"RFB 003.008\n").await.unwrap();
+    let mut security_types = [0_u8; 2];
+    stream.read_exact(&mut security_types).await.unwrap();
+    assert_eq!(security_types, [1, 2]);
+    stream.write_all(&[2]).await.unwrap();
+    let mut challenge = [0_u8; 16];
+    stream.read_exact(&mut challenge).await.unwrap();
+    stream
+        .write_all(&vnc_response(password, &challenge))
+        .await
+        .unwrap();
+    let mut result = [0_u8; 4];
+    stream.read_exact(&mut result).await.unwrap();
+    assert_eq!(result, if expect_success { [0; 4] } else { [0, 0, 0, 1] });
 }
 
 #[tokio::test]
@@ -297,4 +350,54 @@ async fn shutdown_ends_active_connection_and_server() {
         client.read_banner().await.unwrap_err().kind(),
         io::ErrorKind::UnexpectedEof
     );
+}
+
+#[tokio::test]
+async fn vnc_password_handshake_succeeds_over_tcp() {
+    let mut fixture = ServerFixture::start_with_security(
+        16,
+        Some(default_frame()),
+        RfbSecurity::Vnc {
+            password: *b"12345678",
+        },
+    )
+    .await;
+    let mut stream = TcpStream::connect(fixture.address).await.unwrap();
+
+    complete_vnc_handshake(&mut stream, b"12345678", true).await;
+    stream.write_all(&[1]).await.unwrap();
+    let mut server_init = [0_u8; 24];
+    stream.read_exact(&mut server_init).await.unwrap();
+    assert!(matches!(
+        fixture.events.recv().await,
+        Some(RfbServerEvent::Connected { .. })
+    ));
+
+    drop(stream);
+    fixture.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn vnc_password_handshake_rejects_wrong_password_over_tcp() {
+    let mut fixture = ServerFixture::start_with_security(
+        16,
+        Some(default_frame()),
+        RfbSecurity::Vnc {
+            password: *b"12345678",
+        },
+    )
+    .await;
+    let mut stream = TcpStream::connect(fixture.address).await.unwrap();
+
+    complete_vnc_handshake(&mut stream, b"wrongpas", false).await;
+    // 失败后服务器关闭连接：读返回 0。
+    let mut tail = Vec::new();
+    stream.read_to_end(&mut tail).await.unwrap();
+    assert!(!matches!(
+        fixture.events.recv().await,
+        Some(RfbServerEvent::Connected { .. })
+    ));
+
+    drop(stream);
+    fixture.stop().await.unwrap();
 }

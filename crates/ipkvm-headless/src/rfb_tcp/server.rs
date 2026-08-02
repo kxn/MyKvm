@@ -1,5 +1,6 @@
-use std::sync::Arc;
+use std::{net::SocketAddr, sync::Arc};
 
+use ipkvm_rfb::RfbSecurity;
 use ipkvm_video::FrameSource;
 use tokio::{
     net::TcpListener,
@@ -61,6 +62,10 @@ impl<S: FrameSource + ?Sized + 'static> RfbTcpServer<S> {
                     return Err(RfbTcpServerError::EventChannelClosed);
                 }
             };
+            if !tcp_peer_allowed(peer_addr, &self.config.connection.security) {
+                // 未配置密码：非回环来源直接关闭，不进入握手。
+                continue;
+            }
             #[cfg(test)]
             if let Some(notifier) = &self.gate_wait_notifier {
                 let _ = notifier.send(peer_addr);
@@ -99,6 +104,15 @@ impl From<RfbConnectionFinalizeError> for RfbTcpServerError {
         match error {
             RfbConnectionFinalizeError::EventChannelClosed => Self::EventChannelClosed,
         }
+    }
+}
+
+/// 未配置密码时，TCP 入口只允许回环来源（防默认暴露）；配置了 VNC 密码
+/// 则来源不再限制，完全交给密码挑战校验。
+fn tcp_peer_allowed(peer: SocketAddr, security: &RfbSecurity) -> bool {
+    match security {
+        RfbSecurity::None => peer.ip().is_loopback(),
+        RfbSecurity::Vnc { .. } => true,
     }
 }
 
@@ -425,5 +439,18 @@ mod tests {
         drop(shutdown_tx);
         let (server, _event_rx) = make_server().await;
         assert!(server.run(shutdown_rx).await.is_ok());
+    }
+
+    #[test]
+    fn tcp_peer_allowed_rejects_remote_without_password() {
+        let loopback: SocketAddr = "127.0.0.1:5900".parse().unwrap();
+        let remote: SocketAddr = "192.168.1.5:5900".parse().unwrap();
+        assert!(tcp_peer_allowed(loopback, &RfbSecurity::None));
+        assert!(!tcp_peer_allowed(remote, &RfbSecurity::None));
+        // 配置密码后来源不再限制，完全交给密码校验。
+        assert!(tcp_peer_allowed(
+            remote,
+            &RfbSecurity::Vnc { password: [0; 8] }
+        ));
     }
 }
