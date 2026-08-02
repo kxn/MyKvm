@@ -33,7 +33,7 @@ pub fn run() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([960.0, 600.0])
-            .with_title("my_ipkvm"),
+            .with_title(format!("my_ipkvm {}", env!("GIT_COMMIT"))),
         ..Default::default()
     };
     eframe::run_native(
