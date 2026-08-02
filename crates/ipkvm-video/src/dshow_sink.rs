@@ -130,6 +130,12 @@ pub enum NextFrame {
     Stopped,
 }
 
+impl Default for SinkFrameSlot {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl SinkFrameSlot {
     pub fn new() -> Self {
         Self {
@@ -166,19 +172,19 @@ impl SinkFrameSlot {
         };
         let deadline = std::time::Instant::now() + timeout;
         loop {
-            if guard.has_new {
-                if let Some(mt) = guard.media_type.clone() {
-                    // 复用 buf 容量：clear 保留分配，extend 拷贝（容量足够时零分配）。
-                    buf.clear();
-                    buf.extend_from_slice(&guard.data);
-                    guard.has_new = false;
-                    return NextFrame::Frame {
-                        len: buf.len(),
-                        media_type: mt,
-                    };
-                }
-                // 媒体类型尚未协商（理论上 data 不会先于 media_type 到达）：保留 has_new 等下轮。
+            if guard.has_new
+                && let Some(mt) = guard.media_type.clone()
+            {
+                // 复用 buf 容量：clear 保留分配，extend 拷贝（容量足够时零分配）。
+                buf.clear();
+                buf.extend_from_slice(&guard.data);
+                guard.has_new = false;
+                return NextFrame::Frame {
+                    len: buf.len(),
+                    media_type: mt,
+                };
             }
+            // 媒体类型尚未协商（理论上 data 不会先于 media_type 到达）：保留 has_new 等下轮。
             if self.inner.stop.load(std::sync::atomic::Ordering::Acquire) {
                 return NextFrame::Stopped;
             }
@@ -229,7 +235,7 @@ fn parse_video_info(mt: &AM_MEDIA_TYPE) -> Option<NegotiatedMediaType> {
     let vih = unsafe { &*(mt.pbFormat as *const VIDEOINFOHEADER) };
     let width = vih.bmiHeader.biWidth.max(0) as u32;
     // biHeight 为负 = 自顶向下；为正 = 自底向上（DirectShow 视频默认）。
-    let height = vih.bmiHeader.biHeight.abs() as u32;
+    let height = vih.bmiHeader.biHeight.unsigned_abs();
     let top_down = vih.bmiHeader.biHeight < 0;
     let format = NegotiatedFormat::from_subtype(mt.subtype)?;
     if width == 0 || height == 0 {
@@ -448,6 +454,9 @@ impl IBaseFilter_Impl for SinkFilter_Impl {
             Err(windows::Win32::Media::DirectShow::VFW_E_NOT_FOUND.into())
         }
     }
+    // COM 接口方法签名固定为裸指针参数，无法标记 unsafe（windows crate 生成的 trait 契约），
+    // 解引用在 unsafe 块内完成且受文档约束，故豁免该 lint。
+    #[allow(clippy::not_unsafe_ptr_arg_deref)]
     fn QueryFilterInfo(
         &self,
         pinfo: *mut windows::Win32::Media::DirectShow::FILTER_INFO,
@@ -694,13 +703,12 @@ impl IMemInputPin_Impl for SinkPin_Impl {
             // SAFETY: 调用方保证 psamples[..nsamples] 有效。
             if let Some(sample) = unsafe { &*psamples.offset(i as isize) } {
                 let len = unsafe { sample.GetActualDataLength() };
-                if len > 0 {
-                    if let Ok(ptr) = unsafe { sample.GetPointer() } {
-                        if !ptr.is_null() {
-                            let bytes = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
-                            self.slot.store_frame(bytes);
-                        }
-                    }
+                if len > 0
+                    && let Ok(ptr) = unsafe { sample.GetPointer() }
+                    && !ptr.is_null()
+                {
+                    let bytes = unsafe { std::slice::from_raw_parts(ptr, len as usize) };
+                    self.slot.store_frame(bytes);
                 }
                 processed += 1;
             }
