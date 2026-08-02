@@ -37,13 +37,6 @@ pub fn system_font_candidates() -> Vec<PathBuf> {
     candidates
 }
 
-/// 返回第一个可读取的系统字体（路径 + 字节）。
-pub fn first_existing_font() -> Option<(PathBuf, Vec<u8>)> {
-    system_font_candidates()
-        .into_iter()
-        .find_map(|path| std::fs::read(&path).ok().map(|bytes| (path, bytes)))
-}
-
 /// 内置兜底字体（Roboto-Regular，Apache-2.0，许可证文本见 assets/ROBOTO-LICENSE.txt）。
 ///
 /// 任何环境都保证至少一个字体可用，避免 egui 空字体集渲染文本时 panic。
@@ -88,14 +81,6 @@ mod tests {
     #[test]
     fn candidates_are_non_empty_on_supported_platforms() {
         assert!(!system_font_candidates().is_empty());
-    }
-
-    #[test]
-    fn first_existing_font_reads_non_empty_bytes_when_available() {
-        if let Some((path, bytes)) = first_existing_font() {
-            assert!(system_font_candidates().contains(&path));
-            assert!(!bytes.is_empty());
-        }
     }
 
     #[test]
