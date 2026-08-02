@@ -12,8 +12,8 @@ use axum::{
     routing::{get, post},
 };
 use ipkvm_core::InputSink;
-use ipkvm_session::session_manager::{SessionManager, SessionState};
 use ipkvm_session::console_session::InputOfflineInfo;
+use ipkvm_session::session_manager::{SessionManager, SessionState};
 use ipkvm_video::{FrameSource, PixelFormat, VideoFrame, VideoSourceKind};
 use serde::Deserialize;
 use thiserror::Error;
@@ -309,25 +309,33 @@ async fn api_status<I: InputSink + Clone + Send + 'static>(
         },
     };
     // 会话统计：短暂持锁读取后立即 clone（守卫不可跨 await）。
-    let (session_state, input_events, last_input_ns, dropped_frames, serial, last_frame_ns, input_offline) = {
+    let (
+        session_state,
+        input_events,
+        last_input_ns,
+        dropped_frames,
+        serial,
+        last_frame_ns,
+        input_offline,
+    ) = {
         let mut manager = state.manager.lock().await;
         manager.refresh_stats();
         let state_name = session_state_name(manager.state());
         let (input_events, last_input_ns, dropped_frames, serial, last_frame_ns, input_offline) =
             match manager.session() {
-            Some(session) => {
-                let stats = session.stats();
-                (
-                    stats.input_events,
-                    stats.last_input_ns,
-                    stats.dropped_frames,
-                    stats.serial.map(SerialStatsDto::from),
-                    stats.last_frame_ns,
-                    stats.input_offline.as_ref().map(InputOfflineDto::from),
-                )
-            }
-            None => (0, None, 0, None, None, None),
-        };
+                Some(session) => {
+                    let stats = session.stats();
+                    (
+                        stats.input_events,
+                        stats.last_input_ns,
+                        stats.dropped_frames,
+                        stats.serial.map(SerialStatsDto::from),
+                        stats.last_frame_ns,
+                        stats.input_offline.as_ref().map(InputOfflineDto::from),
+                    )
+                }
+                None => (0, None, 0, None, None, None),
+            };
         (
             state_name,
             input_events,
