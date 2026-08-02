@@ -457,26 +457,59 @@ impl DesktopApp {
             self.last_pointer = None;
             return;
         }
+        // 远程输入模式 = 视频面板持有 egui 焦点 且 窗口处于前台。
+        // 窗口失焦（Alt+Tab 切走）也视为退出远程模式，防止远端粘键。
         let focused = response.has_focus();
-        if focused && !self.video_focused {
+        let window_focused = response.ctx.input(|input| input.focused);
+        let remote_active = focused && window_focused;
+
+        // Ctrl+Alt+K：本地退出热键。先于指针/键盘转发处理，拦截后不发送远端。
+        if remote_active {
+            let exit_requested = response
+                .ctx
+                .input(|input| input.events.iter().any(crate::input::is_remote_exit_combo));
+            if exit_requested {
+                let _ = self.session.release_all();
+                response
+                    .ctx
+                    .memory_mut(|memory| memory.surrender_focus(response.id));
+                self.video_focused = false;
+                self.pointer_mask = 0;
+                self.last_pointer = None;
+                self.last_modifiers = response.ctx.input(|input| input.modifiers);
+                return;
+            }
+        }
+
+        if remote_active {
+            // 锁住焦点导航：Tab/方向键/Esc 都转发远端，不让 egui 拿去移动焦点。
+            response.ctx.memory_mut(|memory| {
+                memory.set_focus_lock_filter(response.id, crate::input::remote_focus_filter());
+            });
+        }
+
+        if remote_active && !self.video_focused {
             // 刚获得焦点：以当前修饰键为基线，避免把历史按住状态当新按下。
             self.last_modifiers = response.ctx.input(|input| input.modifiers);
         }
-        if !focused && self.video_focused {
-            // 失焦：释放所有按键并复位本地状态。
+        if !remote_active && self.video_focused {
+            // 退出远程模式（点击本地 UI / 窗口失焦 / Ctrl+Alt+K）：
+            // 释放所有按键并复位本地状态。
             let _ = self.session.release_all();
             self.pointer_mask = 0;
             self.last_pointer = None;
         }
-        self.video_focused = focused;
+        self.video_focused = remote_active;
 
         // 指针：悬停或拖动中发送坐标；点击视频区会先获得焦点。
         let mask = pointer_button_mask(response, self.pointer_mask);
-        if pointer_active(focused, mask, self.pointer_mask)
+        if pointer_active(remote_active, mask, self.pointer_mask)
             && let Some(position) = response.ctx.input(|input| input.pointer.latest_pos())
             && let Some((x, y)) = VideoViewport::map_pointer(position, video_rect, frame)
         {
-            let _ = self.session.send_pointer(mask, x, y, frame);
+            if let Err(error) = self.session.send_pointer(mask, x, y, frame) {
+                self.status_message = Some(format!("指针发送失败：{error}"));
+            }
             self.last_pointer = Some((x, y));
             self.pointer_mask = mask;
         }
@@ -485,7 +518,7 @@ impl DesktopApp {
         }
 
         // 键盘：仅聚焦时发送。
-        if focused {
+        if remote_active {
             let modifiers = response.ctx.input(|input| input.modifiers);
             for action in modifier_diff(self.last_modifiers, modifiers) {
                 self.send_key_action(action);
@@ -507,7 +540,9 @@ impl DesktopApp {
                     }
                     match egui_key_to_keysym(key, modifiers) {
                         Some(keysym) => {
-                            let _ = self.session.send_key(pressed, keysym);
+                            if let Err(error) = self.session.send_key(pressed, keysym) {
+                                self.status_message = Some(format!("键盘发送失败：{error}"));
+                            }
                         }
                         None => self.status_message = Some("不支持的按键".into()),
                     }
@@ -705,7 +740,7 @@ impl DesktopApp {
         let keyboard = if self.paste_busy {
             "粘贴中".to_owned()
         } else if self.video_focused {
-            "聚焦可输入".to_owned()
+            "远程输入中 · Ctrl+Alt+K 退出".to_owned()
         } else {
             "失焦".to_owned()
         };
@@ -893,5 +928,16 @@ mod tests {
         );
 
         assert_eq!(size, egui::vec2(1280.0, 768.0));
+    }
+
+    #[test]
+    fn status_texts_show_remote_input_hint_when_video_focused() {
+        let mut app = DesktopApp::empty();
+        app.showing_device_dialog = false;
+        app.video_focused = true;
+
+        let texts = app.status_bar_texts();
+
+        assert_eq!(texts.keyboard, "远程输入中 · Ctrl+Alt+K 退出");
     }
 }
