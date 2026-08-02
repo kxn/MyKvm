@@ -30,6 +30,14 @@ name = "jpeg-encoder"
 version = "0.6"
 allow = ["MIT", "Apache-2.0", "IJG"]
 
+# serialport 4.x：MPL-2.0（文件级弱 copyleft）。仅链接使用、未修改其源文件，
+# 合规义务为在产品 NOTICE/文档中声明使用了 serialport 并保留其许可证声明。
+# 其传递依赖（cfg-if/scopeguard/windows-sys）均为 MIT/Apache，已在全局允许列表内。
+[[licenses.exceptions]]
+name = "serialport"
+version = "4.9"
+allow = ["MPL-2.0"]
+
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"

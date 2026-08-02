@@ -24,7 +24,7 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use ipkvm_core::{Ch9329InputSink, MouseMode, fake_serial::FakeCommandQueue};
+use ipkvm_core::{Ch9329InputSink, MouseMode, SerialCommandQueue, fake_serial::FakeCommandQueue};
 use ipkvm_headless::rfb_connection::RfbConnectionGate;
 use ipkvm_headless::rfb_input::{RfbInputPump, RfbInputRunError};
 use ipkvm_headless::rfb_tcp::{RfbTcpConfig, RfbTcpServer, RfbTcpServerError};
@@ -51,6 +51,10 @@ struct Options {
     camera_name: Option<String>,
     /// --list-cameras：枚举设备后立即退出。
     list_cameras: bool,
+    /// --serial <路径>：CH9329 串口设备路径（如 COM9 / /dev/ttyUSB0），启用真实键鼠注入。
+    serial_path: Option<String>,
+    /// --baud <波特率>：CH9329 串口波特率，默认 9600（出厂值）。
+    serial_baud: u32,
     bind_address: String,
     tcp_port: u16,
     http_port: u16,
@@ -59,11 +63,14 @@ struct Options {
 
 const USAGE: &str = "\
 用法：ipkvm-headless [--list-cameras] [--camera <名称>|--assets <目录>] \
-[--bind <地址>] [--tcp <端口>] [--http <端口>] [--fps <帧率>]
+[--serial <串口> [--baud <波特率>]] [--bind <地址>] [--tcp <端口>] [--http <端口>] [--fps <帧率>]
 
   --list-cameras   枚举视频采集设备并退出
   --camera <名称>  按名称（id 或显示名）打开相机；与 --assets 互斥
   --assets <目录>  存放 *.y4m 素材的目录（文件伪设备，按文件名排序循环）
+  --serial <串口>  CH9329 串口路径（如 COM9 / /dev/ttyUSB0），启用真实键鼠注入；
+                   不指定时键鼠事件进入模拟队列被丢弃
+  --baud <波特率>  CH9329 串口波特率，默认 9600（出厂值）
   --bind <地址>    监听地址，默认 127.0.0.1
   --tcp <端口>     RFB TCP 监听端口，默认 5900
   --http <端口>    HTTP/noVNC 监听端口，默认 6080
@@ -76,6 +83,8 @@ fn parse_args() -> Result<Options, String> {
         assets_dir: None,
         camera_name: None,
         list_cameras: false,
+        serial_path: None,
+        serial_baud: 9600,
         bind_address: "127.0.0.1".to_string(),
         tcp_port: 5900,
         http_port: 6080,
@@ -123,6 +132,19 @@ fn parse_args() -> Result<Options, String> {
                     .ok_or_else(|| "--fps 需要一个帧率参数".to_string())?
                     .parse()
                     .map_err(|error| format!("无效帧率：{error}"))?;
+            }
+            "--serial" => {
+                options.serial_path = Some(
+                    args.next()
+                        .ok_or_else(|| "--serial 需要一个串口路径参数".to_string())?,
+                );
+            }
+            "--baud" => {
+                options.serial_baud = args
+                    .next()
+                    .ok_or_else(|| "--baud 需要一个波特率参数".to_string())?
+                    .parse()
+                    .map_err(|error| format!("无效波特率：{error}"))?;
             }
             "--help" | "-h" => {
                 print!("{USAGE}");
@@ -246,6 +268,8 @@ enum HeadlessRunError {
     Input(#[from] RfbInputRunError),
     #[error("后台任务失败")]
     Join(#[from] JoinError),
+    #[error("串口失败：{0}")]
+    Serial(String),
 }
 
 type TaskResult<T> = Result<T, HeadlessRunError>;
@@ -311,15 +335,36 @@ async fn run(
     // 因此同一时刻只有一个活跃 RFB 控制连接，无论它来自哪个传输层。
     let gate = RfbConnectionGate::new();
 
-    let sink = Ch9329InputSink::new(FakeCommandQueue::new(), 0, MouseMode::Absolute);
-    let mut pump = RfbInputPump::new(sink);
+    // 输入 sink：按 --serial 选真实串口（CH9329）或模拟队列（FakeCommandQueue，演示/测试用）。
+    // 两条路径各自构造 pump 并 spawn input_task，JoinHandle 类型一致。
     let mut pump_events = event_rx;
-    let input_task = tokio::spawn(async move {
-        pump.run(&mut pump_events, |notice| {
-            println!("输入事件：{notice:?}");
+    let input_task = if let Some(serial_path) = &options.serial_path {
+        let baud = options.serial_baud;
+        let queue = SerialCommandQueue::open(serial_path, baud).map_err(|e| {
+            HeadlessRunError::Serial(format!("无法打开串口 {serial_path}@{baud}：{e}"))
+        })?;
+        println!("输入：CH9329 串口 {serial_path}@{baud}（8N1）");
+        let mut pump = RfbInputPump::new(Ch9329InputSink::new(queue, 0, MouseMode::Absolute));
+        tokio::spawn(async move {
+            pump.run(&mut pump_events, |notice| {
+                println!("输入事件：{notice:?}");
+            })
+            .await
         })
-        .await
-    });
+    } else {
+        println!("输入：模拟队列（无 --serial，键鼠事件不注入真实串口）");
+        let mut pump = RfbInputPump::new(Ch9329InputSink::new(
+            FakeCommandQueue::new(),
+            0,
+            MouseMode::Absolute,
+        ));
+        tokio::spawn(async move {
+            pump.run(&mut pump_events, |notice| {
+                println!("输入事件：{notice:?}");
+            })
+            .await
+        })
+    };
 
     let tcp_server = RfbTcpServer::new(
         tcp_listener,
