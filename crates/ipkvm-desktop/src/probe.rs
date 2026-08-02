@@ -9,6 +9,9 @@ use crate::state::{
     VideoProbeStatus,
 };
 
+/// 自动扫描候选波特率（成品线电平未知：115200 可用则最快，失败逐档降级）。
+pub const BAUD_CANDIDATES: [u32; 5] = [115200, 57600, 38400, 19200, 9600];
+
 #[derive(Debug, thiserror::Error)]
 pub enum ProbeError {
     #[error("video device list failed: {0}")]
@@ -149,6 +152,16 @@ pub fn probe_ch9329(path: &str, baud_rate: u32, timeout: Duration) -> ControlPro
         }
     }
     ControlProbeStatus::NoResponse
+}
+
+/// 扫描候选波特率，返回第一个 GetInfo 有合法应答的档位。
+pub fn detect_baud_rate(path: &str, timeout: Duration) -> Option<u32> {
+    BAUD_CANDIDATES.into_iter().find(|baud| {
+        matches!(
+            probe_ch9329(path, *baud, timeout),
+            ControlProbeStatus::Ready(_)
+        )
+    })
 }
 
 /// 视频预览：打开采集源等一帧；返回前 drop 源，避免预览句柄占住设备。
@@ -295,5 +308,12 @@ mod tests {
 
         assert!(result.is_err());
         assert_eq!(state.video_devices.len(), 1);
+    }
+
+    #[test]
+    fn baud_candidates_prefer_115200_and_fall_back_to_9600() {
+        assert_eq!(BAUD_CANDIDATES[0], 115200);
+        assert_eq!(BAUD_CANDIDATES[4], 9600);
+        assert_eq!(BAUD_CANDIDATES.len(), 5);
     }
 }

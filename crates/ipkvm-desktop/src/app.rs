@@ -370,6 +370,13 @@ impl DesktopApp {
     }
 
     fn connect(&mut self) -> Result<(), DesktopSessionError> {
+        if self.selection.advanced.auto_baud
+            && let Some(control_id) = self.selection.selected_control_id.clone()
+            && let Some(baud) = crate::probe::detect_baud_rate(&control_id, PROBE_TIMEOUT)
+        {
+            self.selection.advanced.baud_rate = baud;
+            self.status_message = Some(format!("已自动选择波特率 {baud}"));
+        }
         let Some(request) = self.connect_request() else {
             return Ok(());
         };
@@ -821,6 +828,10 @@ impl DesktopApp {
                 egui::DragValue::new(&mut self.selection.advanced.baud_rate).range(1200..=115200),
             );
         });
+        ui.checkbox(
+            &mut self.selection.advanced.auto_baud,
+            "连接时自动检测波特率",
+        );
         ui.horizontal(|ui| {
             ui.label("预览帧率");
             ui.add(egui::DragValue::new(&mut self.selection.advanced.preview_fps).range(1..=60));
