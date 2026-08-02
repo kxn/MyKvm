@@ -3,6 +3,7 @@ mod fonts;
 mod frame;
 mod probe;
 mod render;
+mod session;
 mod state;
 
 use thiserror::Error;

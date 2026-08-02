@@ -10,6 +10,7 @@ rust-version.workspace = true
 arboard.workspace = true
 eframe.workspace = true
 ipkvm-core = { path = "../ipkvm-core", features = ["serial"] }
+ipkvm-rfb = { path = "../ipkvm-rfb" }
 ipkvm-session = { path = "../ipkvm-session", features = ["serial"] }
 ipkvm-video = { path = "../ipkvm-video", features = ["mf"] }
 jpeg-encoder.workspace = true
@@ -19,6 +20,9 @@ tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"] }
 
 [target.'cfg(windows)'.dependencies]
 rfd = { version = "0.15.4", default-features = false, features = ["common-controls-v6"] }
+
+[dev-dependencies]
+ipkvm-video = { path = "../ipkvm-video", features = ["mock"] }
 
 [[bin]]
 name = "ipkvm-desktop"

@@ -1521,6 +1521,7 @@ dependencies = [
  "arboard",
  "eframe",
  "ipkvm-core",
+ "ipkvm-rfb",
  "ipkvm-session",
  "ipkvm-video",
  "jpeg-encoder",
