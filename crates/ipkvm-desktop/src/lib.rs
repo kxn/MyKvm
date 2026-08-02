@@ -1,5 +1,7 @@
 mod app;
 mod fonts;
+mod frame;
+mod probe;
 mod state;
 
 use thiserror::Error;
