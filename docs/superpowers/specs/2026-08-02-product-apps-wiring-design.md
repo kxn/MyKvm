@@ -1,6 +1,6 @@
 # 产品接线设计：headless 与 desktop 两个产品 app 共享会话核心
 
-- 关联 issue：#28（后续补独立 issue 编号，见文末「后续工作」）
+- 关联 issue：#30（会话核心归位）、#31（headless 配置与最小鉴权）、#32（headless HTTP 管理 API）、#33（桌面 app）
 - 日期：2026-08-02
 - 状态：设计定稿，待实现
 
