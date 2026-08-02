@@ -252,6 +252,10 @@ mod tests {
 
     use super::*;
 
+    type TestSessionFactory =
+        Box<dyn FnMut(&ConnectRequest) -> Result<SessionParts<RecordingSink>, DesktopSessionError>>;
+    type TestController = DesktopSessionController<RecordingSink, TestSessionFactory>;
+
     /// 记录型输入 sink：观察泵写入的键/指针批次与 release_all 次数。
     #[derive(Clone, Debug, Default)]
     struct RecordingSink {
@@ -296,16 +300,10 @@ mod tests {
         }
     }
 
-    fn controller_with_sink() -> (
-        DesktopSessionController<
-            RecordingSink,
-            impl FnMut(&ConnectRequest) -> Result<SessionParts<RecordingSink>, DesktopSessionError>,
-        >,
-        RecordingSink,
-    ) {
+    fn controller_with_sink() -> (TestController, RecordingSink) {
         let sink = RecordingSink::default();
         let sink_for_factory = sink.clone();
-        let controller = DesktopSessionController::with_factory(move |_request| {
+        let factory: TestSessionFactory = Box::new(move |_request| {
             let frame_source: Arc<dyn FrameSource> = Arc::new(MockFrameSource::new());
             Ok((
                 frame_source,
@@ -313,6 +311,7 @@ mod tests {
                 RfbConnectionGate::new(),
             ))
         });
+        let controller = DesktopSessionController::with_factory(factory);
         (controller, sink)
     }
 

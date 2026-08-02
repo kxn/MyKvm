@@ -424,14 +424,13 @@ impl DesktopApp {
 
         // 指针：悬停或拖动中发送坐标；点击视频区会先获得焦点。
         let mask = pointer_button_mask(response, self.pointer_mask);
-        if response.hovered() || self.pointer_mask != 0 || mask != 0 {
-            if let Some(position) = response.ctx.input(|input| input.pointer.latest_pos()) {
-                if let Some((x, y)) = VideoViewport::map_pointer(position, video_rect, frame) {
-                    let _ = self.session.send_pointer(mask, x, y, frame);
-                    self.last_pointer = Some((x, y));
-                    self.pointer_mask = mask;
-                }
-            }
+        if (response.hovered() || self.pointer_mask != 0 || mask != 0)
+            && let Some(position) = response.ctx.input(|input| input.pointer.latest_pos())
+            && let Some((x, y)) = VideoViewport::map_pointer(position, video_rect, frame)
+        {
+            let _ = self.session.send_pointer(mask, x, y, frame);
+            self.last_pointer = Some((x, y));
+            self.pointer_mask = mask;
         }
         if mask == 0 {
             self.pointer_mask = 0;

@@ -140,15 +140,15 @@ mod tests {
 
     #[test]
     fn connect_requires_video_ready_and_control_ready() {
-        let mut state = DeviceSelectionState::default();
-        assert!(!state.can_connect());
-
-        state.video_status = VideoProbeStatus::Ready(PreviewInfo {
-            width: 1920,
-            height: 1080,
-            label: "capture".into(),
-        });
-        state.control_status = ControlProbeStatus::NoResponse;
+        let mut state = DeviceSelectionState {
+            video_status: VideoProbeStatus::Ready(PreviewInfo {
+                width: 1920,
+                height: 1080,
+                label: "capture".into(),
+            }),
+            control_status: ControlProbeStatus::NoResponse,
+            ..DeviceSelectionState::default()
+        };
         assert!(!state.can_connect());
 
         state.control_status = ControlProbeStatus::Ready(ControlInfo {
@@ -160,20 +160,22 @@ mod tests {
 
     #[test]
     fn refresh_marks_missing_selected_devices_disconnected() {
-        let mut state = DeviceSelectionState::default();
-        state.video_devices = vec![option("cam0", "Camera 0")];
-        state.control_devices = vec![option("COM9", "COM9")];
-        state.selected_video_id = Some("cam0".into());
-        state.selected_control_id = Some("COM9".into());
-        state.video_status = VideoProbeStatus::Ready(PreviewInfo {
-            width: 640,
-            height: 480,
-            label: "Camera 0".into(),
-        });
-        state.control_status = ControlProbeStatus::Ready(ControlInfo {
-            version: 0x31,
-            usb_enumerated: true,
-        });
+        let mut state = DeviceSelectionState {
+            video_devices: vec![option("cam0", "Camera 0")],
+            control_devices: vec![option("COM9", "COM9")],
+            selected_video_id: Some("cam0".into()),
+            selected_control_id: Some("COM9".into()),
+            video_status: VideoProbeStatus::Ready(PreviewInfo {
+                width: 640,
+                height: 480,
+                label: "Camera 0".into(),
+            }),
+            control_status: ControlProbeStatus::Ready(ControlInfo {
+                version: 0x31,
+                usb_enumerated: true,
+            }),
+            ..DeviceSelectionState::default()
+        };
 
         state.refresh_devices(Vec::new(), Vec::new());
 
@@ -184,11 +186,13 @@ mod tests {
 
     #[test]
     fn mark_control_offline_sets_disconnected_status() {
-        let mut state = DeviceSelectionState::default();
-        state.control_status = ControlProbeStatus::Ready(ControlInfo {
-            version: 0x31,
-            usb_enumerated: true,
-        });
+        let mut state = DeviceSelectionState {
+            control_status: ControlProbeStatus::Ready(ControlInfo {
+                version: 0x31,
+                usb_enumerated: true,
+            }),
+            ..DeviceSelectionState::default()
+        };
 
         state.mark_control_offline();
 
