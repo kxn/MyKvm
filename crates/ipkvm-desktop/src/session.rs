@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -52,6 +53,8 @@ where
     notice_rx: mpsc::UnboundedReceiver<RfbInputNotice>,
     event_tx: Option<mpsc::Sender<RfbServerEvent>>,
     frame_source: Option<Arc<dyn FrameSource>>,
+    /// 未送出的事件（通道满时暂存），保证桌面输入不丢事件。
+    pending_events: std::sync::Mutex<VecDeque<RfbServerEvent>>,
 }
 
 impl<S, F> DesktopSessionController<S, F>
@@ -74,6 +77,7 @@ where
             notice_rx,
             event_tx: None,
             frame_source: None,
+            pending_events: std::sync::Mutex::new(VecDeque::new()),
         }
     }
 
@@ -118,6 +122,10 @@ where
     fn rollback(&mut self) {
         self.event_tx = None;
         self.frame_source = None;
+        self.pending_events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
         let _ = self.runtime.block_on(self.manager.stop_and_destroy());
         let (_notice_tx, notice_rx) = mpsc::unbounded_channel();
         self.notice_rx = notice_rx;
@@ -127,6 +135,10 @@ where
     pub fn stop(&mut self) -> Result<(), DesktopSessionError> {
         self.event_tx = None;
         self.frame_source = None;
+        self.pending_events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
         self.runtime
             .block_on(self.manager.stop_and_destroy())
             .map_err(|error| DesktopSessionError::Session(error.to_string()))
@@ -188,22 +200,16 @@ where
     /// 释放所有按键/按钮：断开本地控制器（泵执行 release_all），再重新连接，
     /// 保证后续键鼠仍有活动控制器。
     pub fn release_all(&self) -> Result<(), DesktopSessionError> {
-        let Some(tx) = &self.event_tx else {
-            return Err(DesktopSessionError::NoEventSender);
-        };
-        tx.try_send(RfbServerEvent::Disconnected {
+        self.send_event(RfbServerEvent::Disconnected {
             client_id: RfbClientId::local_desktop(),
             peer_addr: LOCAL_PEER,
             reason: RfbDisconnectReason::ClientClosed,
-        })
-        .map_err(|error| DesktopSessionError::Input(error.to_string()))?;
-        tx.try_send(RfbServerEvent::Connected {
+        })?;
+        self.send_event(RfbServerEvent::Connected {
             client_id: RfbClientId::local_desktop(),
             peer_addr: LOCAL_PEER,
             shared: true,
         })
-        .map_err(|error| DesktopSessionError::Input(error.to_string()))?;
-        Ok(())
     }
 
     /// 取走已排队 notice（app 每帧调用并更新状态栏）。
@@ -216,12 +222,42 @@ where
     }
 
     fn send_event(&self, event: RfbServerEvent) -> Result<(), DesktopSessionError> {
+        let mut pending = self
+            .pending_events
+            .lock()
+            .map_err(|_| DesktopSessionError::Input("pending event queue poisoned".into()))?;
+        pending.push_back(event);
         let Some(tx) = &self.event_tx else {
+            pending.clear();
             return Err(DesktopSessionError::NoEventSender);
         };
-        tx.try_send(event)
-            .map_err(|error| DesktopSessionError::Input(error.to_string()))
+        flush_pending_events(&mut pending, |next| tx.try_send(next))
     }
+}
+
+/// 尽力把暂存队列按 FIFO 顺序送入事件通道；通道满时保留剩余事件等待下次
+/// 提交，通道关闭时清空并返回错误。返回 Ok 不保证队列已清空（Full 是
+/// 正常暂存而非失败）。
+fn flush_pending_events(
+    pending: &mut VecDeque<RfbServerEvent>,
+    mut try_send: impl FnMut(
+        RfbServerEvent,
+    )
+        -> Result<(), tokio::sync::mpsc::error::TrySendError<RfbServerEvent>>,
+) -> Result<(), DesktopSessionError> {
+    while let Some(next) = pending.front().cloned() {
+        match try_send(next) {
+            Ok(()) => {
+                pending.pop_front();
+            }
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => break,
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                pending.clear();
+                return Err(DesktopSessionError::Input("event channel closed".into()));
+            }
+        }
+    }
+    Ok(())
 }
 
 const LOCAL_PEER: SocketAddr =
@@ -445,5 +481,94 @@ mod tests {
         controller.connect(request()).unwrap();
         assert!(controller.is_control_online());
         controller.stop().unwrap();
+    }
+
+    fn key_event(tag: u8) -> RfbServerEvent {
+        RfbServerEvent::Key {
+            client_id: RfbClientId::local_desktop(),
+            down: true,
+            keysym: u32::from(tag),
+        }
+    }
+
+    fn keysym_of(event: &RfbServerEvent) -> u32 {
+        match event {
+            RfbServerEvent::Key { keysym, .. } => *keysym,
+            _ => 0,
+        }
+    }
+
+    #[test]
+    fn flush_pending_events_drains_in_fifo_order() {
+        let mut pending = std::collections::VecDeque::new();
+        let mut delivered = Vec::new();
+        pending.push_back(key_event(1));
+        pending.push_back(key_event(2));
+
+        let result = flush_pending_events(&mut pending, |next| {
+            delivered.push(next);
+            Ok(())
+        });
+
+        assert!(result.is_ok());
+        assert!(pending.is_empty());
+        assert_eq!(
+            delivered.iter().map(keysym_of).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+    }
+
+    #[test]
+    fn flush_pending_events_keeps_remainder_when_full_then_resumes_in_order() {
+        use tokio::sync::mpsc::error::TrySendError;
+
+        let mut pending = std::collections::VecDeque::new();
+        let mut delivered = Vec::new();
+        pending.push_back(key_event(1));
+        pending.push_back(key_event(2));
+        pending.push_back(key_event(3));
+
+        let mut accepts = 0;
+        let result = flush_pending_events(&mut pending, |next| {
+            if accepts < 2 {
+                accepts += 1;
+                delivered.push(next);
+                Ok(())
+            } else {
+                Err(TrySendError::Full(next))
+            }
+        });
+
+        assert!(result.is_ok());
+        assert_eq!(pending.len(), 1);
+        assert_eq!(
+            delivered.iter().map(keysym_of).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+
+        let result = flush_pending_events(&mut pending, |next| {
+            delivered.push(next);
+            Ok(())
+        });
+
+        assert!(result.is_ok());
+        assert!(pending.is_empty());
+        assert_eq!(
+            delivered.iter().map(keysym_of).collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+    }
+
+    #[test]
+    fn flush_pending_events_clears_on_closed_channel() {
+        use tokio::sync::mpsc::error::TrySendError;
+
+        let mut pending = std::collections::VecDeque::new();
+        pending.push_back(key_event(1));
+
+        let result = flush_pending_events(&mut pending, |next| Err(TrySendError::Closed(next)));
+
+        assert!(result.is_err());
+        assert!(pending.is_empty());
     }
 }
