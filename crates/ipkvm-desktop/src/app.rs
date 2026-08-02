@@ -142,9 +142,7 @@ impl DesktopApp {
             self.pending_relative = (0, 0, 0);
             self.last_pointer_sent = None;
             self.last_pointer_sent_at = None;
-            if let Some(task) = self.frame_repaint_task.take() {
-                task.abort();
-            }
+            self.status_message = Some("控制设备离线，请刷新检测后重连".into());
         }
     }
 
@@ -519,18 +517,62 @@ impl DesktopApp {
         frame: FrameSize,
     ) {
         if !self.session.is_control_online() {
+            if self.cursor_grabbed {
+                response
+                    .ctx
+                    .send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::CursorGrab::None));
+                response
+                    .ctx
+                    .send_viewport_cmd(egui::ViewportCommand::CursorVisible(true));
+                self.cursor_grabbed = false;
+            }
             self.pointer_mask = 0;
             self.last_pointer = None;
             return;
         }
-        // 远程输入模式 = 视频面板持有 egui 焦点 且 窗口处于前台。
-        // 窗口失焦（Alt+Tab 切走）也视为退出远程模式，防止远端粘键。
-        let focused = response.has_focus();
-        let window_focused = response.ctx.input(|input| input.focused);
-        let remote_active = focused && window_focused;
+        // 远程输入模式是粘性状态：点击视频区进入；窗口失焦、点击本地 UI、
+        // 焦点被移走或 Ctrl+Alt+K 才退出，避免逐帧聚焦判定抖动导致
+        // “点一下立即失焦/永远失焦”。
+        let clicked_video = response.clicked();
+        if clicked_video {
+            response.request_focus();
+        }
+        let window_lost = response.ctx.input(|input| {
+            input
+                .events
+                .iter()
+                .any(|event| matches!(event, egui::Event::WindowFocused(false)))
+        });
+        let any_click = response.ctx.input(|input| input.pointer.any_click());
+
+        if !self.video_focused && clicked_video {
+            // 刚进入：以当前修饰键为基线，避免把历史按住状态当新按下。
+            self.last_modifiers = response.ctx.input(|input| input.modifiers);
+            self.video_focused = true;
+        }
+        let exit_remote = self.video_focused
+            && (window_lost
+                || (any_click && !clicked_video)
+                || (!clicked_video && !response.has_focus()));
+        if exit_remote {
+            // 退出远程模式（点击本地 UI / 窗口失焦）：释放所有按键、交还
+            // egui 焦点并复位本地状态；再次点击视频区才能重新进入。
+            let _ = self.session.release_all();
+            response
+                .ctx
+                .memory_mut(|memory| memory.surrender_focus(response.id));
+            self.video_focused = false;
+            self.pointer_mask = 0;
+            self.last_pointer = None;
+            self.relative_remainder = (0.0, 0.0);
+            self.pending_pointer = None;
+            self.pending_relative = (0, 0, 0);
+            self.last_pointer_sent = None;
+            self.last_pointer_sent_at = None;
+        }
 
         // Ctrl+Alt+K：本地退出热键。先于指针/键盘转发处理，拦截后不发送远端。
-        if remote_active {
+        if self.video_focused {
             let exit_requested = response
                 .ctx
                 .input(|input| input.events.iter().any(crate::input::is_remote_exit_combo));
@@ -548,7 +590,7 @@ impl DesktopApp {
         }
 
         // Ctrl+Alt+M：本地切换绝对/相对鼠标模式（重连应用）。
-        if remote_active {
+        if self.video_focused {
             let toggle_requested = response
                 .ctx
                 .input(|input| input.events.iter().any(crate::input::is_mode_toggle_combo));
@@ -558,33 +600,16 @@ impl DesktopApp {
             }
         }
 
-        if remote_active {
+        if self.video_focused {
             // 锁住焦点导航：Tab/方向键/Esc 都转发远端，不让 egui 拿去移动焦点。
             response.ctx.memory_mut(|memory| {
                 memory.set_focus_lock_filter(response.id, crate::input::remote_focus_filter());
             });
         }
 
-        if remote_active && !self.video_focused {
-            // 刚获得焦点：以当前修饰键为基线，避免把历史按住状态当新按下。
-            self.last_modifiers = response.ctx.input(|input| input.modifiers);
-        }
-        if !remote_active && self.video_focused {
-            // 退出远程模式（点击本地 UI / 窗口失焦 / Ctrl+Alt+K）：
-            // 释放所有按键、交还 egui 焦点并复位本地状态；切回窗口后需要
-            // 再次点击视频区才能重新进入远程输入。
-            let _ = self.session.release_all();
-            response
-                .ctx
-                .memory_mut(|memory| memory.surrender_focus(response.id));
-            self.pointer_mask = 0;
-            self.last_pointer = None;
-        }
-        self.video_focused = remote_active;
-
         // 相对模式锁定并隐藏本地光标，绝对模式恢复光标。
         let relative_mode = self.selection.advanced.mouse_mode == MouseMode::Relative;
-        if remote_active && relative_mode {
+        if self.video_focused && relative_mode {
             if !self.cursor_grabbed {
                 response
                     .ctx
@@ -606,7 +631,7 @@ impl DesktopApp {
 
         // 指针：相对模式用增量（本地光标已锁定），绝对模式用窗口坐标。
         let mask = pointer_button_mask(response, self.pointer_mask);
-        if remote_active && relative_mode {
+        if self.video_focused && relative_mode {
             // 光标锁定后位置不变，位置增量恒为 0；必须用原始鼠标运动事件
             // （eframe 从 DeviceEvent::MouseMotion 转发，物理像素）。
             let (raw_dx, raw_dy) = response.ctx.input(|input| {
@@ -630,9 +655,7 @@ impl DesktopApp {
             self.pending_relative.1 = self.pending_relative.1.saturating_add(dy);
             self.pending_relative.2 = self.pending_relative.2.saturating_add(wheel);
             let now = Instant::now();
-            let mask_changed = self
-                .last_pointer_sent
-                .is_some_and(|(last_mask, _, _)| last_mask != mask);
+            let mask_changed = mask != self.pointer_mask;
             let (pending_dx, pending_dy, pending_wheel) = self.pending_relative;
             if mask_changed
                 || crate::input::throttle_elapsed(
@@ -656,7 +679,7 @@ impl DesktopApp {
                 self.pending_relative = (0, 0, 0);
             }
             self.pointer_mask = mask;
-        } else if pointer_active(remote_active, mask, self.pointer_mask)
+        } else if pointer_active(self.video_focused, mask, self.pointer_mask)
             && let Some(position) = response.ctx.input(|input| input.pointer.latest_pos())
             && let Some((x, y)) = VideoViewport::map_pointer(position, video_rect, frame)
         {
@@ -701,7 +724,7 @@ impl DesktopApp {
         }
 
         // 键盘：仅聚焦时发送。
-        if remote_active {
+        if self.video_focused {
             let modifiers = response.ctx.input(|input| input.modifiers);
             for action in modifier_diff(self.last_modifiers, modifiers) {
                 self.send_key_action(action);
