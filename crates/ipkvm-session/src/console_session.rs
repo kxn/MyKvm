@@ -1,14 +1,54 @@
 //! 控制台会话组装：把帧源、输入 sink、连接闸门和输入泵组装成可运行的会话。
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use ipkvm_core::InputSink;
+use ipkvm_core::{InputSink, QueueStats};
 use ipkvm_video::FrameSource;
 use thiserror::Error;
 use tokio::sync::mpsc;
 
 use crate::rfb_connection::{RfbConnectionGate, RfbServerEvent};
 use crate::rfb_input::{RfbInputNotice, RfbInputPump, RfbInputRunError};
+
+/// 会话统计：输入事件计数、最后输入时间、丢帧计数、串口统计。
+///
+/// 输入事件计数与最后输入时间由输入泵 notice 回调（`start()` 的 observe
+/// 闭包）写入，`ConsoleSession` 通过 `Arc<Mutex<SessionStats>>` 与泵任务
+/// 共享（会话侧 `stats()` 持锁读取）；丢帧与串口统计由会话侧显式调用
+/// `observe_frame` / `record_serial_stats` 更新。
+#[derive(Clone, Debug, Default)]
+pub struct SessionStats {
+    /// 累计输入事件数（键盘 + 指针）。
+    pub input_events: u64,
+    /// 最后输入事件的单调时间（纳秒，`crate::now_ns()`）。
+    pub last_input_ns: Option<u64>,
+    /// 累计丢帧数（帧 seq 不连续，来自 `observe_frame`）。
+    pub dropped_frames: u64,
+    /// 串口批次/帧统计（`record_serial_stats` 从 `CommandQueue::stats` 映射）。
+    pub serial: Option<crate::serial_stats::SerialStats>,
+    /// 上次观察的帧 seq（丢帧检测内部状态）。
+    last_seq: Option<u64>,
+}
+
+impl SessionStats {
+    /// 记录一次输入事件（键盘/指针）。
+    pub fn observe_input(&mut self) {
+        self.input_events = self.input_events.saturating_add(1);
+        self.last_input_ns = Some(crate::now_ns());
+    }
+
+    /// 观察一帧：seq 跳跃即丢帧（首帧初始化基准，不计数；seq 回退/重复
+    /// 视为重置，不计数）。
+    pub fn observe_frame_seq(&mut self, seq: u64) {
+        match self.last_seq {
+            Some(last) if seq > last + 1 => {
+                self.dropped_frames = self.dropped_frames.saturating_add(seq - last - 1);
+            }
+            _ => {}
+        }
+        self.last_seq = Some(seq);
+    }
+}
 
 /// 会话级错误。
 #[derive(Debug, Error)]
@@ -31,13 +71,14 @@ pub struct SessionHandle;
 /// 键入服务）；会话保留一份 sink，调用方（如 SessionManager）保留另一份供
 /// 统计与后续复用。
 pub struct ConsoleSession<S: InputSink + Clone + Send + 'static> {
-    /// 帧源。T8 帧 seq 检测消费；T6 暂仅持有。
-    #[allow(dead_code)]
+    /// 帧源。帧 seq 检测（`observe_frame`）消费。
     frame_source: Arc<dyn FrameSource>,
     sink: S,
     gate: RfbConnectionGate,
     event_tx: mpsc::Sender<RfbServerEvent>,
     pump_task: Option<tokio::task::JoinHandle<Result<(), RfbInputRunError>>>,
+    /// 会话统计：泵任务（输入计数/最后输入时间）与会话侧共享，Mutex 内部可变。
+    stats: Arc<Mutex<SessionStats>>,
 }
 
 impl<S: InputSink + Clone + Send + 'static> ConsoleSession<S> {
@@ -50,6 +91,7 @@ impl<S: InputSink + Clone + Send + 'static> ConsoleSession<S> {
             // 占位发送端（无接收端）：与 stop() 停泵后的事件出口语义一致。
             event_tx: mpsc::channel(1).0,
             pump_task: None,
+            stats: Arc::new(Mutex::new(SessionStats::default())),
         }
     }
 
@@ -63,6 +105,27 @@ impl<S: InputSink + Clone + Send + 'static> ConsoleSession<S> {
         &self.event_tx
     }
 
+    /// 会话统计访问：返回互斥锁守卫——泵任务并发写入输入计数/最后输入时间，
+    /// 读方短暂持锁读取（守卫可解引用为 `&SessionStats`）。
+    pub fn stats(&self) -> std::sync::MutexGuard<'_, SessionStats> {
+        self.stats.lock().unwrap()
+    }
+
+    /// 观察帧源最新帧：seq 跳跃计入丢帧（真实丢帧检测，非延时/采样）。
+    ///
+    /// 由调用方显式调用（桌面渲染循环或 headless 快照前），不在内部自动轮询。
+    pub fn observe_frame(&mut self) {
+        if let Some(frame) = self.frame_source.latest_frame() {
+            self.stats.lock().unwrap().observe_frame_seq(frame.seq);
+        }
+    }
+
+    /// 记录串口统计快照：调用方（持有 `CommandQueue` 的组装层）从队列
+    /// `stats()` 读取后填入，供 `/api/status` 与桌面状态栏消费。
+    pub fn record_serial_stats(&mut self, stats: QueueStats) {
+        self.stats.lock().unwrap().serial = Some(stats.into());
+    }
+
     /// 会话是否已启动（输入泵任务在运行）。
     pub fn is_running(&self) -> bool {
         self.pump_task.is_some()
@@ -72,6 +135,11 @@ impl<S: InputSink + Clone + Send + 'static> ConsoleSession<S> {
     ///
     /// 调用方必须运行在 tokio runtime 上下文中（`RfbInputPump::new` 内部
     /// `tokio::spawn` 文本键入服务）。
+    ///
+    /// observe 闭包随泵任务在独立任务中执行，无法借用 `self`（`tokio::spawn`
+    /// 要求 `'static`），因此经共享 `Arc<Mutex<SessionStats>>` 更新统计：
+    /// 键盘/指针 notice 各计一次输入事件。文本键入（CutText）走独立 notice
+    /// （`TextTyped` 等），不计入键盘/指针统计。
     pub fn start(&mut self) -> Result<SessionHandle, SessionError> {
         if self.is_running() {
             return Err(SessionError::AlreadyRunning);
@@ -79,10 +147,18 @@ impl<S: InputSink + Clone + Send + 'static> ConsoleSession<S> {
         let (event_tx, mut event_rx) = mpsc::channel(64);
         self.event_tx = event_tx;
         let mut pump = RfbInputPump::new(self.sink.clone());
-        let task =
-            tokio::spawn(
-                async move { pump.run(&mut event_rx, |_notice: &RfbInputNotice| {}).await },
-            );
+        let stats = Arc::clone(&self.stats);
+        let task = tokio::spawn(async move {
+            pump.run(&mut event_rx, |notice: &RfbInputNotice| {
+                if matches!(
+                    notice,
+                    RfbInputNotice::Keyboard { .. } | RfbInputNotice::Pointer { .. }
+                ) {
+                    stats.lock().unwrap().observe_input();
+                }
+            })
+            .await
+        });
         self.pump_task = Some(task);
         Ok(SessionHandle)
     }
@@ -109,11 +185,13 @@ impl<S: InputSink + Clone + Send + 'static> ConsoleSession<S> {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use ipkvm_core::{InputResult, KeyEvent, MouseMode, PointerEvent};
+    use ipkvm_core::{InputResult, KeyEvent, MouseMode, PointerEvent, QueueStats};
     use ipkvm_video::mock::MockFrameSource;
+    use ipkvm_video::{MonotonicTimestamp, PixelFormat, VideoFrame};
 
     use super::*;
     use crate::rfb_connection::{RfbClientId, RfbTransportKind};
+    use crate::serial_stats::SerialStats;
 
     /// 记录型输入 sink：内部共享 `Arc<Mutex<Recorded>>`，供测试观察泵（及
     /// 其文本键入服务克隆）写入的批次与 release 行为。
@@ -264,5 +342,123 @@ mod tests {
             .try_acquire(RfbTransportKind::Tcp, "127.0.0.1:5900".parse().unwrap())
             .unwrap();
         assert_eq!(reservation.client_id().get(), 1);
+    }
+
+    // ---- T8 会话状态统计 ----
+
+    /// 帧 seq 跳跃（1→3，缺 2）→ dropped_frames 计数 1；首帧初始化基准不计数。
+    #[test]
+    fn frame_seq_jump_counts_dropped_frame() {
+        let mut stats = SessionStats::default();
+        stats.observe_frame_seq(1);
+        stats.observe_frame_seq(3);
+        assert_eq!(stats.dropped_frames, 1);
+    }
+
+    /// 输入事件计数与最后时间更新。
+    #[test]
+    fn input_notice_updates_stats() {
+        let mut stats = SessionStats::default();
+        stats.observe_input();
+        stats.observe_input();
+        assert_eq!(stats.input_events, 2);
+        assert!(stats.last_input_ns.is_some());
+    }
+
+    /// 泵通知回路：Connected 不计入，Key + Pointer 各计一次 → input_events 2，
+    /// 最后输入时间已记录（泵线程写、会话线程读）。
+    #[tokio::test]
+    async fn stats_accumulate_input_events_through_pump() {
+        let (mut session, _sink) = console_session_fixture();
+        session.start().unwrap();
+
+        let event_tx = session.event_tx().clone();
+        let client_id = RfbClientId::for_test(1);
+        let peer_addr = "127.0.0.1:5900".parse().unwrap();
+        event_tx
+            .send(RfbServerEvent::Connected {
+                client_id,
+                peer_addr,
+                shared: true,
+            })
+            .await
+            .unwrap();
+        event_tx
+            .send(RfbServerEvent::Key {
+                client_id,
+                down: true,
+                keysym: 0x61,
+            })
+            .await
+            .unwrap();
+        event_tx
+            .send(RfbServerEvent::Pointer {
+                client_id,
+                button_mask: 1,
+                x: 100,
+                y: 200,
+                framebuffer_size: ipkvm_rfb::RfbSize::new(1920, 1080).unwrap(),
+            })
+            .await
+            .unwrap();
+        assert!(
+            yield_until(|| session.stats().input_events == 2).await,
+            "Key+Pointer 后输入事件统计未累积到 2"
+        );
+        assert!(
+            session.stats().last_input_ns.is_some(),
+            "最后输入时间未记录"
+        );
+
+        drop(event_tx);
+        let _ = session.stop().unwrap();
+    }
+
+    /// observe_frame 经帧源 latest_frame().seq 检测丢帧：1→3 缺 2 计 1 帧；
+    /// 空帧源（无最新帧）不计数也不初始化基准。
+    #[test]
+    fn observe_frame_counts_dropped_frames() {
+        let mock = Arc::new(MockFrameSource::new());
+        let frame_source: Arc<dyn FrameSource> = mock.clone();
+        let mut session = ConsoleSession::new(
+            frame_source,
+            RecordingSink::default(),
+            RfbConnectionGate::new(),
+        );
+
+        session.observe_frame();
+        assert_eq!(session.stats().dropped_frames, 0, "空帧源不计数");
+
+        let frame = |seq| {
+            Arc::new(VideoFrame::new(
+                seq,
+                MonotonicTimestamp::from_nanos(0),
+                1920,
+                1080,
+                0,
+                PixelFormat::Mjpeg,
+                Arc::new([0u8; 16]),
+            ))
+        };
+        mock.publish_frame(frame(1));
+        session.observe_frame();
+        mock.publish_frame(frame(3));
+        session.observe_frame();
+        assert_eq!(session.stats().dropped_frames, 1);
+    }
+
+    /// 串口统计：record_serial_stats 从 QueueStats 映射填入 SessionStats.serial。
+    #[test]
+    fn record_serial_stats_maps_queue_stats() {
+        let (mut session, _sink) = console_session_fixture();
+        assert!(session.stats().serial.is_none());
+
+        let queue_stats = QueueStats {
+            batches_accepted: 3,
+            frames_accepted: 7,
+        };
+        session.record_serial_stats(queue_stats);
+        let serial: SerialStats = queue_stats.into();
+        assert_eq!(session.stats().serial.unwrap(), serial);
     }
 }
