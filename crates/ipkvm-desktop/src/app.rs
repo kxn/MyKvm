@@ -21,8 +21,8 @@ const NO_SIGNAL_TIMEOUT: Duration = Duration::from_secs(2);
 const BAUD_PROBE_TIMEOUT: Duration = Duration::from_millis(300);
 /// 指针最小发送间隔（约 30Hz 限频），按键状态变化不受此限制。
 const POINTER_MIN_INTERVAL: Duration = Duration::from_millis(33);
-/// 菜单栏 + 状态栏占用的窗口内容区高度估算（ResizeWindowToVideo 用）。
-const FOLLOW_CHROME: f32 = 48.0;
+/// 菜单栏 + 状态栏高度估算兜底（首帧实测之前用）。
+const DEFAULT_CHROME_FALLBACK: f32 = 48.0;
 /// 视频画面外留白（信箱/黑边区域）的填充色：与黑色视频内容可区分，
 /// 便于判断真实屏幕边界。
 const LETTERBOX_COLOR: egui::Color32 = egui::Color32::from_rgb(24, 32, 48);
@@ -32,7 +32,7 @@ const VIDEO_BORDER_COLOR: egui::Color32 = egui::Color32::from_gray(110);
 pub fn run() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([960.0, 600.0])
+            .with_inner_size([1280.0, 720.0])
             .with_title(format!("my_ipkvm {}", env!("GIT_COMMIT"))),
         ..Default::default()
     };
@@ -64,6 +64,8 @@ struct DesktopApp {
     last_pointer_sent: Option<(u8, u16, u16)>,
     last_pointer_sent_at: Option<Instant>,
     frame_repaint_task: Option<tokio::task::JoinHandle<()>>,
+    menu_chrome: f32,
+    status_chrome: f32,
     video_focused: bool,
     paste_busy: bool,
     status_message: Option<String>,
@@ -103,6 +105,8 @@ impl DesktopApp {
             last_pointer_sent: None,
             last_pointer_sent_at: None,
             frame_repaint_task: None,
+            menu_chrome: 0.0,
+            status_chrome: 0.0,
             video_focused: false,
             paste_busy: false,
             status_message: None,
@@ -117,13 +121,15 @@ impl DesktopApp {
         self.refresh_video(ctx);
         self.sync_control_state();
 
-        egui::TopBottomPanel::top("menu").show(ctx, |ui| self.menu_bar(ui));
+        let menu = egui::TopBottomPanel::top("menu").show(ctx, |ui| self.menu_bar(ui));
+        self.menu_chrome = menu.response.rect.height();
         if self.showing_device_dialog {
             self.device_dialog(ctx);
         } else {
             self.console_ui(ctx);
         }
-        egui::TopBottomPanel::bottom("status").show(ctx, |ui| self.status_bar(ui));
+        let status = egui::TopBottomPanel::bottom("status").show(ctx, |ui| self.status_bar(ui));
+        self.status_chrome = status.response.rect.height();
     }
 
     /// 控制设备离线时的状态同步：标记离线并复位所有输入/粘贴 UI 状态，
@@ -459,7 +465,12 @@ impl DesktopApp {
                 && let Some(actual) = self.frame_size
                 && self.last_follow_resize != Some(actual)
             {
-                let size = desired_window_inner_size(actual, FOLLOW_CHROME, ctx.pixels_per_point());
+                let chrome = if self.menu_chrome > 0.0 && self.status_chrome > 0.0 {
+                    self.menu_chrome + self.status_chrome
+                } else {
+                    DEFAULT_CHROME_FALLBACK
+                };
+                let size = desired_window_inner_size(actual, chrome, ctx.pixels_per_point());
                 ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
                 self.last_follow_resize = Some(actual);
             }

@@ -32,6 +32,12 @@ impl VideoViewport {
                 eframe::egui::vec2(frame.width as f32, frame.height as f32)
             }
         };
+        // 兜底：任何模式下视频矩形都不允许超出容器（ActualSize 大于容器时
+        // 等比缩小，避免底部/右侧被面板裁剪遮挡）。
+        let scale = (container.width() / size.x)
+            .min(container.height() / size.y)
+            .min(1.0);
+        let size = eframe::egui::vec2(size.x * scale, size.y * scale);
         eframe::egui::Rect::from_center_size(container.center(), size)
     }
 
@@ -92,5 +98,21 @@ mod tests {
             VideoViewport::map_pointer(pos2(9.0, 70.0), rect, frame),
             None
         );
+    }
+
+    #[test]
+    fn actual_size_larger_than_container_is_scaled_down_to_fit() {
+        let container = Rect::from_min_size(pos2(0.0, 0.0), eframe::egui::vec2(200.0, 100.0));
+        let frame = FrameSize {
+            width: 1920,
+            height: 1080,
+        };
+
+        let rect =
+            VideoViewport::frame_rect(container, frame, crate::state::VideoScaleMode::ActualSize);
+
+        assert!(rect.width() <= container.width() + 0.01);
+        assert!(rect.height() <= container.height() + 0.01);
+        assert!((rect.width() / rect.height() - 16.0 / 9.0).abs() < 0.01);
     }
 }
