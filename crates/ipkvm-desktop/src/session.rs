@@ -97,21 +97,15 @@ where
         self.frame_source = Some(frame_source);
         self.notice_rx = notice_rx;
 
-        let Some(sender) = self
-            .manager
-            .event_publisher()
-            .borrow()
-            .clone()
-        else {
+        let Some(sender) = self.manager.event_publisher().borrow().clone() else {
             self.rollback();
             return Err(DesktopSessionError::NoEventSender);
         };
         if let Err(error) = sender.try_send(RfbServerEvent::Connected {
-                client_id: RfbClientId::local_desktop(),
-                peer_addr: LOCAL_PEER,
-                shared: true,
-            })
-        {
+            client_id: RfbClientId::local_desktop(),
+            peer_addr: LOCAL_PEER,
+            shared: true,
+        }) {
             self.rollback();
             return Err(DesktopSessionError::Input(error.to_string()));
         }
