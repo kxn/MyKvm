@@ -1,6 +1,6 @@
 # Issue #37 headless 视频断流与 CH9329 掉线恢复模型实现计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** headless 在视频断流/CH9329 掉线时保持可观测且可恢复：`/api/status` 反映断流与输入离线原因/时间；输入泵失败后按指数退避自动重建会话；视频断流恢复后分辨率变化继续通过 RFB DesktopSize 通知。
 
@@ -33,16 +33,16 @@
 **Files:**
 - Modify: `crates/ipkvm-session/src/console_session.rs`
 
-- [ ] **Step 1: 失败测试**（`console_session.rs` 测试：`pump_error_marks_session_stopped` 后追加断言）
+- [x] **Step 1: 失败测试**（`console_session.rs` 测试：`pump_error_marks_session_stopped` 后追加断言）
 
 ```rust
         assert!(session.stats().input_offline.is_some());
         assert!(!session.stats().input_offline.as_ref().unwrap().reason.is_empty());
 ```
 
-- [ ] **Step 2: 运行确认失败**（`cargo test -p ipkvm-session console_session::tests::pump_error_marks_session_stopped`）
+- [x] **Step 2: 运行确认失败**（`cargo test -p ipkvm-session console_session::tests::pump_error_marks_session_stopped`）
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 ```rust
 /// 输入离线信息：泵因错误退出后的原因与时间。
@@ -84,9 +84,9 @@ pub struct InputOfflineInfo {
 
 `refresh_stats` 中 `observe_frame()` 顺带更新 `last_frame_ns`。
 
-- [ ] **Step 4: 运行确认通过**（`cargo test -p ipkvm-session console_session::tests::`）
+- [x] **Step 4: 运行确认通过**（`cargo test -p ipkvm-session console_session::tests::`）
 
-- [ ] **Step 5: 提交** `git commit -m "feat: record frame staleness and input offline reason in session stats"`
+- [x] **Step 5: 提交** `git commit -m "feat: record frame staleness and input offline reason in session stats"`
 
 ---
 
@@ -96,7 +96,7 @@ pub struct InputOfflineInfo {
 - Modify: `crates/ipkvm-headless/src/web/service.rs`
 - Modify: `crates/ipkvm-headless/tests/web_http.rs`
 
-- [ ] **Step 1: 失败测试**（`web_http.rs` 的 `api_status_reports_video_and_controller` 追加）
+- [x] **Step 1: 失败测试**（`web_http.rs` 的 `api_status_reports_video_and_controller` 追加）
 
 ```rust
     assert_eq!(status["video"]["stalled"], false);
@@ -104,9 +104,9 @@ pub struct InputOfflineInfo {
     assert!(status["session"].get("input_offline").is_none());
 ```
 
-- [ ] **Step 2: 运行确认失败**（`cargo test -p ipkvm-headless --test web_http api_status_reports_video_and_controller`）
+- [x] **Step 2: 运行确认失败**（`cargo test -p ipkvm-headless --test web_http api_status_reports_video_and_controller`）
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `const VIDEO_STALL_TIMEOUT_NS: u64 = 2_000_000_000;`
 
@@ -114,9 +114,9 @@ pub struct InputOfflineInfo {
 
 `api_status` 内：从 stats 取 `last_frame_ns`/`input_offline`；`stalled = match &frame { Some(_) => last_frame_ns.map_or(true, |t| now_ns.saturating_sub(t) > VIDEO_STALL_TIMEOUT_NS), None => session_state != "absent" }`。
 
-- [ ] **Step 4: 运行确认通过**（`cargo test -p ipkvm-headless --test web_http`）
+- [x] **Step 4: 运行确认通过**（`cargo test -p ipkvm-headless --test web_http`）
 
-- [ ] **Step 5: 提交** `git commit -m "feat: expose video stall and input offline in api status"`
+- [x] **Step 5: 提交** `git commit -m "feat: expose video stall and input offline in api status"`
 
 ---
 
@@ -127,7 +127,7 @@ pub struct InputOfflineInfo {
 - Modify: `crates/ipkvm-headless/src/web/mod.rs`
 - Modify: `crates/ipkvm-headless/src/web/service.rs`（serve 中 spawn）
 
-- [ ] **Step 1: 失败测试**（`recovery.rs` 内）
+- [x] **Step 1: 失败测试**（`recovery.rs` 内）
 
 ```rust
     #[test]
@@ -140,9 +140,9 @@ pub struct InputOfflineInfo {
     }
 ```
 
-- [ ] **Step 2: 运行确认失败**（`cargo test -p ipkvm-headless recovery::tests::`）
+- [x] **Step 2: 运行确认失败**（`cargo test -p ipkvm-headless recovery::tests::`）
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 ```rust
 use std::time::Duration;
@@ -280,9 +280,9 @@ pub async fn run_recovery_loop<I: InputSink + Clone + Send + 'static>(
         ));
 ```
 
-- [ ] **Step 4: 运行确认通过**（`cargo test -p ipkvm-headless`）
+- [x] **Step 4: 运行确认通过**（`cargo test -p ipkvm-headless`）
 
-- [ ] **Step 5: 提交** `git commit -m "feat: auto-recover headless session with exponential backoff"`
+- [x] **Step 5: 提交** `git commit -m "feat: auto-recover headless session with exponential backoff"`
 
 ---
 
@@ -291,26 +291,26 @@ pub async fn run_recovery_loop<I: InputSink + Clone + Send + 'static>(
 **Files:**
 - Modify: `crates/ipkvm-headless/tests/rfb_dynamic_resolution.rs`（或新增 fixture）
 
-- [ ] **Step 1: 失败测试**
+- [x] **Step 1: 失败测试**
 
 用 `MockFrameSource` 新建小 fixture：连接客户端 → 发布 4×2 帧 → 停 300ms → 发布 2×4 帧 → 断言收到 DesktopSize (0,0,2,4)。
 
-- [ ] **Step 2: 运行确认失败**（新增测试，先只建断言结构）
+- [x] **Step 2: 运行确认失败**（新增测试，先只建断言结构）
 
-- [ ] **Step 3: 实现**：若现有 `ServerFixture` 泛型化困难，新增 `MockServerFixture`（仿照现有 fixture，source 改为 `Arc<dyn FrameSource>`）。
+- [x] **Step 3: 实现**：若现有 `ServerFixture` 泛型化困难，新增 `MockServerFixture`（仿照现有 fixture，source 改为 `Arc<dyn FrameSource>`）。
 
-- [ ] **Step 4: 运行确认通过**（`cargo test -p ipkvm-headless --test rfb_dynamic_resolution`）
+- [x] **Step 4: 运行确认通过**（`cargo test -p ipkvm-headless --test rfb_dynamic_resolution`）
 
-- [ ] **Step 5: 提交** `git commit -m "test: desktop size announced after video stall and resume"`
+- [x] **Step 5: 提交** `git commit -m "test: desktop size announced after video stall and resume"`
 
 ---
 
 ### Task 5: 文档与收口
 
-- [ ] 更新 `docs/ipkvm-coarse-design.md`：headless 自动恢复策略（退避、视频只重启“从未出帧”）、status 字段。
-- [ ] 全量验证（fmt + workspace tests）。
-- [ ] 自审：退避不抢串口、视频停滞不重启、状态字段正确、desktop 行为未变。
-- [ ] 推送、PR、合并、关闭 #37。
+- [x] 更新 `docs/ipkvm-coarse-design.md`：headless 自动恢复策略（退避、视频只重启“从未出帧”）、status 字段。
+- [x] 全量验证（fmt + workspace tests）。
+- [x] 自审：退避不抢串口、视频停滞不重启、状态字段正确、desktop 行为未变。
+- [x] 推送、PR、合并、关闭 #37。
 
 ---
 
