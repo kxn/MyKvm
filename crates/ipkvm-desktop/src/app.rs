@@ -17,6 +17,8 @@ use crate::state::{ControlProbeStatus, DeviceSelectionState, VideoProbeStatus, V
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 const NO_SIGNAL_TIMEOUT: Duration = Duration::from_secs(2);
+/// 波特率扫描单档超时：GetInfo 应答很快，逐档白等会显著拖慢连接。
+const BAUD_PROBE_TIMEOUT: Duration = Duration::from_millis(300);
 /// 指针最小发送间隔（约 30Hz 限频），按键状态变化不受此限制。
 const POINTER_MIN_INTERVAL: Duration = Duration::from_millis(33);
 /// 菜单栏 + 状态栏占用的窗口内容区高度估算（ResizeWindowToVideo 用）。
@@ -372,7 +374,7 @@ impl DesktopApp {
     fn connect(&mut self) -> Result<(), DesktopSessionError> {
         if self.selection.advanced.auto_baud
             && let Some(control_id) = self.selection.selected_control_id.clone()
-            && let Some(baud) = crate::probe::detect_baud_rate(&control_id, PROBE_TIMEOUT)
+            && let Some(baud) = crate::probe::detect_baud_rate(&control_id, BAUD_PROBE_TIMEOUT)
         {
             self.selection.advanced.baud_rate = baud;
             self.status_message = Some(format!("已自动选择波特率 {baud}"));
