@@ -490,7 +490,7 @@ async fn api_devices<I: InputSink + Clone + Send + 'static>(
             .into_iter()
             .map(|d| DeviceDto {
                 id: d.path,
-                display_name: d.port_type,
+                display_name: d.display_name,
                 kind: "serial",
             })
             .collect::<Vec<_>>(),

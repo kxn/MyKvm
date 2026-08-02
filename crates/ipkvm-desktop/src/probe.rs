@@ -75,11 +75,26 @@ impl ProbeBackend for ProductionProbeBackend {
     fn list_control_devices(&mut self) -> Result<Vec<DeviceOption>, ProbeError> {
         ipkvm_session::devices::list_serial_devices()
             .map(|devices| {
+                let mut seen = std::collections::HashMap::<String, usize>::new();
                 devices
                     .into_iter()
-                    .map(|device| DeviceOption {
-                        id: device.path.clone(),
-                        label: format!("{} ({})", device.path, device.port_type),
+                    .map(|device| {
+                        let base = if device.display_name.is_empty() {
+                            device.path.clone()
+                        } else {
+                            device.display_name.clone()
+                        };
+                        let count = seen.entry(base.clone()).or_insert(0);
+                        *count += 1;
+                        let label = if *count > 1 {
+                            format!("{base} ({})", device.path)
+                        } else {
+                            base
+                        };
+                        DeviceOption {
+                            id: device.path,
+                            label,
+                        }
                     })
                     .collect()
             })

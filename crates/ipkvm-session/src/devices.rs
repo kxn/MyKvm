@@ -13,7 +13,8 @@ pub struct VideoDevice {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SerialDevice {
     pub path: String,
-    pub port_type: String,
+    /// 设备管理器显示名（USB 设备取 product/manufacturer，其余取端口名）。
+    pub display_name: String,
 }
 
 #[derive(Debug, Error)]
@@ -44,7 +45,29 @@ pub fn list_video_devices() -> Result<Vec<VideoDevice>, DeviceListError> {
 fn map_serial_port(port: &serialport::SerialPortInfo) -> SerialDevice {
     SerialDevice {
         path: port.port_name.clone(),
-        port_type: format!("{:?}", port.port_type),
+        display_name: serial_display_name(port),
+    }
+}
+
+/// 设备管理器风格的名字：USB 设备优先 product，其次 manufacturer；
+/// 其他类型（蓝牙/PCI/未知）直接使用端口名。
+#[cfg(feature = "serial")]
+fn serial_display_name(port: &serialport::SerialPortInfo) -> String {
+    match &port.port_type {
+        serialport::SerialPortType::UsbPort(info) => {
+            if let Some(product) = &info.product
+                && !product.is_empty()
+            {
+                product.clone()
+            } else if let Some(manufacturer) = &info.manufacturer
+                && !manufacturer.is_empty()
+            {
+                manufacturer.clone()
+            } else {
+                port.port_name.clone()
+            }
+        }
+        _ => port.port_name.clone(),
     }
 }
 
@@ -88,7 +111,7 @@ mod tests {
 
     #[cfg(feature = "serial")]
     #[test]
-    fn serial_device_mapping_preserves_path_and_port_type() {
+    fn serial_device_mapping_uses_device_manager_name() {
         let port = serialport::SerialPortInfo {
             port_name: "COM9".into(),
             port_type: serialport::SerialPortType::Unknown,
@@ -98,9 +121,26 @@ mod tests {
             map_serial_port(&port),
             SerialDevice {
                 path: "COM9".into(),
-                port_type: "Unknown".into(),
+                display_name: "COM9".into(),
             }
         );
+    }
+
+    #[cfg(feature = "serial")]
+    #[test]
+    fn serial_device_mapping_prefers_usb_product_name() {
+        let port = serialport::SerialPortInfo {
+            port_name: "COM9".into(),
+            port_type: serialport::SerialPortType::UsbPort(serialport::UsbPortInfo {
+                vid: 0,
+                pid: 0,
+                serial_number: None,
+                manufacturer: Some("WCH".into()),
+                product: Some("USB-SERIAL CH340".into()),
+            }),
+        };
+
+        assert_eq!(map_serial_port(&port).display_name, "USB-SERIAL CH340");
     }
 
     #[cfg(not(feature = "serial"))]

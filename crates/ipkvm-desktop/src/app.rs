@@ -1,8 +1,10 @@
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use eframe::egui;
 use ipkvm_core::MouseMode;
 use ipkvm_session::rfb_input::RfbInputNotice;
+use ipkvm_video::FrameSource;
 
 use crate::clipboard::{ClipboardService, save_jpeg};
 use crate::frame::bgra_to_rgba;
@@ -72,6 +74,10 @@ struct DesktopApp {
     showing_device_dialog: bool,
     show_special_keys: bool,
     show_advanced: bool,
+    preview_source: Option<Arc<dyn FrameSource>>,
+    preview_texture: Option<egui::TextureHandle>,
+    preview_frame_size: Option<FrameSize>,
+    preview_device_id: Option<String>,
     last_frame_seq: Option<u64>,
     last_frame_at: Option<Instant>,
 }
@@ -115,6 +121,10 @@ impl DesktopApp {
             showing_device_dialog: true,
             show_special_keys: false,
             show_advanced: false,
+            preview_source: None,
+            preview_texture: None,
+            preview_frame_size: None,
+            preview_device_id: None,
             last_frame_seq: None,
             last_frame_at: None,
         }
@@ -284,51 +294,145 @@ impl DesktopApp {
     }
 
     fn device_dialog(&mut self, ctx: &egui::Context) {
+        self.update_preview(ctx);
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("选择设备");
-            ui.add_space(4.0);
-
-            ui.label("视频设备");
-            self.video_device_combo(ui);
-            self.video_status_label(ui);
-            ui.add_space(8.0);
-
-            ui.label("控制设备（CH9329）");
-            self.control_device_combo(ui);
-            self.control_status_label(ui);
-            ui.add_space(8.0);
-
-            egui::CollapsingHeader::new("高级").show(ui, |ui| self.advanced_ui(ui));
-            ui.add_space(8.0);
-
+            ui.add_space(6.0);
             ui.horizontal(|ui| {
-                if ui.button("刷新检测").clicked() {
-                    let mut selection = self.selection.clone();
-                    match refresh_detection(&mut selection, &mut self.probe, PROBE_TIMEOUT) {
-                        Ok(()) => {
-                            self.selection = selection;
-                            self.status_message = None;
-                        }
-                        Err(error) => {
-                            self.status_message = Some(format!("设备枚举失败：{error}"));
-                        }
-                    }
-                }
-                let can_connect = self.selection.can_connect();
-                if ui
-                    .add_enabled(can_connect, egui::Button::new("连接"))
-                    .clicked()
-                {
-                    if let Err(error) = self.connect(ctx) {
-                        self.status_message = Some(format!("连接失败：{error}"));
-                    }
-                }
-            });
+                ui.vertical(|ui| {
+                    ui.set_width(380.0);
+                    ui.label("视频设备");
+                    self.video_device_combo(ui);
+                    self.video_status_label(ui);
+                    ui.add_space(10.0);
 
-            if let Some(message) = &self.status_message {
-                ui.colored_label(egui::Color32::LIGHT_RED, message);
-            }
+                    ui.label("控制设备（CH9329）");
+                    self.control_device_combo(ui);
+                    self.control_status_label(ui);
+                    ui.add_space(10.0);
+
+                    egui::CollapsingHeader::new("高级").show(ui, |ui| self.advanced_ui(ui));
+                    ui.add_space(12.0);
+
+                    ui.horizontal(|ui| {
+                        if ui.button("刷新检测").clicked() {
+                            let mut selection = self.selection.clone();
+                            match refresh_detection(&mut selection, &mut self.probe, PROBE_TIMEOUT)
+                            {
+                                Ok(()) => {
+                                    self.selection = selection;
+                                    self.status_message = None;
+                                }
+                                Err(error) => {
+                                    self.status_message = Some(format!("设备枚举失败：{error}"));
+                                }
+                            }
+                        }
+                        let can_connect = self.selection.can_connect();
+                        if ui
+                            .add_enabled(
+                                can_connect,
+                                egui::Button::new("连接").min_size(egui::vec2(140.0, 36.0)),
+                            )
+                            .clicked()
+                        {
+                            if let Err(error) = self.connect(ctx) {
+                                self.status_message = Some(format!("连接失败：{error}"));
+                            }
+                        }
+                    });
+
+                    if let Some(message) = &self.status_message {
+                        ui.add_space(6.0);
+                        ui.colored_label(egui::Color32::LIGHT_RED, message);
+                    }
+                });
+                ui.separator();
+                ui.vertical(|ui| {
+                    ui.label("视频预览");
+                    let (preview_response, preview_painter) =
+                        ui.allocate_painter(egui::vec2(320.0, 180.0), egui::Sense::hover());
+                    preview_painter.rect_filled(
+                        preview_response.rect,
+                        0.0,
+                        egui::Color32::from_gray(20),
+                    );
+                    if let Some(texture) = &self.preview_texture {
+                        let frame = self.preview_frame_size.unwrap_or(FrameSize {
+                            width: 320,
+                            height: 180,
+                        });
+                        let rect = VideoViewport::frame_rect(
+                            preview_response.rect,
+                            frame,
+                            VideoScaleMode::FitWindow,
+                        );
+                        preview_painter.image(
+                            texture.id(),
+                            rect,
+                            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                            egui::Color32::WHITE,
+                        );
+                    } else {
+                        preview_painter.text(
+                            preview_response.rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            "无预览",
+                            egui::FontId::proportional(16.0),
+                            egui::Color32::GRAY,
+                        );
+                    }
+                });
+            });
         });
+    }
+
+    /// 打开/刷新选中视频设备的实时预览（设备切换时重建源）。
+    fn update_preview(&mut self, ctx: &egui::Context) {
+        let video_id = self.selection.selected_video_id.clone();
+        if self.preview_device_id.as_deref() != video_id.as_deref() {
+            self.preview_source = None;
+            self.preview_texture = None;
+            self.preview_frame_size = None;
+            self.preview_device_id = video_id.clone();
+            if let Some(id) = &video_id
+                && let Ok(source) =
+                    ipkvm_video::camera::CameraSource::open(id, self.selection.advanced.preview_fps)
+            {
+                self.preview_source = Some(Arc::new(source));
+            }
+        }
+        let Some(source) = &self.preview_source else {
+            return;
+        };
+        let Some(frame) = source.latest_frame() else {
+            return;
+        };
+        let Ok(rgba) = bgra_to_rgba(&frame) else {
+            return;
+        };
+        let image = egui::ColorImage::from_rgba_unmultiplied(
+            [rgba.width as usize, rgba.height as usize],
+            &rgba.pixels,
+        );
+        match &mut self.preview_texture {
+            Some(texture) => texture.set(image, egui::TextureOptions::LINEAR),
+            None => {
+                self.preview_texture =
+                    Some(ctx.load_texture("preview", image, egui::TextureOptions::LINEAR));
+            }
+        }
+        self.preview_frame_size = Some(FrameSize {
+            width: rgba.width,
+            height: rgba.height,
+        });
+    }
+
+    fn drop_preview(&mut self) {
+        self.preview_source = None;
+        self.preview_texture = None;
+        self.preview_frame_size = None;
+        self.preview_device_id = None;
     }
 
     fn video_device_combo(&mut self, ui: &mut egui::Ui) {
@@ -397,6 +501,8 @@ impl DesktopApp {
     }
 
     fn connect(&mut self, ctx: &egui::Context) -> Result<(), DesktopSessionError> {
+        // 预览源占用相机/串口，连接前必须先释放。
+        self.drop_preview();
         if self.selection.advanced.auto_baud
             && let Some(control_id) = self.selection.selected_control_id.clone()
             && let Some(baud) = crate::probe::detect_baud_rate(&control_id, BAUD_PROBE_TIMEOUT)
@@ -984,8 +1090,11 @@ impl DesktopApp {
             ControlProbeStatus::Checking => {
                 ui.label("控制：探测中…");
             }
-            ControlProbeStatus::Ready(info) => {
-                ui.label(format!("控制：合法 CH9329（版本 {:#04x}）", info.version));
+            ControlProbeStatus::Ready(_) => {
+                ui.label(format!(
+                    "控制：CH9329({})",
+                    self.selection.selected_control_id.as_deref().unwrap_or("?")
+                ));
             }
             ControlProbeStatus::NotCh9329(reason) => {
                 ui.colored_label(
@@ -1009,7 +1118,10 @@ impl DesktopApp {
         let control = if !self.showing_device_dialog && !self.session.is_control_online() {
             "离线".to_owned()
         } else {
-            control_status_text(&self.selection.control_status)
+            control_status_text(
+                &self.selection.control_status,
+                self.selection.selected_control_id.as_deref(),
+            )
         };
         let keyboard = if self.paste_busy {
             "粘贴中".to_owned()
@@ -1082,11 +1194,11 @@ impl eframe::App for DesktopApp {
     }
 }
 
-fn control_status_text(status: &ControlProbeStatus) -> String {
+fn control_status_text(status: &ControlProbeStatus, port: Option<&str>) -> String {
     match status {
         ControlProbeStatus::NotSelected => "未选择".into(),
         ControlProbeStatus::Checking => "重新探测中".into(),
-        ControlProbeStatus::Ready(info) => format!("合法 CH9329（版本 {:#04x}）", info.version),
+        ControlProbeStatus::Ready(_) => format!("CH9329({})", port.unwrap_or("?")),
         ControlProbeStatus::NotCh9329(reason) => format!("非 CH9329（{reason}）"),
         ControlProbeStatus::NoResponse => "无应答".into(),
         ControlProbeStatus::OpenFailed(error) => format!("打开失败（{error}）"),
