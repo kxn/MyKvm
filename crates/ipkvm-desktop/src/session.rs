@@ -242,8 +242,7 @@ fn flush_pending_events(
     pending: &mut VecDeque<RfbServerEvent>,
     mut try_send: impl FnMut(
         RfbServerEvent,
-    )
-        -> Result<(), tokio::sync::mpsc::error::TrySendError<RfbServerEvent>>,
+    ) -> Result<(), tokio::sync::mpsc::error::TrySendError<RfbServerEvent>>,
 ) -> Result<(), DesktopSessionError> {
     while let Some(next) = pending.front().cloned() {
         match try_send(next) {
