@@ -537,8 +537,11 @@ impl DesktopApp {
         // 远程输入模式是粘性状态：点击视频区进入；窗口失焦、点击本地 UI、
         // 焦点被移走或 Ctrl+Alt+K 才退出，避免逐帧聚焦判定抖动导致
         // “点一下立即失焦/永远失焦”。
+        // 按下即进入（不等松开）：点击的按下帧也会作为远程按键发送，
+        // 避免“先按下一帧走绝对分支、再松开才进远程”的错位。
+        let pressed_video = response.is_pointer_button_down_on();
         let clicked_video = response.clicked();
-        if clicked_video {
+        if pressed_video || clicked_video {
             response.request_focus();
         }
         let window_lost = response.ctx.input(|input| {
@@ -549,7 +552,7 @@ impl DesktopApp {
         });
         let any_click = response.ctx.input(|input| input.pointer.any_click());
 
-        if !self.video_focused && clicked_video {
+        if !self.video_focused && (pressed_video || clicked_video) {
             // 刚进入：以当前修饰键为基线，避免把历史按住状态当新按下。
             self.last_modifiers = response.ctx.input(|input| input.modifiers);
             self.video_focused = true;
@@ -681,7 +684,8 @@ impl DesktopApp {
                 self.relative_wheel = 0;
             }
             self.pointer_mask = mask;
-        } else if pointer_active(self.video_focused, mask, self.pointer_mask)
+        } else if !relative_mode
+            && pointer_active(self.video_focused, mask, self.pointer_mask)
             && let Some(position) = response.ctx.input(|input| input.pointer.latest_pos())
             && let Some((x, y)) = VideoViewport::map_pointer(position, video_rect, frame)
         {
