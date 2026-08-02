@@ -55,6 +55,8 @@ cargo install --locked --version 0.20.2 cargo-deny
 - MPL-2.0。
 - LGPL-2.1-only、LGPL-2.1-or-later。
 - LGPL-3.0-only、LGPL-3.0-or-later。
+- BSL-1.0（源码分发需保留版权与许可证声明）。
+- CC0-1.0（公有领域贡献，无义务；保留按包例外以便追踪来源）。
 - 需要额外归属、源码、可替换或重新链接安排的其他许可证。
 
 Cargo 依赖只有在完成独立 issue 和中文合规记录后，才能通过 `licenses.exceptions` 按 crate 和必要的版本范围放行。记录至少包含：
@@ -82,6 +84,27 @@ LGPL Rust 代码不是绝对禁止，但普通 Cargo 依赖通常会静态链接
   3. 链接方式：纯 Rust + 平台 FFI（Linux ioctl、Windows 注册表/SetupAPI）静态链接进 `ipkvm-core`→`ipkvm-headless`；我们不修改 serialport 源文件。
   4. 发布义务：发布清单需附 MPL-2.0 许可证文本，并在产品文档/NOTICE 中声明使用了 serialport（「copyleft」按文件级，未修改文件无额外开源义务）。
   5. 重新审查条件：升级到 5.x 或上游变更许可证时重新审查。其传递依赖（`cfg-if`、`scopeguard`、`windows-sys`、`mach2`、`nix`、`io-kit-sys`）均为 MIT/Apache，已在全局允许列表内。
+
+- `clipboard-win` 5.4.x（`deny.toml` 例外 `allow = ["BSL-1.0"]`）：
+  1. 引入目的：arboard 3.x 在 Windows 上的剪贴板后端（desktop app 的文本粘贴与截图复制）。arboard 是桌面 app 计划选定的跨平台剪贴板库，Windows 实现必然依赖 clipboard-win，无同质量替代。
+  2. 上游声明：BSL-1.0（Boost 软件许可证，OSI 批准的宽松许可证，无 copyleft）。
+  3. 链接方式：静态链接进 `ipkvm-desktop` 二进制。
+  4. 发布义务：以源码形式分发时保留 BSL-1.0 版权声明与许可证文本；二进制分发无附加义务。仓库保留 Cargo.lock 与依赖源码即可满足。
+  5. 重新审查条件：升级到 6.x 或上游变更许可证时重新审查。其依赖 `error-code` 同许可证，单独批准。
+
+- `error-code` 3.3.x（`deny.toml` 例外 `allow = ["BSL-1.0"]`）：
+  1. 引入目的：`clipboard-win` 的 Windows 错误码辅助依赖。
+  2. 上游声明：BSL-1.0（同上）。
+  3. 链接方式：静态链接进 `ipkvm-desktop` 二进制。
+  4. 发布义务：同 `clipboard-win`（源码分发保留声明，二进制无附加义务）。
+  5. 重新审查条件：升级到 4.x 或上游变更许可证时重新审查。
+
+- `hexf-parse` 0.2.x（`deny.toml` 例外 `allow = ["CC0-1.0"]`）：
+  1. 引入目的：wgpu/naga 解析 WGSL 十六进制浮点字面量的固定依赖；wgpu 是 eframe/egui 桌面 app 的 GPU 渲染后端，无法避开。
+  2. 上游声明：CC0-1.0（公有领域贡献 + 兜底宽松许可，无署名、许可证保留或 copyleft 义务）。
+  3. 链接方式：静态链接进 `ipkvm-desktop` 二进制。
+  4. 发布义务：无（不要求署名或许可证文本；按惯例在依赖清单中注明来源）。
+  5. 重新审查条件：升级到 0.3.x 或上游变更许可证时重新审查。
 
 ### 默认拒绝
 

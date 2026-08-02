@@ -14,10 +14,26 @@ my_ipkvm 是一个软件 IPKVM 项目：主控机通过 USB HDMI 采集卡读取
 - `ipkvm-video`：采集设备枚举、格式选择、共享视频帧流与 `source_info` 元数据；`mock` 功能下提供 Y4M 循环播放帧源（可模拟不同分辨率素材顺序切换），`mf` 功能下提供 Windows DirectShow 相机后端（`list_cameras` 枚举、`CameraSource` 采集与 `camera_probe` 示例，含 OBS 虚拟摄像头）——采用自研纯 sink filter（不依赖系统的 Sample Grabber，因其与 OBS 虚拟摄像头不兼容）+ 事件驱动（Condvar 阻塞等待，无帧时零轮询），`file_source` 提供 Y4M 文件伪设备。
 - `ipkvm-session`：真实会话核心——连接驱动与事件模型（`RfbConnectionGate` 仲裁）、输入泵与映射器、设备枚举（`devices`）、`ConsoleSession` 组装与 `SessionManager` 生命周期管理、会话状态统计。
 - `ipkvm-rfb`：传输无关的 RFB 3.8 `None` 握手、客户端消息增量解码、真彩像素转换、`Raw` 更新、`DesktopSize` 和指针输入坐标时期。
-- `ipkvm-desktop`：本地图形界面入口。
+- `ipkvm-desktop`：本地图形界面入口（第一版：设备选择与 CH9329 探测、视频控制台、本地键鼠直通、特殊键/粘贴/截图、状态栏与硬件异常状态）。
 - `ipkvm-headless`：RFB TCP 与 WebSocket 传输适配层，以及内嵌中文 noVNC 页面的 HTTP 服务（含 `/api/devices`、`/api/session`、`/api/status`、`/api/screenshot`）；`demo` 功能下提供 `ipkvm-headless` 正式后台进程（`--serial`/`--baud` 真实 CH9329 串口注入）和 `ipkvm-demo` 演示二进制。TLS 尚未实现。
 
 `ipkvm-session` 当前默认按 CH9329 出厂波特率 9600 配置串口。硬件到货前不自动改写芯片参数，也不假定成品线支持 115200。
+
+## 运行桌面 app（第一版）
+
+```powershell
+cargo run -p ipkvm-desktop --all-features
+```
+
+启动后选择视频设备和控制设备；控制设备必须探测为合法 CH9329 后「连接」按钮才会启用。连接后：
+
+- 点击视频区域获得焦点后可发送本地键盘/鼠标（绝对坐标按目标画面缩放换算）。
+- 控制菜单可发送 Ctrl+Alt+Del、Esc、F1-F12、Insert/Delete/Home/End/PageUp/PageDown、方向键，粘贴剪贴板文本，释放所有按键，截图复制到剪贴板（Windows 还可保存 JPEG）。
+- 重新选择设备或停止连接不退出 app；切换设备采用会话级停旧启新。
+- 底部状态栏显示控制设备、键盘输入、鼠标坐标和视频状态（无信号/断流/分辨率）。
+- 视频断流连续 2 秒显示「无信号」，app 不退出；CH9329 掉线后输入进入「控制设备离线」，刷新检测重新探测后可手动重新连接（自动恢复见 issue #37）。
+
+界面字体优先加载系统字体；找不到系统字体时使用内置 Roboto-Regular（Apache-2.0）兜底，许可证文本见 `crates/ipkvm-desktop/assets/ROBOTO-LICENSE.txt`。
 
 ## 设计文档
 

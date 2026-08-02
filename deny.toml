@@ -38,6 +38,27 @@ name = "serialport"
 version = "4.9"
 allow = ["MPL-2.0"]
 
+# arboard 3.x 在 Windows 上的剪贴板后端：BSL-1.0（Boost 软件许可证，OSI 批准的
+# 宽松许可证）。仅要求源码分发保留版权与许可证声明，二进制分发无附加义务。
+# 合规记录见 docs/dependency-license-policy.md「按组件审查」。
+[[licenses.exceptions]]
+name = "clipboard-win"
+version = "5.4"
+allow = ["BSL-1.0"]
+
+# clipboard-win 的依赖，同属 BSL-1.0（同上）。
+[[licenses.exceptions]]
+name = "error-code"
+version = "3.3"
+allow = ["BSL-1.0"]
+
+# naga/wgpu 解析 WGSL 十六进制浮点字面量的依赖：CC0-1.0（公有领域贡献，
+# 无署名或声明义务）。合规记录见 docs/dependency-license-policy.md「按组件审查」。
+[[licenses.exceptions]]
+name = "hexf-parse"
+version = "0.2"
+allow = ["CC0-1.0"]
+
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"

@@ -10,7 +10,7 @@ use tokio::sync::watch;
 
 use crate::console_session::{ConsoleSession, SessionError, SessionHandle};
 use crate::rfb_connection::{RfbConnectionGate, RfbServerEvent};
-use crate::rfb_input::RfbInputRunError;
+use crate::rfb_input::{RfbInputNotice, RfbInputRunError};
 
 /// 会话状态：从实际会话的 `is_running()` 推断，不复制维护。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -36,6 +36,8 @@ pub struct SessionManager<S: InputSink + Clone + Send + 'static> {
     /// 当前事件出口发布端：`Some` 表示会话已启动、传输层可发事件；`None`
     /// 表示无活动出口（会话未创建/已停止/已销毁）。
     event_publisher: watch::Sender<Option<tokio::sync::mpsc::Sender<RfbServerEvent>>>,
+    /// 会话 notice 镜像：组装/重建会话时注入，供桌面本地控制器观察输入状态。
+    notice_mirror: Option<tokio::sync::mpsc::UnboundedSender<RfbInputNotice>>,
 }
 
 impl<S: InputSink + Clone + Send + 'static> SessionManager<S> {
@@ -47,6 +49,7 @@ impl<S: InputSink + Clone + Send + 'static> SessionManager<S> {
             session: Some(session),
             pending_stop: None,
             event_publisher,
+            notice_mirror: None,
         }
     }
 
@@ -60,6 +63,19 @@ impl<S: InputSink + Clone + Send + 'static> SessionManager<S> {
             session: None,
             pending_stop: None,
             event_publisher,
+            notice_mirror: None,
+        }
+    }
+
+    /// 设置 notice 镜像发送端；`None` 关闭镜像。会应用到当前已组装会话；
+    /// 已在运行的泵在下次重启/换设备重建后接入新镜像。
+    pub fn set_notice_mirror(
+        &mut self,
+        notice_mirror: Option<tokio::sync::mpsc::UnboundedSender<RfbInputNotice>>,
+    ) {
+        self.notice_mirror = notice_mirror;
+        if let Some(session) = self.session.as_mut() {
+            session.set_notice_mirror(self.notice_mirror.clone());
         }
     }
 
@@ -76,12 +92,10 @@ impl<S: InputSink + Clone + Send + 'static> SessionManager<S> {
         if self.session.is_some() {
             return Err(SessionError::AlreadyCreated);
         }
-        self.session = Some(ConsoleSession::new(
-            frame_source,
-            sink,
-            gate,
-            self.event_publisher.clone(),
-        ));
+        let mut session =
+            ConsoleSession::new(frame_source, sink, gate, self.event_publisher.clone());
+        session.set_notice_mirror(self.notice_mirror.clone());
+        self.session = Some(session);
         Ok(())
     }
 
@@ -179,12 +193,10 @@ impl<S: InputSink + Clone + Send + 'static> SessionManager<S> {
             self.stop()?;
         }
         self.wait_stopped().await;
-        self.session = Some(ConsoleSession::new(
-            frame_source,
-            sink,
-            gate,
-            self.event_publisher.clone(),
-        ));
+        let mut session =
+            ConsoleSession::new(frame_source, sink, gate, self.event_publisher.clone());
+        session.set_notice_mirror(self.notice_mirror.clone());
+        self.session = Some(session);
         self.start()?;
         Ok(())
     }
@@ -545,6 +557,91 @@ mod tests {
 
         manager.stop().unwrap();
         assert!(publisher.borrow().is_none());
+        manager.wait_stopped().await;
+    }
+
+    /// notice mirror 必须跨 create/replace_and_start 保持：重建会话后仍能收到 notice。
+    #[tokio::test]
+    async fn notice_mirror_survives_create_and_replace() {
+        let (mut manager, _sink) = session_manager_fixture();
+        let (notice_tx, mut notice_rx) = tokio::sync::mpsc::unbounded_channel();
+        manager.set_notice_mirror(Some(notice_tx));
+        manager.start().unwrap();
+
+        let client_id = RfbClientId::for_test(7);
+        let peer_addr = "127.0.0.1:5900".parse().unwrap();
+        let event_tx = manager
+            .event_publisher()
+            .borrow()
+            .clone()
+            .expect("started session must publish event sender");
+        event_tx
+            .send(RfbServerEvent::Connected {
+                client_id,
+                peer_addr,
+                shared: true,
+            })
+            .await
+            .unwrap();
+
+        let mut saw_notice = false;
+        for _ in 0..4 {
+            let notice = tokio::time::timeout(Duration::from_secs(1), notice_rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            if matches!(
+                notice,
+                crate::rfb_input::RfbInputNotice::ControllerAcquired { .. }
+            ) {
+                saw_notice = true;
+                break;
+            }
+        }
+        assert!(saw_notice, "create 后 mirror 未收到 ControllerAcquired");
+
+        manager
+            .replace_and_start(
+                Arc::new(MockFrameSource::new()),
+                RecordingSink::default(),
+                RfbConnectionGate::new(),
+            )
+            .await
+            .unwrap();
+        let event_tx = manager
+            .event_publisher()
+            .borrow()
+            .clone()
+            .expect("replaced session must publish event sender");
+        event_tx
+            .send(RfbServerEvent::Connected {
+                client_id,
+                peer_addr,
+                shared: true,
+            })
+            .await
+            .unwrap();
+
+        let mut saw_after_replace = false;
+        for _ in 0..4 {
+            let notice = tokio::time::timeout(Duration::from_secs(1), notice_rx.recv())
+                .await
+                .unwrap()
+                .unwrap();
+            if matches!(
+                notice,
+                crate::rfb_input::RfbInputNotice::ControllerAcquired { .. }
+            ) {
+                saw_after_replace = true;
+                break;
+            }
+        }
+        assert!(
+            saw_after_replace,
+            "replace_and_start 后 mirror 未收到新会话 notice"
+        );
+
+        manager.stop().unwrap();
         manager.wait_stopped().await;
     }
 
