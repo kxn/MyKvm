@@ -5,7 +5,9 @@ use std::sync::Arc;
 use ipkvm_headless::rfb_connection::{RfbConnectionGate, RfbServerEvent};
 use ipkvm_headless::rfb_tcp::{RfbTcpConfig, RfbTcpServer};
 use ipkvm_video::looping::LoopingVideoSource;
+use ipkvm_video::mock::MockFrameSource;
 use ipkvm_video::y4m::Y4mAsset;
+use ipkvm_video::{MonotonicTimestamp, PixelFormat, VideoFrame};
 use support::TestRfbClient;
 use tokio::{
     net::TcpListener,
@@ -155,4 +157,80 @@ async fn looping_source_announces_desktop_size_over_real_tcp() {
     );
 
     fixture.stop().await;
+}
+
+fn bgra_frame(seq: u64, width: u32, height: u32, luminance: u8) -> Arc<VideoFrame> {
+    let pixels = vec![luminance, luminance, luminance, 0xff]
+        .repeat((width * height) as usize);
+    Arc::new(VideoFrame::new(
+        seq,
+        MonotonicTimestamp::from_nanos(seq),
+        width,
+        height,
+        width * 4,
+        PixelFormat::Bgra8888,
+        Arc::from(pixels.into_boxed_slice()),
+    ))
+}
+
+#[tokio::test]
+async fn desktop_size_announced_after_video_stall_and_resume() {
+    let source = Arc::new(MockFrameSource::new());
+    source.publish_frame(bgra_frame(1, 4, 2, 0));
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let (event_tx, _events) = mpsc::channel(16);
+    let event_publisher = watch::channel(Some(event_tx)).1;
+    let (shutdown, shutdown_rx) = watch::channel(false);
+    let server = RfbTcpServer::new(
+        listener,
+        source.clone(),
+        event_publisher,
+        RfbTcpConfig::default(),
+        RfbConnectionGate::new(),
+    )
+    .unwrap();
+    let task = tokio::spawn(server.run(shutdown_rx));
+
+    let mut client = TestRfbClient::connect(address).await;
+    let server_init = client.handshake(true).await;
+    assert_eq!((server_init.width, server_init.height), (4, 2));
+
+    // 声明 Raw 与 DesktopSize 伪编码。
+    client
+        .send_raw(&[2, 0, 0, 2, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0x21])
+        .await;
+    client.request_update(false, 0, 0, 4, 2).await;
+    let initial = client.read_update(4 * 2 * 4).await;
+    assert_eq!((initial.width, initial.height), (4, 2));
+
+    // 断流（暂停出帧），随后恢复并切换分辨率。
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    source.publish_frame(bgra_frame(2, 2, 4, 255));
+
+    let desktop_size = timeout(Duration::from_secs(10), async {
+        loop {
+            client.request_update(true, 0, 0, 4, 2).await;
+            let update = client.read_update_any().await;
+            if update.encoding == -223 {
+                return update;
+            }
+        }
+    })
+    .await
+    .expect("timed out waiting for DesktopSize after stall and resume");
+
+    assert_eq!(
+        (
+            desktop_size.x,
+            desktop_size.y,
+            desktop_size.width,
+            desktop_size.height
+        ),
+        (0, 0, 2, 4)
+    );
+
+    shutdown.send(true).unwrap();
+    task.await.unwrap().unwrap();
 }
