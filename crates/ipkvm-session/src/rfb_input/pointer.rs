@@ -91,7 +91,10 @@ fn button_events(committed: u8, new_mask: u8) -> Vec<PointerEvent> {
     let mut events = Vec::new();
     for (mask, button) in PERSISTENT_BUTTONS {
         if committed & mask != 0 && new_mask & mask == 0 {
-            events.push(PointerEvent::Button { button, down: false });
+            events.push(PointerEvent::Button {
+                button,
+                down: false,
+            });
         }
     }
     for (mask, button) in PERSISTENT_BUTTONS {

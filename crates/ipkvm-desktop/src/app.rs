@@ -548,27 +548,42 @@ impl DesktopApp {
         let relative_mode = self.selection.advanced.mouse_mode == MouseMode::Relative;
         if remote_active && relative_mode {
             if !self.cursor_grabbed {
-                response.ctx.send_viewport_cmd(egui::ViewportCommand::CursorGrab(
-                    egui::CursorGrab::Locked,
-                ));
-                response.ctx.send_viewport_cmd(egui::ViewportCommand::CursorVisible(false));
+                response
+                    .ctx
+                    .send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::CursorGrab::Locked));
+                response
+                    .ctx
+                    .send_viewport_cmd(egui::ViewportCommand::CursorVisible(false));
                 self.cursor_grabbed = true;
             }
         } else if self.cursor_grabbed {
-            response.ctx.send_viewport_cmd(egui::ViewportCommand::CursorGrab(
-                egui::CursorGrab::None,
-            ));
-            response.ctx.send_viewport_cmd(egui::ViewportCommand::CursorVisible(true));
+            response
+                .ctx
+                .send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::CursorGrab::None));
+            response
+                .ctx
+                .send_viewport_cmd(egui::ViewportCommand::CursorVisible(true));
             self.cursor_grabbed = false;
         }
 
         // 指针：相对模式用增量（本地光标已锁定），绝对模式用窗口坐标。
         let mask = pointer_button_mask(response, self.pointer_mask);
         if remote_active && relative_mode {
-            let delta = response.ctx.input(|input| input.pointer.delta());
+            // 光标锁定后位置不变，位置增量恒为 0；必须用原始鼠标运动事件
+            // （eframe 从 DeviceEvent::MouseMotion 转发，物理像素）。
+            let (raw_dx, raw_dy) = response.ctx.input(|input| {
+                input.events.iter().fold((0.0f32, 0.0f32), |acc, event| {
+                    if let egui::Event::MouseMoved(delta) = event {
+                        (acc.0 + delta.x, acc.1 + delta.y)
+                    } else {
+                        acc
+                    }
+                })
+            });
             let sensitivity = self.selection.advanced.relative_sensitivity;
-            let dx_points = delta.x * sensitivity;
-            let dy_points = delta.y * sensitivity;
+            let pixels_per_point = response.ctx.pixels_per_point();
+            let dx_points = raw_dx / pixels_per_point * sensitivity;
+            let dy_points = raw_dy / pixels_per_point * sensitivity;
             let dx = dx_points * (frame.width as f32 / video_rect.width());
             let dy = dy_points * (frame.height as f32 / video_rect.height());
             let (dx, dy) = crate::input::accumulate_delta(&mut self.relative_remainder, dx, dy);
@@ -843,15 +858,14 @@ impl DesktopApp {
         } else {
             "失焦".to_owned()
         };
-        let pointer = if self.selection.advanced.mouse_mode == MouseMode::Relative
-            && self.video_focused
-        {
-            "相对模式".to_owned()
-        } else {
-            self.last_pointer
-                .map(|(x, y)| format!("({x}, {y})"))
-                .unwrap_or_else(|| "窗口外".into())
-        };
+        let pointer =
+            if self.selection.advanced.mouse_mode == MouseMode::Relative && self.video_focused {
+                "相对模式".to_owned()
+            } else {
+                self.last_pointer
+                    .map(|(x, y)| format!("({x}, {y})"))
+                    .unwrap_or_else(|| "窗口外".into())
+            };
         StatusBarTexts {
             control,
             keyboard,

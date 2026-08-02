@@ -593,9 +593,7 @@ mod tests {
         let (mut controller, sink) = controller_with_sink();
         controller.connect(request()).unwrap();
 
-        controller
-            .send_pointer_relative(1, 10, -3, 2)
-            .unwrap();
+        controller.send_pointer_relative(1, 10, -3, 2).unwrap();
 
         wait_until(
             || sink.recorded.lock().unwrap().pointer_batches == 1,

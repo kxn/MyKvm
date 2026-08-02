@@ -226,14 +226,8 @@ pub fn is_mode_toggle_combo(event: &eframe::egui::Event) -> bool {
 pub fn accumulate_delta(remainder: &mut (f32, f32), dx: f32, dy: f32) -> (i16, i16) {
     remainder.0 += dx;
     remainder.1 += dy;
-    let ix = remainder
-        .0
-        .trunc()
-        .clamp(i16::MIN as f32, i16::MAX as f32) as i16;
-    let iy = remainder
-        .1
-        .trunc()
-        .clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+    let ix = remainder.0.trunc().clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+    let iy = remainder.1.trunc().clamp(i16::MIN as f32, i16::MAX as f32) as i16;
     remainder.0 -= ix as f32;
     remainder.1 -= iy as f32;
     (ix, iy)
