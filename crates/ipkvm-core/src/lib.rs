@@ -3,6 +3,9 @@ mod geometry;
 mod input;
 mod serial;
 
+#[cfg(feature = "serial")]
+mod serial_port;
+
 #[cfg(any(test, feature = "mock"))]
 pub mod fake_serial;
 
@@ -21,6 +24,9 @@ pub use serial::{
     CommandBatch, CommandBatchError, CommandQueue, CommandQueueError, CommandQueueResult,
     QueueStats,
 };
+
+#[cfg(feature = "serial")]
+pub use serial_port::{DEFAULT_BAUD_RATE, SerialCommandQueue, SerialCommandQueueError};
 
 #[cfg(test)]
 mod tests {

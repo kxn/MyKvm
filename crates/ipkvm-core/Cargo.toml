@@ -8,6 +8,8 @@ rust-version.workspace = true
 
 [dependencies]
 thiserror.workspace = true
+# serialport 仅在 serial feature 下启用（CH9329 真实串口通信）。
+serialport = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest.workspace = true
@@ -15,3 +17,9 @@ proptest.workspace = true
 [features]
 default = []
 mock = []
+# 真实串口后端：SerialCommandQueue（实现 CommandQueue，把 CH9329 帧写入串口设备）。
+serial = ["dep:serialport"]
+
+[[example]]
+name = "ch9329_probe"
+required-features = ["serial"]

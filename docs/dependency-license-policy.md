@@ -76,6 +76,13 @@ LGPL Rust 代码不是绝对禁止，但普通 Cargo 依赖通常会静态链接
   4. 发布义务：发布清单需附 MIT 与 Apache-2.0 许可证文本，并因 IJG 条款在产品文档中致谢使用 IJG 代码（「Conditions of distribution and use」要求 acknowledgment）。
   5. 重新审查条件：升级到 0.7.x 或更高、或上游修改许可证表达式/源码来源时重新审查（0.7 已切换 edition 2024 与 rust-version 1.87，行为差异需另行核对）。
 
+- `serialport` 4.9.x（`deny.toml` 例外 `allow = ["MPL-2.0"]`）：
+  1. 引入目的：CH9329 串口转 USB-HID 芯片的通信后端（`ipkvm-core` 的 `serial` feature，`SerialCommandQueue` 把键鼠命令写入串口）。备选的 `serial`/`mio-serial` 维护停滞或跨平台支持弱，`serialport` 是维护活跃、跨 Windows/Linux/macOS 的事实标准。
+  2. 上游声明：MPL-2.0（文件级弱 copyleft，类 LGPL 的弱传染：仅修改过的源文件需开源，链接不传染）。
+  3. 链接方式：纯 Rust + 平台 FFI（Linux ioctl、Windows 注册表/SetupAPI）静态链接进 `ipkvm-core`→`ipkvm-headless`；我们不修改 serialport 源文件。
+  4. 发布义务：发布清单需附 MPL-2.0 许可证文本，并在产品文档/NOTICE 中声明使用了 serialport（「copyleft」按文件级，未修改文件无额外开源义务）。
+  5. 重新审查条件：升级到 5.x 或上游变更许可证时重新审查。其传递依赖（`cfg-if`、`scopeguard`、`windows-sys`、`mach2`、`nix`、`io-kit-sys`）均为 MIT/Apache，已在全局允许列表内。
+
 ### 默认拒绝
 
 以下情况默认使验证失败：

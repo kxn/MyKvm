@@ -1233,13 +1233,17 @@ mod tests {
         assert_eq!(batches.len(), 3);
         assert_eq!(batches[0].frames().len(), 1);
         assert_eq!(batches[0].frames()[0].command(), 0x02);
+        // Pointer batch：绝对移动（0x04，buttons=0）+ 左键按下（0x05 相对，buttons=1）。
         assert_eq!(batches[1].frames().len(), 2);
+        assert_eq!(batches[1].frames()[0].command(), 0x04);
         assert_eq!(batches[1].frames()[0].data()[1], 0);
+        assert_eq!(batches[1].frames()[1].command(), 0x05);
         assert_eq!(batches[1].frames()[1].data()[1], 1);
+        // 释放 batch：键盘全 0 + 鼠标相对 buttons=0（协议修正：release 走相对命令）。
         let release = batches[2].frames();
         assert_eq!(release.len(), 2);
         assert_eq!(release[0].data(), &[0; 8]);
-        assert_eq!(release[1].command(), 0x04);
+        assert_eq!(release[1].command(), 0x05);
         assert_eq!(release[1].data()[1], 0);
         assert_eq!(pump.active_client(), None);
     }

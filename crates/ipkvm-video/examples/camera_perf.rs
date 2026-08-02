@@ -41,13 +41,12 @@ fn main() {
     let win = Duration::from_secs(5);
     let start = std::time::Instant::now();
     while start.elapsed() < win {
-        if rx.has_changed().unwrap_or(false) {
-            if let Some(f) = rx.borrow_and_update().as_ref() {
-                if f.seq != last_seq {
-                    frames += 1;
-                    last_seq = f.seq;
-                }
-            }
+        if rx.has_changed().unwrap_or(false)
+            && let Some(f) = rx.borrow_and_update().as_ref()
+            && f.seq != last_seq
+        {
+            frames += 1;
+            last_seq = f.seq;
         }
         // 用阻塞等待代替忙轮询，降低工具自身 CPU：用 recv_timeout 语义不可得（watch 无），
         // 改用较长 sleep 让采集线程主导。
