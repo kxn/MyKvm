@@ -70,6 +70,7 @@ pub struct AdvancedSettings {
     pub preview_fps: u64,
     pub scale_mode: VideoScaleMode,
     pub relative_sensitivity: f32,
+    pub auto_baud: bool,
 }
 
 impl Default for AdvancedSettings {
@@ -80,6 +81,7 @@ impl Default for AdvancedSettings {
             preview_fps: 30,
             scale_mode: VideoScaleMode::FitWindow,
             relative_sensitivity: 1.0,
+            auto_baud: true,
         }
     }
 }
@@ -207,5 +209,6 @@ mod tests {
         let advanced = AdvancedSettings::default();
         assert_eq!(advanced.mouse_mode, MouseMode::Absolute);
         assert_eq!(advanced.relative_sensitivity, 1.0);
+        assert!(advanced.auto_baud);
     }
 }
