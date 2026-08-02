@@ -26,8 +26,10 @@
 - `crates/ipkvm-session/src/rfb_connection/` — 从 headless 整目录搬入（driver/finalize/frame/gate/pending/transport/mod.rs）
 - `crates/ipkvm-session/src/rfb_input/` — 从 headless 整目录搬入（keyboard/keymap/mod.rs/pointer/pump/text.rs）
 - `crates/ipkvm-session/src/devices.rs` — 新增：视频 + 串口设备枚举
-- `crates/ipkvm-session/src/session_manager.rs` — 新增：会话创建/重启/停止
-- `crates/ipkvm-session/Cargo.toml` — 新增 ipkvm-rfb、tokio、serialport（serial feature）
+- `crates/ipkvm-session/src/console_session.rs` — 新增：ConsoleSession 真实组装（帧源+输入泵+gate+事件出口）
+- `crates/ipkvm-session/src/serial_stats.rs` — 新增：串口统计类型（从 CommandQueue::stats 映射）
+- `crates/ipkvm-session/src/session_manager.rs` — 新增：会话创建/重启/停止（委托 ConsoleSession）
+- `crates/ipkvm-session/Cargo.toml` — 新增 ipkvm-rfb、tokio、serialport（serial feature）、thiserror
 
 **headless crate（搬运后调整）：**
 - `crates/ipkvm-headless/src/lib.rs` — 移除 rfb_connection/rfb_input 模块，改为 `pub use ipkvm_session::{rfb_connection, rfb_input, ...}` 重新导出 + 保留 HeadlessConfig
@@ -345,22 +347,198 @@ git commit -m "feat(session): 新增设备枚举模块（视频 + 串口）"
 
 ---
 
-## Task 6: session 新增 SessionManager 会话生命周期管理
+## Task 6: ConsoleSession 真实组装（帧源 + 输入泵 + gate）
 
-> **范围说明**：本任务只建 `SessionManager` 的状态机与生命周期骨架，**不组装真实帧源/串口/输入泵**（那属于后续 issue 的 `ConsoleSession` 真实组装）。SessionManager 面向 `/api/session`（headless）与桌面设备切换（desktop）共用，本期只交付可测试的状态迁移。`SessionHandle` 骨架可 Clone。
+> **范围**：`ConsoleSession` 从空壳变为真实会话组装器。它持有帧源（`Arc<dyn FrameSource>`）、输入 sink（`S: InputSink`，headless 用 `Ch9329InputSink<SerialCommandQueue>` 或 `<FakeCommandQueue>`）、`RfbConnectionGate`（仲裁，与传输层共享）和事件出口（`mpsc::Sender<RfbServerEvent>`）。`start()` spawn 输入泵并收集通知；`stop()` 触发释放并停泵。
+
+**Files:**
+- Create: `crates/ipkvm-session/src/console_session.rs`
+- Modify: `crates/ipkvm-session/src/lib.rs`（`pub mod console_session;`）
+- Modify: `crates/ipkvm-session/Cargo.toml`（加 `ipkvm-rfb`、`tokio`、`thiserror`——如 T1 未加）
+
+**Interfaces:**
+- Produces:
+  - `ConsoleSession<S: InputSink + Send + 'static>`
+  - `ConsoleSession::new(frame_source, sink, gate, event_tx) -> Self`
+  - `ConsoleSession::start(&mut self) -> Result<SessionHandle, SessionError>`（spawn 输入泵，返回可停止句柄）
+  - `ConsoleSession::stop(&mut self) -> Result<(), SessionError>`（触发 release_all 并停泵）
+  - `ConsoleSession::gate(&self) -> &RfbConnectionGate`
+  - `ConsoleSession::event_tx(&self) -> &mpsc::Sender<RfbServerEvent>`（传输层 clone 使用）
+  - `ConsoleSession::stats(&self) -> &SessionStats`
+- Consumes: `RfbInputPump`（T2 搬入）、`RfbConnectionGate`（T1 搬入）、`ipkvm_core::InputSink`、`ipkvm_video::FrameSource`
+
+- [ ] **Step 1: 写失败的测试**
+
+```rust
+// console_session.rs 底部
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // 用记录型 sink 验证：start 后事件能到 pump，stop 后 release_all 被调用。
+    // 帧源用 ipkvm-video mock（MockFrameSource），sink 用记录型 TestSink。
+    #[test]
+    fn start_returns_running_handle_and_stop_releases() {
+        let mut session = console_session_fixture();
+        let handle = session.start().unwrap();
+        assert!(session.stats().is_running());
+        session.stop().unwrap();
+        assert!(!session.stats().is_running());
+        let _ = handle;
+    }
+}
+```
+
+- [ ] **Step 2: 运行测试确认失败**
+
+Run: `cargo test -p ipkvm-session console_session --features mock`
+Expected: FAIL（模块不存在）。
+
+- [ ] **Step 3: 实现**
+
+```rust
+//! 控制台会话组装：把帧源、输入 sink、连接闸门和输入泵组装成可运行的会话。
+
+use ipkvm_core::InputSink;
+use ipkvm_video::FrameSource;
+use tokio::sync::{mpsc, watch};
+use thiserror::Error;
+
+use crate::rfb_connection::{RfbConnectionGate, RfbServerEvent};
+use crate::rfb_input::{RfbInputNotice, RfbInputPump, RfbInputRunError};
+
+#[derive(Debug, Error)]
+pub enum SessionError {
+    #[error("session is already running")]
+    AlreadyRunning,
+    #[error("session is not running")]
+    NotRunning,
+    #[error("input pump failed: {0}")]
+    Input(#[from] RfbInputRunError),
+}
+
+/// 会话统计：输入事件计数、最后输入时间、丢帧计数、串口统计。
+#[derive(Clone, Debug, Default)]
+pub struct SessionStats {
+    /// 累计输入事件数（键盘 + 指针）。
+    pub input_events: u64,
+    /// 最后输入事件的单调时间（纳秒）。
+    pub last_input_ns: Option<u64>,
+    /// 累计丢帧数（帧 seq 不连续）。
+    pub dropped_frames: u64,
+    /// 串口批次/帧统计（来自 CommandQueue::stats）。
+    pub serial: Option<crate::serial_stats::SerialStats>,
+}
+
+/// 运行中会话句柄：可 Clone，调用方持有即可请求停止。
+#[derive(Clone, Debug)]
+pub struct SessionHandle;
+
+/// 控制台会话：帧源 + 输入 sink + 连接闸门 + 输入泵的组装。
+pub struct ConsoleSession<S: InputSink + Send + 'static> {
+    frame_source: std::sync::Arc<dyn FrameSource>,
+    sink: S,
+    gate: RfbConnectionGate,
+    event_tx: mpsc::Sender<RfbServerEvent>,
+    pump_task: Option<tokio::task::JoinHandle<Result<(), RfbInputRunError>>>,
+    stats: SessionStats,
+}
+
+impl<S: InputSink + Send + 'static> ConsoleSession<S> {
+    pub fn new(
+        frame_source: std::sync::Arc<dyn FrameSource>,
+        sink: S,
+        gate: RfbConnectionGate,
+        event_tx: mpsc::Sender<RfbServerEvent>,
+    ) -> Self {
+        Self {
+            frame_source,
+            sink,
+            gate,
+            event_tx,
+            pump_task: None,
+            stats: SessionStats::default(),
+        }
+    }
+
+    pub fn gate(&self) -> &RfbConnectionGate {
+        &self.gate
+    }
+
+    pub fn event_tx(&self) -> &mpsc::Sender<RfbServerEvent> {
+        &self.event_tx
+    }
+
+    pub fn stats(&self) -> &SessionStats {
+        &self.stats
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.pump_task.is_some()
+    }
+
+    pub fn start(&mut self) -> Result<SessionHandle, SessionError> {
+        if self.is_running() {
+            return Err(SessionError::AlreadyRunning);
+        }
+        let (event_tx, event_rx) = mpsc::channel(64);
+        self.event_tx = event_tx;
+        let mut pump = RfbInputPump::new(self.sink.clone());
+        let task = tokio::spawn(async move {
+            let mut rx = event_rx;
+            pump.run(&mut rx, |_notice: &RfbInputNotice| {}).await
+        });
+        self.pump_task = Some(task);
+        Ok(SessionHandle)
+    }
+
+    pub fn stop(&mut self) -> Result<(), SessionError> {
+        let task = self
+            .pump_task
+            .take()
+            .ok_or(SessionError::NotRunning)?;
+        // 关闭事件发送端 → pump 收到事件源关闭 → release_all()
+        drop(&self.event_tx);
+        task.abort(); // 超时兜底；正常路径 pump 因事件源关闭自然退出
+        Ok(())
+    }
+}
+```
+
+> **说明**：`start()` 中 `self.sink` 需 `S: Clone`（pump 持有 sink 副本，调用方保留原 sink 便于统计/释放）；`self.event_tx` 在 `new()` 由调用方传入，`start()` 内重建 channel 使事件流向 pump。`RfbInputPump` 消费 `&mut mpsc::Receiver`（见 pump.rs:245），因此 `event_rx` 在闭包内声明为可变。
+
+- [ ] **Step 4: 运行测试确认通过**
+
+Run: `cargo test -p ipkvm-session console_session --features mock`
+Expected: PASS（1 个测试）。
+
+- [ ] **Step 5: 提交**
+
+```bash
+git add crates/ipkvm-session
+git commit -m "feat(session): ConsoleSession 真实组装（帧源+输入泵+gate+事件出口）"
+```
+
+---
+
+## Task 7: SessionManager 委托真实会话（不复制状态）
+
+> **范围**：`SessionManager` 不再持有自己的 state 字段，改为持有 `Option<ConsoleSession>`，state 从实际会话推断。start/stop/restart 委托给 ConsoleSession 真实组装。`SessionManagerConfig` 含设备选择字段（video id、serial path、fps、baud）。
 
 **Files:**
 - Create: `crates/ipkvm-session/src/session_manager.rs`
 - Modify: `crates/ipkvm-session/src/lib.rs`（`pub mod session_manager;`）
 
 **Interfaces:**
-- Produces: `ipkvm_session::session_manager::{SessionManager, SessionManagerConfig, SessionState, SessionHandle, SessionError}`
-  - `SessionManager::new(config) -> Self`
-  - `SessionManager::state(&self) -> SessionState`
-  - `SessionManager::start(&mut self) -> Result<SessionHandle, SessionError>`
+- Produces:
+  - `SessionManager<S: InputSink + Send + 'static>`
+  - `SessionManager::new(config, frame_source, sink, gate) -> Self`（调用方构造帧源与 sink）
+  - `SessionManager::state(&self) -> SessionState`（从 `is_running()` 推断）
+  - `SessionManager::start(&mut self) -> Result<SessionHandle, SessionError>`（委托 ConsoleSession::start）
   - `SessionManager::stop(&mut self) -> Result<(), SessionError>`
   - `SessionManager::restart(&mut self) -> Result<(), SessionError>`
-  - `SessionState::{Stopped, Running}`；`SessionHandle` 可 Clone；`SessionError::{AlreadyRunning, NotRunning}`
+  - `SessionManager::session(&self) -> Option<&ConsoleSession<S>>`
+- Consumes: `ConsoleSession`（T6）、`SessionState`、`SessionError`
 
 - [ ] **Step 1: 写失败的测试**
 
@@ -370,58 +548,41 @@ git commit -m "feat(session): 新增设备枚举模块（视频 + 串口）"
 mod tests {
     use super::*;
 
+    // 用记录型 sink + mock 帧源构造 SessionManager，验证委托真实会话。
     #[test]
-    fn manager_transitions_stopped_running_stopped() {
-        let mut manager = SessionManager::new(SessionManagerConfig::default());
+    fn manager_delegates_start_stop_to_console_session() {
+        let mut manager = session_manager_fixture();
         assert_eq!(manager.state(), SessionState::Stopped);
-
-        let handle = manager.start().unwrap();
-        assert_eq!(manager.state(), SessionState::Running);
-        // handle 可 Clone，供调用方共享
-        let _handle2 = handle.clone();
-
-        manager.stop().unwrap();
-        assert_eq!(manager.state(), SessionState::Stopped);
-    }
-
-    #[test]
-    fn restart_rebuilds_from_running() {
-        let mut manager = SessionManager::new(SessionManagerConfig::default());
         manager.start().unwrap();
+        assert_eq!(manager.state(), SessionState::Running);
         manager.restart().unwrap();
         assert_eq!(manager.state(), SessionState::Running);
-    }
-
-    #[test]
-    fn start_when_running_is_rejected() {
-        let mut manager = SessionManager::new(SessionManagerConfig::default());
-        manager.start().unwrap();
-        assert_eq!(manager.start(), Err(SessionError::AlreadyRunning));
-    }
-
-    #[test]
-    fn stop_when_stopped_is_rejected() {
-        let mut manager = SessionManager::new(SessionManagerConfig::default());
-        assert_eq!(manager.stop(), Err(SessionError::NotRunning));
+        manager.stop().unwrap();
+        assert_eq!(manager.state(), SessionState::Stopped);
     }
 }
 ```
 
 - [ ] **Step 2: 运行测试确认失败**
 
-Run: `cargo test -p ipkvm-session session_manager`
-Expected: FAIL（模块不存在，编译错误）。
+Run: `cargo test -p ipkvm-session session_manager --features mock`
+Expected: FAIL（模块不存在）。
 
-- [ ] **Step 3: 实现（状态机骨架，不组装真实帧源/串口）**
+- [ ] **Step 3: 实现**
 
 ```rust
 //! 会话管理：创建、重启、停止控制台会话的生命周期。
 //!
-//! 本模块只负责会话生命周期状态机，不直接组装帧源/串口/输入泵；
-//! 真实组装由 `ConsoleSession` 完成（后续 issue）。面向 /api/session
-//! （headless）与桌面设备切换（desktop）共用同一状态模型。
+//! 委托 `ConsoleSession` 真实组装，不复制状态——state 从实际会话推断。
 
+use ipkvm_core::InputSink;
+use ipkvm_video::FrameSource;
 use thiserror::Error;
+
+use crate::console_session::{ConsoleSession, SessionError, SessionHandle};
+use crate::rfb_connection::RfbConnectionGate;
+use crate::rfb_input::RfbServerEvent;
+use tokio::sync::mpsc;
 
 #[derive(Clone, Debug)]
 pub struct SessionManagerConfig {
@@ -441,57 +602,50 @@ pub enum SessionState {
     Running,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Error)]
-pub enum SessionError {
-    #[error("session already running")]
-    AlreadyRunning,
-    #[error("session not running")]
-    NotRunning,
+/// 会话管理器：委托 ConsoleSession 管理单个会话生命周期。
+pub struct SessionManager<S: InputSink + Send + 'static> {
+    config: SessionManagerConfig,
+    session: Option<ConsoleSession<S>>,
 }
 
-/// 运行中会话的句柄：可 Clone，调用方持有即可停止。
-#[derive(Clone, Debug)]
-pub struct SessionHandle {
-    state: SessionState,
-}
-
-impl SessionHandle {
-    fn running() -> Self {
-        Self { state: SessionState::Running }
-    }
-}
-
-/// 会话管理器：管理单个控制台会话的生命周期状态机。
-#[derive(Debug, Default)]
-pub struct SessionManager {
-    state: SessionState,
-}
-
-impl SessionManager {
-    pub fn new(_config: SessionManagerConfig) -> Self {
-        Self { state: SessionState::Stopped }
+impl<S: InputSink + Send + 'static> SessionManager<S> {
+    pub fn new(
+        config: SessionManagerConfig,
+        frame_source: std::sync::Arc<dyn FrameSource>,
+        sink: S,
+        gate: RfbConnectionGate,
+        event_tx: mpsc::Sender<RfbServerEvent>,
+    ) -> Self {
+        Self {
+            config,
+            session: Some(ConsoleSession::new(frame_source, sink, gate, event_tx)),
+        }
     }
 
     pub fn state(&self) -> SessionState {
-        self.state
+        if self.session.as_ref().is_some_and(|s| s.is_running()) {
+            SessionState::Running
+        } else {
+            SessionState::Stopped
+        }
+    }
+
+    pub fn session(&self) -> Option<&ConsoleSession<S>> {
+        self.session.as_ref()
     }
 
     pub fn start(&mut self) -> Result<SessionHandle, SessionError> {
-        if self.state == SessionState::Running {
-            return Err(SessionError::AlreadyRunning);
-        }
-        // TODO(#30): 真实组装帧源+串口+输入泵（ConsoleSession 组装，后续 issue）
-        self.state = SessionState::Running;
-        Ok(SessionHandle::running())
+        let Some(session) = self.session.as_mut() else {
+            return Err(SessionError::NotRunning);
+        };
+        session.start()
     }
 
     pub fn stop(&mut self) -> Result<(), SessionError> {
-        if self.state == SessionState::Stopped {
+        let Some(session) = self.session.as_mut() else {
             return Err(SessionError::NotRunning);
-        }
-        // TODO(#30): 真实释放帧源/串口/输入泵
-        self.state = SessionState::Stopped;
-        Ok(())
+        };
+        session.stop()
     }
 
     pub fn restart(&mut self) -> Result<(), SessionError> {
@@ -504,19 +658,129 @@ impl SessionManager {
 
 - [ ] **Step 4: 运行测试确认通过**
 
-Run: `cargo test -p ipkvm-session session_manager`
-Expected: PASS（4 个测试全过）。
+Run: `cargo test -p ipkvm-session session_manager --features mock`
+Expected: PASS（1 个测试）。
 
 - [ ] **Step 5: 提交**
 
 ```bash
 git add crates/ipkvm-session
-git commit -m "feat(session): 新增 SessionManager 会话生命周期状态机（骨架）"
+git commit -m "feat(session): SessionManager 委托真实 ConsoleSession，state 从会话推断"
 ```
 
 ---
 
-## Task 7: 全量验证收口（issue #30 关闭前）
+## Task 8: 会话状态统计（输入统计、最后输入时间、丢帧、串口统计）
+
+> **范围**：`ConsoleSession` 在输入泵 notice 回调中收集输入统计（键盘/指针计数 + 最后输入时间）；从帧源 `latest_frame().seq` 检测跳跃计数丢帧；串口统计从 sink 的 `CommandQueue::stats()` 读取。`SessionStats` 供后续 `/api/status` 扩展与桌面状态栏消费。
+
+**Files:**
+- Modify: `crates/ipkvm-session/src/console_session.rs`（`SessionStats` 字段填充 + notice 回调 + 帧 seq 检测）
+- Create: `crates/ipkvm-session/src/serial_stats.rs`（`SerialStats` 类型，从 `CommandQueue::stats` 映射）
+
+**Interfaces:**
+- Produces:
+  - `SessionStats { input_events, last_input_ns, dropped_frames, serial }`
+  - `console_session::SerialStats { batches_accepted, frames_accepted }`
+- Consumes: `ipkvm_core::CommandQueue::stats`、`ipkvm_video::FrameSource::latest_frame().seq`
+
+- [ ] **Step 1: 写失败的测试**
+
+```rust
+// console_session.rs 底部
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // 帧 seq 跳跃（1→3，缺 2）→ dropped_frames 计数 1。
+    #[test]
+    fn frame_seq_jump_counts_dropped_frame() {
+        let mut stats = SessionStats::default();
+        stats.observe_frame_seq(1);
+        stats.observe_frame_seq(3);
+        assert_eq!(stats.dropped_frames, 1);
+    }
+
+    // 输入事件计数与最后时间更新。
+    #[test]
+    fn input_notice_updates_stats() {
+        let mut stats = SessionStats::default();
+        stats.observe_input();
+        stats.observe_input();
+        assert_eq!(stats.input_events, 2);
+        assert!(stats.last_input_ns.is_some());
+    }
+}
+```
+
+- [ ] **Step 2: 运行测试确认失败**
+
+Run: `cargo test -p ipkvm-session console_session --features mock`
+Expected: FAIL（`observe_frame_seq` / `observe_input` 未定义）。
+
+- [ ] **Step 3: 实现**
+
+```rust
+// console_session.rs 内补充 SessionStats 方法：
+impl SessionStats {
+    /// 记录一次输入事件（键盘/指针）。
+    pub fn observe_input(&mut self) {
+        self.input_events = self.input_events.saturating_add(1);
+        self.last_input_ns = Some(crate::now_ns());
+    }
+
+    /// 观察一帧：seq 跳跃即丢帧。
+    pub fn observe_frame_seq(&mut self, seq: u64) {
+        // 首帧初始化 last_seq；后续 seq 不连续则计数丢帧。
+        match self.last_seq {
+            Some(last) if seq > last + 1 => {
+                self.dropped_frames =
+                    self.dropped_frames.saturating_add(seq - last - 1);
+            }
+            _ => {}
+        }
+        self.last_seq = Some(seq);
+    }
+}
+
+// serial_stats.rs:
+//! 串口统计：从 `CommandQueue::stats()` 映射。
+
+use ipkvm_core::QueueStats;
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct SerialStats {
+    pub batches_accepted: u64,
+    pub frames_accepted: u64,
+}
+
+impl From<QueueStats> for SerialStats {
+    fn from(stats: QueueStats) -> Self {
+        Self {
+            batches_accepted: stats.batches_accepted,
+            frames_accepted: stats.frames_accepted,
+        }
+    }
+}
+```
+
+> **说明**：`ConsoleSession::start` 的 notice 回调改为 `observe` 闭包——键盘/指针 notice 时调用 `stats.observe_input()`；`stop` 后从 sink 的 `CommandQueue::stats()` 取串口统计填入 `SessionStats.serial`。帧 seq 检测在需要时由会话轮询帧源时调用（桌面渲染循环或 headless 快照前）。
+
+- [ ] **Step 4: 运行测试确认通过**
+
+Run: `cargo test -p ipkvm-session console_session --features mock`
+Expected: PASS（3 个测试）。
+
+- [ ] **Step 5: 提交**
+
+```bash
+git add crates/ipkvm-session
+git commit -m "feat(session): 会话状态统计（输入事件/最后输入/丢帧/串口统计）"
+```
+
+---
+
+## Task 9: 全量验证收口（issue #30 关闭前）
 
 **Files:**
 - Test: 全部（不改）
