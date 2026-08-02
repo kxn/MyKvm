@@ -11,7 +11,9 @@ let disconnectRequested = false;
 
 function websocketUrl() {
   const scheme = location.protocol === "https:" ? "wss" : "ws";
-  return `${scheme}://${location.host}/rfb`;
+  const token = new URLSearchParams(location.search).get("token");
+  const query = token ? `?token=${encodeURIComponent(token)}` : "";
+  return `${scheme}://${location.host}/rfb${query}`;
 }
 
 function setConnectionState(state, text) {

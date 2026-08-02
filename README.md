@@ -6,7 +6,7 @@ my_ipkvm 是一个软件 IPKVM 项目：主控机通过 USB HDMI 采集卡读取
 
 `ipkvm-headless` 已提供可供生产组装复用的嵌入式 Web 服务。它内置项目中文控制台页面和固定到 noVNC 1.7.0 提交 `63107bd06d9e1f6136ff21aeda8cd62cbf0d433e` 的完整 npm 发布资源，并通过同源 `/rfb` 建立连接。真实 Chrome 自动化已经证明模拟帧像素、桌面与窄视口等比缩放、键盘 HID、缩放后的绝对指针坐标、按键顺序、断开释放和重连全部穿过 noVNC、RFB 服务与 `RfbInputPump` 到达记录型 `InputSink`。
 
-当前正式 `ipkvm-headless` 二进制已能作为可运行后台进程提供完整的 RFB TCP（5900）+ noVNC 网页（6080）双传输服务。视频源通过 CLI 选择：`--camera` 打开 Windows 相机（按 id 或显示名，DirectShow 后端，含 OBS 虚拟摄像头）、`--assets` 使用 Y4M 文件伪设备、未指定时默认优先打开 OBS 虚拟摄像头（找不到时退回第一台）、`--list-cameras` 只枚举设备并退出。键鼠注入通过 CLI 选择：`--serial <路径>` 打开真实 CH9329 串口（默认 9600 8N1，`--baud <速率>` 可调），未指定时键鼠事件进入模拟串口队列后被丢弃。鉴权和 TLS 尚未实现。
+当前正式 `ipkvm-headless` 二进制已能作为可运行后台进程提供完整的 RFB TCP（5900）+ noVNC 网页（6080）双传输服务。视频源通过 CLI 选择：`--camera` 打开 Windows 相机（按 id 或显示名，DirectShow 后端，含 OBS 虚拟摄像头）、`--assets` 使用 Y4M 文件伪设备、未指定时默认优先打开 OBS 虚拟摄像头（找不到时退回第一台）、`--list-cameras` 只枚举设备并退出。键鼠注入通过 CLI 选择：`--serial <路径>` 打开真实 CH9329 串口（默认 9600 8N1，`--baud <速率>` 可调），未指定时键鼠事件进入模拟串口队列后被丢弃。最小鉴权已实现：`--token` 管 HTTP/WS 凭证、`--vnc-password` 管 RFB VNC 密码挑战，未配置对应凭证时默认仅本机可访问（见「运行无头后台进程」）。TLS 尚未实现。
 
 ## 当前模块
 
@@ -15,7 +15,7 @@ my_ipkvm 是一个软件 IPKVM 项目：主控机通过 USB HDMI 采集卡读取
 - `ipkvm-session`：真实会话核心——连接驱动与事件模型（`RfbConnectionGate` 仲裁）、输入泵与映射器、设备枚举（`devices`）、`ConsoleSession` 组装与 `SessionManager` 生命周期管理、会话状态统计。
 - `ipkvm-rfb`：传输无关的 RFB 3.8 `None` 握手、客户端消息增量解码、真彩像素转换、`Raw` 更新、`DesktopSize` 和指针输入坐标时期。
 - `ipkvm-desktop`：本地图形界面入口。
-- `ipkvm-headless`：RFB TCP 与 WebSocket 传输适配层，以及内嵌中文 noVNC 页面的 HTTP 服务（含 `/api/status` 状态接口与 `/api/screenshot` JPEG 快照接口）；`demo` 功能下提供 `ipkvm-headless` 正式后台进程（`--serial`/`--baud` 真实 CH9329 串口注入）和 `ipkvm-demo` 演示二进制。鉴权和 TLS 尚未实现。
+- `ipkvm-headless`：RFB TCP 与 WebSocket 传输适配层，以及内嵌中文 noVNC 页面的 HTTP 服务（含 `/api/status` 状态接口与 `/api/screenshot` JPEG 快照接口）；`demo` 功能下提供 `ipkvm-headless` 正式后台进程（`--serial`/`--baud` 真实 CH9329 串口注入）和 `ipkvm-demo` 演示二进制。TLS 尚未实现。
 
 `ipkvm-session` 当前默认按 CH9329 出厂波特率 9600 配置串口。硬件到货前不自动改写芯片参数，也不假定成品线支持 115200。
 
@@ -87,9 +87,44 @@ cargo run -p ipkvm-headless --features demo --bin ipkvm-headless \
 
 # 只枚举相机设备
 cargo run -p ipkvm-headless --features demo --bin ipkvm-headless --list-cameras
+
+# 配置与鉴权：--config 读取 TOML 文件，CLI 参数覆盖文件字段（CLI > 文件 > 默认）
+cargo run -p ipkvm-headless --features demo --bin ipkvm-headless \
+    --assets .cache/demo-assets --config config.toml --token abc12345 --vnc-password abc12345
 ```
 
 启动后用浏览器打开 `http://127.0.0.1:6080`，或用标准 VNC 客户端连接 `127.0.0.1:5900`。素材按文件名排序循环播放，切换分辨率时已连接客户端收到 `DesktopSize` 更新。`--bind` 可指定监听地址（默认 `127.0.0.1`）。`--camera` 与 `--assets` 互斥；相机未就绪时可用 `--assets` 的 Y4M 模拟帧源验证画面与键鼠链路。
+
+### 配置：TOML 文件 + CLI 覆盖
+
+默认值：`--bind` 默认 `127.0.0.1`、`--tcp` 默认 `5900`、`--http` 默认 `6080`、`--fps` 默认 `10`、`--baud` 默认 `9600`。`--config <路径>` 读取 TOML 配置文件，CLI 参数覆盖文件字段，优先级为 **CLI > 文件 > 默认**；配置文件错误会打印含文件路径的确定性中文报错。示例 `config.toml`（与设计文档一致）：
+
+```toml
+[server]
+bind = "127.0.0.1"
+tcp_port = 5900
+http_port = 6080
+
+[video]
+camera = "OBS Virtual Camera"    # 或 assets 目录
+fps = 30
+
+[input]
+serial = "COM9"
+baud = 9600
+
+[auth]
+token = "..."                    # 可选；HTTP/WS 鉴权 token（非空 ASCII）
+vnc_password = "abc12345"        # 可选；RFB VNC 密码（1-8 个 ASCII 字符）
+```
+
+### 鉴权（最小）
+
+`token` 与 `vnc_password` 独立，分别管两个入口：
+
+- `--token` / `[auth] token`：HTTP 与 WebSocket（含 `/rfb` 升级）凭证，必须为非空 ASCII 字符串。启用后所有请求（含本机）必须带 `Authorization: Bearer <token>`、cookie `ipkvm_token=<token>` 或 query 参数 `?token=<token>` 之一。浏览器首次访问 `http://host:6080/?token=xxx` 即可：页面自动把 query token 拼到 WebSocket 地址，并在放行后换得 cookie。
+- `--vnc-password` / `[auth] vnc_password`：RFB TCP 入口的 VNC 密码挑战，长度 1-8 个 ASCII 字符（RFC 6143 密码上限 8 字节）。标准 VNC 客户端（含 vncdotool）用该密码连接。
+- 未配置 token 时 HTTP/WS 仅放行本机来源（防默认暴露）；未配置 vnc_password 时 RFB TCP 仅允许本机连接。两个入口都支持通过 `--bind` 扩大监听范围，但鉴权凭证是独立维度。
 
 ## 演示：双分辨率视频 mock 源
 
