@@ -86,9 +86,7 @@ impl DesktopApp {
     fn update_impl(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_notices();
         self.refresh_video();
-        if !self.showing_device_dialog && !self.session.is_control_online() {
-            self.selection.mark_control_offline();
-        }
+        self.sync_control_state();
 
         egui::TopBottomPanel::top("menu").show(ctx, |ui| self.menu_bar(ui));
         if self.showing_device_dialog {
@@ -97,6 +95,19 @@ impl DesktopApp {
             self.console_ui(ctx);
         }
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| self.status_bar(ui));
+    }
+
+    /// 控制设备离线时的状态同步：标记离线并复位所有输入/粘贴 UI 状态，
+    /// 保证停止、掉线后不会残留"聚焦可输入/粘贴中/按键按下"等过期状态。
+    fn sync_control_state(&mut self) {
+        if !self.showing_device_dialog && !self.session.is_control_online() {
+            self.selection.mark_control_offline();
+            self.paste_busy = false;
+            self.video_focused = false;
+            self.pointer_mask = 0;
+            self.last_pointer = None;
+            self.last_modifiers = egui::Modifiers::NONE;
+        }
     }
 
     fn refresh_video(&mut self) {
@@ -533,8 +544,11 @@ impl DesktopApp {
         self.latest_frame = None;
         self.frame_size = None;
         self.texture = None;
+        self.paste_busy = false;
+        self.video_focused = false;
         self.pointer_mask = 0;
         self.last_pointer = None;
+        self.last_modifiers = egui::Modifiers::NONE;
         self.last_frame_seq = None;
         self.last_frame_at = None;
     }
@@ -760,6 +774,7 @@ fn choose_screenshot_path() -> Option<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::ControlProbeStatus;
 
     #[test]
     fn status_texts_include_message_and_offline_state() {
@@ -787,5 +802,45 @@ mod tests {
         assert_eq!(texts.keyboard, "失焦");
         assert_eq!(texts.pointer, "窗口外");
         assert_eq!(texts.message, None);
+    }
+
+    #[test]
+    fn offline_sync_resets_paste_and_focus_state() {
+        let mut app = DesktopApp::empty();
+        app.showing_device_dialog = false;
+        app.paste_busy = true;
+        app.video_focused = true;
+        app.pointer_mask = 1;
+        app.last_pointer = Some((1, 2));
+        app.last_modifiers = egui::Modifiers {
+            shift: true,
+            ..Default::default()
+        };
+
+        app.sync_control_state();
+
+        assert!(!app.paste_busy);
+        assert!(!app.video_focused);
+        assert_eq!(app.pointer_mask, 0);
+        assert!(app.last_pointer.is_none());
+        assert_eq!(app.last_modifiers, egui::Modifiers::NONE);
+        assert_eq!(
+            app.selection.control_status,
+            ControlProbeStatus::Disconnected
+        );
+    }
+
+    #[test]
+    fn stop_session_resets_input_state() {
+        let mut app = DesktopApp::empty();
+        app.paste_busy = true;
+        app.video_focused = true;
+        app.pointer_mask = 1;
+
+        app.stop_session();
+
+        assert!(!app.paste_busy);
+        assert!(!app.video_focused);
+        assert_eq!(app.pointer_mask, 0);
     }
 }
