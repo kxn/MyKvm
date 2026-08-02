@@ -494,8 +494,12 @@ impl DesktopApp {
         }
         if !remote_active && self.video_focused {
             // 退出远程模式（点击本地 UI / 窗口失焦 / Ctrl+Alt+K）：
-            // 释放所有按键并复位本地状态。
+            // 释放所有按键、交还 egui 焦点并复位本地状态；切回窗口后需要
+            // 再次点击视频区才能重新进入远程输入。
             let _ = self.session.release_all();
+            response
+                .ctx
+                .memory_mut(|memory| memory.surrender_focus(response.id));
             self.pointer_mask = 0;
             self.last_pointer = None;
         }
