@@ -58,6 +58,8 @@ impl SessionStats {
 pub enum SessionError {
     #[error("session is already running")]
     AlreadyRunning,
+    #[error("session is already created")]
+    AlreadyCreated,
     #[error("session is not running")]
     NotRunning,
     #[error("input pump failed: {0}")]
@@ -87,11 +89,24 @@ pub struct ConsoleSession<S: InputSink + Clone + Send + 'static> {
     running: Arc<AtomicBool>,
     /// 会话统计：泵任务（输入计数/最后输入时间）与会话侧共享，Mutex 内部可变。
     stats: Arc<Mutex<SessionStats>>,
+    /// 当前事件出口发布端：`start()` 写入新 channel 的发送端，`stop()` 写入
+    /// `None`。由 `SessionManager` 持有原始 sender，会话持有 clone——两者共享
+    /// 同一 watch channel，使传输层订阅端在会话重建后仍能拿到新发送端。
+    event_publisher: watch::Sender<Option<mpsc::Sender<RfbServerEvent>>>,
 }
 
 impl<S: InputSink + Clone + Send + 'static> ConsoleSession<S> {
     /// 组装会话。事件通道由 `start()` 在启动时重建，因此这里不接收发送端。
-    pub fn new(frame_source: Arc<dyn FrameSource>, sink: S, gate: RfbConnectionGate) -> Self {
+    ///
+    /// `event_publisher` 由 `SessionManager` 持有原始 sender 后传入 clone：会话
+    /// 在 `start()`/`stop()` 时把当前事件出口写入，供传输层订阅端读取最新
+    /// 发送端（会话重建后订阅端自动看到新 channel）。
+    pub fn new(
+        frame_source: Arc<dyn FrameSource>,
+        sink: S,
+        gate: RfbConnectionGate,
+        event_publisher: watch::Sender<Option<mpsc::Sender<RfbServerEvent>>>,
+    ) -> Self {
         let (stop_tx, _) = watch::channel(false);
         Self {
             frame_source,
@@ -103,6 +118,7 @@ impl<S: InputSink + Clone + Send + 'static> ConsoleSession<S> {
             stop_tx,
             running: Arc::new(AtomicBool::new(false)),
             stats: Arc::new(Mutex::new(SessionStats::default())),
+            event_publisher,
         }
     }
 
@@ -114,6 +130,15 @@ impl<S: InputSink + Clone + Send + 'static> ConsoleSession<S> {
     /// 事件发送端引用；`start()` 之后才有效（start() 重建 channel 使事件流向输入泵）。
     pub fn event_tx(&self) -> &mpsc::Sender<RfbServerEvent> {
         &self.event_tx
+    }
+
+    /// 事件出口订阅端：返回的 `watch::Receiver` 反映当前活动事件发送端。
+    ///
+    /// `start()` 后为 `Some(sender)`，`stop()` 或会话未启动时为 `None`。传输层
+    /// 应在每次建立连接前读取最新值，而非缓存启动时的发送端——这样会话重启
+    /// 后能拿到新 channel。
+    pub fn event_publisher(&self) -> watch::Receiver<Option<mpsc::Sender<RfbServerEvent>>> {
+        self.event_publisher.subscribe()
     }
 
     /// 会话统计访问：返回互斥锁守卫——泵任务并发写入输入计数/最后输入时间，
@@ -140,6 +165,14 @@ impl<S: InputSink + Clone + Send + 'static> ConsoleSession<S> {
         self.stats.lock().unwrap().serial = Some(stats.into());
     }
 
+    /// 刷新调用方可见的会话状态快照。
+    pub fn refresh_stats(&mut self) {
+        self.observe_frame();
+        if let Some(stats) = self.sink.queue_stats() {
+            self.record_serial_stats(stats);
+        }
+    }
+
     /// 会话是否已启动（输入泵任务在运行）。
     pub fn is_running(&self) -> bool {
         self.running.load(Ordering::SeqCst)
@@ -163,6 +196,9 @@ impl<S: InputSink + Clone + Send + 'static> ConsoleSession<S> {
         let stop_rx = self.stop_tx.subscribe();
         let (event_tx, mut event_rx) = mpsc::channel(64);
         self.event_tx = event_tx;
+        // 发布新事件出口：传输层订阅端据此拿到当前 channel 的发送端。
+        self.event_publisher
+            .send_replace(Some(self.event_tx.clone()));
         let mut pump = RfbInputPump::new(self.sink.clone());
         let stats = Arc::clone(&self.stats);
         let running = Arc::clone(&self.running);
@@ -206,6 +242,8 @@ impl<S: InputSink + Clone + Send + 'static> ConsoleSession<S> {
         let _ = self.stop_tx.send(true);
         // 覆盖旧发送端，使 start() 重建事件出口前的 event_tx() 保持「无接收端」语义。
         self.event_tx = mpsc::channel(1).0;
+        // 发布无活动事件出口：传输层据此拒绝新连接，直到下一次 start()。
+        self.event_publisher.send_replace(None);
         Ok(task)
     }
 }
@@ -215,7 +253,10 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use ipkvm_core::{InputError, InputResult, KeyEvent, MouseMode, PointerEvent, QueueStats};
+    use ipkvm_core::{
+        Ch9329Frame, Ch9329InputSink, CommandBatch, CommandQueue, InputError, InputResult,
+        KeyEvent, MouseMode, PointerEvent, QueueStats, fake_serial::FakeCommandQueue,
+    };
     use ipkvm_video::mock::MockFrameSource;
     use ipkvm_video::{MonotonicTimestamp, PixelFormat, VideoFrame};
 
@@ -269,7 +310,13 @@ mod tests {
     fn console_session_fixture() -> (ConsoleSession<RecordingSink>, RecordingSink) {
         let frame_source: Arc<dyn FrameSource> = Arc::new(MockFrameSource::new());
         let sink = RecordingSink::default();
-        let session = ConsoleSession::new(frame_source, sink.clone(), RfbConnectionGate::new());
+        let (event_publisher, _) = watch::channel(None);
+        let session = ConsoleSession::new(
+            frame_source,
+            sink.clone(),
+            RfbConnectionGate::new(),
+            event_publisher,
+        );
         (session, sink)
     }
 
@@ -475,6 +522,53 @@ mod tests {
         assert_eq!(reservation.client_id().get(), 1);
     }
 
+    // ---- T9 事件出口发布（传输层订阅） ----
+
+    /// event_publisher 反映会话生命周期：未启动 None → start 后 Some → stop 后 None。
+    /// 这是传输层「每次连接前读最新 sender」的契约基础。
+    #[tokio::test]
+    async fn event_publisher_reflects_session_lifecycle() {
+        let (mut session, _sink) = console_session_fixture();
+
+        // 未启动：订阅端读到 None。
+        let publisher = session.event_publisher();
+        assert!(publisher.borrow().is_none());
+
+        // start 后读到 Some（活动出口）。
+        session.start().unwrap();
+        assert!(publisher.borrow().is_some());
+
+        // stop 后回到 None。
+        drop(session.stop().unwrap());
+        assert!(publisher.borrow().is_none());
+    }
+
+    /// restart 后 event_publisher 反映**新** channel 的发送端——旧的 sender
+    /// 已随 stop 失效，传输层必须经订阅端重新获取。若 start 未发布新 sender，
+    /// 或发布了旧 sender 的克隆，此断言失败。
+    #[tokio::test]
+    async fn event_publisher_publishes_new_sender_after_restart() {
+        let (mut session, _sink) = console_session_fixture();
+
+        session.start().unwrap();
+        let publisher = session.event_publisher();
+        let first_sender = publisher.borrow().clone().unwrap();
+
+        drop(session.stop().unwrap());
+        // stop 期间 sender 失效，publisher 读到 None。
+        assert!(publisher.borrow().is_none());
+
+        session.start().unwrap();
+        let second_sender = publisher.borrow().clone().unwrap();
+        // 新 sender 与旧 sender 指向不同 channel（restart 后旧 channel 已关闭）。
+        assert!(
+            !first_sender.same_channel(&second_sender),
+            "restart 后必须发布新 channel 的发送端"
+        );
+
+        drop(session.stop().unwrap());
+    }
+
     // ---- T8 会话状态统计 ----
 
     /// 帧 seq 跳跃（1→3，缺 2）→ dropped_frames 计数 1；首帧初始化基准
@@ -603,10 +697,12 @@ mod tests {
     fn observe_frame_counts_dropped_frames() {
         let mock = Arc::new(MockFrameSource::new());
         let frame_source: Arc<dyn FrameSource> = mock.clone();
+        let (event_publisher, _) = watch::channel(None);
         let mut session = ConsoleSession::new(
             frame_source,
             RecordingSink::default(),
             RfbConnectionGate::new(),
+            event_publisher,
         );
 
         session.observe_frame();
@@ -643,5 +739,50 @@ mod tests {
         session.record_serial_stats(queue_stats);
         let serial: SerialStats = queue_stats.into();
         assert_eq!(session.stats().serial.unwrap(), serial);
+    }
+
+    #[test]
+    fn refresh_stats_observes_frame_and_sink_queue_stats() {
+        let mock = Arc::new(MockFrameSource::new());
+        let frame_source: Arc<dyn FrameSource> = mock.clone();
+        let queue = FakeCommandQueue::new();
+        let sink = Ch9329InputSink::new(queue.clone(), 0, MouseMode::Absolute);
+        let (event_publisher, _) = watch::channel(None);
+        let mut session = ConsoleSession::new(
+            frame_source,
+            sink,
+            RfbConnectionGate::new(),
+            event_publisher,
+        );
+
+        let frame = |seq| {
+            Arc::new(VideoFrame::new(
+                seq,
+                MonotonicTimestamp::from_nanos(seq),
+                1,
+                1,
+                4,
+                PixelFormat::Bgra8888,
+                Arc::new([0u8; 4]),
+            ))
+        };
+        mock.publish_frame(frame(1));
+        session.refresh_stats();
+        mock.publish_frame(frame(3));
+
+        queue
+            .enqueue_batch(CommandBatch::new(vec![Ch9329Frame::new(0, 0, &[]).unwrap()]).unwrap())
+            .unwrap();
+        session.refresh_stats();
+
+        let stats = session.stats();
+        assert_eq!(stats.dropped_frames, 1);
+        assert_eq!(
+            stats.serial,
+            Some(crate::serial_stats::SerialStats {
+                batches_accepted: 1,
+                frames_accepted: 1
+            })
+        );
     }
 }

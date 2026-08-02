@@ -62,10 +62,11 @@ impl TestWebSocketServer {
         let address = listener.local_addr().unwrap();
         let source = Arc::new(MockFrameSource::new());
         source.publish_frame(default_frame());
+        let event_publisher = watch::channel(Some(event_tx)).1;
         let (shutdown, shutdown_rx) = watch::channel(false);
         let service = RfbWebSocketService::new(
             Arc::clone(&source),
-            event_tx,
+            event_publisher,
             config,
             shutdown_rx,
             RfbConnectionGate::new(),

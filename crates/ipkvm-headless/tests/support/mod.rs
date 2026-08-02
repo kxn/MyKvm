@@ -161,6 +161,11 @@ impl TestRfbClient {
         self.stream.try_read(bytes)
     }
 
+    pub async fn read_one(&mut self) -> io::Result<usize> {
+        let mut byte = [0; 1];
+        self.stream.read(&mut byte).await
+    }
+
     async fn read_exact(&mut self, length: usize) -> Vec<u8> {
         let mut bytes = vec![0; length];
         self.stream.read_exact(&mut bytes).await.unwrap();

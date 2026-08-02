@@ -1,18 +1,30 @@
-use std::{collections::HashMap, net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    net::SocketAddr,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use futures_util::StreamExt;
+use ipkvm_core::{InputResult, InputSink, KeyEvent, MouseMode, PointerEvent};
 use ipkvm_headless::{
-    rfb_connection::{RfbConnectionGate, RfbServerEvent},
+    frame_source::SwitchableFrameSource,
+    rfb_connection::RfbConnectionGate,
     rfb_ws::RfbWebSocketConfig,
-    web::{HeadlessWebService, HeadlessWebServiceError},
+    session_manager::SessionManager,
+    web::{HeadlessWebService, HeadlessWebServiceError, SessionFactory, SessionSelection},
 };
 use ipkvm_video::{
-    MonotonicTimestamp, PixelFormat, SharedVideoFrame, VideoFrame, mock::MockFrameSource,
+    FrameReceiver, FrameSource, MonotonicTimestamp, PixelFormat, SharedVideoFrame, VideoFrame,
+    VideoSourceInfo, VideoSourceKind, mock::MockFrameSource,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
-    sync::{mpsc, watch},
+    sync::watch,
     task::JoinHandle,
     time::timeout,
 };
@@ -21,18 +33,246 @@ use tokio_tungstenite::{
     tungstenite::{Error as WebSocketError, Message},
 };
 
+/// 记录型输入 sink：共享 `Arc<Mutex<Recorded>>`，供测试观察泵写入。
+/// 与 session crate 内部测试 sink 同构，但本文件私有（不依赖 crate 内部）。
+#[derive(Clone, Debug, Default)]
+struct RecordingSink {
+    recorded: Arc<std::sync::Mutex<Recorded>>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct Recorded {
+    key_batches: usize,
+    release_count: usize,
+}
+
+impl InputSink for RecordingSink {
+    fn set_mouse_mode(&mut self, _mode: MouseMode) -> InputResult<()> {
+        Ok(())
+    }
+
+    fn handle_key_batch(&mut self, _events: &[KeyEvent]) -> InputResult<()> {
+        self.recorded.lock().unwrap().key_batches += 1;
+        Ok(())
+    }
+
+    fn handle_pointer_batch(&mut self, _events: &[PointerEvent]) -> InputResult<()> {
+        Ok(())
+    }
+
+    fn release_all(&mut self) -> InputResult<()> {
+        self.recorded.lock().unwrap().release_count += 1;
+        Ok(())
+    }
+}
+
+/// 带可辨识名称的测试帧源：用来断言 `/api/session` 切换后 status/screenshot
+/// 读取的是新帧源，而不是启动时固定的旧帧源。
+#[derive(Debug)]
+struct NamedFrameSource {
+    inner: MockFrameSource,
+    name: String,
+}
+
+impl NamedFrameSource {
+    fn new(name: &str, frame: Option<SharedVideoFrame>) -> Self {
+        let inner = MockFrameSource::new();
+        if let Some(frame) = frame {
+            inner.publish_frame(frame);
+        }
+        Self {
+            inner,
+            name: name.to_string(),
+        }
+    }
+
+    fn publish_frame(&self, frame: SharedVideoFrame) {
+        self.inner.publish_frame(frame);
+    }
+}
+
+impl FrameSource for NamedFrameSource {
+    fn latest_frame(&self) -> Option<SharedVideoFrame> {
+        self.inner.latest_frame()
+    }
+
+    fn subscribe(&self) -> FrameReceiver {
+        self.inner.subscribe()
+    }
+
+    fn source_info(&self) -> VideoSourceInfo {
+        VideoSourceInfo {
+            kind: VideoSourceKind::Generated,
+            device_name: self.name.clone(),
+            is_loop: false,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct DropAwareFrameSource {
+    inner: NamedFrameSource,
+    dropped: Arc<AtomicBool>,
+}
+
+impl DropAwareFrameSource {
+    fn new(name: &str, frame: Option<SharedVideoFrame>, dropped: Arc<AtomicBool>) -> Self {
+        Self {
+            inner: NamedFrameSource::new(name, frame),
+            dropped,
+        }
+    }
+}
+
+impl Drop for DropAwareFrameSource {
+    fn drop(&mut self) {
+        self.dropped.store(true, Ordering::SeqCst);
+    }
+}
+
+impl FrameSource for DropAwareFrameSource {
+    fn latest_frame(&self) -> Option<SharedVideoFrame> {
+        self.inner.latest_frame()
+    }
+
+    fn subscribe(&self) -> FrameReceiver {
+        self.inner.subscribe()
+    }
+
+    fn source_info(&self) -> VideoSourceInfo {
+        self.inner.source_info()
+    }
+}
+
+/// 测试会话工厂：默认构造 replacement 源，模拟用户通过 video 字段选中新设备。
+struct TestSessionFactory {
+    replacement: Arc<NamedFrameSource>,
+}
+
+impl SessionFactory<RecordingSink> for TestSessionFactory {
+    fn build(
+        &self,
+        selection: &SessionSelection,
+    ) -> Result<(Arc<dyn FrameSource>, RecordingSink), String> {
+        if selection.video.as_deref() == Some("__factory_fail__") {
+            return Err("test factory failure".to_string());
+        }
+        Ok((
+            Arc::clone(&self.replacement) as Arc<dyn FrameSource>,
+            RecordingSink::default(),
+        ))
+    }
+}
+
+/// 独占资源测试工厂：只有旧帧源已释放后才允许构建新会话。
+struct ReleaseCheckingFactory {
+    old_released: Arc<AtomicBool>,
+    replacement: Arc<NamedFrameSource>,
+}
+
+impl SessionFactory<RecordingSink> for ReleaseCheckingFactory {
+    fn build(
+        &self,
+        _selection: &SessionSelection,
+    ) -> Result<(Arc<dyn FrameSource>, RecordingSink), String> {
+        if !self.old_released.load(Ordering::SeqCst) {
+            return Err("old resource is still held".to_string());
+        }
+        Ok((
+            Arc::clone(&self.replacement) as Arc<dyn FrameSource>,
+            RecordingSink::default(),
+        ))
+    }
+}
+
 struct HttpResponse {
     status: u16,
     headers: HashMap<String, String>,
     body: Vec<u8>,
 }
 
-struct TestWebServer {
+struct ReleaseOrderWebServer {
     address: SocketAddr,
-    source: Arc<MockFrameSource>,
+    manager: Arc<tokio::sync::Mutex<SessionManager<RecordingSink>>>,
     shutdown: watch::Sender<bool>,
     task: JoinHandle<Result<(), HeadlessWebServiceError>>,
-    _events: mpsc::Receiver<RfbServerEvent>,
+}
+
+impl ReleaseOrderWebServer {
+    async fn start() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let old_released = Arc::new(AtomicBool::new(false));
+        let source: Arc<dyn FrameSource> = Arc::new(DropAwareFrameSource::new(
+            "exclusive",
+            Some(test_frame()),
+            Arc::clone(&old_released),
+        ));
+        let gate = RfbConnectionGate::new();
+        let mut manager =
+            SessionManager::new(Arc::clone(&source), RecordingSink::default(), gate.clone());
+        manager.start().unwrap();
+        let event_publisher = manager.event_publisher();
+        let manager = Arc::new(tokio::sync::Mutex::new(manager));
+        let switchable = Arc::new(SwitchableFrameSource::new(source));
+        let factory = Arc::new(ReleaseCheckingFactory {
+            old_released,
+            replacement: Arc::new(NamedFrameSource::new("wide", Some(wide_frame()))),
+        });
+        let (shutdown, shutdown_rx) = watch::channel(false);
+        let service = HeadlessWebService::<RecordingSink>::new(
+            switchable,
+            Arc::clone(&manager),
+            factory,
+            event_publisher,
+            RfbWebSocketConfig::default(),
+            shutdown_rx,
+            gate,
+            None,
+        )
+        .unwrap();
+        let task = tokio::spawn(service.serve(listener));
+        Self {
+            address,
+            manager,
+            shutdown,
+            task,
+        }
+    }
+
+    async fn request_with_body(&self, method: &str, path: &str, body: &[u8]) -> HttpResponse {
+        request_with_headers_and_body(
+            self.address,
+            method,
+            path,
+            &[("Content-Type", "application/json")],
+            body,
+        )
+        .await
+    }
+
+    async fn stop(self) {
+        {
+            let mut manager = self.manager.lock().await;
+            if manager.stop().is_ok() {
+                manager.wait_stopped().await;
+            }
+        }
+        self.shutdown.send_replace(true);
+        timeout(Duration::from_secs(2), self.task)
+            .await
+            .expect("headless web service did not stop")
+            .expect("headless web service task panicked")
+            .expect("headless web service failed");
+    }
+}
+
+struct TestWebServer {
+    address: SocketAddr,
+    source: Arc<NamedFrameSource>,
+    manager: Arc<tokio::sync::Mutex<SessionManager<RecordingSink>>>,
+    shutdown: watch::Sender<bool>,
+    task: JoinHandle<Result<(), HeadlessWebServiceError>>,
 }
 
 impl TestWebServer {
@@ -40,21 +280,74 @@ impl TestWebServer {
         Self::start_with_frame(Some(test_frame()), None).await
     }
 
+    /// 以零初始会话启动（manager empty）：供 `POST /api/session {create}` 测试。
+    async fn start_empty() -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let source = Arc::new(NamedFrameSource::new("initial", Some(test_frame())));
+        let gate = RfbConnectionGate::new();
+        // empty：不构造会话；event_publisher 初始为 None，传输层拒绝连接。
+        let manager = Arc::new(tokio::sync::Mutex::new(
+            SessionManager::<RecordingSink>::empty(),
+        ));
+        let factory = Arc::new(TestSessionFactory {
+            replacement: Arc::new(NamedFrameSource::new("wide", Some(wide_frame()))),
+        });
+        let (shutdown, shutdown_rx) = watch::channel(false);
+        let switchable = Arc::new(SwitchableFrameSource::new(
+            Arc::clone(&source) as Arc<dyn FrameSource>
+        ));
+        let service = HeadlessWebService::<RecordingSink>::new(
+            switchable,
+            Arc::clone(&manager),
+            factory,
+            manager.lock().await.event_publisher(),
+            RfbWebSocketConfig::default(),
+            shutdown_rx,
+            gate,
+            None,
+        )
+        .unwrap();
+        let task = tokio::spawn(service.serve(listener));
+        Self {
+            address,
+            source,
+            manager,
+            shutdown,
+            task,
+        }
+    }
+
     async fn start_with_frame(frame: Option<SharedVideoFrame>, auth: Option<String>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
-        let source = Arc::new(MockFrameSource::new());
-        if let Some(frame) = frame {
-            source.publish_frame(frame);
-        }
-        let (event_tx, events) = mpsc::channel(32);
+        let source = Arc::new(NamedFrameSource::new("initial", frame));
+        let sink = RecordingSink::default();
+        let gate = RfbConnectionGate::new();
+        // 启动即绑定：构造并 start 会话，传输层立即接受连接。
+        let mut manager = SessionManager::new(
+            Arc::clone(&source) as Arc<dyn FrameSource>,
+            sink.clone(),
+            gate.clone(),
+        );
+        manager.start().unwrap();
+        let event_publisher = manager.event_publisher();
+        let manager = Arc::new(tokio::sync::Mutex::new(manager));
+        let factory = Arc::new(TestSessionFactory {
+            replacement: Arc::new(NamedFrameSource::new("wide", Some(wide_frame()))),
+        });
         let (shutdown, shutdown_rx) = watch::channel(false);
-        let service = HeadlessWebService::new(
-            Arc::clone(&source),
-            event_tx,
+        let switchable = Arc::new(SwitchableFrameSource::new(
+            Arc::clone(&source) as Arc<dyn FrameSource>
+        ));
+        let service = HeadlessWebService::<RecordingSink>::new(
+            switchable,
+            Arc::clone(&manager),
+            factory,
+            event_publisher,
             RfbWebSocketConfig::default(),
             shutdown_rx,
-            RfbConnectionGate::new(),
+            gate,
             auth, // HTTP 鉴权 token；None 表示仅放行本机来源
         )
         .unwrap();
@@ -62,9 +355,9 @@ impl TestWebServer {
         Self {
             address,
             source,
+            manager,
             shutdown,
             task,
-            _events: events,
         }
     }
 
@@ -73,7 +366,18 @@ impl TestWebServer {
     }
 
     async fn request(&self, method: &str, path: &str) -> HttpResponse {
-        self.request_with_headers(method, path, &[]).await
+        self.request_with_body(method, path, &[]).await
+    }
+
+    async fn request_with_body(&self, method: &str, path: &str, body: &[u8]) -> HttpResponse {
+        // 测试用 body 均为 JSON：带 content-type 让 axum Json extractor 放行。
+        self.request_with_headers_and_body(
+            method,
+            path,
+            &[("Content-Type", "application/json")],
+            body,
+        )
+        .await
     }
 
     async fn request_with_headers(
@@ -82,22 +386,28 @@ impl TestWebServer {
         path: &str,
         headers: &[(&str, &str)],
     ) -> HttpResponse {
-        let mut stream = TcpStream::connect(self.address).await.unwrap();
-        let mut request = format!(
-            "{method} {path} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nContent-Length: 0\r\n",
-            self.address
-        );
-        for (name, value) in headers {
-            request.push_str(&format!("{name}: {value}\r\n"));
-        }
-        request.push_str("\r\n");
-        stream.write_all(request.as_bytes()).await.unwrap();
-        let mut response = Vec::new();
-        stream.read_to_end(&mut response).await.unwrap();
-        parse_http_response(&response)
+        self.request_with_headers_and_body(method, path, headers, &[])
+            .await
+    }
+
+    async fn request_with_headers_and_body(
+        &self,
+        method: &str,
+        path: &str,
+        headers: &[(&str, &str)],
+        body: &[u8],
+    ) -> HttpResponse {
+        request_with_headers_and_body(self.address, method, path, headers, body).await
     }
 
     async fn stop(self) {
+        // 先停会话（释放泵），再触发 web 服务优雅关闭。
+        {
+            let mut manager = self.manager.lock().await;
+            if manager.stop().is_ok() {
+                manager.wait_stopped().await;
+            }
+        }
         self.shutdown.send_replace(true);
         timeout(Duration::from_secs(2), self.task)
             .await
@@ -105,6 +415,31 @@ impl TestWebServer {
             .expect("headless web service task panicked")
             .expect("headless web service failed");
     }
+}
+
+async fn request_with_headers_and_body(
+    address: SocketAddr,
+    method: &str,
+    path: &str,
+    headers: &[(&str, &str)],
+    body: &[u8],
+) -> HttpResponse {
+    let mut stream = TcpStream::connect(address).await.unwrap();
+    let mut request = format!(
+        "{method} {path} HTTP/1.1\r\nHost: {address}\r\nConnection: close\r\nContent-Length: {}\r\n",
+        body.len()
+    );
+    for (name, value) in headers {
+        request.push_str(&format!("{name}: {value}\r\n"));
+    }
+    request.push_str("\r\n");
+    stream.write_all(request.as_bytes()).await.unwrap();
+    if !body.is_empty() {
+        stream.write_all(body).await.unwrap();
+    }
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).await.unwrap();
+    parse_http_response(&response)
 }
 
 #[tokio::test]
@@ -231,7 +566,7 @@ async fn api_status_reports_video_and_controller() {
     assert_eq!(status["service"]["name"], "ipkvm-headless");
     assert_eq!(status["service"]["version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(status["video"]["source"]["kind"], "generated");
-    assert_eq!(status["video"]["source"]["device_name"], "mock");
+    assert_eq!(status["video"]["source"]["device_name"], "initial");
     assert_eq!(status["video"]["source"]["is_loop"], false);
     assert_eq!(status["video"]["frame"]["width"], 2);
     assert_eq!(status["video"]["frame"]["height"], 1);
@@ -242,6 +577,15 @@ async fn api_status_reports_video_and_controller() {
     assert!(status["controller"]["transport"].is_null());
     assert!(status["controller"]["peer_addr"].is_null());
     assert!(status["controller"]["connected_since_ms"].is_null());
+    // 会话状态：启动即绑定 → running；无输入时计数字段为 0，last_input_ns 因
+    // skip_serializing_if 不出现（None 时不序列化）。
+    assert_eq!(status["session"]["state"], "running");
+    assert_eq!(status["session"]["input_events"], 0);
+    assert_eq!(status["session"]["dropped_frames"], 0);
+    assert!(
+        status["session"].get("last_input_ns").is_none(),
+        "无输入时 last_input_ns 不应序列化"
+    );
 
     server.stop().await;
 }
@@ -293,6 +637,201 @@ async fn api_screenshot_503_when_no_frame() {
 
     assert_eq!(response.status, 503);
     assert!(response.body.is_empty());
+
+    server.stop().await;
+}
+
+// ---- GET /api/devices ----
+
+#[tokio::test]
+async fn api_devices_returns_lists_with_video_and_serial_kinds() {
+    let server = TestWebServer::start().await;
+
+    let response = server.request("GET", "/api/devices").await;
+    assert_eq!(response.status, 200);
+    assert!(
+        response
+            .headers
+            .get("content-type")
+            .is_some_and(|value| value.starts_with("application/json"))
+    );
+    let body: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
+    // mock/无硬件环境下枚举可能返回空列表或失败；成功时结构必须正确。
+    assert!(body["video"].is_array(), "video 字段必须是数组");
+    assert!(body["serial"].is_array(), "serial 字段必须是数组");
+    // 若枚举到视频设备，每项必须有 id/display_name/kind 字段。
+    if let Some(device) = body["video"].as_array().unwrap().first() {
+        assert!(device["kind"] == "video");
+        assert!(device["display_name"].is_string());
+    }
+
+    server.stop().await;
+}
+
+// ---- POST /api/session ----
+
+#[tokio::test]
+async fn api_session_restart_returns_running_state() {
+    let server = TestWebServer::start().await;
+
+    let response = server
+        .request_with_body("POST", "/api/session", br#"{"action":"restart"}"#)
+        .await;
+    assert_eq!(response.status, 200);
+    let body: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
+    assert_eq!(body["state"], "running");
+
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn api_session_restart_starts_from_empty_manager() {
+    let server = TestWebServer::start_empty().await;
+
+    // 零初始会话：restart 可按当前默认选择直接首启。
+    let restart = server
+        .request_with_body("POST", "/api/session", br#"{"action":"restart"}"#)
+        .await;
+    assert_eq!(restart.status, 200);
+    let restart_body: serde_json::Value = serde_json::from_slice(&restart.body).unwrap();
+    assert_eq!(restart_body["state"], "running");
+
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn api_session_create_starts_from_empty_manager() {
+    let server = TestWebServer::start_empty().await;
+
+    let create = server
+        .request_with_body("POST", "/api/session", br#"{"action":"create"}"#)
+        .await;
+    assert_eq!(create.status, 200);
+    let body: serde_json::Value = serde_json::from_slice(&create.body).unwrap();
+    assert_eq!(body["state"], "running");
+
+    // create 后 status 反映 running。
+    let status = server.request("GET", "/api/status").await;
+    let status_body: serde_json::Value = serde_json::from_slice(&status.body).unwrap();
+    assert_eq!(status_body["session"]["state"], "running");
+
+    // 重复 create 报告冲突；即使请求携带会导致工厂失败的设备名，也必须先
+    // 按“会话已存在”处理，避免把幂等/冲突语义泄露成设备打开 500。
+    let again = server
+        .request_with_body(
+            "POST",
+            "/api/session",
+            br#"{"action":"create","video":"__factory_fail__"}"#,
+        )
+        .await;
+    assert_eq!(again.status, 409);
+
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn api_session_stop_then_restart_cycles_state() {
+    let server = TestWebServer::start().await;
+
+    let stop = server
+        .request_with_body("POST", "/api/session", br#"{"action":"stop"}"#)
+        .await;
+    assert_eq!(stop.status, 200);
+    let stop_body: serde_json::Value = serde_json::from_slice(&stop.body).unwrap();
+    assert_eq!(stop_body["state"], "stopped");
+
+    // 停止后再 restart：按当前选择重新启动会话。
+    let restart = server
+        .request_with_body("POST", "/api/session", br#"{"action":"restart"}"#)
+        .await;
+    assert_eq!(restart.status, 200);
+    let restart_body: serde_json::Value = serde_json::from_slice(&restart.body).unwrap();
+    assert_eq!(restart_body["state"], "running");
+
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn api_session_restart_with_video_switches_current_frame_source() {
+    let server = TestWebServer::start().await;
+
+    let response = server
+        .request_with_body(
+            "POST",
+            "/api/session",
+            br#"{"action":"restart","video":"wide"}"#,
+        )
+        .await;
+    assert_eq!(response.status, 200);
+    let restart: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
+    assert_eq!(restart["state"], "running");
+
+    let status = server.request("GET", "/api/status").await;
+    assert_eq!(status.status, 200);
+    let body: serde_json::Value = serde_json::from_slice(&status.body).unwrap();
+    assert_eq!(body["video"]["source"]["device_name"], "wide");
+    assert_eq!(body["video"]["frame"]["width"], 4);
+    assert_eq!(body["video"]["frame"]["height"], 1);
+    assert_eq!(body["video"]["frame"]["seq"], 9);
+
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn api_session_restart_releases_old_resources_before_factory_build() {
+    let server = ReleaseOrderWebServer::start().await;
+
+    let response = server
+        .request_with_body("POST", "/api/session", br#"{"action":"restart"}"#)
+        .await;
+    assert_eq!(
+        response.status,
+        200,
+        "restart should build after releasing the old resource: {}",
+        String::from_utf8_lossy(&response.body)
+    );
+
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn api_session_rejects_unknown_action() {
+    let server = TestWebServer::start().await;
+
+    let response = server
+        .request_with_body("POST", "/api/session", br#"{"action":"nuke"}"#)
+        .await;
+    assert_eq!(response.status, 400);
+    let body: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
+    assert_eq!(body["error"], "unknown action");
+
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn api_devices_and_session_require_token_when_configured() {
+    let server =
+        TestWebServer::start_with_frame(Some(test_frame()), Some("secret".to_string())).await;
+
+    // 新增管理路由同样受全局鉴权层保护。
+    let devices = server.request("GET", "/api/devices").await;
+    assert_eq!(devices.status, 401);
+
+    let session = server
+        .request_with_body("POST", "/api/session", br#"{"action":"restart"}"#)
+        .await;
+    assert_eq!(session.status, 401);
+
+    // 带 token 放行。
+    let devices_ok = server
+        .request_with_headers_and_body(
+            "GET",
+            "/api/devices",
+            &[("Authorization", "Bearer secret")],
+            &[],
+        )
+        .await;
+    assert_eq!(devices_ok.status, 200);
 
     server.stop().await;
 }
@@ -387,6 +926,23 @@ fn test_frame() -> Arc<VideoFrame> {
         8,
         PixelFormat::Bgra8888,
         Arc::from(vec![0, 0, 255, 255, 0, 255, 0, 255].into_boxed_slice()),
+    ))
+}
+
+fn wide_frame() -> Arc<VideoFrame> {
+    Arc::new(VideoFrame::new(
+        9,
+        MonotonicTimestamp::from_nanos(9),
+        4,
+        1,
+        16,
+        PixelFormat::Bgra8888,
+        Arc::from(
+            vec![
+                255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+            ]
+            .into_boxed_slice(),
+        ),
     ))
 }
 

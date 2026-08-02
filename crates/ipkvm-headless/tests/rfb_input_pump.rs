@@ -128,11 +128,12 @@ async fn real_tcp_client_drives_ch9329_input_and_disconnect_release() {
         Arc::from(vec![0_u8; 8].into_boxed_slice()),
     )));
     let (event_tx, mut event_rx) = mpsc::channel(2);
+    let event_publisher = watch::channel(Some(event_tx)).1;
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let server = RfbTcpServer::new(
         listener,
         Arc::clone(&source),
-        event_tx,
+        event_publisher,
         RfbTcpConfig::default(),
         RfbConnectionGate::new(),
     )

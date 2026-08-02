@@ -6,14 +6,17 @@ use std::sync::Arc;
 
 use ipkvm_core::InputSink;
 use ipkvm_video::FrameSource;
+use tokio::sync::watch;
 
 use crate::console_session::{ConsoleSession, SessionError, SessionHandle};
-use crate::rfb_connection::RfbConnectionGate;
+use crate::rfb_connection::{RfbConnectionGate, RfbServerEvent};
 use crate::rfb_input::RfbInputRunError;
 
 /// 会话状态：从实际会话的 `is_running()` 推断，不复制维护。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SessionState {
+    /// 未创建会话（`empty()` 启动后、或会话已销毁）。
+    Absent,
     Stopped,
     Running,
 }
@@ -23,33 +26,95 @@ pub enum SessionState {
 /// 不复制状态——`state()` 从实际会话推断；`stop()` 委托返回的旧泵任务
 /// 句柄保存在 `pending_stop`，`wait_stopped()` await 后构成「释放完成」
 /// 屏障，供组装层在重启前等待旧泵收尾。
+///
+/// `event_publisher` 由本管理器拥有，会话持有其 clone：传输层经
+/// `event_publisher()` 拿到的订阅端在会话重建后仍能读到新事件发送端。
 pub struct SessionManager<S: InputSink + Clone + Send + 'static> {
     session: Option<ConsoleSession<S>>,
     /// 上次 `stop()` 委托返回的旧泵任务句柄（await 前存在）。
     pending_stop: Option<tokio::task::JoinHandle<Result<(), RfbInputRunError>>>,
+    /// 当前事件出口发布端：`Some` 表示会话已启动、传输层可发事件；`None`
+    /// 表示无活动出口（会话未创建/已停止/已销毁）。
+    event_publisher: watch::Sender<Option<tokio::sync::mpsc::Sender<RfbServerEvent>>>,
 }
 
 impl<S: InputSink + Clone + Send + 'static> SessionManager<S> {
     /// 组装会话管理器：调用方构造帧源与 sink（设备选择由调用方/配置层完成）。
     pub fn new(frame_source: Arc<dyn FrameSource>, sink: S, gate: RfbConnectionGate) -> Self {
+        let (event_publisher, _) = watch::channel(None);
+        let session = ConsoleSession::new(frame_source, sink, gate, event_publisher.clone());
         Self {
-            session: Some(ConsoleSession::new(frame_source, sink, gate)),
+            session: Some(session),
             pending_stop: None,
+            event_publisher,
         }
     }
 
-    /// 会话状态：实际会话正在运行 → Running，否则 Stopped。
+    /// 零会话启动：不立即创建会话，待 `create()` 接入帧源/sink。
+    ///
+    /// `event_publisher` 仍建立，传输层订阅端初始读到 `None`（无活动出口），
+    /// `create()` 首启后会读到新 channel 的发送端。
+    pub fn empty() -> Self {
+        let (event_publisher, _) = watch::channel(None);
+        Self {
+            session: None,
+            pending_stop: None,
+            event_publisher,
+        }
+    }
+
+    /// 首次创建会话（用于 `empty()` 启动后由 API/配置层注入帧源与 sink）。
+    ///
+    /// 已有会话时返回 `AlreadyCreated`。本方法只组装会话结构，不启动泵——
+    /// 调用方随后调用 `start()`。
+    pub fn create(
+        &mut self,
+        frame_source: Arc<dyn FrameSource>,
+        sink: S,
+        gate: RfbConnectionGate,
+    ) -> Result<(), SessionError> {
+        if self.session.is_some() {
+            return Err(SessionError::AlreadyCreated);
+        }
+        self.session = Some(ConsoleSession::new(
+            frame_source,
+            sink,
+            gate,
+            self.event_publisher.clone(),
+        ));
+        Ok(())
+    }
+
+    /// 会话状态：实际会话正在运行 → Running，已组装未启动 → Stopped，
+    /// 无会话 → Absent。
     pub fn state(&self) -> SessionState {
-        if self.session.as_ref().is_some_and(|s| s.is_running()) {
-            SessionState::Running
-        } else {
-            SessionState::Stopped
+        match &self.session {
+            Some(session) if session.is_running() => SessionState::Running,
+            Some(_) => SessionState::Stopped,
+            None => SessionState::Absent,
         }
     }
 
     /// 底层真实会话引用（传输层事件发送端等经此获取）。
     pub fn session(&self) -> Option<&ConsoleSession<S>> {
         self.session.as_ref()
+    }
+
+    /// 刷新当前会话统计快照（帧丢失、串口队列等）。
+    pub fn refresh_stats(&mut self) {
+        if let Some(session) = self.session.as_mut() {
+            session.refresh_stats();
+        }
+    }
+
+    /// 事件出口订阅端：传输层经此获取当前活动发送端。
+    ///
+    /// 会话未创建时订阅端恒读 `None`；`start()` 后读 `Some(sender)`，
+    /// `stop()` 后读 `None`，会话重建后自动读到新 channel。
+    pub fn event_publisher(
+        &self,
+    ) -> watch::Receiver<Option<tokio::sync::mpsc::Sender<RfbServerEvent>>> {
+        self.event_publisher.subscribe()
     }
 
     /// 启动会话：委托 `ConsoleSession::start`（重建事件 channel 并 spawn 泵任务）。
@@ -86,11 +151,60 @@ impl<S: InputSink + Clone + Send + 'static> SessionManager<S> {
     /// 无竞态重启：`stop()` → 等待旧泵收尾（释放屏障）→ `start()`。
     ///
     /// 返回时旧泵已释放、新泵已启动。对已停止会话返回 `NotRunning`（委托
-    /// `stop()` 的语义）。帧源/串口设备重建属于 #31 配置层接线，不在此范围。
+    /// `stop()` 的语义）。本方法只对**相同**帧源/串口配置做泵重启；运行时
+    /// 换设备（重建帧源/串口）走 `replace_and_start()`。
     pub async fn restart(&mut self) -> Result<(), SessionError> {
         self.stop()?;
         self.wait_stopped().await;
         self.start()?;
+        Ok(())
+    }
+
+    /// 替换会话组件并启动新会话。
+    ///
+    /// 这是运行时换设备的会话级边界：如旧会话正在运行，先停泵并等待释放；
+    /// 然后丢弃旧帧源/sink，组装新 `ConsoleSession` 并启动。已停止或空会话
+    /// 直接替换并启动。
+    pub async fn replace_and_start(
+        &mut self,
+        frame_source: Arc<dyn FrameSource>,
+        sink: S,
+        gate: RfbConnectionGate,
+    ) -> Result<(), SessionError> {
+        if self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.is_running())
+        {
+            self.stop()?;
+        }
+        self.wait_stopped().await;
+        self.session = Some(ConsoleSession::new(
+            frame_source,
+            sink,
+            gate,
+            self.event_publisher.clone(),
+        ));
+        self.start()?;
+        Ok(())
+    }
+
+    /// 停止并销毁当前会话组件。
+    ///
+    /// 运行时换独占设备前调用此方法：先等旧输入泵 release，再 drop 旧
+    /// `ConsoleSession` 持有的帧源和 sink，确保后续工厂可以重新打开同一个
+    /// 相机或串口。空会话调用是 no-op。
+    pub async fn stop_and_destroy(&mut self) -> Result<(), SessionError> {
+        if self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.is_running())
+        {
+            self.stop()?;
+        }
+        self.wait_stopped().await;
+        self.session = None;
+        self.event_publisher.send_replace(None);
         Ok(())
     }
 }
@@ -359,5 +473,162 @@ mod tests {
             yield_until(|| sink.recorded.lock().unwrap().release_count == 2).await,
             "wait_stopped 后文本服务 release_all 未执行完成"
         );
+    }
+
+    // ---- 零会话启动与 create ----
+
+    /// empty() 启动：无会话，state 为 Absent；start/stop/restart 均报告 NotRunning。
+    #[tokio::test]
+    async fn empty_manager_has_absent_state() {
+        let mut manager: SessionManager<RecordingSink> = SessionManager::empty();
+
+        assert_eq!(manager.state(), SessionState::Absent);
+        assert!(matches!(manager.start(), Err(SessionError::NotRunning)));
+        assert!(matches!(manager.stop(), Err(SessionError::NotRunning)));
+        assert!(matches!(
+            manager.restart().await,
+            Err(SessionError::NotRunning)
+        ));
+    }
+
+    /// create() 首次注入帧源/sink 后会话进入 Stopped，start 后 Running；
+    /// 重复 create 报告 AlreadyCreated。
+    #[tokio::test]
+    async fn create_assembles_session_then_start_runs() {
+        let mut manager: SessionManager<RecordingSink> = SessionManager::empty();
+        let frame_source: Arc<dyn FrameSource> = Arc::new(MockFrameSource::new());
+        let sink = RecordingSink::default();
+
+        manager
+            .create(frame_source, sink.clone(), RfbConnectionGate::new())
+            .unwrap();
+        assert_eq!(manager.state(), SessionState::Stopped);
+
+        manager.start().unwrap();
+        assert_eq!(manager.state(), SessionState::Running);
+
+        // 已有会话时 create 报告 AlreadyCreated。
+        assert!(matches!(
+            manager.create(
+                Arc::new(MockFrameSource::new()),
+                sink.clone(),
+                RfbConnectionGate::new(),
+            ),
+            Err(SessionError::AlreadyCreated)
+        ));
+
+        manager.stop().unwrap();
+        manager.wait_stopped().await;
+    }
+
+    /// empty() 管理器的 event_publisher 订阅端恒读 None；create + start 后
+    /// 读到 Some(sender)，传输层据此区分「无活动出口」与「可发事件」。
+    #[tokio::test]
+    async fn empty_manager_publisher_is_none_until_create_and_start() {
+        let mut manager: SessionManager<RecordingSink> = SessionManager::empty();
+        let publisher = manager.event_publisher();
+        assert!(publisher.borrow().is_none());
+
+        let frame_source: Arc<dyn FrameSource> = Arc::new(MockFrameSource::new());
+        manager
+            .create(
+                frame_source,
+                RecordingSink::default(),
+                RfbConnectionGate::new(),
+            )
+            .unwrap();
+        // create 只组装，未启动 → 仍 None。
+        assert!(publisher.borrow().is_none());
+
+        manager.start().unwrap();
+        assert!(publisher.borrow().is_some());
+
+        manager.stop().unwrap();
+        assert!(publisher.borrow().is_none());
+        manager.wait_stopped().await;
+    }
+
+    /// replace_and_start：运行中会话先停旧泵，再替换为新帧源/sink 并启动；
+    /// 传输层订阅端应读到新的事件 channel。
+    #[tokio::test]
+    async fn replace_and_start_replaces_running_session_with_new_sender() {
+        let (mut manager, _sink) = session_manager_fixture();
+        manager.start().unwrap();
+        let publisher = manager.event_publisher();
+        let first_sender = publisher.borrow().clone().unwrap();
+
+        manager
+            .replace_and_start(
+                Arc::new(MockFrameSource::new()),
+                RecordingSink::default(),
+                RfbConnectionGate::new(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(manager.state(), SessionState::Running);
+        let second_sender = publisher.borrow().clone().unwrap();
+        assert!(
+            !first_sender.same_channel(&second_sender),
+            "替换会话后必须发布新事件 channel"
+        );
+
+        manager.stop().unwrap();
+        manager.wait_stopped().await;
+    }
+
+    /// replace_and_start 对 stopped/absent 同样是“按新组件启动”，供 API restart
+    /// 在停止后再次启动，避免把用户操作暴露成底层 NotRunning 冲突。
+    #[tokio::test]
+    async fn replace_and_start_starts_from_stopped_or_absent_state() {
+        let (mut stopped, _sink) = session_manager_fixture();
+        stopped.start().unwrap();
+        stopped.stop().unwrap();
+        stopped.wait_stopped().await;
+        assert_eq!(stopped.state(), SessionState::Stopped);
+
+        stopped
+            .replace_and_start(
+                Arc::new(MockFrameSource::new()),
+                RecordingSink::default(),
+                RfbConnectionGate::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(stopped.state(), SessionState::Running);
+        stopped.stop().unwrap();
+        stopped.wait_stopped().await;
+
+        let mut absent: SessionManager<RecordingSink> = SessionManager::empty();
+        absent
+            .replace_and_start(
+                Arc::new(MockFrameSource::new()),
+                RecordingSink::default(),
+                RfbConnectionGate::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(absent.state(), SessionState::Running);
+        absent.stop().unwrap();
+        absent.wait_stopped().await;
+    }
+
+    #[tokio::test]
+    async fn stop_and_destroy_releases_session_and_allows_create_again() {
+        let (mut manager, _sink) = session_manager_fixture();
+        manager.start().unwrap();
+
+        manager.stop_and_destroy().await.unwrap();
+
+        assert_eq!(manager.state(), SessionState::Absent);
+        assert!(manager.event_publisher().borrow().is_none());
+        manager
+            .create(
+                Arc::new(MockFrameSource::new()),
+                RecordingSink::default(),
+                RfbConnectionGate::new(),
+            )
+            .unwrap();
+        assert_eq!(manager.state(), SessionState::Stopped);
     }
 }

@@ -14,20 +14,16 @@ use std::{net::SocketAddr, sync::Arc};
 use futures_util::StreamExt;
 use ipkvm_core::{Ch9329InputSink, MouseMode, fake_serial::FakeCommandQueue};
 use ipkvm_headless::{
-    rfb_connection::{RfbConnectionGate, RfbServerEvent},
-    rfb_input::RfbInputPump,
+    frame_source::SwitchableFrameSource,
+    rfb_connection::RfbConnectionGate,
     rfb_tcp::{RfbTcpConfig, RfbTcpServer, RfbTcpServerError},
     rfb_ws::RfbWebSocketConfig,
-    web::HeadlessWebService,
+    session_manager::SessionManager,
+    web::{HeadlessWebService, SessionFactory, SessionSelection},
 };
 use ipkvm_video::{MonotonicTimestamp, PixelFormat, VideoFrame, mock::MockFrameSource};
-use support::TestRfbClient;
-use tokio::{
-    io::AsyncReadExt,
-    net::TcpListener,
-    sync::{mpsc, watch},
-    task::JoinHandle,
-};
+use support::{TestRfbClient, TestWebSocketRfbClient};
+use tokio::{io::AsyncReadExt, net::TcpListener, sync::watch, task::JoinHandle, time::Duration};
 use tokio_tungstenite::{connect_async, tungstenite::Error as WebSocketError};
 
 /// 复刻正式 `src/main.rs` 的组装结构：TCP + HTTP/WS 共享 gate/source/event。
@@ -49,23 +45,29 @@ impl HeadlessAssembly {
         let source = Arc::new(MockFrameSource::new());
         source.publish_frame(test_frame());
 
-        let (event_tx, event_rx) = mpsc::channel::<RfbServerEvent>(16);
         let (shutdown, shutdown_rx) = watch::channel(false);
         let gate = RfbConnectionGate::new();
 
-        // 输入泵：消费两个传输汇入的事件。
-        let sink = Ch9329InputSink::new(FakeCommandQueue::new(), 0, MouseMode::Absolute);
-        let mut pump = RfbInputPump::new(sink);
-        let mut pump_rx = event_rx;
-        tokio::spawn(async move {
-            let _ = pump.run(&mut pump_rx, |_| {}).await;
-        });
+        // 会话管理器：构造并 start（内部 spawn 输入泵消费两个传输汇入的事件）。
+        // `event_publisher()` 提供传输层共享的 watch 订阅端。
+        let mut manager = SessionManager::new(
+            Arc::clone(&source) as Arc<dyn ipkvm_video::FrameSource>,
+            Ch9329InputSink::new(FakeCommandQueue::new(), 0, MouseMode::Absolute),
+            gate.clone(),
+        );
+        manager.start().unwrap();
+        let event_publisher = manager.event_publisher();
+        let manager = Arc::new(tokio::sync::Mutex::new(manager));
+        let factory = Arc::new(TestSessionFactory);
+        let switchable_source = Arc::new(SwitchableFrameSource::new(
+            Arc::clone(&source) as Arc<dyn ipkvm_video::FrameSource>
+        ));
 
         // TCP 任务（clone gate）。
         let tcp_server = RfbTcpServer::new(
             tcp_listener,
-            Arc::clone(&source),
-            event_tx.clone(),
+            Arc::clone(&switchable_source),
+            event_publisher.clone(),
             RfbTcpConfig::default(),
             gate.clone(),
         )
@@ -75,8 +77,10 @@ impl HeadlessAssembly {
 
         // HTTP+WS 任务（move gate）：HeadlessWebService 提供静态资源 + /rfb。
         let web_service = HeadlessWebService::new(
-            source,
-            event_tx,
+            switchable_source,
+            manager,
+            factory,
+            event_publisher,
             RfbWebSocketConfig::default(),
             shutdown_rx.clone(),
             gate,
@@ -104,6 +108,44 @@ impl HeadlessAssembly {
         shutdown.send(true).unwrap();
         tcp_task.await.unwrap().unwrap();
         http_task.await.unwrap().unwrap();
+    }
+
+    async fn post_session(&self, body: &str) -> String {
+        let mut stream = tokio::net::TcpStream::connect(self.http_address)
+            .await
+            .unwrap();
+        let request = format!(
+            "POST /api/session HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            self.http_address,
+            body.len(),
+            body
+        );
+        stream.write_all(request.as_bytes()).await.unwrap();
+        read_http_status_line(&mut stream).await
+    }
+}
+
+/// 会话工厂：`POST /api/session {action:"create"}` 首启时按当前帧源/sink 构造。
+/// 本测试不触发该路径，工厂仅占位以满足 `HeadlessWebService::new` 签名。
+struct TestSessionFactory;
+
+impl SessionFactory<Ch9329InputSink<FakeCommandQueue>> for TestSessionFactory {
+    fn build(
+        &self,
+        _selection: &SessionSelection,
+    ) -> Result<
+        (
+            Arc<dyn ipkvm_video::FrameSource>,
+            Ch9329InputSink<FakeCommandQueue>,
+        ),
+        String,
+    > {
+        let source = Arc::new(MockFrameSource::new());
+        source.publish_frame(test_frame());
+        Ok((
+            source as Arc<dyn ipkvm_video::FrameSource>,
+            Ch9329InputSink::new(FakeCommandQueue::new(), 0, MouseMode::Absolute),
+        ))
     }
 }
 
@@ -225,6 +267,58 @@ async fn active_tcp_blocks_websocket_with_conflict() {
     assert_eq!(status, axum::http::StatusCode::CONFLICT);
 
     drop(tcp);
+    system.stop().await;
+}
+
+#[tokio::test]
+async fn session_restart_while_tcp_active_releases_gate_and_keeps_tcp_server_alive() {
+    let system = HeadlessAssembly::start().await;
+
+    let mut tcp = TestRfbClient::connect(system.tcp_address).await;
+    tcp.handshake(true).await;
+
+    let status = system.post_session(r#"{"action":"restart"}"#).await;
+    assert!(
+        status.starts_with("HTTP/1.1 200"),
+        "restart status: {status}"
+    );
+    let old_closed = tokio::time::timeout(Duration::from_secs(1), tcp.read_one())
+        .await
+        .expect("active TCP connection should close during session restart")
+        .expect("old TCP read should complete");
+    assert_eq!(old_closed, 0, "old TCP connection should reach EOF");
+
+    let mut next = TestRfbClient::connect(system.tcp_address).await;
+    assert_eq!(next.read_banner().await.unwrap(), *b"RFB 003.008\n");
+
+    system.stop().await;
+}
+
+#[tokio::test]
+async fn session_restart_while_websocket_active_releases_gate_for_new_websocket() {
+    let system = HeadlessAssembly::start().await;
+
+    let (socket, _response) = connect_async(format!("ws://{}/rfb", system.http_address))
+        .await
+        .expect("initial WebSocket upgrade should succeed");
+    let mut websocket = TestWebSocketRfbClient::new(socket);
+    websocket.handshake(true).await;
+
+    let status = system.post_session(r#"{"action":"restart"}"#).await;
+    assert!(
+        status.starts_with("HTTP/1.1 200"),
+        "restart status: {status}"
+    );
+    let _old_end = tokio::time::timeout(Duration::from_secs(1), websocket.read_message())
+        .await
+        .expect("active WebSocket should close during session restart");
+
+    let (socket, _response) = connect_async(format!("ws://{}/rfb", system.http_address))
+        .await
+        .expect("new WebSocket upgrade should succeed after restart");
+    let mut next = TestWebSocketRfbClient::new(socket);
+    assert_eq!(next.read_banner().await, *b"RFB 003.008\n");
+
     system.stop().await;
 }
 

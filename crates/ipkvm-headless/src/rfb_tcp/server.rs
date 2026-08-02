@@ -10,13 +10,16 @@ use tokio::{
 use super::{RfbTcpConfig, RfbTcpServerError, transport::TcpTransport};
 use ipkvm_session::rfb_connection::{
     ConnectionEnd, RfbConnectionFinalizeError, RfbConnectionGate, RfbConnectionGateError,
-    RfbServerEvent, RfbTransportKind, finalize_connection, run_managed_connection,
+    RfbServerEvent, RfbTransportKind, finalize_connection, finalize_connection_after_session_end,
+    run_managed_connection,
 };
 
 pub struct RfbTcpServer<S: ?Sized> {
     listener: TcpListener,
     frame_source: Arc<S>,
-    event_tx: mpsc::Sender<RfbServerEvent>,
+    /// 当前活动事件出口订阅端：每个连接 accept 后读取最新 sender；
+    /// `None`（会话未启动/已停止）时拒绝连接。会话重启后自动读到新 channel。
+    event_publisher: watch::Receiver<Option<mpsc::Sender<RfbServerEvent>>>,
     config: RfbTcpConfig,
     gate: RfbConnectionGate,
     #[cfg(test)]
@@ -27,7 +30,7 @@ impl<S: FrameSource + ?Sized + 'static> RfbTcpServer<S> {
     pub fn new(
         listener: TcpListener,
         frame_source: Arc<S>,
-        event_tx: mpsc::Sender<RfbServerEvent>,
+        event_publisher: watch::Receiver<Option<mpsc::Sender<RfbServerEvent>>>,
         config: RfbTcpConfig,
         gate: RfbConnectionGate,
     ) -> Result<Self, RfbTcpServerError> {
@@ -35,7 +38,7 @@ impl<S: FrameSource + ?Sized + 'static> RfbTcpServer<S> {
         Ok(Self {
             listener,
             frame_source,
-            event_tx,
+            event_publisher,
             config,
             gate,
             #[cfg(test)]
@@ -52,20 +55,32 @@ impl<S: FrameSource + ?Sized + 'static> RfbTcpServer<S> {
             if shutdown_is_requested(&shutdown) {
                 return Ok(());
             }
+            let watched_event_tx = current_event_tx(&self.event_publisher);
+            if event_sender_is_current_and_closed(&self.event_publisher, &watched_event_tx) {
+                return Err(RfbTcpServerError::EventChannelClosed);
+            }
 
             let (stream, peer_addr) = tokio::select! {
                 result = self.listener.accept() => {
                     result.map_err(RfbTcpServerError::Accept)?
                 }
                 _ = wait_for_shutdown(&mut shutdown) => return Ok(()),
-                _ = self.event_tx.closed() => {
-                    return Err(RfbTcpServerError::EventChannelClosed);
+                _ = wait_for_event_channel_closed(watched_event_tx.clone()) => {
+                    if event_sender_is_current_and_closed(&self.event_publisher, &watched_event_tx) {
+                        return Err(RfbTcpServerError::EventChannelClosed);
+                    }
+                    continue;
                 }
             };
             if !tcp_peer_allowed(peer_addr, &self.config.connection.security) {
                 // 未配置密码：非回环来源直接关闭，不进入握手。
                 continue;
             }
+            // 每个连接前读取当前活动事件出口；无活动会话时拒绝（等下一次 start）。
+            let event_tx = match current_event_tx(&self.event_publisher) {
+                Some(tx) => tx,
+                None => continue,
+            };
             #[cfg(test)]
             if let Some(notifier) = &self.gate_wait_notifier {
                 let _ = notifier.send(peer_addr);
@@ -79,23 +94,60 @@ impl<S: FrameSource + ?Sized + 'static> RfbTcpServer<S> {
                     })?
                 }
                 _ = wait_for_shutdown(&mut shutdown) => return Ok(()),
-                _ = self.event_tx.closed() => return Err(RfbTcpServerError::EventChannelClosed),
             };
             let completion = run_managed_connection(
                 reservation,
                 peer_addr,
                 TcpTransport::new(stream, self.config.read_buffer_bytes),
                 self.frame_source.subscribe(),
-                self.event_tx.clone(),
+                event_tx.clone(),
                 self.config.connection.clone(),
                 shutdown.clone(),
             )
             .await;
-            let end = finalize_connection(&self.event_tx, completion).await?;
+            let end = if event_sender_is_current(&self.event_publisher, &event_tx) {
+                finalize_connection(&event_tx, completion).await?
+            } else {
+                finalize_connection_after_session_end(&event_tx, completion).await
+            };
             if matches!(&end, ConnectionEnd::ServerShutdown) {
                 return Ok(());
             }
         }
+    }
+}
+
+/// 读取当前活动事件发送端：会话未启动/已停止时返回 `None`。
+fn current_event_tx(
+    publisher: &watch::Receiver<Option<mpsc::Sender<RfbServerEvent>>>,
+) -> Option<mpsc::Sender<RfbServerEvent>> {
+    publisher.borrow().clone()
+}
+
+fn event_sender_is_current_and_closed(
+    publisher: &watch::Receiver<Option<mpsc::Sender<RfbServerEvent>>>,
+    sender: &Option<mpsc::Sender<RfbServerEvent>>,
+) -> bool {
+    let Some(sender) = sender else {
+        return false;
+    };
+    let Some(current) = current_event_tx(publisher) else {
+        return false;
+    };
+    sender.same_channel(&current) && sender.is_closed()
+}
+
+fn event_sender_is_current(
+    publisher: &watch::Receiver<Option<mpsc::Sender<RfbServerEvent>>>,
+    sender: &mpsc::Sender<RfbServerEvent>,
+) -> bool {
+    current_event_tx(publisher).is_some_and(|current| sender.same_channel(&current))
+}
+
+async fn wait_for_event_channel_closed(sender: Option<mpsc::Sender<RfbServerEvent>>) {
+    match sender {
+        Some(sender) => sender.closed().await,
+        None => std::future::pending().await,
     }
 }
 
@@ -162,6 +214,7 @@ mod tests {
     ) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let (event_tx, event_rx) = mpsc::channel(1);
+        let event_publisher = watch::channel(Some(event_tx)).1;
         let frame_source = Arc::new(MockFrameSource::new());
         frame_source.publish_frame(Arc::new(VideoFrame::new(
             1,
@@ -176,7 +229,7 @@ mod tests {
             RfbTcpServer::new(
                 listener,
                 frame_source,
-                event_tx,
+                event_publisher,
                 RfbTcpConfig::default(),
                 RfbConnectionGate::new(),
             )
@@ -267,11 +320,12 @@ mod tests {
             Arc::from([0_u8, 0, 0, 0]),
         )));
         let (event_tx, _event_rx) = mpsc::channel(1);
+        let event_publisher = watch::channel(Some(event_tx)).1;
         let (_shutdown_tx, shutdown_rx) = watch::channel(false);
         let poisoned_server = RfbTcpServer::new(
             listener,
             frame_source,
-            event_tx,
+            event_publisher,
             RfbTcpConfig::default(),
             gate,
         )
@@ -301,6 +355,7 @@ mod tests {
             Arc::from([0_u8, 0, 0, 0]),
         )));
         let (event_tx, mut event_rx) = mpsc::channel(1);
+        let (event_watch_tx, _) = watch::channel(Some(event_tx));
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
         let gate = RfbConnectionGate::new();
         let (gate_wait_tx, mut gate_wait_rx) = mpsc::unbounded_channel();
@@ -308,7 +363,7 @@ mod tests {
         let mut tcp_server = RfbTcpServer::new(
             tcp_listener,
             Arc::clone(&frame_source),
-            event_tx.clone(),
+            event_watch_tx.subscribe(),
             RfbTcpConfig::default(),
             gate.clone(),
         )
@@ -318,7 +373,7 @@ mod tests {
 
         let websocket_service = RfbWebSocketService::new(
             frame_source,
-            event_tx,
+            event_watch_tx.subscribe(),
             RfbWebSocketConfig::default(),
             shutdown_rx.clone(),
             gate,

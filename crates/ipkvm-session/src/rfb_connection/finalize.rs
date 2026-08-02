@@ -76,6 +76,32 @@ pub async fn finalize_connection(
     Ok(end)
 }
 
+/// 会话已停止/替换时的收尾路径。
+///
+/// 旧输入泵的事件接收端可能已经被关闭，此时无法再投递 `Disconnected`；
+/// 但这是会话级重启的预期结果，不应让连接 lease 的 Drop 毒化 gate。
+pub async fn finalize_connection_after_session_end(
+    event_tx: &mpsc::Sender<RfbServerEvent>,
+    completion: RfbConnectionCompletion,
+) -> ConnectionEnd {
+    let RfbConnectionCompletion {
+        end,
+        lease,
+        peer_addr,
+    } = completion;
+    if let Some(reason) = end.reason() {
+        let _ = event_tx
+            .send(RfbServerEvent::Disconnected {
+                client_id: lease.client_id(),
+                peer_addr,
+                reason,
+            })
+            .await;
+    }
+    lease.release();
+    end
+}
+
 #[cfg(test)]
 mod tests {
     use std::{net::SocketAddr, task::Poll};
@@ -211,6 +237,45 @@ mod tests {
             gate.try_acquire(RfbTransportKind::Tcp, peer()).unwrap_err(),
             RfbConnectionGateError::Poisoned
         );
+    }
+
+    #[tokio::test]
+    async fn session_end_without_disconnect_reason_releases_gate_without_event() {
+        let gate = RfbConnectionGate::new();
+        let completion = completion(
+            &gate,
+            "127.0.0.1:5900".parse().unwrap(),
+            ConnectionEnd::Failed(RfbConnectionError::EventChannelClosed),
+        );
+        let (event_tx, mut event_rx) = mpsc::channel(1);
+
+        assert!(matches!(
+            finalize_connection_after_session_end(&event_tx, completion).await,
+            ConnectionEnd::Failed(RfbConnectionError::EventChannelClosed)
+        ));
+        assert!(matches!(
+            event_rx.try_recv(),
+            Err(mpsc::error::TryRecvError::Empty)
+        ));
+        gate.try_acquire(RfbTransportKind::Tcp, peer()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn session_end_with_closed_receiver_releases_gate_without_poisoning() {
+        let gate = RfbConnectionGate::new();
+        let completion = completion(
+            &gate,
+            "127.0.0.1:5900".parse().unwrap(),
+            ConnectionEnd::ClientClosed,
+        );
+        let (event_tx, event_rx) = mpsc::channel(1);
+        drop(event_rx);
+
+        assert!(matches!(
+            finalize_connection_after_session_end(&event_tx, completion).await,
+            ConnectionEnd::ClientClosed
+        ));
+        gate.try_acquire(RfbTransportKind::Tcp, peer()).unwrap();
     }
 
     #[tokio::test]

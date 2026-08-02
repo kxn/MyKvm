@@ -3,7 +3,7 @@ use crate::input::{
     FramebufferSize, InputError, InputResult, InputSink, KeyEvent, MouseMode, PointerButton,
     PointerEvent,
 };
-use crate::serial::{CommandBatch, CommandQueue};
+use crate::serial::{CommandBatch, CommandQueue, QueueStats};
 
 use super::{AbsoluteMouseReport, Ch9329Command, KeyboardReport, RelativeMouseReport};
 
@@ -293,6 +293,10 @@ impl<Q: CommandQueue> Ch9329InputSink<Q> {
         Ok(())
     }
 
+    pub fn queue_stats(&self) -> QueueStats {
+        self.queue.stats()
+    }
+
     fn enqueue_commands(&self, commands: Vec<Ch9329Command>) -> InputResult<()> {
         let frames = commands
             .iter()
@@ -328,6 +332,10 @@ impl<Q: CommandQueue> InputSink for Ch9329InputSink<Q> {
 
     fn release_all(&mut self) -> InputResult<()> {
         Ch9329InputSink::release_all(self)
+    }
+
+    fn queue_stats(&self) -> Option<QueueStats> {
+        Some(Ch9329InputSink::queue_stats(self))
     }
 }
 
