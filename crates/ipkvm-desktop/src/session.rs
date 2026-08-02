@@ -189,6 +189,23 @@ where
         })
     }
 
+    /// 发送相对指针事件（桌面相对鼠标模式；dx/dy 为帧像素增量）。
+    pub fn send_pointer_relative(
+        &self,
+        button_mask: u8,
+        dx: i16,
+        dy: i16,
+        wheel: i8,
+    ) -> Result<(), DesktopSessionError> {
+        self.send_event(RfbServerEvent::PointerRelative {
+            client_id: RfbClientId::local_desktop(),
+            button_mask,
+            dx,
+            dy,
+            wheel,
+        })
+    }
+
     /// 粘贴文本：以 CutText 进入文本键入服务。
     pub fn paste_text(&self, text: String) -> Result<(), DesktopSessionError> {
         self.send_event(RfbServerEvent::CutText {
@@ -569,5 +586,21 @@ mod tests {
 
         assert!(result.is_err());
         assert!(pending.is_empty());
+    }
+
+    #[test]
+    fn connect_then_relative_pointer_reaches_sink() {
+        let (mut controller, sink) = controller_with_sink();
+        controller.connect(request()).unwrap();
+
+        controller
+            .send_pointer_relative(1, 10, -3, 2)
+            .unwrap();
+
+        wait_until(
+            || sink.recorded.lock().unwrap().pointer_batches == 1,
+            "相对指针事件未到达记录型 sink",
+        );
+        controller.stop().unwrap();
     }
 }
