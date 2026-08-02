@@ -1,0 +1,406 @@
+//! CH9329 串口探测工具：直接向 CH9329 发送键盘/鼠标命令，用于硬件闭环验证。
+//!
+//! 用法：
+//!   ch9329_probe <串口路径> [波特率=9600] <子命令> [参数]
+//!
+//! 子命令：
+//!   key <usage_hex>              按下并释放一个 HID usage（如 0x04 = a）
+//!   text <字符串>                依次「按下并释放」每个 ASCII 字符（模拟打字）
+//!   info                         发送 GetInfo 命令（CH9329 默认无应答模式，仅发出）
+//!   mouse-abs <x> <y>            绝对鼠标移动到 (x,y)，坐标按 0-4095 原始范围
+//!   mouse-rel <dx> <dy>          相对鼠标移动 (dx,dy)
+//!   click <left|middle|right>    在当前位置（绝对 2048,2048）按下并释放一次按键
+//!   mouse-abs-btn <x> <y> <btn>  直接发送绝对帧 0x04 带按钮位（绕过 InputSink 的按键路由），
+//!                                用于实测「绝对帧按键位是否被目标机识别」；btn 为 0-7 掩码
+//!                                （bit0=左 bit1=右 bit2=中），按下 60ms 后原位释放
+//!   btn <left|middle|right> <down|up>
+//!                                单独按下/释放一个鼠标按键（走相对帧 0x05），
+//!                                用于组合测试拖拽：mouse-abs 移动 + btn down + mouse-abs 移动 + btn up
+//!   drag <x1> <y1> <x2> <y2>     拖拽测试：绝对移动到 A → 左键 down → 绝对移动到 B → 左键 up，
+//!                                全程在一个进程内完成（避免命令收尾 release_all 干扰）；
+//!                                用于验证绝对移动帧期间按钮状态是否保持
+//!
+//! 验证方法（本机 COM9 → ARM 10.10.10.21）：
+//!   1. ARM 上 `cat /dev/tty1` 或登录控制台，运行 `ch9329_probe COM9 text hello`
+//!      → 应在 ARM 屏幕看到 "hello" 字符出现。
+//!   2. `ch9329_probe COM9 mouse-rel 100 0` → ARM 上 `evtest /dev/input/event6`
+//!      应看到鼠标 X 方向事件。
+
+use std::time::Duration;
+
+use ipkvm_core::{
+    AbsoluteMouseReport, Ch9329Command, Ch9329InputSink, CommandBatch, CommandQueue,
+    DEFAULT_BAUD_RATE, KeyEvent, KeyboardUsage, MouseMode, PointerButton, PointerEvent,
+    SerialCommandQueue,
+};
+
+fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let (serial_path, baud, subcommand, rest) = match parse_args(&args) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("参数错误：{e}");
+            eprintln!(
+                "用法：ch9329_probe <串口路径> [波特率=9600] <key|text|info|mouse-abs|mouse-rel|click|mouse-abs-btn> [参数]"
+            );
+            std::process::exit(2);
+        }
+    };
+
+    let queue = match SerialCommandQueue::open(&serial_path, baud) {
+        Ok(q) => q,
+        Err(e) => {
+            eprintln!("打开串口 {serial_path}@{baud} 失败：{e}");
+            std::process::exit(1);
+        }
+    };
+    eprintln!("[probe] 已打开 {serial_path}@{baud}（8N1 无流控）");
+
+    // 键盘测试用 Absolute 鼠标模式（CH9329 同时支持键鼠；鼠标模式仅影响鼠标命令）。
+    // raw_queue 与 sink 共享同一串口句柄（Arc<Mutex>），供需要绕过 InputSink
+    // 直接构造帧的子命令（mouse-abs-btn）使用。
+    let raw_queue = queue.clone();
+    let mut sink = Ch9329InputSink::new(queue, 0x00, MouseMode::Absolute);
+
+    let result = match subcommand.as_str() {
+        "key" => cmd_key(&mut sink, &rest),
+        "text" => cmd_text(&mut sink, &rest),
+        "info" => {
+            eprintln!("[probe] 发送 GetInfo（CH9329 默认无应答模式，不会读返回）");
+            // GetInfo 通过 InputSink 无法直接发（InputSink 只暴露键鼠）；这里用 queue
+            // 直接 enqueue。但 SerialCommandQueue.enqueue_batch 需要 CommandBatch。
+            // 简化：info 命令要求一个独立的 Ch9329Command::GetInfo 通道，暂用 key 路径提示。
+            eprintln!("[probe] info 子命令需通过底层 queue 发送，此示例暂未实现");
+            Ok(())
+        }
+        "mouse-abs" => cmd_mouse_abs(&mut sink, &rest),
+        "mouse-rel" => {
+            // 相对鼠标需切到 Relative 模式。
+            sink.set_mouse_mode(MouseMode::Relative).unwrap();
+            cmd_mouse_rel(&mut sink, &rest)
+        }
+        "click" => cmd_click(&mut sink, &rest),
+        "mouse-abs-btn" => cmd_mouse_abs_btn(&raw_queue, &rest),
+        "btn" => cmd_btn(&mut sink, &rest),
+        "drag" => cmd_drag(&mut sink, &rest),
+        other => Err(format!("未知子命令：{other}")),
+    };
+
+    match result {
+        Ok(()) => {
+            // 给串口一点时间把字节发完（9600bps 下 ~16ms/帧）。
+            std::thread::sleep(Duration::from_millis(50));
+            // 释放所有键鼠状态（避免按键卡住）。
+            let _ = sink.release_all();
+            std::thread::sleep(Duration::from_millis(50));
+            eprintln!("[probe] 完成");
+        }
+        Err(e) => {
+            eprintln!("[probe] 失败：{e}");
+            let _ = sink.release_all();
+            std::process::exit(1);
+        }
+    }
+}
+
+/// 解析：<串口路径> [波特率] <子命令> [参数...]。波特率可选，缺省 9600。
+fn parse_args(args: &[String]) -> Result<(String, u32, String, Vec<String>), String> {
+    if args.len() < 2 {
+        return Err("至少需要串口路径和子命令".into());
+    }
+    let serial_path = args[0].clone();
+    // 第二个参数若以数字开头且是合法波特率，则当作波特率。
+    let (baud, sub_idx) = if args.len() >= 3 && args[1].parse::<u32>().is_ok() {
+        (args[1].parse::<u32>().unwrap(), 2)
+    } else {
+        (DEFAULT_BAUD_RATE, 1)
+    };
+    if args.len() <= sub_idx {
+        return Err("缺少子命令".into());
+    }
+    let subcommand = args[sub_idx].clone();
+    let rest = args[sub_idx + 1..].to_vec();
+    Ok((serial_path, baud, subcommand, rest))
+}
+
+fn cmd_key<Q: CommandQueue>(sink: &mut Ch9329InputSink<Q>, rest: &[String]) -> Result<(), String> {
+    let usage_str = rest.first().ok_or("key 需要一个 usage 参数（如 0x04）")?;
+    let usage_val = parse_u8(usage_str)?;
+    let key = KeyboardUsage::new(usage_val).map_err(|e| format!("无效 usage：{e}"))?;
+    eprintln!("[probe] 按下 usage={usage_val:#04x}");
+    sink.handle_key(KeyEvent::Down { usage: key })
+        .map_err(|e| format!("key down: {e}"))?;
+    std::thread::sleep(Duration::from_millis(40));
+    sink.handle_key(KeyEvent::Up { usage: key })
+        .map_err(|e| format!("key up: {e}"))?;
+    eprintln!("[probe] 释放 usage={usage_val:#04x}");
+    Ok(())
+}
+
+fn cmd_text<Q: CommandQueue>(sink: &mut Ch9329InputSink<Q>, rest: &[String]) -> Result<(), String> {
+    // rest 各参数用空格拼接为待输入文本。
+    let text = rest.join(" ");
+    if text.is_empty() {
+        return Err("text 需要文本参数".into());
+    }
+    eprintln!("[probe] 输入文本：{text:?}");
+    for ch in text.chars() {
+        let usage =
+            ascii_to_usage(ch).ok_or_else(|| format!("无法映射字符 {ch:?} 到 HID usage"))?;
+        sink.handle_key(KeyEvent::Down { usage })
+            .map_err(|e| format!("key down {ch}: {e}"))?;
+        std::thread::sleep(Duration::from_millis(20));
+        sink.handle_key(KeyEvent::Up { usage })
+            .map_err(|e| format!("key up {ch}: {e}"))?;
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    Ok(())
+}
+
+fn cmd_mouse_abs<Q: CommandQueue>(
+    sink: &mut Ch9329InputSink<Q>,
+    rest: &[String],
+) -> Result<(), String> {
+    let x = rest
+        .first()
+        .ok_or("mouse-abs 需要 x 参数")?
+        .parse::<u32>()
+        .map_err(|e| format!("无效 x：{e}"))?;
+    let y = rest
+        .get(1)
+        .ok_or("mouse-abs 需要 y 参数")?
+        .parse::<u32>()
+        .map_err(|e| format!("无效 y：{e}"))?;
+    if x > 4095 || y > 4095 {
+        return Err(format!("绝对坐标超出 0-4095：({x},{y})"));
+    }
+    eprintln!("[probe] 绝对鼠标移动到 ({x},{y})");
+    // 用 4096x4096 的虚拟帧缓冲，使传入的原始坐标直通（map_framebuffer_axis 在
+    // 像素坐标 == 范围时 1:1 映射）。
+    sink.handle_pointer(PointerEvent::AbsoluteMove {
+        x,
+        y,
+        framebuffer_size: ipkvm_core::FramebufferSize {
+            width: 4096,
+            height: 4096,
+        },
+    })
+    .map_err(|e| format!("mouse-abs: {e}"))?;
+    Ok(())
+}
+
+fn cmd_mouse_rel<Q: CommandQueue>(
+    sink: &mut Ch9329InputSink<Q>,
+    rest: &[String],
+) -> Result<(), String> {
+    let dx = rest
+        .first()
+        .ok_or("mouse-rel 需要 dx 参数")?
+        .parse::<i16>()
+        .map_err(|e| format!("无效 dx：{e}"))?;
+    let dy = rest
+        .get(1)
+        .ok_or("mouse-rel 需要 dy 参数")?
+        .parse::<i16>()
+        .map_err(|e| format!("无效 dy：{e}"))?;
+    eprintln!("[probe] 相对鼠标移动 ({dx},{dy})");
+    sink.handle_pointer(PointerEvent::RelativeMove { dx, dy })
+        .map_err(|e| format!("mouse-rel: {e}"))?;
+    Ok(())
+}
+
+/// 直接发送绝对帧 0x04 带按钮位，用于实测「绝对帧的按键位是否被目标机识别」。
+///
+/// 与 `click` 不同，这里绕过 `Ch9329InputSink` 的按键路由（修正后按键一律走相对帧
+/// 0x05），用底层 `CommandQueue` 直接构造 `Ch9329Command::MouseAbsolute`：
+/// 按下（绝对帧 buttons=btn，坐标 (x,y)）→ 60ms 后释放（绝对帧 buttons=0，原位）。
+///
+/// 对比观测：在目标机（如 ARM 10.10.10.21）上 `evtest /dev/input/event6`，
+/// 若绝对帧的按钮位有效，应看到 BTN_LEFT/BTN_RIGHT/BTN_MIDDLE 的 press/release；
+/// 若无效（仅坐标被识别），则只有 ABS_X/ABS_Y 而没有任何按钮事件。
+fn cmd_mouse_abs_btn<Q: CommandQueue>(queue: &Q, rest: &[String]) -> Result<(), String> {
+    let x = rest
+        .first()
+        .ok_or("mouse-abs-btn 需要 x 参数")?
+        .parse::<u32>()
+        .map_err(|e| format!("无效 x：{e}"))?;
+    let y = rest
+        .get(1)
+        .ok_or("mouse-abs-btn 需要 y 参数")?
+        .parse::<u32>()
+        .map_err(|e| format!("无效 y：{e}"))?;
+    let buttons = rest
+        .get(2)
+        .ok_or("mouse-abs-btn 需要 btn 参数（0-7，bit0=左 bit1=右 bit2=中）")?;
+    let buttons = parse_u8(buttons)?;
+    if x > 4095 || y > 4095 {
+        return Err(format!("绝对坐标超出 0-4095：({x},{y})"));
+    }
+    if buttons > 0x07 {
+        return Err(format!("按钮掩码超出 0-7：{buttons:#04x}"));
+    }
+
+    let frame = |buttons: u8| {
+        let report = AbsoluteMouseReport::new(buttons, x as u16, y as u16, 0)
+            .map_err(|e| format!("构造绝对报告失败：{e}"))?;
+        Ch9329Command::MouseAbsolute(report)
+            .to_frame(0x00)
+            .map_err(|e| format!("构造绝对帧失败：{e}"))
+    };
+    let down_batch =
+        CommandBatch::new(vec![frame(buttons)?]).map_err(|e| format!("构造 batch 失败：{e}"))?;
+    let up_batch =
+        CommandBatch::new(vec![frame(0)?]).map_err(|e| format!("构造 batch 失败：{e}"))?;
+
+    eprintln!("[probe] 绝对帧 0x04 buttons={buttons:#04x} 按下 @({x},{y})，60ms 后释放");
+    queue
+        .enqueue_batch(down_batch)
+        .map_err(|e| format!("发送按下帧失败：{e}"))?;
+    std::thread::sleep(Duration::from_millis(60));
+    queue
+        .enqueue_batch(up_batch)
+        .map_err(|e| format!("发送释放帧失败：{e}"))?;
+    Ok(())
+}
+
+/// 单独按下/释放一个鼠标按键（走相对帧 0x05）。用于组合测试拖拽：
+/// `mouse-abs A && btn left down && mouse-abs B && btn left up`，
+/// 在目标机上观察绝对移动期间按钮是否被意外释放。
+fn cmd_btn<Q: CommandQueue>(sink: &mut Ch9329InputSink<Q>, rest: &[String]) -> Result<(), String> {
+    let button = match rest.first().map(|s| s.as_str()) {
+        Some("left") => PointerButton::Left,
+        Some("middle") => PointerButton::Middle,
+        Some("right") => PointerButton::Right,
+        Some(other) => return Err(format!("未知按键：{other}（可选 left/middle/right）")),
+        None => return Err("btn 需要 left/middle/right 参数".into()),
+    };
+    let down = match rest.get(1).map(|s| s.as_str()) {
+        Some("down") => true,
+        Some("up") => false,
+        Some(other) => return Err(format!("未知动作：{other}（可选 down/up）")),
+        None => return Err("btn 需要 down/up 参数".into()),
+    };
+    sink.handle_pointer(PointerEvent::Button { button, down })
+        .map_err(|e| format!("btn {button:?} {down}: {e}"))?;
+    eprintln!("[probe] {button:?} {down}");
+    Ok(())
+}
+
+/// 拖拽测试：绝对移动 A → 左键 down → 绝对移动 B → 左键 up，全程一个进程。
+/// 在目标机上观察：若绝对移动期间按钮状态被芯片清掉，会在中间看到 BTN_LEFT 意外 up；
+/// 若保持，则事件序列为 ABS(A) → BTN_LEFT down → ABS(B) → BTN_LEFT up。
+fn cmd_drag<Q: CommandQueue>(sink: &mut Ch9329InputSink<Q>, rest: &[String]) -> Result<(), String> {
+    let coords: Vec<u32> = rest
+        .iter()
+        .map(|s| s.parse::<u32>().map_err(|e| format!("无效坐标 {s:?}：{e}")))
+        .collect::<Result<_, _>>()?;
+    if coords.len() != 4 {
+        return Err("drag 需要 4 个参数：x1 y1 x2 y2".into());
+    }
+    if coords.iter().any(|c| *c > 4095) {
+        return Err("坐标超出 0-4095".into());
+    }
+    let [x1, y1, x2, y2] = coords[..] else {
+        unreachable!()
+    };
+    let move_to = |x: u32, y: u32| PointerEvent::AbsoluteMove {
+        x,
+        y,
+        framebuffer_size: ipkvm_core::FramebufferSize {
+            width: 4096,
+            height: 4096,
+        },
+    };
+
+    eprintln!("[probe] drag ({x1},{y1}) → ({x2},{y2})，左键拖拽");
+    sink.handle_pointer(move_to(x1, y1))
+        .map_err(|e| format!("move A: {e}"))?;
+    std::thread::sleep(Duration::from_millis(30));
+    sink.handle_pointer(PointerEvent::Button {
+        button: PointerButton::Left,
+        down: true,
+    })
+    .map_err(|e| format!("btn down: {e}"))?;
+    std::thread::sleep(Duration::from_millis(80));
+    sink.handle_pointer(move_to(x2, y2))
+        .map_err(|e| format!("move B: {e}"))?;
+    std::thread::sleep(Duration::from_millis(80));
+    sink.handle_pointer(PointerEvent::Button {
+        button: PointerButton::Left,
+        down: false,
+    })
+    .map_err(|e| format!("btn up: {e}"))?;
+    Ok(())
+}
+
+fn cmd_click<Q: CommandQueue>(
+    sink: &mut Ch9329InputSink<Q>,
+    rest: &[String],
+) -> Result<(), String> {
+    let button = match rest.first().map(|s| s.as_str()) {
+        Some("left") => PointerButton::Left,
+        Some("middle") => PointerButton::Middle,
+        Some("right") => PointerButton::Right,
+        Some(other) => return Err(format!("未知按键：{other}（可选 left/middle/right）")),
+        None => return Err("click 需要 left/middle/right 参数".into()),
+    };
+    // 先移到屏幕中心（绝对 2048,2048），再点击。
+    sink.handle_pointer(PointerEvent::AbsoluteMove {
+        x: 2048,
+        y: 2048,
+        framebuffer_size: ipkvm_core::FramebufferSize {
+            width: 4096,
+            height: 4096,
+        },
+    })
+    .map_err(|e| format!("move to center: {e}"))?;
+    std::thread::sleep(Duration::from_millis(30));
+    sink.handle_pointer(PointerEvent::Button { button, down: true })
+        .map_err(|e| format!("button down: {e}"))?;
+    std::thread::sleep(Duration::from_millis(40));
+    sink.handle_pointer(PointerEvent::Button {
+        button,
+        down: false,
+    })
+    .map_err(|e| format!("button up: {e}"))?;
+    eprintln!("[probe] 点击 {button:?}（中心位置）");
+    Ok(())
+}
+
+fn parse_u8(s: &str) -> Result<u8, String> {
+    if let Some(hex) = s.strip_prefix("0x").or_else(|| s.strip_prefix("0X")) {
+        u8::from_str_radix(hex, 16).map_err(|e| format!("无效十六进制 {s:?}：{e}"))
+    } else {
+        s.parse::<u8>().map_err(|e| format!("无效数字 {s:?}：{e}"))
+    }
+}
+
+/// ASCII 字符 → HID Keyboard usage（USB HID Usage Tables，Keyboard/Keypad page）。
+/// 仅覆盖可打印 ASCII；大小写不加 Shift（输出小写形式），Shift 由调用方按需。
+fn ascii_to_usage(ch: char) -> Option<KeyboardUsage> {
+    let usage: u8 = match ch {
+        'a'..='z' => 0x04 + (ch as u8 - b'a'),
+        'A'..='Z' => 0x04 + (ch as u8 - b'A'),
+        '1'..='9' => 0x1e + (ch as u8 - b'1'),
+        '0' => 0x27,
+        ' ' => 0x2c,
+        '\n' | '\r' => 0x28,
+        '-' => 0x2d,
+        '=' => 0x2e,
+        '[' => 0x2f,
+        ']' => 0x30,
+        '\\' => 0x31,
+        ';' => 0x33,
+        '\'' => 0x34,
+        '`' => 0x35,
+        ',' => 0x36,
+        '.' => 0x37,
+        '/' => 0x38,
+        _ => return None,
+    };
+    KeyboardUsage::new(usage).ok()
+}
+
+// CommandQueue 在 example 里需要泛型约束可见。
+#[allow(dead_code)]
+fn _assert_command_queue<Q: CommandQueue>(_: &Q) {}
