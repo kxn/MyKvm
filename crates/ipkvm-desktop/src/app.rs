@@ -55,7 +55,16 @@ struct DesktopApp {
 
 impl DesktopApp {
     fn new() -> Self {
-        let mut app = Self {
+        let mut app = Self::empty();
+        let mut selection = app.selection.clone();
+        refresh_detection(&mut selection, &mut app.probe, PROBE_TIMEOUT);
+        app.selection = selection;
+        app
+    }
+
+    /// 空构造器：不枚举设备，由 `new()` 追加启动刷新；测试直接使用。
+    fn empty() -> Self {
+        Self {
             selection: DeviceSelectionState::default(),
             probe: ProductionProbeBackend,
             session: ProductionDesktopSessionController::production(),
@@ -71,11 +80,7 @@ impl DesktopApp {
             showing_device_dialog: true,
             last_frame_seq: None,
             last_frame_at: None,
-        };
-        let mut selection = app.selection.clone();
-        refresh_detection(&mut selection, &mut app.probe, PROBE_TIMEOUT);
-        app.selection = selection;
-        app
+        }
     }
 
     fn update_impl(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -644,36 +649,46 @@ impl DesktopApp {
         }
     }
 
+    fn status_bar_texts(&self) -> StatusBarTexts {
+        let control = if !self.showing_device_dialog && !self.session.is_control_online() {
+            "离线".to_owned()
+        } else {
+            control_status_text(&self.selection.control_status)
+        };
+        let keyboard = if self.paste_busy {
+            "粘贴中".to_owned()
+        } else if self.video_focused {
+            "聚焦可输入".to_owned()
+        } else {
+            "失焦".to_owned()
+        };
+        let pointer = self
+            .last_pointer
+            .map(|(x, y)| format!("({x}, {y})"))
+            .unwrap_or_else(|| "窗口外".into());
+        StatusBarTexts {
+            control,
+            keyboard,
+            pointer,
+            video: self.video_status_text(),
+            message: self.status_message.clone(),
+        }
+    }
+
     fn status_bar(&self, ui: &mut egui::Ui) {
+        let texts = self.status_bar_texts();
         ui.horizontal(|ui| {
-            ui.label(format!(
-                "控制设备：{}",
-                if !self.showing_device_dialog && !self.session.is_control_online() {
-                    "离线".to_owned()
-                } else {
-                    control_status_text(&self.selection.control_status)
-                }
-            ));
+            ui.label(format!("控制设备：{}", texts.control));
             ui.separator();
-            ui.label(format!(
-                "键盘：{}",
-                if self.paste_busy {
-                    "粘贴中"
-                } else if self.video_focused {
-                    "聚焦可输入"
-                } else {
-                    "失焦"
-                }
-            ));
+            ui.label(format!("键盘：{}", texts.keyboard));
             ui.separator();
-            ui.label(format!(
-                "鼠标：{}",
-                self.last_pointer
-                    .map(|(x, y)| format!("({x}, {y})"))
-                    .unwrap_or_else(|| "窗口外".into())
-            ));
+            ui.label(format!("鼠标：{}", texts.pointer));
             ui.separator();
-            ui.label(format!("视频：{}", self.video_status_text()));
+            ui.label(format!("视频：{}", texts.video));
+            if let Some(message) = &texts.message {
+                ui.separator();
+                ui.colored_label(egui::Color32::LIGHT_RED, format!("状态：{message}"));
+            }
         });
     }
 
@@ -686,6 +701,14 @@ impl DesktopApp {
             None => "无信号".into(),
         }
     }
+}
+
+struct StatusBarTexts {
+    control: String,
+    keyboard: String,
+    pointer: String,
+    video: String,
+    message: Option<String>,
 }
 
 impl eframe::App for DesktopApp {
@@ -732,4 +755,37 @@ fn choose_screenshot_path() -> Option<std::path::PathBuf> {
         .add_filter("JPEG image", &["jpg", "jpeg"])
         .set_file_name("my_ipkvm-screenshot.jpg")
         .save_file()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn status_texts_include_message_and_offline_state() {
+        let mut app = DesktopApp::empty();
+        app.showing_device_dialog = false;
+        app.paste_busy = true;
+        app.video_focused = true;
+        app.status_message = Some("粘贴失败".into());
+        app.selection.mark_control_offline();
+
+        let texts = app.status_bar_texts();
+
+        assert_eq!(texts.control, "离线");
+        assert_eq!(texts.keyboard, "粘贴中");
+        assert_eq!(texts.message, Some("粘贴失败".into()));
+    }
+
+    #[test]
+    fn status_texts_default_to_idle_states() {
+        let app = DesktopApp::empty();
+
+        let texts = app.status_bar_texts();
+
+        assert_eq!(texts.control, "未选择");
+        assert_eq!(texts.keyboard, "失焦");
+        assert_eq!(texts.pointer, "窗口外");
+        assert_eq!(texts.message, None);
+    }
 }
