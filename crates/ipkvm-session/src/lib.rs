@@ -1,5 +1,6 @@
 //! 控制台会话抽象。
 
+pub mod console_session;
 pub mod devices;
 pub mod rfb_connection;
 pub mod rfb_input;
@@ -78,21 +79,6 @@ impl ConsoleSessionConfig {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum KeyboardLayout {
     EnUs,
-}
-
-#[derive(Debug)]
-pub struct ConsoleSession {
-    config: ConsoleSessionConfig,
-}
-
-impl ConsoleSession {
-    pub fn new(config: ConsoleSessionConfig) -> Self {
-        Self { config }
-    }
-
-    pub fn config(&self) -> &ConsoleSessionConfig {
-        &self.config
-    }
 }
 
 #[cfg(test)]
