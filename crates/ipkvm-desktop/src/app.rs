@@ -5,6 +5,7 @@ use eframe::egui;
 use ipkvm_core::MouseMode;
 use ipkvm_session::rfb_input::RfbInputNotice;
 use ipkvm_video::FrameSource;
+use rust_i18n::t;
 
 use crate::clipboard::{ClipboardService, save_jpeg};
 use crate::frame::bgra_to_rgba;
@@ -12,6 +13,7 @@ use crate::input::{
     KeyAction, SpecialKey, egui_key_to_keysym, modifier_diff, pointer_active, pointer_button_mask,
     special_key_sequence,
 };
+use crate::locale::AppLanguage;
 use crate::probe::{ProbeBackend, ProductionProbeBackend, refresh_detection};
 use crate::render::{FrameSize, VideoViewport};
 use crate::session::{ConnectRequest, DesktopSessionError, ProductionDesktopSessionController};
@@ -71,6 +73,7 @@ struct DesktopApp {
     video_focused: bool,
     paste_busy: bool,
     status_message: Option<String>,
+    language: AppLanguage,
     showing_device_dialog: bool,
     show_special_keys: bool,
     show_advanced: bool,
@@ -85,6 +88,8 @@ struct DesktopApp {
 impl DesktopApp {
     fn new() -> Self {
         let mut app = Self::empty();
+        // 跟随系统语言（检测失败回退项目默认中文）；显式语言选择在设置里覆盖。
+        AppLanguage::System.apply();
         let mut selection = app.selection.clone();
         if let Err(error) = refresh_detection(&mut selection, &mut app.probe, PROBE_TIMEOUT) {
             eprintln!("warning: 初始设备枚举失败：{error}");
@@ -118,6 +123,7 @@ impl DesktopApp {
             video_focused: false,
             paste_busy: false,
             status_message: None,
+            language: AppLanguage::System,
             showing_device_dialog: true,
             show_special_keys: false,
             show_advanced: false,
@@ -148,18 +154,18 @@ impl DesktopApp {
         if self.show_special_keys {
             egui::Modal::new(egui::Id::new("special_keys_modal")).show(ctx, |ui| {
                 ui.set_min_width(240.0);
-                ui.heading("发送特殊键");
+                ui.heading(t!("special_keys.title"));
                 ui.add_space(8.0);
-                ui.label("其余按键可直接用键盘发送。");
+                ui.label(t!("special_keys.hint"));
                 ui.add_space(8.0);
-                if ui.button("Ctrl+Alt+Del").clicked() {
+                if ui.button(t!("special_keys.ctrl_alt_del")).clicked() {
                     self.send_special(SpecialKey::CtrlAltDel);
                 }
-                if ui.button("Esc").clicked() {
+                if ui.button(t!("special_keys.esc")).clicked() {
                     self.send_special(SpecialKey::Escape);
                 }
                 ui.add_space(8.0);
-                if ui.button("关闭").clicked() {
+                if ui.button(t!("common.close")).clicked() {
                     self.show_special_keys = false;
                 }
             });
@@ -167,11 +173,11 @@ impl DesktopApp {
         if self.show_advanced {
             egui::Modal::new(egui::Id::new("advanced_modal")).show(ctx, |ui| {
                 ui.set_min_width(320.0);
-                ui.heading("高级设置");
+                ui.heading(t!("advanced.title"));
                 ui.add_space(8.0);
                 self.advanced_ui(ui);
                 ui.add_space(8.0);
-                if ui.button("关闭").clicked() {
+                if ui.button(t!("common.close")).clicked() {
                     self.show_advanced = false;
                 }
             });
@@ -195,8 +201,8 @@ impl DesktopApp {
             self.last_pointer_sent = None;
             self.last_pointer_sent_at = None;
             let message = match self.session.input_offline_reason() {
-                Some(reason) => format!("控制设备离线：{reason}"),
-                None => "控制设备离线，请刷新检测后重连".into(),
+                Some(reason) => t!("message.offline_with_reason", reason = reason).to_string(),
+                None => t!("message.offline_reconnect").to_string(),
             };
             self.status_message = Some(message);
         }
@@ -232,7 +238,7 @@ impl DesktopApp {
                     self.paste_busy = false;
                 }
                 RfbInputNotice::KeyboardRejected { .. } => {
-                    self.status_message = Some("输入被拒绝".into());
+                    self.status_message = Some(t!("message.input_rejected").to_string());
                 }
                 RfbInputNotice::ControllerReleased { .. }
                 | RfbInputNotice::TextDispatched { .. } => {}
@@ -243,18 +249,18 @@ impl DesktopApp {
 
     fn menu_bar(&mut self, ui: &mut egui::Ui) {
         egui::MenuBar::new().ui(ui, |ui| {
-            ui.menu_button("控制", |ui| self.control_menu(ui));
-            ui.menu_button("设备", |ui| {
-                if ui.button("重新选择设备").clicked() {
+            ui.menu_button(t!("menu.control"), |ui| self.control_menu(ui));
+            ui.menu_button(t!("menu.device"), |ui| {
+                if ui.button(t!("menu.reselect_device")).clicked() {
                     self.show_device_dialog();
                     ui.close();
                 }
-                if ui.button("停止连接").clicked() {
+                if ui.button(t!("menu.stop_connection")).clicked() {
                     self.stop_session();
                     ui.close();
                 }
             });
-            if ui.button("高级设置…").clicked() {
+            if ui.button(t!("menu.advanced")).clicked() {
                 self.show_advanced = true;
             }
         });
@@ -262,21 +268,21 @@ impl DesktopApp {
 
     fn control_menu(&mut self, ui: &mut egui::Ui) {
         if self.paste_busy {
-            ui.add_enabled(false, egui::Button::new("粘贴文本"));
-        } else if ui.button("粘贴文本").clicked() {
+            ui.add_enabled(false, egui::Button::new(t!("menu.paste_text")));
+        } else if ui.button(t!("menu.paste_text")).clicked() {
             self.paste();
             ui.close();
         }
-        if ui.button("释放所有按键").clicked() {
+        if ui.button(t!("menu.release_keys")).clicked() {
             let _ = self.session.release_all();
             ui.close();
         }
-        if ui.button("截图复制到剪贴板").clicked() {
+        if ui.button(t!("menu.copy_screenshot")).clicked() {
             self.screenshot_copy();
             ui.close();
         }
         #[cfg(windows)]
-        if ui.button("截图保存为 JPEG…").clicked() {
+        if ui.button(t!("menu.save_screenshot")).clicked() {
             self.screenshot_save();
             ui.close();
         }
@@ -284,10 +290,10 @@ impl DesktopApp {
         {
             ui.add_enabled(
                 false,
-                egui::Button::new("截图保存（当前平台暂不支持保存对话框）"),
+                egui::Button::new(t!("menu.save_screenshot_unsupported")),
             );
         }
-        if ui.button("发送特殊键…").clicked() {
+        if ui.button(t!("menu.send_special_keys")).clicked() {
             self.show_special_keys = true;
             ui.close();
         }
@@ -296,26 +302,27 @@ impl DesktopApp {
     fn device_dialog(&mut self, ctx: &egui::Context) {
         self.update_preview(ctx);
         egui::CentralPanel::default().show(ctx, |ui| {
-            ui.heading("选择设备");
+            ui.heading(t!("device.title"));
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
                     ui.set_width(380.0);
-                    ui.label("视频设备");
+                    ui.label(t!("device.video"));
                     self.video_device_combo(ui);
                     self.video_status_label(ui);
                     ui.add_space(10.0);
 
-                    ui.label("控制设备（CH9329）");
+                    ui.label(t!("device.control"));
                     self.control_device_combo(ui);
                     self.control_status_label(ui);
                     ui.add_space(10.0);
 
-                    egui::CollapsingHeader::new("高级").show(ui, |ui| self.advanced_ui(ui));
+                    egui::CollapsingHeader::new(t!("device.advanced"))
+                        .show(ui, |ui| self.advanced_ui(ui));
                     ui.add_space(12.0);
 
                     ui.horizontal(|ui| {
-                        if ui.button("刷新检测").clicked() {
+                        if ui.button(t!("device.refresh")).clicked() {
                             let mut selection = self.selection.clone();
                             match refresh_detection(&mut selection, &mut self.probe, PROBE_TIMEOUT)
                             {
@@ -324,7 +331,10 @@ impl DesktopApp {
                                     self.status_message = None;
                                 }
                                 Err(error) => {
-                                    self.status_message = Some(format!("设备枚举失败：{error}"));
+                                    self.status_message = Some(
+                                        t!("message.enumeration_failed", error = error.to_string())
+                                            .to_string(),
+                                    );
                                 }
                             }
                         }
@@ -332,13 +342,15 @@ impl DesktopApp {
                         if ui
                             .add_enabled(
                                 can_connect,
-                                egui::Button::new("连接").min_size(egui::vec2(140.0, 36.0)),
+                                egui::Button::new(t!("device.connect"))
+                                    .min_size(egui::vec2(140.0, 36.0)),
                             )
                             .clicked()
+                            && let Err(error) = self.connect(ctx)
                         {
-                            if let Err(error) = self.connect(ctx) {
-                                self.status_message = Some(format!("连接失败：{error}"));
-                            }
+                            self.status_message = Some(
+                                t!("message.connect_failed", error = error.to_string()).to_string(),
+                            );
                         }
                     });
 
@@ -349,7 +361,7 @@ impl DesktopApp {
                 });
                 ui.separator();
                 ui.vertical(|ui| {
-                    ui.label("视频预览");
+                    ui.label(t!("device.preview"));
                     let (preview_response, preview_painter) =
                         ui.allocate_painter(egui::vec2(320.0, 180.0), egui::Sense::hover());
                     preview_painter.rect_filled(
@@ -377,7 +389,7 @@ impl DesktopApp {
                         preview_painter.text(
                             preview_response.rect.center(),
                             egui::Align2::CENTER_CENTER,
-                            "无预览",
+                            t!("device.no_preview"),
                             egui::FontId::proportional(16.0),
                             egui::Color32::GRAY,
                         );
@@ -442,7 +454,7 @@ impl DesktopApp {
             .iter()
             .find(|device| self.selection.selected_video_id.as_deref() == Some(device.id.as_str()))
             .map(|device| device.label.clone())
-            .unwrap_or_else(|| "未选择".into());
+            .unwrap_or_else(|| t!("common.not_selected").to_string());
         egui::ComboBox::from_id_salt("video_devices")
             .selected_text(selected_text)
             .show_ui(ui, |ui| {
@@ -467,7 +479,7 @@ impl DesktopApp {
                 self.selection.selected_control_id.as_deref() == Some(device.id.as_str())
             })
             .map(|device| device.label.clone())
-            .unwrap_or_else(|| "未选择".into());
+            .unwrap_or_else(|| t!("common.not_selected").to_string());
         egui::ComboBox::from_id_salt("control_devices")
             .selected_text(selected_text)
             .show_ui(ui, |ui| {
@@ -508,7 +520,7 @@ impl DesktopApp {
             && let Some(baud) = crate::probe::detect_baud_rate(&control_id, BAUD_PROBE_TIMEOUT)
         {
             self.selection.advanced.baud_rate = baud;
-            self.status_message = Some(format!("已自动选择波特率 {baud}"));
+            self.status_message = Some(t!("message.baud_selected", baud = baud).to_string());
         }
         let Some(request) = self.connect_request() else {
             return Ok(());
@@ -557,10 +569,18 @@ impl DesktopApp {
                 self.relative_remainder = (0.0, 0.0);
                 self.relative_wheel = 0;
                 self.last_pointer_sent = None;
-                self.status_message = Some(format!("已切换为{}鼠标", mouse_mode_label(next)));
+                self.status_message = Some(
+                    t!("message.mouse_mode_switched", mode = mouse_mode_label(next)).to_string(),
+                );
             }
             Err(error) => {
-                self.status_message = Some(format!("切换鼠标模式失败：{error}"));
+                self.status_message = Some(
+                    t!(
+                        "message.mouse_mode_switch_failed",
+                        error = error.to_string()
+                    )
+                    .to_string(),
+                );
             }
         }
     }
@@ -612,7 +632,7 @@ impl DesktopApp {
                 painter.text(
                     video_rect.center(),
                     egui::Align2::CENTER_CENTER,
-                    "无信号",
+                    t!("status.video_no_signal"),
                     egui::FontId::proportional(28.0),
                     egui::Color32::GRAY,
                 );
@@ -805,7 +825,10 @@ impl DesktopApp {
                 let wheel = self.relative_wheel;
                 if dx != 0 || dy != 0 || wheel != 0 || mask_changed {
                     if let Err(error) = self.session.send_pointer_relative(mask, dx, dy, wheel) {
-                        self.status_message = Some(format!("指针发送失败：{error}"));
+                        self.status_message = Some(
+                            t!("message.pointer_send_failed", error = error.to_string())
+                                .to_string(),
+                        );
                     }
                     self.last_pointer_sent = Some((mask, u16::MAX, u16::MAX));
                     self.last_pointer_sent_at = Some(now);
@@ -838,7 +861,10 @@ impl DesktopApp {
                 {
                     if let Err(error) = self.session.send_pointer(send_mask, send_x, send_y, frame)
                     {
-                        self.status_message = Some(format!("指针发送失败：{error}"));
+                        self.status_message = Some(
+                            t!("message.pointer_send_failed", error = error.to_string())
+                                .to_string(),
+                        );
                     }
                     self.last_pointer_sent = Some((send_mask, send_x, send_y));
                     self.last_pointer_sent_at = Some(now);
@@ -846,10 +872,11 @@ impl DesktopApp {
                 self.pending_pointer = None;
             }
             let wheel = self.wheel_steps_from_events(response);
-            if wheel != 0 {
-                if let Err(error) = self.session.send_pointer_relative(mask, 0, 0, wheel) {
-                    self.status_message = Some(format!("指针发送失败：{error}"));
-                }
+            if wheel != 0
+                && let Err(error) = self.session.send_pointer_relative(mask, 0, 0, wheel)
+            {
+                self.status_message =
+                    Some(t!("message.pointer_send_failed", error = error.to_string()).to_string());
             }
             self.last_pointer = Some((x, y));
             self.pointer_mask = mask;
@@ -882,10 +909,15 @@ impl DesktopApp {
                     match egui_key_to_keysym(key, modifiers) {
                         Some(keysym) => {
                             if let Err(error) = self.session.send_key(pressed, keysym) {
-                                self.status_message = Some(format!("键盘发送失败：{error}"));
+                                self.status_message = Some(
+                                    t!("message.keyboard_send_failed", error = error.to_string())
+                                        .to_string(),
+                                );
                             }
                         }
-                        None => self.status_message = Some("不支持的按键".into()),
+                        None => {
+                            self.status_message = Some(t!("message.unsupported_key").to_string())
+                        }
                     }
                 }
             }
@@ -934,34 +966,56 @@ impl DesktopApp {
                     self.paste_busy = true;
                 }
             }
-            Ok(_) => self.status_message = Some("剪贴板为空".into()),
-            Err(error) => self.status_message = Some(format!("读取剪贴板失败：{error}")),
+            Ok(_) => self.status_message = Some(t!("message.clipboard_empty").to_string()),
+            Err(error) => {
+                self.status_message = Some(
+                    t!("message.clipboard_read_failed", error = error.to_string()).to_string(),
+                );
+            }
         }
     }
 
     fn screenshot_copy(&mut self) {
         let Some(frame) = self.latest_frame.clone() else {
-            self.status_message = Some("当前无画面可截图".into());
+            self.status_message = Some(t!("message.no_frame_screenshot").to_string());
             return;
         };
         match ClipboardService::copy_image(&frame) {
-            Ok(()) => self.status_message = Some("截图已复制到剪贴板".into()),
-            Err(error) => self.status_message = Some(format!("截图复制失败：{error}")),
+            Ok(()) => {
+                self.status_message = Some(t!("message.screenshot_copied").to_string());
+            }
+            Err(error) => {
+                self.status_message = Some(
+                    t!("message.screenshot_copy_failed", error = error.to_string()).to_string(),
+                );
+            }
         }
     }
 
     #[cfg(windows)]
     fn screenshot_save(&mut self) {
         let Some(frame) = self.latest_frame.clone() else {
-            self.status_message = Some("当前无画面可截图".into());
+            self.status_message = Some(t!("message.no_frame_screenshot").to_string());
             return;
         };
         let Some(path) = choose_screenshot_path() else {
             return;
         };
         match save_jpeg(&path, &frame) {
-            Ok(()) => self.status_message = Some(format!("截图已保存到 {}", path.display())),
-            Err(error) => self.status_message = Some(format!("截图保存失败：{error}")),
+            Ok(()) => {
+                self.status_message = Some(
+                    t!(
+                        "message.screenshot_saved",
+                        path = path.display().to_string()
+                    )
+                    .to_string(),
+                );
+            }
+            Err(error) => {
+                self.status_message = Some(
+                    t!("message.screenshot_save_failed", error = error.to_string()).to_string(),
+                );
+            }
         }
     }
 
@@ -996,33 +1050,33 @@ impl DesktopApp {
 
     fn advanced_ui(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
-            ui.label("波特率");
+            ui.label(t!("settings.baud_rate"));
             ui.add(
                 egui::DragValue::new(&mut self.selection.advanced.baud_rate).range(1200..=115200),
             );
         });
         ui.checkbox(
             &mut self.selection.advanced.auto_baud,
-            "连接时自动检测波特率",
+            t!("settings.auto_baud"),
         );
         ui.horizontal(|ui| {
-            ui.label("预览帧率");
+            ui.label(t!("settings.preview_fps"));
             ui.add(egui::DragValue::new(&mut self.selection.advanced.preview_fps).range(1..=60));
         });
         ui.horizontal(|ui| {
-            ui.label("鼠标模式");
+            ui.label(t!("settings.mouse_mode"));
             let current = self.selection.advanced.mouse_mode;
             egui::ComboBox::from_id_salt("mouse_mode")
                 .selected_text(mouse_mode_label(current))
                 .show_ui(ui, |ui| {
                     if ui
-                        .selectable_label(current == MouseMode::Absolute, "绝对坐标")
+                        .selectable_label(current == MouseMode::Absolute, t!("mouse_mode.absolute"))
                         .clicked()
                     {
                         self.selection.advanced.mouse_mode = MouseMode::Absolute;
                     }
                     if ui
-                        .selectable_label(current == MouseMode::Relative, "相对坐标")
+                        .selectable_label(current == MouseMode::Relative, t!("mouse_mode.relative"))
                         .clicked()
                     {
                         self.selection.advanced.mouse_mode = MouseMode::Relative;
@@ -1030,7 +1084,7 @@ impl DesktopApp {
                 });
         });
         ui.horizontal(|ui| {
-            ui.label("相对灵敏度");
+            ui.label(t!("settings.relative_sensitivity"));
             ui.add(
                 egui::DragValue::new(&mut self.selection.advanced.relative_sensitivity)
                     .range(0.1..=5.0)
@@ -1038,18 +1092,38 @@ impl DesktopApp {
             );
         });
         ui.horizontal(|ui| {
-            ui.label("缩放");
+            ui.label(t!("settings.scale_mode"));
             let current = self.selection.advanced.scale_mode;
             egui::ComboBox::from_id_salt("scale_mode")
                 .selected_text(scale_mode_label(current))
                 .show_ui(ui, |ui| {
                     for (mode, label) in [
-                        (VideoScaleMode::FitWindow, "适配窗口"),
-                        (VideoScaleMode::ActualSize, "原始大小"),
-                        (VideoScaleMode::ResizeWindowToVideo, "窗口跟随视频"),
+                        (VideoScaleMode::FitWindow, t!("scale_mode.fit_window")),
+                        (VideoScaleMode::ActualSize, t!("scale_mode.actual_size")),
+                        (
+                            VideoScaleMode::ResizeWindowToVideo,
+                            t!("scale_mode.resize_to_video"),
+                        ),
                     ] {
                         if ui.selectable_label(current == mode, label).clicked() {
                             self.selection.advanced.scale_mode = mode;
+                        }
+                    }
+                });
+        });
+        ui.horizontal(|ui| {
+            ui.label(t!("settings.language"));
+            let current = self.language;
+            egui::ComboBox::from_id_salt("language")
+                .selected_text(current.label())
+                .show_ui(ui, |ui| {
+                    for option in AppLanguage::ALL {
+                        if ui
+                            .selectable_label(current == option, option.label())
+                            .clicked()
+                        {
+                            self.language = option;
+                            option.apply();
                         }
                     }
                 });
@@ -1059,25 +1133,30 @@ impl DesktopApp {
     fn video_status_label(&self, ui: &mut egui::Ui) {
         match &self.selection.video_status {
             VideoProbeStatus::NotSelected => {
-                ui.label("视频：未选择");
+                ui.label(t!("video_status.not_selected"));
             }
             VideoProbeStatus::Checking => {
-                ui.label("视频：检测中…");
+                ui.label(t!("video_status.checking"));
             }
             VideoProbeStatus::Ready(info) => {
-                ui.label(format!(
-                    "视频：预览可用 {}×{}（{}）",
-                    info.width, info.height, info.label
+                ui.label(t!(
+                    "video_status.ready",
+                    width = info.width,
+                    height = info.height,
+                    label = info.label
                 ));
             }
             VideoProbeStatus::NoSignal => {
-                ui.label("视频：无信号");
+                ui.label(t!("video_status.no_signal"));
             }
             VideoProbeStatus::OpenFailed(error) => {
-                ui.colored_label(egui::Color32::LIGHT_RED, format!("视频：打开失败 {error}"));
+                ui.colored_label(
+                    egui::Color32::LIGHT_RED,
+                    t!("video_status.open_failed", error = error),
+                );
             }
             VideoProbeStatus::Disconnected => {
-                ui.label("视频：设备已断开");
+                ui.label(t!("video_status.disconnected"));
             }
         }
     }
@@ -1085,38 +1164,44 @@ impl DesktopApp {
     fn control_status_label(&self, ui: &mut egui::Ui) {
         match &self.selection.control_status {
             ControlProbeStatus::NotSelected => {
-                ui.label("控制：未选择");
+                ui.label(t!("control_status_label.not_selected"));
             }
             ControlProbeStatus::Checking => {
-                ui.label("控制：探测中…");
+                ui.label(t!("control_status_label.checking"));
             }
             ControlProbeStatus::Ready(_) => {
-                ui.label(format!(
-                    "控制：CH9329({})",
-                    self.selection.selected_control_id.as_deref().unwrap_or("?")
+                ui.label(t!(
+                    "control_status_label.ready",
+                    port = self.selection.selected_control_id.as_deref().unwrap_or("?")
                 ));
             }
             ControlProbeStatus::NotCh9329(reason) => {
                 ui.colored_label(
                     egui::Color32::LIGHT_RED,
-                    format!("控制：不是合法 CH9329（{reason}）"),
+                    t!("control_status_label.not_ch9329", reason = reason),
                 );
             }
             ControlProbeStatus::NoResponse => {
-                ui.colored_label(egui::Color32::LIGHT_RED, "控制：无应答");
+                ui.colored_label(
+                    egui::Color32::LIGHT_RED,
+                    t!("control_status_label.no_response"),
+                );
             }
             ControlProbeStatus::OpenFailed(error) => {
-                ui.colored_label(egui::Color32::LIGHT_RED, format!("控制：打开失败 {error}"));
+                ui.colored_label(
+                    egui::Color32::LIGHT_RED,
+                    t!("control_status_label.open_failed", error = error),
+                );
             }
             ControlProbeStatus::Disconnected => {
-                ui.label("控制：设备已断开");
+                ui.label(t!("control_status_label.disconnected"));
             }
         }
     }
 
     fn status_bar_texts(&self) -> StatusBarTexts {
         let control = if !self.showing_device_dialog && !self.session.is_control_online() {
-            "离线".to_owned()
+            t!("status.offline").to_string()
         } else {
             control_status_text(
                 &self.selection.control_status,
@@ -1124,19 +1209,19 @@ impl DesktopApp {
             )
         };
         let keyboard = if self.paste_busy {
-            "粘贴中".to_owned()
+            t!("status.pasting").to_string()
         } else if self.video_focused {
-            "远程输入中 · Ctrl+Alt+K 退出".to_owned()
+            t!("status.remote_input").to_string()
         } else {
-            "失焦".to_owned()
+            t!("status.keyboard_lost").to_string()
         };
         let pointer =
             if self.selection.advanced.mouse_mode == MouseMode::Relative && self.video_focused {
-                "相对模式".to_owned()
+                t!("status.relative_mode").to_string()
             } else {
                 self.last_pointer
                     .map(|(x, y)| format!("({x}, {y})"))
-                    .unwrap_or_else(|| "窗口外".into())
+                    .unwrap_or_else(|| t!("status.pointer_outside").to_string())
             };
         StatusBarTexts {
             control,
@@ -1150,16 +1235,19 @@ impl DesktopApp {
     fn status_bar(&self, ui: &mut egui::Ui) {
         let texts = self.status_bar_texts();
         ui.horizontal(|ui| {
-            ui.label(format!("控制设备：{}", texts.control));
+            ui.label(t!("status.control_device", value = texts.control));
             ui.separator();
-            ui.label(format!("键盘：{}", texts.keyboard));
+            ui.label(t!("status.keyboard", value = texts.keyboard));
             ui.separator();
-            ui.label(format!("鼠标：{}", texts.pointer));
+            ui.label(t!("status.pointer", value = texts.pointer));
             ui.separator();
-            ui.label(format!("视频：{}", texts.video));
+            ui.label(t!("status.video", value = texts.video));
             if let Some(message) = &texts.message {
                 ui.separator();
-                ui.colored_label(egui::Color32::LIGHT_RED, format!("状态：{message}"));
+                ui.colored_label(
+                    egui::Color32::LIGHT_RED,
+                    t!("status.message", message = message),
+                );
             }
         });
     }
@@ -1169,8 +1257,8 @@ impl DesktopApp {
             Some(frame) if !self.no_signal_elapsed() => {
                 format!("{}×{}", frame.width, frame.height)
             }
-            Some(_) => "断流/无信号".into(),
-            None => "无信号".into(),
+            Some(_) => t!("status.video_stalled").to_string(),
+            None => t!("status.video_no_signal").to_string(),
         }
     }
 }
@@ -1196,13 +1284,19 @@ impl eframe::App for DesktopApp {
 
 fn control_status_text(status: &ControlProbeStatus, port: Option<&str>) -> String {
     match status {
-        ControlProbeStatus::NotSelected => "未选择".into(),
-        ControlProbeStatus::Checking => "重新探测中".into(),
-        ControlProbeStatus::Ready(_) => format!("CH9329({})", port.unwrap_or("?")),
-        ControlProbeStatus::NotCh9329(reason) => format!("非 CH9329（{reason}）"),
-        ControlProbeStatus::NoResponse => "无应答".into(),
-        ControlProbeStatus::OpenFailed(error) => format!("打开失败（{error}）"),
-        ControlProbeStatus::Disconnected => "离线".into(),
+        ControlProbeStatus::NotSelected => t!("control_status.not_selected").to_string(),
+        ControlProbeStatus::Checking => t!("control_status.checking").to_string(),
+        ControlProbeStatus::Ready(_) => {
+            t!("control_status.ready", port = port.unwrap_or("?")).to_string()
+        }
+        ControlProbeStatus::NotCh9329(reason) => {
+            t!("control_status.not_ch9329", reason = reason).to_string()
+        }
+        ControlProbeStatus::NoResponse => t!("control_status.no_response").to_string(),
+        ControlProbeStatus::OpenFailed(error) => {
+            t!("control_status.open_failed", error = error).to_string()
+        }
+        ControlProbeStatus::Disconnected => t!("control_status.offline").to_string(),
     }
 }
 
@@ -1213,25 +1307,25 @@ fn desired_window_inner_size(frame: FrameSize, chrome: f32, pixels_per_point: f3
     egui::vec2(frame.width as f32 / ppp, frame.height as f32 / ppp + chrome)
 }
 
-fn mouse_mode_label(mode: MouseMode) -> &'static str {
+fn mouse_mode_label(mode: MouseMode) -> String {
     match mode {
-        MouseMode::Absolute => "绝对坐标",
-        MouseMode::Relative => "相对坐标",
+        MouseMode::Absolute => t!("mouse_mode.absolute").to_string(),
+        MouseMode::Relative => t!("mouse_mode.relative").to_string(),
     }
 }
 
-fn scale_mode_label(mode: VideoScaleMode) -> &'static str {
+fn scale_mode_label(mode: VideoScaleMode) -> String {
     match mode {
-        VideoScaleMode::FitWindow => "适配窗口",
-        VideoScaleMode::ActualSize => "原始大小",
-        VideoScaleMode::ResizeWindowToVideo => "窗口跟随视频",
+        VideoScaleMode::FitWindow => t!("scale_mode.fit_window").to_string(),
+        VideoScaleMode::ActualSize => t!("scale_mode.actual_size").to_string(),
+        VideoScaleMode::ResizeWindowToVideo => t!("scale_mode.resize_to_video").to_string(),
     }
 }
 
 #[cfg(windows)]
 fn choose_screenshot_path() -> Option<std::path::PathBuf> {
     rfd::FileDialog::new()
-        .add_filter("JPEG image", &["jpg", "jpeg"])
+        .add_filter(t!("dialog.jpeg_filter"), &["jpg", "jpeg"])
         .set_file_name("my_ipkvm-screenshot.jpg")
         .save_file()
 }
@@ -1241,8 +1335,18 @@ mod tests {
     use super::*;
     use crate::state::ControlProbeStatus;
 
+    /// 状态文案依赖进程级 i18n locale：取全局锁并固定为中文，避免并行测试互踩。
+    fn lock_zh_locale() -> std::sync::MutexGuard<'static, ()> {
+        let guard = crate::I18N_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        rust_i18n::set_locale("zh-CN");
+        guard
+    }
+
     #[test]
     fn status_texts_include_message_and_offline_state() {
+        let _guard = lock_zh_locale();
         let mut app = DesktopApp::empty();
         app.showing_device_dialog = false;
         app.paste_busy = true;
@@ -1259,6 +1363,7 @@ mod tests {
 
     #[test]
     fn status_texts_default_to_idle_states() {
+        let _guard = lock_zh_locale();
         let app = DesktopApp::empty();
 
         let texts = app.status_bar_texts();
@@ -1325,6 +1430,7 @@ mod tests {
 
     #[test]
     fn status_texts_show_remote_input_hint_when_video_focused() {
+        let _guard = lock_zh_locale();
         let mut app = DesktopApp::empty();
         app.showing_device_dialog = false;
         app.video_focused = true;
@@ -1336,6 +1442,7 @@ mod tests {
 
     #[test]
     fn status_texts_show_relative_mode_hint_when_video_focused() {
+        let _guard = lock_zh_locale();
         let mut app = DesktopApp::empty();
         app.showing_device_dialog = false;
         app.video_focused = true;
@@ -1344,6 +1451,127 @@ mod tests {
         let texts = app.status_bar_texts();
 
         assert_eq!(texts.pointer, "相对模式");
+    }
+
+    /// 全部用户可见文案键：两侧语言都必须存在且返回非键原文。
+    /// 该表同时是“新增文案必须走 t!()”的回归检查清单。
+    const ALL_UI_KEYS: &[&str] = &[
+        "common.not_selected",
+        "common.close",
+        "menu.control",
+        "menu.device",
+        "menu.reselect_device",
+        "menu.stop_connection",
+        "menu.advanced",
+        "menu.paste_text",
+        "menu.release_keys",
+        "menu.copy_screenshot",
+        "menu.save_screenshot",
+        "menu.save_screenshot_unsupported",
+        "menu.send_special_keys",
+        "device.title",
+        "device.video",
+        "device.control",
+        "device.advanced",
+        "device.refresh",
+        "device.connect",
+        "device.preview",
+        "device.no_preview",
+        "special_keys.title",
+        "special_keys.hint",
+        "special_keys.ctrl_alt_del",
+        "special_keys.esc",
+        "advanced.title",
+        "settings.baud_rate",
+        "settings.auto_baud",
+        "settings.preview_fps",
+        "settings.mouse_mode",
+        "settings.relative_sensitivity",
+        "settings.scale_mode",
+        "settings.language",
+        "language.system",
+        "language.chinese",
+        "language.english",
+        "mouse_mode.absolute",
+        "mouse_mode.relative",
+        "scale_mode.fit_window",
+        "scale_mode.actual_size",
+        "scale_mode.resize_to_video",
+        "status.control_device",
+        "status.keyboard",
+        "status.pointer",
+        "status.video",
+        "status.message",
+        "status.offline",
+        "status.pasting",
+        "status.remote_input",
+        "status.keyboard_lost",
+        "status.relative_mode",
+        "status.pointer_outside",
+        "status.video_no_signal",
+        "status.video_stalled",
+        "control_status.not_selected",
+        "control_status.checking",
+        "control_status.ready",
+        "control_status.not_ch9329",
+        "control_status.no_response",
+        "control_status.open_failed",
+        "control_status.offline",
+        "video_status.not_selected",
+        "video_status.checking",
+        "video_status.ready",
+        "video_status.no_signal",
+        "video_status.open_failed",
+        "video_status.disconnected",
+        "control_status_label.not_selected",
+        "control_status_label.checking",
+        "control_status_label.ready",
+        "control_status_label.not_ch9329",
+        "control_status_label.no_response",
+        "control_status_label.open_failed",
+        "control_status_label.disconnected",
+        "message.offline_with_reason",
+        "message.offline_reconnect",
+        "message.input_rejected",
+        "message.enumeration_failed",
+        "message.connect_failed",
+        "message.baud_selected",
+        "message.mouse_mode_switched",
+        "message.mouse_mode_switch_failed",
+        "message.pointer_send_failed",
+        "message.keyboard_send_failed",
+        "message.unsupported_key",
+        "message.clipboard_empty",
+        "message.clipboard_read_failed",
+        "message.no_frame_screenshot",
+        "message.screenshot_copied",
+        "message.screenshot_copy_failed",
+        "message.screenshot_saved",
+        "message.screenshot_save_failed",
+        "dialog.jpeg_filter",
+    ];
+
+    #[test]
+    fn all_ui_keys_exist_in_both_locales() {
+        for locale in ["zh-CN", "en"] {
+            for &key in ALL_UI_KEYS {
+                // 直接查精确 locale（不走 fallback），缺键时 t! 会回退成 en/键名，
+                // 那种兜底不能算“该语言已翻译”。
+                let text = crate::_rust_i18n_backend()
+                    .translate(locale, key)
+                    .unwrap_or_else(|| panic!("键 {key} 在 {locale} 缺失"));
+                assert!(!text.is_empty(), "键 {key} 在 {locale} 为空");
+            }
+        }
+    }
+
+    #[test]
+    fn arg_keys_substitute_placeholders_in_both_locales() {
+        for locale in ["zh-CN", "en"] {
+            let substituted = t!("status.control_device", locale = locale, value = "XYZ");
+            assert!(substituted.contains("XYZ"));
+            assert!(!substituted.contains("%{value}"));
+        }
     }
 
     #[test]
