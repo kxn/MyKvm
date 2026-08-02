@@ -18,7 +18,7 @@ use tokio::{
     sync::{mpsc, watch},
 };
 
-use super::assets::find_asset;
+use super::{assets::find_asset, auth};
 use crate::rfb_ws::{RfbWebSocketConfig, RfbWebSocketService, RfbWebSocketServiceError};
 use ipkvm_session::rfb_connection::{RfbConnectionGate, RfbServerEvent, RfbTransportKind};
 
@@ -29,6 +29,7 @@ pub struct HeadlessWebService<S: ?Sized> {
     rfb: RfbWebSocketService<S>,
     api: Arc<ApiState<S>>,
     shutdown: watch::Receiver<bool>,
+    auth: Option<String>,
 }
 
 /// `/api` 路由共享的服务状态：帧源元数据与连接闸门状态。
@@ -47,28 +48,36 @@ pub enum HeadlessWebServiceError {
 
 impl<S: FrameSource + ?Sized + 'static> HeadlessWebService<S> {
     /// `auth` 为 `[auth] token`（HTTP/WS 鉴权）；`None` 表示仅允许本机来源。
-    /// 中间件逻辑由 Task 5 接入，当前调用方统一传 `None`。
     pub fn new(
         frame_source: Arc<S>,
         event_tx: mpsc::Sender<RfbServerEvent>,
         config: RfbWebSocketConfig,
         shutdown: watch::Receiver<bool>,
         gate: RfbConnectionGate,
-        _auth: Option<String>,
+        auth: Option<String>,
     ) -> Result<Self, HeadlessWebServiceError> {
         let api = Arc::new(ApiState {
             frame_source: Arc::clone(&frame_source),
             gate: gate.clone(),
         });
         let rfb = RfbWebSocketService::new(frame_source, event_tx, config, shutdown.clone(), gate)?;
-        Ok(Self { rfb, api, shutdown })
+        Ok(Self {
+            rfb,
+            api,
+            shutdown,
+            auth,
+        })
     }
 
     pub async fn serve(self, listener: TcpListener) -> Result<(), HeadlessWebServiceError> {
         let shutdown = self.shutdown;
         let router = static_router()
             .merge(self.rfb.router())
-            .merge(api_router(self.api));
+            .merge(api_router(self.api))
+            .layer(axum::middleware::from_fn_with_state(
+                auth::AuthState { token: self.auth },
+                auth::require_auth,
+            ));
         axum::serve(
             listener,
             router.into_make_service_with_connect_info::<SocketAddr>(),

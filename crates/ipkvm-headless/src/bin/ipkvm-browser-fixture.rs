@@ -157,7 +157,7 @@ async fn run() -> Result<(), FixtureError> {
         RfbWebSocketConfig::default(),
         shutdown_rx,
         RfbConnectionGate::new(),
-        None, // auth：Task 5 接入 HTTP 鉴权后由调用方注入
+        None, // auth：本机回环 fixture，未配置 token 即放行
     )?;
 
     let mut http_task = tokio::spawn(service.serve(listener));

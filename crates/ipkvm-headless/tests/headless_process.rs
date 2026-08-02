@@ -80,7 +80,7 @@ impl HeadlessAssembly {
             RfbWebSocketConfig::default(),
             shutdown_rx.clone(),
             gate,
-            None, // auth：Task 5 接入 HTTP 鉴权后由调用方注入
+            None, // auth：未配置 token，仅放行本机来源（本测试不覆盖鉴权）
         )
         .unwrap();
         let http_task = tokio::spawn(async move { web_service.serve(http_listener).await });

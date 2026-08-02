@@ -304,7 +304,7 @@ async fn run(
         ws_config,
         shutdown_rx.clone(),
         gate,
-        None, // auth：HTTP/WS 鉴权由 Task 5 接入，届时注入 options.token
+        options.token.clone(), // HTTP/WS 鉴权 token（[auth] token）
     )?;
     let mut http_task = tokio::spawn(async move { web_service.serve(http_listener).await });
 
