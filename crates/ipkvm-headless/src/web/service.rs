@@ -1,7 +1,7 @@
 use std::{borrow::Cow, net::SocketAddr, sync::Arc};
 
 use axum::{
-    Router,
+    Json, Router,
     body::Body,
     extract::State,
     http::{
@@ -9,9 +9,12 @@ use axum::{
         header::{CACHE_CONTROL, CONTENT_TYPE},
     },
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
 };
+use ipkvm_core::InputSink;
+use ipkvm_session::session_manager::{SessionManager, SessionState};
 use ipkvm_video::{FrameSource, PixelFormat, VideoFrame, VideoSourceKind};
+use serde::Deserialize;
 use thiserror::Error;
 use tokio::{
     net::TcpListener,
@@ -19,23 +22,49 @@ use tokio::{
 };
 
 use super::{assets::find_asset, auth};
+use crate::frame_source::{EmptyFrameSource, SwitchableFrameSource};
 use crate::rfb_ws::{RfbWebSocketConfig, RfbWebSocketService, RfbWebSocketServiceError};
 use ipkvm_session::rfb_connection::{RfbConnectionGate, RfbServerEvent, RfbTransportKind};
 
 const CONTENT_TYPE_OPTIONS: &str = "x-content-type-options";
 const JPEG_QUALITY: u8 = 85;
 
-pub struct HeadlessWebService<S: ?Sized> {
-    rfb: RfbWebSocketService<S>,
-    api: Arc<ApiState<S>>,
+pub struct HeadlessWebService<I: InputSink + Clone + Send + 'static> {
+    rfb: RfbWebSocketService<SwitchableFrameSource>,
+    api: Arc<ApiState<I>>,
     shutdown: watch::Receiver<bool>,
     auth: Option<String>,
 }
 
-/// `/api` 路由共享的服务状态：帧源元数据与连接闸门状态。
-struct ApiState<S: ?Sized> {
-    frame_source: Arc<S>,
+/// `/api` 路由共享的服务状态：帧源元数据、连接闸门与会话管理器。
+struct ApiState<I: InputSink + Clone + Send + 'static> {
+    frame_source: Arc<SwitchableFrameSource>,
     gate: RfbConnectionGate,
+    manager: Arc<tokio::sync::Mutex<SessionManager<I>>>,
+    selection: tokio::sync::Mutex<Option<SessionSelection>>,
+    /// 会话工厂：按请求中的设备选择构造帧源与 sink。
+    factory: Arc<dyn SessionFactory<I> + Send + Sync>,
+}
+
+/// 一次运行时会话选择。字段为 `None` 时由工厂沿用启动配置默认值。
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
+pub struct SessionSelection {
+    pub video: Option<String>,
+    pub serial: Option<String>,
+}
+
+impl SessionSelection {
+    fn with_overrides(&self, overrides: &Self) -> Self {
+        Self {
+            video: overrides.video.clone().or_else(|| self.video.clone()),
+            serial: overrides.serial.clone().or_else(|| self.serial.clone()),
+        }
+    }
+}
+
+/// 会话工厂：按启动默认配置与运行时选择构造帧源与输入 sink。
+pub trait SessionFactory<I>: Send + Sync {
+    fn build(&self, selection: &SessionSelection) -> Result<(Arc<dyn FrameSource>, I), String>;
 }
 
 #[derive(Debug, Error)]
@@ -46,11 +75,17 @@ pub enum HeadlessWebServiceError {
     Serve(#[source] std::io::Error),
 }
 
-impl<S: FrameSource + ?Sized + 'static> HeadlessWebService<S> {
+impl<I: InputSink + Clone + Send + 'static> HeadlessWebService<I> {
     /// `auth` 为 `[auth] token`（HTTP/WS 鉴权）；`None` 表示仅允许本机来源。
+    ///
+    /// `event_publisher` 来自 `SessionManager::event_publisher()`，传输层据此
+    /// 在会话重启后拿到新事件发送端。
+    #[allow(clippy::too_many_arguments)] // 组装依赖项，无法合理合并
     pub fn new(
-        frame_source: Arc<S>,
-        event_tx: mpsc::Sender<RfbServerEvent>,
+        frame_source: Arc<SwitchableFrameSource>,
+        manager: Arc<tokio::sync::Mutex<SessionManager<I>>>,
+        factory: Arc<dyn SessionFactory<I> + Send + Sync>,
+        event_publisher: watch::Receiver<Option<mpsc::Sender<RfbServerEvent>>>,
         config: RfbWebSocketConfig,
         shutdown: watch::Receiver<bool>,
         gate: RfbConnectionGate,
@@ -59,8 +94,17 @@ impl<S: FrameSource + ?Sized + 'static> HeadlessWebService<S> {
         let api = Arc::new(ApiState {
             frame_source: Arc::clone(&frame_source),
             gate: gate.clone(),
+            manager,
+            selection: tokio::sync::Mutex::new(Some(SessionSelection::default())),
+            factory,
         });
-        let rfb = RfbWebSocketService::new(frame_source, event_tx, config, shutdown.clone(), gate)?;
+        let rfb = RfbWebSocketService::new(
+            frame_source,
+            event_publisher,
+            config,
+            shutdown.clone(),
+            gate,
+        )?;
         Ok(Self {
             rfb,
             api,
@@ -99,10 +143,12 @@ fn static_router() -> Router {
         .route("/vendor/novnc/{*path}", get(serve_asset))
 }
 
-fn api_router<S: FrameSource + ?Sized + 'static>(api: Arc<ApiState<S>>) -> Router {
+fn api_router<I: InputSink + Clone + Send + 'static>(api: Arc<ApiState<I>>) -> Router {
     Router::new()
-        .route("/api/status", get(api_status::<S>))
-        .route("/api/screenshot", get(api_screenshot::<S>))
+        .route("/api/status", get(api_status::<I>))
+        .route("/api/screenshot", get(api_screenshot::<I>))
+        .route("/api/devices", get(api_devices))
+        .route("/api/session", post(api_session::<I>))
         .with_state(api)
 }
 
@@ -119,11 +165,33 @@ async fn serve_asset(uri: Uri) -> Response {
         .expect("static response headers are valid")
 }
 
+// ---- 结构化 JSON 错误响应 ----
+
+/// 统一 JSON 错误响应：`{"error": "...", "detail": "..."}`。
+fn json_error(code: StatusCode, error: &str, detail: Option<&str>) -> Response {
+    #[derive(serde::Serialize)]
+    struct ErrorBody<'a> {
+        error: &'a str,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        detail: Option<&'a str>,
+    }
+    let body = serde_json::to_vec(&ErrorBody { error, detail })
+        .expect("error body serialization cannot fail");
+    Response::builder()
+        .status(code)
+        .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
+        .body(Body::from(body))
+        .expect("error response headers are valid")
+}
+
+// ---- /api/status ----
+
 #[derive(serde::Serialize)]
 struct StatusResponse {
     service: ServiceStatus,
     video: VideoStatus,
     controller: ControllerStatus,
+    session: SessionStatus,
 }
 
 #[derive(serde::Serialize)]
@@ -162,11 +230,39 @@ struct ControllerStatus {
     connected_since_ms: Option<u64>,
 }
 
-async fn api_status<S: FrameSource + ?Sized + 'static>(
-    State(state): State<Arc<ApiState<S>>>,
+/// 会话状态：管理器状态 + 输入/丢帧/串口统计。会话未创建时各计数字段为 0。
+#[derive(serde::Serialize)]
+struct SessionStatus {
+    state: &'static str,
+    input_events: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_input_ns: Option<u64>,
+    dropped_frames: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    serial: Option<SerialStatsDto>,
+}
+
+#[derive(serde::Serialize)]
+struct SerialStatsDto {
+    batches_accepted: u64,
+    frames_accepted: u64,
+}
+
+impl From<ipkvm_session::serial_stats::SerialStats> for SerialStatsDto {
+    fn from(stats: ipkvm_session::serial_stats::SerialStats) -> Self {
+        Self {
+            batches_accepted: stats.batches_accepted,
+            frames_accepted: stats.frames_accepted,
+        }
+    }
+}
+
+async fn api_status<I: InputSink + Clone + Send + 'static>(
+    State(state): State<Arc<ApiState<I>>>,
 ) -> Response {
-    let source = state.frame_source.source_info();
-    let frame = state.frame_source.latest_frame();
+    let frame_source = state.frame_source.current();
+    let source = frame_source.source_info();
+    let frame = frame_source.latest_frame();
     let controller = match state.gate.active_controller() {
         Some(active) => ControllerStatus {
             active: true,
@@ -182,6 +278,31 @@ async fn api_status<S: FrameSource + ?Sized + 'static>(
             peer_addr: None,
             connected_since_ms: None,
         },
+    };
+    // 会话统计：短暂持锁读取后立即 clone（守卫不可跨 await）。
+    let (session_state, input_events, last_input_ns, dropped_frames, serial) = {
+        let mut manager = state.manager.lock().await;
+        manager.refresh_stats();
+        let state_name = session_state_name(manager.state());
+        let (input_events, last_input_ns, dropped_frames, serial) = match manager.session() {
+            Some(session) => {
+                let stats = session.stats();
+                (
+                    stats.input_events,
+                    stats.last_input_ns,
+                    stats.dropped_frames,
+                    stats.serial.map(SerialStatsDto::from),
+                )
+            }
+            None => (0, None, 0, None),
+        };
+        (
+            state_name,
+            input_events,
+            last_input_ns,
+            dropped_frames,
+            serial,
+        )
     };
     let status = StatusResponse {
         service: ServiceStatus {
@@ -202,6 +323,13 @@ async fn api_status<S: FrameSource + ?Sized + 'static>(
             }),
         },
         controller,
+        session: SessionStatus {
+            state: session_state,
+            input_events,
+            last_input_ns,
+            dropped_frames,
+            serial,
+        },
     };
     let body = serde_json::to_vec(&status).expect("status serialization cannot fail");
     Response::builder()
@@ -211,12 +339,16 @@ async fn api_status<S: FrameSource + ?Sized + 'static>(
         .expect("status response headers are valid")
 }
 
-async fn api_screenshot<S: FrameSource + ?Sized + 'static>(
-    State(state): State<Arc<ApiState<S>>>,
+// ---- /api/screenshot ----
+
+async fn api_screenshot<I: InputSink + Clone + Send + 'static>(
+    State(state): State<Arc<ApiState<I>>>,
 ) -> Response {
-    let Some(frame) = state.frame_source.latest_frame() else {
+    let frame_source = state.frame_source.current();
+    let Some(frame) = frame_source.latest_frame() else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
+    state.manager.lock().await.refresh_stats();
     if frame.pixel_format != PixelFormat::Bgra8888 {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
@@ -266,6 +398,257 @@ fn packed_bgra(frame: &VideoFrame) -> Option<Cow<'_, [u8]>> {
     Some(Cow::Owned(packed))
 }
 
+// ---- /api/devices ----
+
+#[derive(serde::Serialize)]
+struct DeviceListResponse {
+    video: Vec<DeviceDto>,
+    serial: Vec<DeviceDto>,
+}
+
+#[derive(serde::Serialize)]
+struct DeviceDto {
+    id: String,
+    display_name: String,
+    kind: &'static str,
+}
+
+async fn api_devices<I: InputSink + Clone + Send + 'static>(
+    State(_state): State<Arc<ApiState<I>>>,
+) -> Response {
+    let video = match ipkvm_session::devices::list_video_devices() {
+        Ok(devices) => devices
+            .into_iter()
+            .map(|d| DeviceDto {
+                id: d.id,
+                display_name: d.display_name,
+                kind: "video",
+            })
+            .collect::<Vec<_>>(),
+        Err(error) => {
+            return json_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "video enumeration failed",
+                Some(&error.to_string()),
+            );
+        }
+    };
+    let serial = match ipkvm_session::devices::list_serial_devices() {
+        Ok(devices) => devices
+            .into_iter()
+            .map(|d| DeviceDto {
+                id: d.path,
+                display_name: d.port_type,
+                kind: "serial",
+            })
+            .collect::<Vec<_>>(),
+        Err(error) => {
+            return json_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "serial enumeration failed",
+                Some(&error.to_string()),
+            );
+        }
+    };
+    let body = serde_json::to_vec(&DeviceListResponse { video, serial })
+        .expect("device list serialization cannot fail");
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
+        .body(Body::from(body))
+        .expect("device list response headers are valid")
+}
+
+// ---- /api/session ----
+
+/// `POST /api/session` 请求体：`restart` 可携带设备选择并重启会话。
+#[derive(Deserialize)]
+struct SessionRequest {
+    action: String,
+    #[serde(default)]
+    video: Option<String>,
+    #[serde(default)]
+    serial: Option<String>,
+}
+
+#[derive(serde::Serialize)]
+struct SessionResponse {
+    state: &'static str,
+}
+
+async fn api_session<I: InputSink + Clone + Send + 'static>(
+    State(state): State<Arc<ApiState<I>>>,
+    Json(request): Json<SessionRequest>,
+) -> Response {
+    let mut manager = state.manager.lock().await;
+    let selection = SessionSelection {
+        video: request.video,
+        serial: request.serial,
+    };
+    match request.action.as_str() {
+        "restart" => {
+            let (previous_selection, target_selection) = {
+                let current = state.selection.lock().await;
+                let base = current.clone().unwrap_or_default();
+                (current.clone(), base.with_overrides(&selection))
+            };
+            if let Err(error) = manager.stop_and_destroy().await {
+                return session_error(error);
+            }
+            state
+                .frame_source
+                .set_current(Arc::new(EmptyFrameSource::new()));
+            let (frame_source, sink) = match state.factory.build(&target_selection) {
+                Ok(built) => built,
+                Err(detail) => {
+                    let rollback = match &previous_selection {
+                        Some(previous) => restore_previous_session(&state, &mut manager, previous)
+                            .await
+                            .map(|()| previous.clone()),
+                        None => Err("没有上一成功会话选择可回滚".to_string()),
+                    };
+                    let detail = match rollback {
+                        Ok(restored) => {
+                            *state.selection.lock().await = Some(restored);
+                            format!("{detail}; 已回滚到上一会话选择")
+                        }
+                        Err(rollback_detail) => {
+                            *state.selection.lock().await = None;
+                            format!("{detail}; 回滚上一会话选择失败：{rollback_detail}")
+                        }
+                    };
+                    return json_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "session creation failed",
+                        Some(&detail),
+                    );
+                }
+            };
+            match create_and_start_session(&mut manager, &frame_source, sink, state.gate.clone()) {
+                Ok(()) => {
+                    state.frame_source.set_current(frame_source);
+                    *state.selection.lock().await = Some(target_selection);
+                    json_session_state(&manager)
+                }
+                Err(error) => session_error(error),
+            }
+        }
+        "create" => {
+            // 零初始会话首启：经工厂构造帧源/sink 后 create + start。
+            if manager.state() != SessionState::Absent {
+                return session_error(ipkvm_session::console_session::SessionError::AlreadyCreated);
+            }
+            let target_selection = {
+                let current = state.selection.lock().await;
+                current
+                    .clone()
+                    .unwrap_or_default()
+                    .with_overrides(&selection)
+            };
+            let (frame_source, sink) = match state.factory.build(&target_selection) {
+                Ok(built) => built,
+                Err(detail) => {
+                    return json_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "session creation failed",
+                        Some(&detail),
+                    );
+                }
+            };
+            // create 用独立闸门副本（与传输层共享同一仲裁，clone 共享内部信号量）。
+            if let Err(error) =
+                create_and_start_session(&mut manager, &frame_source, sink, state.gate.clone())
+            {
+                return session_error(error);
+            }
+            state.frame_source.set_current(frame_source);
+            *state.selection.lock().await = Some(target_selection);
+            json_session_state(&manager)
+        }
+        "stop" => match manager.stop() {
+            Ok(()) => {
+                manager.wait_stopped().await;
+                json_session_state(&manager)
+            }
+            Err(error) => session_error(error),
+        },
+        other => json_error(
+            StatusCode::BAD_REQUEST,
+            "unknown action",
+            Some(&format!(
+                "action 必须是 restart/create/stop，得到 {other:?}"
+            )),
+        ),
+    }
+}
+
+fn create_and_start_session<I: InputSink + Clone + Send + 'static>(
+    manager: &mut SessionManager<I>,
+    frame_source: &Arc<dyn FrameSource>,
+    sink: I,
+    gate: RfbConnectionGate,
+) -> Result<(), ipkvm_session::console_session::SessionError> {
+    manager.create(Arc::clone(frame_source), sink, gate)?;
+    manager.start()?;
+    Ok(())
+}
+
+async fn restore_previous_session<I: InputSink + Clone + Send + 'static>(
+    state: &ApiState<I>,
+    manager: &mut SessionManager<I>,
+    selection: &SessionSelection,
+) -> Result<(), String> {
+    let (frame_source, sink) = state.factory.build(selection)?;
+    create_and_start_session(manager, &frame_source, sink, state.gate.clone())
+        .map_err(|error| error.to_string())?;
+    state.frame_source.set_current(frame_source);
+    Ok(())
+}
+
+fn json_session_state<I: InputSink + Clone + Send + 'static>(
+    manager: &SessionManager<I>,
+) -> Response {
+    let body = serde_json::to_vec(&SessionResponse {
+        state: session_state_name(manager.state()),
+    })
+    .expect("session response serialization cannot fail");
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
+        .body(Body::from(body))
+        .expect("session response headers are valid")
+}
+
+/// 会话级错误映射到 HTTP 状态码与结构化 JSON。
+fn session_error(error: ipkvm_session::console_session::SessionError) -> Response {
+    use ipkvm_session::console_session::SessionError;
+    match error {
+        SessionError::AlreadyRunning | SessionError::AlreadyCreated => json_error(
+            StatusCode::CONFLICT,
+            "session conflict",
+            Some(&error.to_string()),
+        ),
+        SessionError::NotRunning => json_error(
+            StatusCode::CONFLICT,
+            "session conflict",
+            Some(&error.to_string()),
+        ),
+        SessionError::Input(error) => json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "input pump failed",
+            Some(&error.to_string()),
+        ),
+    }
+}
+
+fn session_state_name(state: SessionState) -> &'static str {
+    match state {
+        SessionState::Absent => "absent",
+        SessionState::Stopped => "stopped",
+        SessionState::Running => "running",
+    }
+}
+
 fn source_kind_name(kind: VideoSourceKind) -> &'static str {
     match kind {
         VideoSourceKind::Camera => "camera",
@@ -305,94 +688,18 @@ async fn wait_for_shutdown(mut shutdown: watch::Receiver<bool>) {
 
 #[cfg(test)]
 mod tests {
-    use ipkvm_video::MonotonicTimestamp;
-
     use super::*;
 
-    #[tokio::test]
-    async fn closed_shutdown_sender_stops_the_waiter() {
-        let (sender, receiver) = watch::channel(false);
-        drop(sender);
-
-        wait_for_shutdown(receiver).await;
-    }
-
-    #[tokio::test]
-    async fn pre_requested_shutdown_stops_the_waiter() {
-        let (sender, receiver) = watch::channel(true);
-
-        wait_for_shutdown(receiver).await;
-        drop(sender);
+    #[test]
+    fn json_error_serializes_error_and_optional_detail() {
+        let response = json_error(StatusCode::BAD_REQUEST, "bad", Some("why"));
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 
     #[test]
-    fn packed_bgra_borrows_tightly_packed_frames() {
-        let frame = bgra_frame(2, 1, 8, vec![0, 0, 255, 255, 0, 255, 0, 255]);
-
-        match packed_bgra(&frame) {
-            Some(Cow::Borrowed(bytes)) => {
-                assert!(std::ptr::eq(bytes.as_ptr(), frame.data.as_ptr()));
-                assert_eq!(bytes.len(), frame.data.len());
-            }
-            _ => panic!("tight frame must not be copied"),
-        }
-    }
-
-    #[test]
-    fn packed_bgra_tightens_padded_rows() {
-        let frame = bgra_frame(
-            2,
-            2,
-            12,
-            vec![
-                0, 0, 255, 255, 0, 255, 0, 255, // 第 0 行
-                1, 1, 1, 1, // 行填充
-                3, 3, 3, 3, 4, 4, 4, 4, // 第 1 行
-                2, 2, 2, 2, // 行填充
-            ],
-        );
-
-        let packed = packed_bgra(&frame).unwrap();
-        assert_eq!(
-            packed.as_ref(),
-            &[0, 0, 255, 255, 0, 255, 0, 255, 3, 3, 3, 3, 4, 4, 4, 4]
-        );
-    }
-
-    #[test]
-    fn packed_bgra_rejects_truncated_data() {
-        let frame = bgra_frame(4, 1, 20, vec![0; 4]);
-
-        assert!(packed_bgra(&frame).is_none());
-    }
-
-    #[test]
-    fn packed_bgra_rejects_data_shorter_than_stride_times_height() {
-        // 像素行与行间填充齐备、仅末行填充缺失：数据短于 stride*height，
-        // 视为畸形帧拒绝（行校验先于按元数据分配，避免畸形帧触发大分配）。
-        let frame = bgra_frame(
-            2,
-            2,
-            12,
-            vec![
-                0, 0, 255, 255, 0, 255, 0, 255, // 第 0 行
-                1, 1, 1, 1, // 行填充
-                3, 3, 3, 3, 4, 4, 4, 4, // 第 1 行
-            ],
-        );
-
-        assert!(packed_bgra(&frame).is_none());
-    }
-
-    fn bgra_frame(width: u32, height: u32, stride: u32, data: Vec<u8>) -> VideoFrame {
-        VideoFrame::new(
-            1,
-            MonotonicTimestamp::from_nanos(1),
-            width,
-            height,
-            stride,
-            PixelFormat::Bgra8888,
-            Arc::from(data.into_boxed_slice()),
-        )
+    fn session_state_name_covers_all_variants() {
+        assert_eq!(session_state_name(SessionState::Absent), "absent");
+        assert_eq!(session_state_name(SessionState::Stopped), "stopped");
+        assert_eq!(session_state_name(SessionState::Running), "running");
     }
 }

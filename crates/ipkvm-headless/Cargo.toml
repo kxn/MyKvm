@@ -7,11 +7,11 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-axum.workspace = true
+axum = { workspace = true, features = ["json"] }
 include_dir.workspace = true
 ipkvm-core = { path = "../ipkvm-core" }
 ipkvm-rfb = { path = "../ipkvm-rfb" }
-ipkvm-session = { path = "../ipkvm-session" }
+ipkvm-session = { path = "../ipkvm-session", features = ["serial"] }
 ipkvm-video = { path = "../ipkvm-video" }
 jpeg-encoder.workspace = true
 serde = { workspace = true, features = ["derive"] }

@@ -39,13 +39,14 @@ impl TestDualTransportSystem {
         let source = Arc::new(MockFrameSource::new());
         source.publish_frame(default_frame());
         let (event_tx, events) = mpsc::channel(event_capacity);
+        let (event_watch_tx, _) = watch::channel(Some(event_tx));
         let (shutdown, shutdown_rx) = watch::channel(false);
         let gate = RfbConnectionGate::new();
 
         let tcp_server = RfbTcpServer::new(
             tcp_listener,
             Arc::clone(&source),
-            event_tx.clone(),
+            event_watch_tx.subscribe(),
             RfbTcpConfig::default(),
             gate.clone(),
         )
@@ -54,7 +55,7 @@ impl TestDualTransportSystem {
 
         let websocket_service = RfbWebSocketService::new(
             source,
-            event_tx,
+            event_watch_tx.subscribe(),
             RfbWebSocketConfig::default(),
             shutdown_rx.clone(),
             gate,

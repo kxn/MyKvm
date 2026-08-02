@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 use crate::ch9329::{Ch9329FrameError, Ch9329ReportError};
-use crate::serial::CommandQueueError;
+use crate::serial::{CommandQueueError, QueueStats};
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct KeyboardUsage(u8);
@@ -107,4 +107,8 @@ pub trait InputSink {
 
     fn handle_pointer_batch(&mut self, events: &[PointerEvent]) -> InputResult<()>;
     fn release_all(&mut self) -> InputResult<()>;
+
+    fn queue_stats(&self) -> Option<QueueStats> {
+        None
+    }
 }

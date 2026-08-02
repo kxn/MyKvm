@@ -15,7 +15,10 @@ use ipkvm_video::PixelFormat;
 use thiserror::Error;
 
 pub use driver::ConnectionEnd;
-pub use finalize::{RfbConnectionFinalizeError, finalize_connection, run_managed_connection};
+pub use finalize::{
+    RfbConnectionFinalizeError, finalize_connection, finalize_connection_after_session_end,
+    run_managed_connection,
+};
 pub use gate::RfbConnectionReservation;
 pub use gate::{ActiveController, RfbConnectionGate, RfbConnectionGateError, RfbTransportKind};
 pub use transport::{RfbTransport, RfbTransportError, RfbTransportRead};

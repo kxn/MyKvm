@@ -22,28 +22,81 @@
 //! 只有一个客户端能获得控制权。
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
-use ipkvm_core::{Ch9329InputSink, MouseMode, SerialCommandQueue, fake_serial::FakeCommandQueue};
+use ipkvm_core::{
+    Ch9329InputSink, InputResult, InputSink, KeyEvent, MouseMode, PointerEvent, QueueStats,
+    SerialCommandQueue, fake_serial::FakeCommandQueue,
+};
 use ipkvm_headless::config::{self, Options};
+use ipkvm_headless::frame_source::SwitchableFrameSource;
 use ipkvm_headless::rfb_connection::{RfbConnectionGate, RfbConnectionSettings};
-use ipkvm_headless::rfb_input::{RfbInputPump, RfbInputRunError};
 use ipkvm_headless::rfb_tcp::{RfbTcpConfig, RfbTcpServer, RfbTcpServerError};
 use ipkvm_headless::rfb_ws::RfbWebSocketConfig;
-use ipkvm_headless::web::{HeadlessWebService, HeadlessWebServiceError};
+use ipkvm_headless::session_manager::SessionManager;
+use ipkvm_headless::web::{
+    HeadlessWebService, HeadlessWebServiceError, SessionFactory, SessionSelection,
+};
 use ipkvm_video::FrameSource;
 use ipkvm_video::camera::CameraSource;
 use ipkvm_video::file_source::FileVideoSource;
 use ipkvm_video::y4m::Y4mAsset;
 use thiserror::Error;
-use tokio::{
-    net::TcpListener,
-    sync::{mpsc, watch},
-    task::JoinError,
-};
+use tokio::{net::TcpListener, sync::watch, task::JoinError};
 
 /// 优雅关闭的等待上限。超时后强制退出，避免卡死的连接阻止进程结束。
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// headless 统一输入 sink：枚举分发真实串口与模拟队列。
+///
+/// `SessionManager<S>` 要求 `S: InputSink + Clone + Send + 'static`；真实串口
+/// (`Ch9329InputSink<SerialCommandQueue>`) 与模拟队列
+/// (`Ch9329InputSink<FakeCommandQueue>`) 是不同具体类型，本枚举在组装层统一，
+/// 使 `SessionManager<HeadlessSink>` 在整个进程生命周期单态化。运行时换 sink
+/// 类型不在本轮范围（见 issue #32）——启动时决定，restart 复用相同变体。
+#[derive(Clone)]
+enum HeadlessSink {
+    Serial(Ch9329InputSink<SerialCommandQueue>),
+    Fake(Ch9329InputSink<FakeCommandQueue>),
+}
+
+impl InputSink for HeadlessSink {
+    fn set_mouse_mode(&mut self, mode: MouseMode) -> InputResult<()> {
+        match self {
+            HeadlessSink::Serial(sink) => sink.set_mouse_mode(mode),
+            HeadlessSink::Fake(sink) => sink.set_mouse_mode(mode),
+        }
+    }
+
+    fn handle_key_batch(&mut self, events: &[KeyEvent]) -> InputResult<()> {
+        match self {
+            HeadlessSink::Serial(sink) => sink.handle_key_batch(events),
+            HeadlessSink::Fake(sink) => sink.handle_key_batch(events),
+        }
+    }
+
+    fn handle_pointer_batch(&mut self, events: &[PointerEvent]) -> InputResult<()> {
+        match self {
+            HeadlessSink::Serial(sink) => sink.handle_pointer_batch(events),
+            HeadlessSink::Fake(sink) => sink.handle_pointer_batch(events),
+        }
+    }
+
+    fn release_all(&mut self) -> InputResult<()> {
+        match self {
+            HeadlessSink::Serial(sink) => sink.release_all(),
+            HeadlessSink::Fake(sink) => sink.release_all(),
+        }
+    }
+
+    fn queue_stats(&self) -> Option<QueueStats> {
+        Some(match self {
+            HeadlessSink::Serial(sink) => sink.queue_stats(),
+            HeadlessSink::Fake(sink) => sink.queue_stats(),
+        })
+    }
+}
 
 fn load_assets(directory: &PathBuf) -> Result<Vec<Y4mAsset>, String> {
     let mut paths = Vec::new();
@@ -149,12 +202,10 @@ enum HeadlessRunError {
     TcpServer(#[from] RfbTcpServerError),
     #[error(transparent)]
     Web(#[from] HeadlessWebServiceError),
-    #[error(transparent)]
-    Input(#[from] RfbInputRunError),
     #[error("后台任务失败")]
     Join(#[from] JoinError),
-    #[error("串口失败：{0}")]
-    Serial(String),
+    #[error("会话失败：{0}")]
+    Session(String),
 }
 
 type TaskResult<T> = Result<T, HeadlessRunError>;
@@ -209,22 +260,87 @@ async fn main() {
         }
     }
 
-    let source = match build_source(&options) {
-        Ok(source) => source,
+    let (source, sink) = match build_session_components(&options) {
+        Ok(built) => built,
         Err(error) => {
             eprintln!("{error}");
             std::process::exit(1);
         }
     };
 
-    if let Err(error) = run(source, options).await {
+    if let Err(error) = run(source, sink, options).await {
         eprintln!("{error}");
         std::process::exit(1);
     }
 }
 
+/// 按 CLI 参数构造会话所需的帧源与输入 sink。
+///
+/// 返回的 `(frame_source, sink)` 同时用于启动即绑定（`run` 首启）与零初始
+/// 会话启动后的工厂 `build()`。两条 sink 路径（真实串口/模拟队列）经
+/// `HeadlessSink` 统一类型。
+fn build_session_components(
+    options: &Options,
+) -> Result<(Arc<dyn FrameSource>, HeadlessSink), String> {
+    let source = build_source(options)?;
+    let sink = build_sink(options)?;
+    Ok((source, sink))
+}
+
+/// 按 `--serial` 选择输入 sink：真实串口或模拟队列。
+fn build_sink(options: &Options) -> Result<HeadlessSink, String> {
+    if let Some(serial_path) = &options.serial_path {
+        let baud = options.serial_baud;
+        let queue = SerialCommandQueue::open(serial_path, baud)
+            .map_err(|e| format!("无法打开串口 {serial_path}@{baud}：{e}"))?;
+        println!("输入：CH9329 串口 {serial_path}@{baud}（8N1）");
+        Ok(HeadlessSink::Serial(Ch9329InputSink::new(
+            queue,
+            0,
+            MouseMode::Absolute,
+        )))
+    } else {
+        println!("输入：模拟队列（无 --serial，键鼠事件不注入真实串口）");
+        Ok(HeadlessSink::Fake(Ch9329InputSink::new(
+            FakeCommandQueue::new(),
+            0,
+            MouseMode::Absolute,
+        )))
+    }
+}
+
+/// 会话工厂：捕获启动配置作为默认值，供运行时 `POST /api/session`
+/// create/restart 按设备选择重新构造帧源/sink。
+struct HeadlessSessionFactory {
+    options: Options,
+}
+
+impl SessionFactory<HeadlessSink> for HeadlessSessionFactory {
+    fn build(
+        &self,
+        selection: &SessionSelection,
+    ) -> Result<(Arc<dyn FrameSource>, HeadlessSink), String> {
+        let mut options = self.options.clone();
+        if let Some(video) = &selection.video
+            && !video.trim().is_empty()
+        {
+            options.camera_name = Some(video.clone());
+            options.assets_dir = None;
+        }
+        if let Some(serial) = &selection.serial {
+            options.serial_path = if serial.trim().is_empty() {
+                None
+            } else {
+                Some(serial.clone())
+            };
+        }
+        build_session_components(&options)
+    }
+}
+
 async fn run(
-    source: std::sync::Arc<dyn FrameSource>,
+    source: Arc<dyn FrameSource>,
+    sink: HeadlessSink,
     options: Options,
 ) -> Result<(), HeadlessRunError> {
     let tcp_listener = TcpListener::bind((options.bind_address.as_str(), options.tcp_port)).await?;
@@ -233,43 +349,27 @@ async fn run(
         TcpListener::bind((options.bind_address.as_str(), options.http_port)).await?;
     let http_local = http_listener.local_addr()?;
 
-    let (event_tx, event_rx) = mpsc::channel(64);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
-    // 单一连接闸门：clone 给 TCP，move 给 HTTP/WS。两者共享同一个信号量，
+    // 单一连接闸门：clone 给 TCP、HTTP/WS 与会话管理器。三者共享同一个信号量，
     // 因此同一时刻只有一个活跃 RFB 控制连接，无论它来自哪个传输层。
     let gate = RfbConnectionGate::new();
 
-    // 输入 sink：按 --serial 选真实串口（CH9329）或模拟队列（FakeCommandQueue，演示/测试用）。
-    // 两条路径各自构造 pump 并 spawn input_task，JoinHandle 类型一致。
-    let mut pump_events = event_rx;
-    let input_task = if let Some(serial_path) = &options.serial_path {
-        let baud = options.serial_baud;
-        let queue = SerialCommandQueue::open(serial_path, baud).map_err(|e| {
-            HeadlessRunError::Serial(format!("无法打开串口 {serial_path}@{baud}：{e}"))
-        })?;
-        println!("输入：CH9329 串口 {serial_path}@{baud}（8N1）");
-        let mut pump = RfbInputPump::new(Ch9329InputSink::new(queue, 0, MouseMode::Absolute));
-        tokio::spawn(async move {
-            pump.run(&mut pump_events, |notice| {
-                println!("输入事件：{notice:?}");
-            })
-            .await
-        })
-    } else {
-        println!("输入：模拟队列（无 --serial，键鼠事件不注入真实串口）");
-        let mut pump = RfbInputPump::new(Ch9329InputSink::new(
-            FakeCommandQueue::new(),
-            0,
-            MouseMode::Absolute,
-        ));
-        tokio::spawn(async move {
-            pump.run(&mut pump_events, |notice| {
-                println!("输入事件：{notice:?}");
-            })
-            .await
-        })
-    };
+    let switchable_source = Arc::new(SwitchableFrameSource::new(Arc::clone(&source)));
+
+    // 会话管理器：启动即绑定（构造并 start），生命周期交由管理器托管。
+    // 输入泵由 ConsoleSession 内部 spawn（run_until_stopped），不再手工组装。
+    // 帧源经 Arc::clone 分发给会话与传输层（同一帧源多读端，各自 latest_frame）。
+    let mut manager = SessionManager::new(Arc::clone(&source), sink, gate.clone());
+    manager
+        .start()
+        .map_err(|error| HeadlessRunError::Session(format!("启动会话失败：{error}")))?;
+    let event_publisher = manager.event_publisher();
+    drop(source);
+    let manager = Arc::new(tokio::sync::Mutex::new(manager));
+    let factory = Arc::new(HeadlessSessionFactory {
+        options: options.clone(),
+    });
 
     // 鉴权注入：VNC 密码（若有）同时作用于 TCP 与 WS 两条 RFB 传输，
     // 未配置时保持 RfbSecurity::None（连接闸门侧按本机回环限制来源）。
@@ -290,17 +390,19 @@ async fn run(
 
     let tcp_server = RfbTcpServer::new(
         tcp_listener,
-        std::sync::Arc::clone(&source),
-        event_tx.clone(),
+        Arc::clone(&switchable_source),
+        event_publisher.clone(),
         tcp_config,
         gate.clone(),
     )?;
     let tcp_shutdown = shutdown_rx.clone();
     let mut tcp_task = tokio::spawn(async move { tcp_server.run(tcp_shutdown).await });
 
-    let web_service = HeadlessWebService::new(
-        source,
-        event_tx,
+    let web_service = HeadlessWebService::<HeadlessSink>::new(
+        switchable_source,
+        Arc::clone(&manager),
+        factory,
+        event_publisher,
         ws_config,
         shutdown_rx.clone(),
         gate,
@@ -347,14 +449,24 @@ async fn run(
     shutdown_tx.send_replace(true);
     ctrl_c.abort();
 
-    // 优雅关闭：等待三个任务全部结束，超时则强制退出。
+    // 优雅关闭：先停会话（释放输入泵、release_all），再等待传输任务结束。
+    let session_stop = async {
+        let mut manager = manager.lock().await;
+        if manager.stop().is_ok() {
+            manager.wait_stopped().await;
+        }
+    };
     let join = async {
         let tcp = flatten(tcp_task.await);
         let http = flatten(http_task.await);
-        let input = flatten(input_task.await);
-        tcp.and(http).and(input)
+        tcp.and(http)
     };
-    match tokio::time::timeout(SHUTDOWN_TIMEOUT, join).await {
+    match tokio::time::timeout(SHUTDOWN_TIMEOUT, async {
+        session_stop.await;
+        join.await
+    })
+    .await
+    {
         Ok(Ok(())) => {
             println!("ipkvm-headless 已停止");
             Ok(())

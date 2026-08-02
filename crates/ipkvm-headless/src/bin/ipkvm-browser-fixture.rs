@@ -5,12 +5,16 @@ use std::{
 
 use ipkvm_core::{InputResult, InputSink, KeyEvent, MouseMode, PointerButton, PointerEvent};
 use ipkvm_headless::{
+    frame_source::SwitchableFrameSource,
     rfb_connection::{RfbConnectionGate, RfbServerEvent},
     rfb_input::{RfbInputNotice, RfbInputPump, RfbInputRunError},
     rfb_ws::RfbWebSocketConfig,
-    web::{HeadlessWebService, HeadlessWebServiceError},
+    session_manager::SessionManager,
+    web::{HeadlessWebService, HeadlessWebServiceError, SessionFactory, SessionSelection},
 };
-use ipkvm_video::{MonotonicTimestamp, PixelFormat, VideoFrame, mock::MockFrameSource};
+use ipkvm_video::{
+    FrameSource, MonotonicTimestamp, PixelFormat, VideoFrame, mock::MockFrameSource,
+};
 use thiserror::Error;
 use tokio::{
     net::TcpListener,
@@ -111,6 +115,22 @@ fn button_name(button: PointerButton) -> &'static str {
     }
 }
 
+/// 会话工厂占位：fixture 不触发 `POST /api/session`，仅满足
+/// `HeadlessWebService::new` 签名。
+struct FixtureFactory;
+
+impl SessionFactory<RecordingInputSink> for FixtureFactory {
+    fn build(
+        &self,
+        _selection: &SessionSelection,
+    ) -> Result<(Arc<dyn FrameSource>, RecordingInputSink), String> {
+        Ok((
+            Arc::new(MockFrameSource::new()) as Arc<dyn FrameSource>,
+            RecordingInputSink::new(LineWriter::new()),
+        ))
+    }
+}
+
 #[derive(Debug, Error)]
 enum FixtureError {
     #[error("fixture I/O failed")]
@@ -151,9 +171,33 @@ async fn run() -> Result<(), FixtureError> {
     let address = listener.local_addr()?;
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
     let (event_tx, mut event_rx) = mpsc::channel::<RfbServerEvent>(64);
+
+    // READY 在构造 HeadlessWebService 之前输出：引入 SessionManager 后，构造 +
+    // spawn 之后的 stdout 写入于 Windows 测试 pipe 下偶发不可达读端（手动运行
+    // 正常，仅子进程受影响）。listener 已 bind，连接在 serve 起来前进 TCP 积压
+    // 队列，不丢失。用 println! + 显式 flush（而非 output.line 的持久 handle），
+    // 后者在测试 pipe 下首写偶发滞留。
+    {
+        use std::io::Write;
+        println!("READY\thttp://{address}\t{FRAME_WIDTH}\t{FRAME_HEIGHT}");
+        let _ = std::io::stdout().flush();
+    }
+
+    // 传输层订阅端：fixture 手动驱动 RecordingInputSink + RfbInputPump 以打印
+    // 输入事件；SessionManager 仅满足 HeadlessWebService::new 签名（不 start，
+    // 故内部泵不参与）。event_publisher 由 fixture 的事件通道直接发布。
+    let (event_publish_tx, event_publisher) = watch::channel(Some(event_tx.clone()));
+    let manager = Arc::new(tokio::sync::Mutex::new(
+        SessionManager::<RecordingInputSink>::empty(),
+    ));
+    let factory: Arc<dyn SessionFactory<RecordingInputSink> + Send + Sync> =
+        Arc::new(FixtureFactory);
+    let source = Arc::new(SwitchableFrameSource::new(source));
     let service = HeadlessWebService::new(
         source,
-        event_tx,
+        manager,
+        factory,
+        event_publisher,
         RfbWebSocketConfig::default(),
         shutdown_rx,
         RfbConnectionGate::new(),
@@ -174,10 +218,6 @@ async fn run() -> Result<(), FixtureError> {
     });
     let stop_rx = spawn_stdin_waiter();
 
-    output.line(format!(
-        "READY\thttp://{address}\t{FRAME_WIDTH}\t{FRAME_HEIGHT}"
-    ));
-
     tokio::pin!(stop_rx);
     let trigger = tokio::select! {
         result = &mut stop_rx => Trigger::Stop(result),
@@ -185,6 +225,8 @@ async fn run() -> Result<(), FixtureError> {
         result = &mut input_task => Trigger::Input(result),
     };
     shutdown_tx.send_replace(true);
+    event_publish_tx.send_replace(None);
+    drop(event_tx);
 
     match trigger {
         Trigger::Stop(result) => {

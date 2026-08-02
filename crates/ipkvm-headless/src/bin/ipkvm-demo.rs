@@ -154,6 +154,7 @@ async fn main() {
     let address = listener.local_addr().unwrap();
 
     let (event_tx, event_rx) = mpsc::channel(64);
+    let event_publisher = watch::channel(Some(event_tx)).1;
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     let sink = Ch9329InputSink::new(FakeCommandQueue::new(), 0, MouseMode::Absolute);
@@ -171,7 +172,7 @@ async fn main() {
     let server = match RfbTcpServer::new(
         listener,
         source,
-        event_tx,
+        event_publisher,
         RfbTcpConfig::default(),
         RfbConnectionGate::new(),
     ) {

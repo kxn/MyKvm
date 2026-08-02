@@ -1,7 +1,8 @@
 use ipkvm_rfb::RfbServerConfig;
 
-pub use ipkvm_session::{rfb_connection, rfb_input};
+pub use ipkvm_session::{rfb_connection, rfb_input, session_manager};
 pub mod config;
+pub mod frame_source;
 pub mod rfb_tcp;
 pub mod rfb_ws;
 pub mod web;

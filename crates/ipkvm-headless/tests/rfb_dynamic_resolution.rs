@@ -37,11 +37,12 @@ impl ServerFixture {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let (event_tx, events) = mpsc::channel(16);
+        let event_publisher = watch::channel(Some(event_tx)).1;
         let (shutdown, shutdown_rx) = watch::channel(false);
         let server = RfbTcpServer::new(
             listener,
             source,
-            event_tx,
+            event_publisher,
             RfbTcpConfig::default(),
             RfbConnectionGate::new(),
         )
