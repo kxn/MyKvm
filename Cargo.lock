@@ -699,6 +699,7 @@ dependencies = [
  "ipkvm-core",
  "ipkvm-rfb",
  "ipkvm-video",
+ "serialport",
  "thiserror",
  "tokio",
 ]

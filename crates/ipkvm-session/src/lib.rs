@@ -1,5 +1,6 @@
 //! 控制台会话抽象。
 
+pub mod devices;
 pub mod rfb_connection;
 pub mod rfb_input;
 
