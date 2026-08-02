@@ -40,13 +40,13 @@ pub struct HeadlessWebService<I: InputSink + Clone + Send + 'static> {
 }
 
 /// `/api` 路由共享的服务状态：帧源元数据、连接闸门与会话管理器。
-struct ApiState<I: InputSink + Clone + Send + 'static> {
-    frame_source: Arc<SwitchableFrameSource>,
-    gate: RfbConnectionGate,
-    manager: Arc<tokio::sync::Mutex<SessionManager<I>>>,
-    selection: tokio::sync::Mutex<Option<SessionSelection>>,
+pub(super) struct ApiState<I: InputSink + Clone + Send + 'static> {
+    pub(super) frame_source: Arc<SwitchableFrameSource>,
+    pub(super) gate: RfbConnectionGate,
+    pub(super) manager: Arc<tokio::sync::Mutex<SessionManager<I>>>,
+    pub(super) selection: tokio::sync::Mutex<Option<SessionSelection>>,
     /// 会话工厂：按请求中的设备选择构造帧源与 sink。
-    factory: Arc<dyn SessionFactory<I> + Send + Sync>,
+    pub(super) factory: Arc<dyn SessionFactory<I> + Send + Sync>,
 }
 
 /// 一次运行时会话选择。字段为 `None` 时由工厂沿用启动配置默认值。
@@ -117,6 +117,12 @@ impl<I: InputSink + Clone + Send + 'static> HeadlessWebService<I> {
     }
 
     pub async fn serve(self, listener: TcpListener) -> Result<(), HeadlessWebServiceError> {
+        // 自动恢复循环：输入泵失败/视频从未出帧时按退避重建会话。
+        tokio::spawn(super::recovery::run_recovery_loop(
+            Arc::clone(&self.api),
+            self.shutdown.clone(),
+            super::recovery::RecoveryPolicy::default(),
+        ));
         let shutdown = self.shutdown;
         let router = static_router()
             .merge(self.rfb.router())
@@ -620,7 +626,7 @@ async fn api_session<I: InputSink + Clone + Send + 'static>(
     }
 }
 
-fn create_and_start_session<I: InputSink + Clone + Send + 'static>(
+pub(super) fn create_and_start_session<I: InputSink + Clone + Send + 'static>(
     manager: &mut SessionManager<I>,
     frame_source: &Arc<dyn FrameSource>,
     sink: I,
@@ -679,7 +685,7 @@ fn session_error(error: ipkvm_session::console_session::SessionError) -> Respons
     }
 }
 
-fn session_state_name(state: SessionState) -> &'static str {
+pub(super) fn session_state_name(state: SessionState) -> &'static str {
     match state {
         SessionState::Absent => "absent",
         SessionState::Stopped => "stopped",
