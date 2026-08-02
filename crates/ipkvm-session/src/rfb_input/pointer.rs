@@ -34,20 +34,7 @@ impl RfbPointerMapper {
             y: u32::from(y),
             framebuffer_size,
         }];
-
-        for (mask, button) in PERSISTENT_BUTTONS {
-            if self.committed_button_mask & mask != 0 && button_mask & mask == 0 {
-                events.push(PointerEvent::Button {
-                    button,
-                    down: false,
-                });
-            }
-        }
-        for (mask, button) in PERSISTENT_BUTTONS {
-            if self.committed_button_mask & mask == 0 && button_mask & mask != 0 {
-                events.push(PointerEvent::Button { button, down: true });
-            }
-        }
+        events.extend(button_events(self.committed_button_mask, button_mask));
         let pressed_edges = button_mask & !self.committed_button_mask;
         if pressed_edges & WHEEL_UP_MASK != 0 {
             events.push(PointerEvent::Wheel { delta: 1 });
@@ -67,6 +54,52 @@ impl RfbPointerMapper {
             })
         }
     }
+
+    pub fn handle_relative_pointer(
+        &mut self,
+        sink: &mut impl InputSink,
+        button_mask: u8,
+        dx: i16,
+        dy: i16,
+        wheel: i8,
+    ) -> Result<RfbPointerOutcome, RfbPointerError> {
+        let mut events = Vec::new();
+        if dx != 0 || dy != 0 {
+            events.push(PointerEvent::RelativeMove { dx, dy });
+        }
+        events.extend(button_events(self.committed_button_mask, button_mask));
+        if wheel != 0 {
+            events.push(PointerEvent::Wheel {
+                delta: i16::from(wheel),
+            });
+        }
+
+        sink.handle_pointer_batch(&events)?;
+        self.committed_button_mask = button_mask;
+        let ignored = button_mask & UNSUPPORTED_BUTTON_MASK;
+        if ignored == 0 {
+            Ok(RfbPointerOutcome::Applied)
+        } else {
+            Ok(RfbPointerOutcome::AppliedIgnoringButtons {
+                button_mask: ignored,
+            })
+        }
+    }
+}
+
+fn button_events(committed: u8, new_mask: u8) -> Vec<PointerEvent> {
+    let mut events = Vec::new();
+    for (mask, button) in PERSISTENT_BUTTONS {
+        if committed & mask != 0 && new_mask & mask == 0 {
+            events.push(PointerEvent::Button { button, down: false });
+        }
+    }
+    for (mask, button) in PERSISTENT_BUTTONS {
+        if committed & mask == 0 && new_mask & mask != 0 {
+            events.push(PointerEvent::Button { button, down: true });
+        }
+    }
+    events
 }
 
 #[cfg(test)]
@@ -333,5 +366,50 @@ mod tests {
             .handle_pointer(&mut sink, 0x09, 101, 201, size())
             .unwrap();
         assert_eq!(sink.batches[1], vec![absolute_move(101, 201)]);
+    }
+
+    #[test]
+    fn relative_move_emits_delta_and_preserves_buttons() {
+        let mut mapper = RfbPointerMapper::new();
+        let mut sink = RecordingSink::default();
+
+        mapper
+            .handle_relative_pointer(&mut sink, 0x01, 12, -4, 0)
+            .unwrap();
+
+        assert_eq!(
+            sink.batches,
+            vec![vec![
+                PointerEvent::RelativeMove { dx: 12, dy: -4 },
+                button(PointerButton::Left, true),
+            ]]
+        );
+    }
+
+    #[test]
+    fn relative_wheel_emits_wheel_and_keeps_button_state() {
+        let mut mapper = RfbPointerMapper::new();
+        let mut sink = RecordingSink::default();
+        mapper
+            .handle_relative_pointer(&mut sink, 0x01, 0, 0, 0)
+            .unwrap();
+
+        mapper
+            .handle_relative_pointer(&mut sink, 0x01, 0, 0, 3)
+            .unwrap();
+
+        assert_eq!(sink.batches[1], vec![PointerEvent::Wheel { delta: 3 }]);
+    }
+
+    #[test]
+    fn relative_zero_delta_skips_move_but_still_sends_buttons() {
+        let mut mapper = RfbPointerMapper::new();
+        let mut sink = RecordingSink::default();
+
+        mapper
+            .handle_relative_pointer(&mut sink, 0x01, 0, 0, 0)
+            .unwrap();
+
+        assert_eq!(sink.batches[0], vec![button(PointerButton::Left, true)]);
     }
 }

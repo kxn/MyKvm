@@ -95,6 +95,13 @@ pub enum RfbServerEvent {
         y: u16,
         framebuffer_size: RfbSize,
     },
+    PointerRelative {
+        client_id: RfbClientId,
+        button_mask: u8,
+        dx: i16,
+        dy: i16,
+        wheel: i8,
+    },
     CutText {
         client_id: RfbClientId,
         bytes: Vec<u8>,

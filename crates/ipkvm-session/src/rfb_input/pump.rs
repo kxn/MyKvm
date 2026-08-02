@@ -98,6 +98,7 @@ pub enum RfbInputEventKind {
     Connected,
     Key,
     Pointer,
+    PointerRelative,
     CutText,
     ContinuousUpdates,
     Disconnected,
@@ -369,6 +370,13 @@ impl<S: InputSink> RfbInputPump<S> {
                     height: u32::from(framebuffer_size.height()),
                 },
             ),
+            RfbServerEvent::PointerRelative {
+                client_id,
+                button_mask,
+                dx,
+                dy,
+                wheel,
+            } => self.handle_pointer_relative(*client_id, *button_mask, *dx, *dy, *wheel),
             RfbServerEvent::CutText { client_id, bytes } => {
                 self.require_active(*client_id, RfbInputEventKind::CutText)?;
                 let text = String::from_utf8_lossy(bytes).into_owned();
@@ -470,6 +478,28 @@ impl<S: InputSink> RfbInputPump<S> {
         match self
             .pointer
             .handle_pointer(&mut self.sink, button_mask, x, y, framebuffer_size)
+        {
+            Ok(outcome) => Ok(RfbInputNotice::Pointer { client_id, outcome }),
+            Err(RfbPointerError::Input(source)) => Err(RfbInputError::Sink {
+                client_id,
+                operation: RfbInputOperation::Pointer,
+                source,
+            }),
+        }
+    }
+
+    fn handle_pointer_relative(
+        &mut self,
+        client_id: RfbClientId,
+        button_mask: u8,
+        dx: i16,
+        dy: i16,
+        wheel: i8,
+    ) -> Result<RfbInputNotice, RfbInputError> {
+        self.require_active(client_id, RfbInputEventKind::PointerRelative)?;
+        match self
+            .pointer
+            .handle_relative_pointer(&mut self.sink, button_mask, dx, dy, wheel)
         {
             Ok(outcome) => Ok(RfbInputNotice::Pointer { client_id, outcome }),
             Err(RfbPointerError::Input(source)) => Err(RfbInputError::Sink {
@@ -1463,5 +1493,60 @@ mod tests {
             &batches[0].frames()[0].data()[2..6],
             &[0xeb, 0x0f, 0xd7, 0x0f]
         );
+    }
+
+    #[tokio::test]
+    async fn routes_relative_pointer_events_after_connect() {
+        let client_id = client(20);
+        let peer_addr = peer(5920);
+        let mut pump = RfbInputPump::new(RecordingSink::default());
+        pump.handle_event(connected(client_id, peer_addr)).unwrap();
+
+        assert_eq!(
+            pump.handle_event(RfbServerEvent::PointerRelative {
+                client_id,
+                button_mask: 1,
+                dx: 12,
+                dy: -4,
+                wheel: 0,
+            }),
+            Ok(RfbInputNotice::Pointer {
+                client_id,
+                outcome: RfbPointerOutcome::Applied,
+            })
+        );
+        assert_eq!(
+            pump.sink().pointer_batches,
+            vec![vec![
+                PointerEvent::RelativeMove { dx: 12, dy: -4 },
+                PointerEvent::Button {
+                    button: PointerButton::Left,
+                    down: true,
+                },
+            ]]
+        );
+    }
+
+    #[tokio::test]
+    async fn relative_pointer_without_active_controller_is_rejected() {
+        let client_id = client(21);
+        let mut pump = RfbInputPump::new(RecordingSink::default());
+
+        let error = pump
+            .handle_event(RfbServerEvent::PointerRelative {
+                client_id,
+                button_mask: 0,
+                dx: 1,
+                dy: 0,
+                wheel: 0,
+            })
+            .unwrap_err();
+        assert!(matches!(
+            error.error(),
+            RfbInputError::Lifecycle(RfbInputLifecycleError::NoActiveController {
+                event_kind: RfbInputEventKind::PointerRelative,
+                ..
+            })
+        ));
     }
 }
