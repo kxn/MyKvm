@@ -55,6 +55,7 @@ impl TestWebServer {
             RfbWebSocketConfig::default(),
             shutdown_rx,
             RfbConnectionGate::new(),
+            None, // auth：Task 5 接入 HTTP 鉴权后由调用方注入
         )
         .unwrap();
         let task = tokio::spawn(service.serve(listener));

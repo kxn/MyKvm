@@ -489,4 +489,63 @@ vnc_password = "filepass"
             }
         );
     }
+
+    #[test]
+    fn parse_cli_reads_all_flags_including_config_and_token() {
+        let cli = parse_cli_from(&[
+            "--camera",
+            "OBS",
+            "--tcp",
+            "6000",
+            "--http",
+            "7000",
+            "--fps",
+            "15",
+            "--serial",
+            "COM9",
+            "--baud",
+            "115200",
+            "--bind",
+            "0.0.0.0",
+            "--assets",
+            "assets",
+            "--config",
+            "my.toml",
+            "--token",
+            "secret",
+            "--vnc-password",
+            "abc12345",
+        ])
+        .unwrap();
+        assert_eq!(cli.camera_name, Some("OBS".to_string()));
+        assert_eq!(cli.assets_dir, Some(PathBuf::from("assets")));
+        assert_eq!(cli.tcp_port, Some(6000));
+        assert_eq!(cli.http_port, Some(7000));
+        assert_eq!(cli.frames_per_second, Some(15));
+        assert_eq!(cli.serial_path, Some("COM9".to_string()));
+        assert_eq!(cli.serial_baud, Some(115200));
+        assert_eq!(cli.bind_address, Some("0.0.0.0".to_string()));
+        assert_eq!(cli.config_path, Some(PathBuf::from("my.toml")));
+        assert_eq!(cli.token, Some("secret".to_string()));
+        assert_eq!(cli.vnc_password, Some("abc12345".to_string()));
+        assert!(!cli.list_cameras);
+    }
+
+    #[test]
+    fn parse_cli_errors_are_deterministic_chinese() {
+        let unknown = parse_cli_from(&["--nope"]).unwrap_err();
+        assert_eq!(unknown, "未知参数：--nope");
+
+        let missing_value = parse_cli_from(&["--camera"]).unwrap_err();
+        assert_eq!(missing_value, "--camera 需要一个名称参数");
+
+        let bad_port = parse_cli_from(&["--tcp", "not-a-port"]).unwrap_err();
+        assert!(bad_port.contains("无效端口"));
+    }
+
+    #[test]
+    fn list_cameras_flag_is_kept() {
+        let cli = parse_cli_from(&["--list-cameras"]).unwrap();
+        assert!(cli.list_cameras);
+    }
 }

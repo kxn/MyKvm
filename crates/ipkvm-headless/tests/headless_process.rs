@@ -80,6 +80,7 @@ impl HeadlessAssembly {
             RfbWebSocketConfig::default(),
             shutdown_rx.clone(),
             gate,
+            None, // auth：Task 5 接入 HTTP 鉴权后由调用方注入
         )
         .unwrap();
         let http_task = tokio::spawn(async move { web_service.serve(http_listener).await });

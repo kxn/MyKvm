@@ -25,7 +25,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use ipkvm_core::{Ch9329InputSink, MouseMode, SerialCommandQueue, fake_serial::FakeCommandQueue};
-use ipkvm_headless::rfb_connection::RfbConnectionGate;
+use ipkvm_headless::config::{self, Options};
+use ipkvm_headless::rfb_connection::{RfbConnectionGate, RfbConnectionSettings};
 use ipkvm_headless::rfb_input::{RfbInputPump, RfbInputRunError};
 use ipkvm_headless::rfb_tcp::{RfbTcpConfig, RfbTcpServer, RfbTcpServerError};
 use ipkvm_headless::rfb_ws::RfbWebSocketConfig;
@@ -43,122 +44,6 @@ use tokio::{
 
 /// 优雅关闭的等待上限。超时后强制退出，避免卡死的连接阻止进程结束。
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
-
-struct Options {
-    /// 显式 --assets：文件伪设备目录。
-    assets_dir: Option<PathBuf>,
-    /// 显式 --camera：按 id 或显示名打开的相机。
-    camera_name: Option<String>,
-    /// --list-cameras：枚举设备后立即退出。
-    list_cameras: bool,
-    /// --serial <路径>：CH9329 串口设备路径（如 COM9 / /dev/ttyUSB0），启用真实键鼠注入。
-    serial_path: Option<String>,
-    /// --baud <波特率>：CH9329 串口波特率，默认 9600（出厂值）。
-    serial_baud: u32,
-    bind_address: String,
-    tcp_port: u16,
-    http_port: u16,
-    frames_per_second: u64,
-}
-
-const USAGE: &str = "\
-用法：ipkvm-headless [--list-cameras] [--camera <名称>|--assets <目录>] \
-[--serial <串口> [--baud <波特率>]] [--bind <地址>] [--tcp <端口>] [--http <端口>] [--fps <帧率>]
-
-  --list-cameras   枚举视频采集设备并退出
-  --camera <名称>  按名称（id 或显示名）打开相机；与 --assets 互斥
-  --assets <目录>  存放 *.y4m 素材的目录（文件伪设备，按文件名排序循环）
-  --serial <串口>  CH9329 串口路径（如 COM9 / /dev/ttyUSB0），启用真实键鼠注入；
-                   不指定时键鼠事件进入模拟队列被丢弃
-  --baud <波特率>  CH9329 串口波特率，默认 9600（出厂值）
-  --bind <地址>    监听地址，默认 127.0.0.1
-  --tcp <端口>     RFB TCP 监听端口，默认 5900
-  --http <端口>    HTTP/noVNC 监听端口，默认 6080
-  --fps <帧率>     播放帧率，默认 10
-";
-
-/// 未指定任何视频参数时默认打开枚举到的第一台相机。
-fn parse_args() -> Result<Options, String> {
-    let mut options = Options {
-        assets_dir: None,
-        camera_name: None,
-        list_cameras: false,
-        serial_path: None,
-        serial_baud: 9600,
-        bind_address: "127.0.0.1".to_string(),
-        tcp_port: 5900,
-        http_port: 6080,
-        frames_per_second: 10,
-    };
-
-    let mut args = std::env::args().skip(1);
-    while let Some(argument) = args.next() {
-        match argument.as_str() {
-            "--list-cameras" => options.list_cameras = true,
-            "--camera" => {
-                options.camera_name = Some(
-                    args.next()
-                        .ok_or_else(|| "--camera 需要一个名称参数".to_string())?,
-                );
-            }
-            "--assets" => {
-                options.assets_dir = Some(PathBuf::from(
-                    args.next()
-                        .ok_or_else(|| "--assets 需要一个目录参数".to_string())?,
-                ));
-            }
-            "--bind" => {
-                options.bind_address = args
-                    .next()
-                    .ok_or_else(|| "--bind 需要一个地址参数".to_string())?;
-            }
-            "--tcp" => {
-                options.tcp_port = args
-                    .next()
-                    .ok_or_else(|| "--tcp 需要一个端口参数".to_string())?
-                    .parse()
-                    .map_err(|error| format!("无效端口：{error}"))?;
-            }
-            "--http" => {
-                options.http_port = args
-                    .next()
-                    .ok_or_else(|| "--http 需要一个端口参数".to_string())?
-                    .parse()
-                    .map_err(|error| format!("无效端口：{error}"))?;
-            }
-            "--fps" => {
-                options.frames_per_second = args
-                    .next()
-                    .ok_or_else(|| "--fps 需要一个帧率参数".to_string())?
-                    .parse()
-                    .map_err(|error| format!("无效帧率：{error}"))?;
-            }
-            "--serial" => {
-                options.serial_path = Some(
-                    args.next()
-                        .ok_or_else(|| "--serial 需要一个串口路径参数".to_string())?,
-                );
-            }
-            "--baud" => {
-                options.serial_baud = args
-                    .next()
-                    .ok_or_else(|| "--baud 需要一个波特率参数".to_string())?
-                    .parse()
-                    .map_err(|error| format!("无效波特率：{error}"))?;
-            }
-            "--help" | "-h" => {
-                print!("{USAGE}");
-                std::process::exit(0);
-            }
-            other => return Err(format!("未知参数：{other}")),
-        }
-    }
-
-    if options.assets_dir.is_some() && options.camera_name.is_some() {
-        return Err("--assets 与 --camera 互斥，只能指定其中一个".to_string());
-    }
-    Ok(options)
-}
 
 fn load_assets(directory: &PathBuf) -> Result<Vec<Y4mAsset>, String> {
     let mut paths = Vec::new();
@@ -285,11 +170,31 @@ where
 
 #[tokio::main]
 async fn main() {
-    let options = match parse_args() {
-        Ok(options) => options,
+    let cli = match config::parse_cli() {
+        Ok(cli) => cli,
         Err(error) => {
             eprintln!("参数错误：{error}");
-            eprint!("{USAGE}");
+            eprint!("{}", config::USAGE);
+            std::process::exit(2);
+        }
+    };
+    let file = match cli
+        .config_path
+        .as_deref()
+        .map(config::load_config)
+        .transpose()
+    {
+        Ok(file) => file,
+        Err(error) => {
+            eprintln!("{error}");
+            std::process::exit(1);
+        }
+    };
+    let options = match config::resolve(cli, file) {
+        Ok(options) => options,
+        Err(error) => {
+            eprintln!("配置错误：{error}");
+            eprint!("{}", config::USAGE);
             std::process::exit(2);
         }
     };
@@ -366,11 +271,28 @@ async fn run(
         })
     };
 
+    // 鉴权注入：VNC 密码（若有）同时作用于 TCP 与 WS 两条 RFB 传输，
+    // 未配置时保持 RfbSecurity::None（连接闸门侧按本机回环限制来源）。
+    let security = config::vnc_security(options.vnc_password.as_deref());
+    let tcp_config = RfbTcpConfig {
+        connection: RfbConnectionSettings {
+            security: security.clone(),
+            ..RfbConnectionSettings::default()
+        },
+        ..RfbTcpConfig::default()
+    };
+    let ws_config = RfbWebSocketConfig {
+        connection: RfbConnectionSettings {
+            security,
+            ..RfbConnectionSettings::default()
+        },
+    };
+
     let tcp_server = RfbTcpServer::new(
         tcp_listener,
         std::sync::Arc::clone(&source),
         event_tx.clone(),
-        RfbTcpConfig::default(),
+        tcp_config,
         gate.clone(),
     )?;
     let tcp_shutdown = shutdown_rx.clone();
@@ -379,15 +301,27 @@ async fn run(
     let web_service = HeadlessWebService::new(
         source,
         event_tx,
-        RfbWebSocketConfig::default(),
+        ws_config,
         shutdown_rx.clone(),
         gate,
+        None, // auth：HTTP/WS 鉴权由 Task 5 接入，届时注入 options.token
     )?;
     let mut http_task = tokio::spawn(async move { web_service.serve(http_listener).await });
 
     let mut ctrl_c = tokio::spawn(async move {
         let _ = tokio::signal::ctrl_c().await;
     });
+
+    if options.token.is_some() {
+        println!("HTTP 鉴权：已启用（Bearer/cookie/query token）");
+    } else {
+        println!("HTTP 鉴权：未配置 token，仅允许本机来源访问");
+    }
+    if options.vnc_password.is_some() {
+        println!("RFB 鉴权：已启用（VNC 密码挑战）");
+    } else {
+        println!("RFB 鉴权：未配置 VNC 密码，TCP 仅允许本机来源连接");
+    }
 
     println!(
         "ipkvm-headless 已启动：RFB TCP 监听 {tcp_local}，noVNC 网页 http://{http_local}（Ctrl+C 退出）"

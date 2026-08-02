@@ -46,12 +46,15 @@ pub enum HeadlessWebServiceError {
 }
 
 impl<S: FrameSource + ?Sized + 'static> HeadlessWebService<S> {
+    /// `auth` 为 `[auth] token`（HTTP/WS 鉴权）；`None` 表示仅允许本机来源。
+    /// 中间件逻辑由 Task 5 接入，当前调用方统一传 `None`。
     pub fn new(
         frame_source: Arc<S>,
         event_tx: mpsc::Sender<RfbServerEvent>,
         config: RfbWebSocketConfig,
         shutdown: watch::Receiver<bool>,
         gate: RfbConnectionGate,
+        _auth: Option<String>,
     ) -> Result<Self, HeadlessWebServiceError> {
         let api = Arc::new(ApiState {
             frame_source: Arc::clone(&frame_source),
