@@ -160,7 +160,7 @@ async fn looping_source_announces_desktop_size_over_real_tcp() {
 }
 
 fn bgra_frame(seq: u64, width: u32, height: u32, luminance: u8) -> Arc<VideoFrame> {
-    let pixels = vec![luminance, luminance, luminance, 0xff].repeat((width * height) as usize);
+    let pixels = [luminance, luminance, luminance, 0xff].repeat((width * height) as usize);
     Arc::new(VideoFrame::new(
         seq,
         MonotonicTimestamp::from_nanos(seq),

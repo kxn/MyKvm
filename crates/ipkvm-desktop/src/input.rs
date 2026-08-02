@@ -231,7 +231,7 @@ pub fn throttle_elapsed(
     last: Option<std::time::Instant>,
     interval: std::time::Duration,
 ) -> bool {
-    last.map_or(true, |last| now.duration_since(last) >= interval)
+    last.is_none_or(|last| now.duration_since(last) >= interval)
 }
 
 #[cfg(test)]
