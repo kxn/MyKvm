@@ -13,6 +13,7 @@ use axum::{
 };
 use ipkvm_core::InputSink;
 use ipkvm_session::session_manager::{SessionManager, SessionState};
+use ipkvm_session::console_session::InputOfflineInfo;
 use ipkvm_video::{FrameSource, PixelFormat, VideoFrame, VideoSourceKind};
 use serde::Deserialize;
 use thiserror::Error;
@@ -28,6 +29,8 @@ use ipkvm_session::rfb_connection::{RfbConnectionGate, RfbServerEvent, RfbTransp
 
 const CONTENT_TYPE_OPTIONS: &str = "x-content-type-options";
 const JPEG_QUALITY: u8 = 85;
+/// 视频断流判定阈值：超过该时长无新帧视为 stalled（与桌面端无信号阈值一致）。
+const VIDEO_STALL_TIMEOUT_NS: u64 = 2_000_000_000;
 
 pub struct HeadlessWebService<I: InputSink + Clone + Send + 'static> {
     rfb: RfbWebSocketService<SwitchableFrameSource>,
@@ -204,6 +207,7 @@ struct ServiceStatus {
 struct VideoStatus {
     source: SourceStatus,
     frame: Option<FrameStatus>,
+    stalled: bool,
 }
 
 #[derive(serde::Serialize)]
@@ -219,6 +223,8 @@ struct FrameStatus {
     height: u32,
     pixel_format: &'static str,
     seq: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_frame_ns: Option<u64>,
 }
 
 #[derive(serde::Serialize)]
@@ -240,12 +246,29 @@ struct SessionStatus {
     dropped_frames: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     serial: Option<SerialStatsDto>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    input_offline: Option<InputOfflineDto>,
 }
 
 #[derive(serde::Serialize)]
 struct SerialStatsDto {
     batches_accepted: u64,
     frames_accepted: u64,
+}
+
+#[derive(serde::Serialize)]
+struct InputOfflineDto {
+    reason: String,
+    since_ns: u64,
+}
+
+impl From<&InputOfflineInfo> for InputOfflineDto {
+    fn from(info: &InputOfflineInfo) -> Self {
+        Self {
+            reason: info.reason.clone(),
+            since_ns: info.since_ns,
+        }
+    }
 }
 
 impl From<ipkvm_session::serial_stats::SerialStats> for SerialStatsDto {
@@ -280,11 +303,12 @@ async fn api_status<I: InputSink + Clone + Send + 'static>(
         },
     };
     // 会话统计：短暂持锁读取后立即 clone（守卫不可跨 await）。
-    let (session_state, input_events, last_input_ns, dropped_frames, serial) = {
+    let (session_state, input_events, last_input_ns, dropped_frames, serial, last_frame_ns, input_offline) = {
         let mut manager = state.manager.lock().await;
         manager.refresh_stats();
         let state_name = session_state_name(manager.state());
-        let (input_events, last_input_ns, dropped_frames, serial) = match manager.session() {
+        let (input_events, last_input_ns, dropped_frames, serial, last_frame_ns, input_offline) =
+            match manager.session() {
             Some(session) => {
                 let stats = session.stats();
                 (
@@ -292,9 +316,11 @@ async fn api_status<I: InputSink + Clone + Send + 'static>(
                     stats.last_input_ns,
                     stats.dropped_frames,
                     stats.serial.map(SerialStatsDto::from),
+                    stats.last_frame_ns,
+                    stats.input_offline.as_ref().map(InputOfflineDto::from),
                 )
             }
-            None => (0, None, 0, None),
+            None => (0, None, 0, None, None, None),
         };
         (
             state_name,
@@ -302,7 +328,16 @@ async fn api_status<I: InputSink + Clone + Send + 'static>(
             last_input_ns,
             dropped_frames,
             serial,
+            last_frame_ns,
+            input_offline,
         )
+    };
+    let now_ns = ipkvm_session::now_ns();
+    let stalled = match &frame {
+        Some(_) => last_frame_ns
+            .map(|last| now_ns.saturating_sub(last) > VIDEO_STALL_TIMEOUT_NS)
+            .unwrap_or(true),
+        None => session_state != "absent",
     };
     let status = StatusResponse {
         service: ServiceStatus {
@@ -320,7 +355,9 @@ async fn api_status<I: InputSink + Clone + Send + 'static>(
                 height: frame.height,
                 pixel_format: pixel_format_name(frame.pixel_format),
                 seq: frame.seq,
+                last_frame_ns,
             }),
+            stalled,
         },
         controller,
         session: SessionStatus {
@@ -329,6 +366,7 @@ async fn api_status<I: InputSink + Clone + Send + 'static>(
             last_input_ns,
             dropped_frames,
             serial,
+            input_offline,
         },
     };
     let body = serde_json::to_vec(&status).expect("status serialization cannot fail");
