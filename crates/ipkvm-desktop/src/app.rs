@@ -587,20 +587,7 @@ impl DesktopApp {
             let dx = dx_points * (frame.width as f32 / video_rect.width());
             let dy = dy_points * (frame.height as f32 / video_rect.height());
             let (dx, dy) = crate::input::accumulate_delta(&mut self.relative_remainder, dx, dy);
-            let wheel = response.ctx.input(|input| {
-                let total: i32 = input
-                    .events
-                    .iter()
-                    .filter_map(|event| {
-                        if let egui::Event::MouseWheel { unit, delta, .. } = event {
-                            Some(i32::from(crate::input::wheel_steps(*unit, delta.y)))
-                        } else {
-                            None
-                        }
-                    })
-                    .sum();
-                total.clamp(i32::from(i8::MIN), i32::from(i8::MAX)) as i8
-            });
+            let wheel = self.wheel_steps_from_events(response);
             if dx != 0 || dy != 0 || wheel != 0 || mask != self.pointer_mask {
                 if let Err(error) = self.session.send_pointer_relative(mask, dx, dy, wheel) {
                     self.status_message = Some(format!("指针发送失败：{error}"));
@@ -613,6 +600,12 @@ impl DesktopApp {
         {
             if let Err(error) = self.session.send_pointer(mask, x, y, frame) {
                 self.status_message = Some(format!("指针发送失败：{error}"));
+            }
+            let wheel = self.wheel_steps_from_events(response);
+            if wheel != 0 {
+                if let Err(error) = self.session.send_pointer_relative(mask, 0, 0, wheel) {
+                    self.status_message = Some(format!("滚轮发送失败：{error}"));
+                }
             }
             self.last_pointer = Some((x, y));
             self.pointer_mask = mask;
@@ -653,6 +646,24 @@ impl DesktopApp {
                 }
             }
         }
+    }
+
+    /// 汇总本帧滚轮事件为滚轮步数（egui Line/Page 直接取整，Point 按 50 点一步）。
+    fn wheel_steps_from_events(&self, response: &egui::Response) -> i8 {
+        response.ctx.input(|input| {
+            let total: i32 = input
+                .events
+                .iter()
+                .filter_map(|event| {
+                    if let egui::Event::MouseWheel { unit, delta, .. } = event {
+                        Some(i32::from(crate::input::wheel_steps(*unit, delta.y)))
+                    } else {
+                        None
+                    }
+                })
+                .sum();
+            total.clamp(i32::from(i8::MIN), i32::from(i8::MAX)) as i8
+        })
     }
 
     fn send_key_action(&mut self, action: KeyAction) {
