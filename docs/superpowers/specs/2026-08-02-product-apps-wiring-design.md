@@ -42,6 +42,8 @@ ipkvm-core / ipkvm-rfb / ipkvm-video
 
 ## 阶段 1：session 归位（行为不变，测试不破）
 
+> **状态：已实现**（issue #30，2026-08-02 完成）
+
 ### 搬入 session（从 headless，机械搬迁 + import 路径调整）
 
 - `rfb_connection` 模块：驱动、事件模型 `RfbServerEvent`、`RfbConnectionGate` 仲裁、`RfbTransportKind` 等（约 1400 行）——传输无关，desktop 也要用仲裁。
