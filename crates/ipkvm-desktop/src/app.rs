@@ -63,6 +63,7 @@ struct DesktopApp {
     pending_relative: (i16, i16, i8),
     last_pointer_sent: Option<(u8, u16, u16)>,
     last_pointer_sent_at: Option<Instant>,
+    frame_repaint_task: Option<tokio::task::JoinHandle<()>>,
     video_focused: bool,
     paste_busy: bool,
     status_message: Option<String>,
@@ -101,6 +102,7 @@ impl DesktopApp {
             pending_relative: (0, 0, 0),
             last_pointer_sent: None,
             last_pointer_sent_at: None,
+            frame_repaint_task: None,
             video_focused: false,
             paste_busy: false,
             status_message: None,
@@ -140,6 +142,9 @@ impl DesktopApp {
             self.pending_relative = (0, 0, 0);
             self.last_pointer_sent = None;
             self.last_pointer_sent_at = None;
+            if let Some(task) = self.frame_repaint_task.take() {
+                task.abort();
+            }
         }
     }
 
@@ -294,7 +299,7 @@ impl DesktopApp {
                     .add_enabled(can_connect, egui::Button::new("连接"))
                     .clicked()
                 {
-                    if let Err(error) = self.connect() {
+                    if let Err(error) = self.connect(ctx) {
                         self.status_message = Some(format!("连接失败：{error}"));
                     }
                 }
@@ -371,7 +376,7 @@ impl DesktopApp {
         }
     }
 
-    fn connect(&mut self) -> Result<(), DesktopSessionError> {
+    fn connect(&mut self, ctx: &egui::Context) -> Result<(), DesktopSessionError> {
         if self.selection.advanced.auto_baud
             && let Some(control_id) = self.selection.selected_control_id.clone()
             && let Some(baud) = crate::probe::detect_baud_rate(&control_id, BAUD_PROBE_TIMEOUT)
@@ -393,6 +398,10 @@ impl DesktopApp {
                 self.pending_relative = (0, 0, 0);
                 self.last_pointer_sent = None;
                 self.last_pointer_sent_at = None;
+                if let Some(task) = self.frame_repaint_task.take() {
+                    task.abort();
+                }
+                self.frame_repaint_task = self.session.spawn_frame_repainter(ctx.clone());
                 Ok(())
             }
             Err(error) => Err(error),
@@ -409,7 +418,7 @@ impl DesktopApp {
         })
     }
 
-    fn toggle_mouse_mode(&mut self) {
+    fn toggle_mouse_mode(&mut self, ctx: &egui::Context) {
         self.selection.advanced.mouse_mode = match self.selection.advanced.mouse_mode {
             MouseMode::Absolute => MouseMode::Relative,
             MouseMode::Relative => MouseMode::Absolute,
@@ -417,7 +426,7 @@ impl DesktopApp {
         if let Err(error) = self.session.release_all() {
             self.status_message = Some(format!("释放输入失败：{error}"));
         }
-        match self.connect() {
+        match self.connect(ctx) {
             Ok(()) => {
                 self.status_message = Some(format!(
                     "已切换为{}鼠标",
@@ -544,7 +553,7 @@ impl DesktopApp {
                 .ctx
                 .input(|input| input.events.iter().any(crate::input::is_mode_toggle_combo));
             if toggle_requested {
-                self.toggle_mouse_mode();
+                self.toggle_mouse_mode(&response.ctx);
                 return;
             }
         }
@@ -815,6 +824,9 @@ impl DesktopApp {
         self.pending_relative = (0, 0, 0);
         self.last_pointer_sent = None;
         self.last_pointer_sent_at = None;
+        if let Some(task) = self.frame_repaint_task.take() {
+            task.abort();
+        }
         self.last_frame_seq = None;
         self.last_frame_at = None;
     }
