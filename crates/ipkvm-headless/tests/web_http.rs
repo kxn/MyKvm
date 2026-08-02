@@ -572,6 +572,8 @@ async fn api_status_reports_video_and_controller() {
     assert_eq!(status["video"]["frame"]["height"], 1);
     assert_eq!(status["video"]["frame"]["pixel_format"], "bgra8888");
     assert_eq!(status["video"]["frame"]["seq"], 1);
+    assert_eq!(status["video"]["stalled"], false);
+    assert!(status["video"]["frame"]["last_frame_ns"].is_number());
     assert_eq!(status["controller"]["active"], false);
     assert!(status["controller"]["client_id"].is_null());
     assert!(status["controller"]["transport"].is_null());
@@ -585,6 +587,10 @@ async fn api_status_reports_video_and_controller() {
     assert!(
         status["session"].get("last_input_ns").is_none(),
         "无输入时 last_input_ns 不应序列化"
+    );
+    assert!(
+        status["session"].get("input_offline").is_none(),
+        "会话正常时 input_offline 不应序列化"
     );
 
     server.stop().await;
