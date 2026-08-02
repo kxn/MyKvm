@@ -57,7 +57,9 @@ impl DesktopApp {
     fn new() -> Self {
         let mut app = Self::empty();
         let mut selection = app.selection.clone();
-        refresh_detection(&mut selection, &mut app.probe, PROBE_TIMEOUT);
+        if let Err(error) = refresh_detection(&mut selection, &mut app.probe, PROBE_TIMEOUT) {
+            eprintln!("warning: 初始设备枚举失败：{error}");
+        }
         app.selection = selection;
         app
     }
@@ -244,8 +246,15 @@ impl DesktopApp {
             ui.horizontal(|ui| {
                 if ui.button("刷新检测").clicked() {
                     let mut selection = self.selection.clone();
-                    refresh_detection(&mut selection, &mut self.probe, PROBE_TIMEOUT);
-                    self.selection = selection;
+                    match refresh_detection(&mut selection, &mut self.probe, PROBE_TIMEOUT) {
+                        Ok(()) => {
+                            self.selection = selection;
+                            self.status_message = None;
+                        }
+                        Err(error) => {
+                            self.status_message = Some(format!("设备枚举失败：{error}"));
+                        }
+                    }
                 }
                 let can_connect = self.selection.can_connect();
                 if ui
