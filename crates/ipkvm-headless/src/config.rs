@@ -24,7 +24,7 @@ pub const USAGE: &str = "\
   --http <端口>    HTTP/noVNC 监听端口，默认 6080
   --fps <帧率>     播放帧率，默认 10
   --config <路径>  读取 TOML 配置文件；CLI 参数覆盖文件字段（CLI > 文件 > 默认）
-  --token <token>  [auth] HTTP/WS 鉴权 token（非空 ASCII）；未配置时仅允许本机访问
+  --token <token>  [auth] HTTP/WS 鉴权 token（非空，仅含字母数字与 - _ . ~）；未配置时仅允许本机访问
   --vnc-password <密码>
                    [auth] RFB VNC 密码（1-8 个 ASCII 字符）；未配置时 TCP 仅允许本机连接
 ";
@@ -134,11 +134,16 @@ pub fn resolve(cli: CliOptions, file: Option<FileConfig>) -> Result<Options, Str
         .token
         .clone()
         .or_else(|| auth.and_then(|a| a.token.clone()));
-    if token
-        .as_ref()
-        .is_some_and(|token| token.is_empty() || !token.is_ascii())
-    {
-        return Err("[auth] token 必须为非空 ASCII 字符串".to_string());
+    if token.as_ref().is_some_and(|token| {
+        token.is_empty()
+            || !token
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '~'))
+    }) {
+        return Err(
+            "[auth] token 只能包含字母、数字和 - _ . ~（RFC 3986 无保留字符），当前包含非法字符"
+                .to_string(),
+        );
     }
     let vnc_password = cli
         .vnc_password
@@ -431,21 +436,24 @@ vnc_password = "filepass"
     }
 
     #[test]
-    fn token_must_be_non_empty_ascii() {
-        for token in ["", "密abc"] {
+    fn token_must_be_non_empty_unreserved_ascii() {
+        // 空串、非 ASCII 与 URL 保留字符（空格/&/#/%= 等）均拒绝。
+        for token in ["", "密abc", "a b", "a&b", "a#b", "a%b", "a=b"] {
             let file = file_config(&format!("[auth]\ntoken = \"{token}\"\n"));
             let error = resolve(CliOptions::default(), Some(file)).unwrap_err();
             assert!(
-                error.contains("非空 ASCII"),
+                error.contains("无保留字符"),
                 "token {token:?} 报错：{error}"
             );
         }
-        // token 不设长度上限（HTTP 凭证）。
-        let cli = CliOptions {
-            token: Some("a".repeat(32)),
-            ..CliOptions::default()
-        };
-        assert_eq!(resolve(cli, None).unwrap().token, Some("a".repeat(32)));
+        // token 不设长度上限（HTTP 凭证），且只允许无保留字符（ALPHA/DIGIT/-_.~）。
+        for token in ["a".repeat(32), "abc-_.~123".to_string()] {
+            let cli = CliOptions {
+                token: Some(token.clone()),
+                ..CliOptions::default()
+            };
+            assert_eq!(resolve(cli, None).unwrap().token, Some(token));
+        }
     }
 
     #[test]

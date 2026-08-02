@@ -114,7 +114,7 @@ serial = "COM9"
 baud = 9600
 
 [auth]
-token = "..."                    # 可选；HTTP/WS 鉴权 token（非空 ASCII）
+token = "..."                    # 可选；HTTP/WS 鉴权 token（非空，仅含字母数字与 - _ . ~）
 vnc_password = "abc12345"        # 可选；RFB VNC 密码（1-8 个 ASCII 字符）
 ```
 
@@ -122,7 +122,7 @@ vnc_password = "abc12345"        # 可选；RFB VNC 密码（1-8 个 ASCII 字�
 
 `token` 与 `vnc_password` 独立，分别管两个入口：
 
-- `--token` / `[auth] token`：HTTP 与 WebSocket（含 `/rfb` 升级）凭证，必须为非空 ASCII 字符串。启用后所有请求（含本机）必须带 `Authorization: Bearer <token>`、cookie `ipkvm_token=<token>` 或 query 参数 `?token=<token>` 之一。浏览器首次访问 `http://host:6080/?token=xxx` 即可：页面自动把 query token 拼到 WebSocket 地址，并在放行后换得 cookie。
+- `--token` / `[auth] token`：HTTP 与 WebSocket（含 `/rfb` 升级）凭证，必须为非空、仅含 RFC 3986 无保留字符（字母数字、`- _ . ~`）的字符串。启用后所有请求（含本机）必须带 `Authorization: Bearer <token>`、cookie `ipkvm_token=<token>` 或 query 参数 `?token=<token>` 之一。浏览器首次访问 `http://host:6080/?token=xxx` 即可：页面自动把 query token 拼到 WebSocket 地址，并在放行后换得 cookie。
 - `--vnc-password` / `[auth] vnc_password`：RFB TCP 入口的 VNC 密码挑战，长度 1-8 个 ASCII 字符（RFC 6143 密码上限 8 字节）。标准 VNC 客户端（含 vncdotool）用该密码连接。
 - 未配置 token 时 HTTP/WS 仅放行本机来源（防默认暴露）；未配置 vnc_password 时 RFB TCP 仅允许本机连接。两个入口都支持通过 `--bind` 扩大监听范围，但鉴权凭证是独立维度。
 

@@ -94,7 +94,7 @@ serial = "COM9"
 baud = 9600
 
 [auth]
-token = "..."                    # 可选；HTTP/WS 鉴权 token（非空 ASCII），配置了才启用
+token = "..."                    # 可选；HTTP/WS 鉴权 token（非空、仅含 RFC 3986 无保留字符），配置了才启用
 vnc_password = "abc12345"        # 可选；RFB VNC 密码（1-8 个 ASCII 字符），配置了才启用
 ```
 
@@ -118,7 +118,7 @@ vnc_password = "abc12345"        # 可选；RFB VNC 密码（1-8 个 ASCII 字�
 > **状态：已实现**（issue #31）
 
 - 配置 `[auth] token` 则启用；未配置默认拒绝非 `127.0.0.1` 来源（防默认暴露）。
-- `token` 管 HTTP/WS 凭证，`vnc_password`（1-8 个 ASCII 字符）管 RFB VNC 密码挑战，两者独立。
+- `token`（非空、仅含 RFC 3986 无保留字符——字母数字与 `-_.~`，保证 query 通道免百分号编码）管 HTTP/WS 凭证，`vnc_password`（1-8 个 ASCII 字符）管 RFB VNC 密码挑战，两者独立。
 - HTTP：`Authorization: Bearer <token>` 或 cookie；RFB TCP 与 WS 同样校验（VNC 密码/WS token）。
 - 统一在传输层前的一个中间件/包装点做，不散落在每个路由。
 
