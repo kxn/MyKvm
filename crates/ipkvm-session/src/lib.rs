@@ -4,6 +4,7 @@ pub mod console_session;
 pub mod devices;
 pub mod rfb_connection;
 pub mod rfb_input;
+pub mod session_manager;
 
 use ipkvm_core::MouseMode;
 use ipkvm_video::{PixelFormat, VideoFormat};
