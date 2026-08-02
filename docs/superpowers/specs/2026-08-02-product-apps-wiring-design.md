@@ -52,8 +52,8 @@ ipkvm-core / ipkvm-rfb / ipkvm-video
 ### session 新增
 
 - `devices` 模块：视频设备枚举（封装 `list_cameras`）+ 串口枚举（`serialport::available_ports`，新增依赖，随 serial feature）。
-- `SessionManager`：会话创建/重启/停止——重启 = 只重建帧源+串口+输入泵，传输层不动；供 headless 的 `/api/session` 与 desktop 的设备切换共用。
-- `ConsoleSession`：从空壳变为真实组装器（帧源 + 串口 + 输入泵 + gate），`start(config) → SessionHandle`（可停止）。
+- `SessionManager`：会话创建/重启/停止——#30 内 `restart()` = `stop()` → 等待旧泵释放屏障 → `start()`（泵级无竞态重启）；帧源/串口设备重建由阶段 2 `/api/session` 接线实现。供 headless 的 `/api/session` 与 desktop 的设备切换共用。
+- `ConsoleSession`：从空壳变为真实组装器（帧源 + 输入 sink + 输入泵 + gate + 事件出口）；`start() → SessionHandle`（#30 中为占位标记，句柄式控制随 #32 接线）；`stop()` 用 watch 停止信号停泵并 `release_all`，不依赖传输层持有的事件发送端释放。
 - 会话状态：输入统计、最后输入时间、丢帧计数、串口统计（给 `/api/status` 扩展）。
 
 ### headless 侧
