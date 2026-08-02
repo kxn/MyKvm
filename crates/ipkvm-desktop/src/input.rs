@@ -34,17 +34,6 @@ pub enum KeyAction {
 pub enum SpecialKey {
     CtrlAltDel,
     Escape,
-    F(u8),
-    Insert,
-    Delete,
-    Home,
-    End,
-    PageUp,
-    PageDown,
-    ArrowLeft,
-    ArrowUp,
-    ArrowRight,
-    ArrowDown,
 }
 
 fn press(keysym: u32) -> Vec<KeyAction> {
@@ -63,17 +52,6 @@ pub fn special_key_sequence(key: SpecialKey) -> Vec<KeyAction> {
             KeyAction::Up(XK_CONTROL_L),
         ],
         SpecialKey::Escape => press(XK_ESCAPE),
-        SpecialKey::F(n) => press(XK_F1 + n.saturating_sub(1) as u32),
-        SpecialKey::Insert => press(XK_INSERT),
-        SpecialKey::Delete => press(XK_DELETE),
-        SpecialKey::Home => press(XK_HOME),
-        SpecialKey::End => press(XK_END),
-        SpecialKey::PageUp => press(XK_PAGE_UP),
-        SpecialKey::PageDown => press(XK_PAGE_DOWN),
-        SpecialKey::ArrowLeft => press(XK_LEFT),
-        SpecialKey::ArrowUp => press(XK_UP),
-        SpecialKey::ArrowRight => press(XK_RIGHT),
-        SpecialKey::ArrowDown => press(XK_DOWN),
     }
 }
 
@@ -274,18 +252,6 @@ mod tests {
                 KeyAction::Up(XK_ALT_L),
                 KeyAction::Up(XK_CONTROL_L),
             ]
-        );
-    }
-
-    #[test]
-    fn function_keys_use_x11_keysym_range() {
-        assert_eq!(
-            special_key_sequence(SpecialKey::F(1))[0],
-            KeyAction::Down(0xffbe)
-        );
-        assert_eq!(
-            special_key_sequence(SpecialKey::F(12))[0],
-            KeyAction::Down(0xffc9)
         );
     }
 

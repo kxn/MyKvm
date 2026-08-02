@@ -70,6 +70,8 @@ struct DesktopApp {
     paste_busy: bool,
     status_message: Option<String>,
     showing_device_dialog: bool,
+    show_special_keys: bool,
+    show_advanced: bool,
     last_frame_seq: Option<u64>,
     last_frame_at: Option<Instant>,
 }
@@ -111,6 +113,8 @@ impl DesktopApp {
             paste_busy: false,
             status_message: None,
             showing_device_dialog: true,
+            show_special_keys: false,
+            show_advanced: false,
             last_frame_seq: None,
             last_frame_at: None,
         }
@@ -130,6 +134,38 @@ impl DesktopApp {
         }
         let status = egui::TopBottomPanel::bottom("status").show(ctx, |ui| self.status_bar(ui));
         self.status_chrome = status.response.rect.height();
+
+        if self.show_special_keys {
+            egui::Modal::new(egui::Id::new("special_keys_modal")).show(ctx, |ui| {
+                ui.set_min_width(240.0);
+                ui.heading("发送特殊键");
+                ui.add_space(8.0);
+                ui.label("其余按键可直接用键盘发送。");
+                ui.add_space(8.0);
+                if ui.button("Ctrl+Alt+Del").clicked() {
+                    self.send_special(SpecialKey::CtrlAltDel);
+                }
+                if ui.button("Esc").clicked() {
+                    self.send_special(SpecialKey::Escape);
+                }
+                ui.add_space(8.0);
+                if ui.button("关闭").clicked() {
+                    self.show_special_keys = false;
+                }
+            });
+        }
+        if self.show_advanced {
+            egui::Modal::new(egui::Id::new("advanced_modal")).show(ctx, |ui| {
+                ui.set_min_width(320.0);
+                ui.heading("高级设置");
+                ui.add_space(8.0);
+                self.advanced_ui(ui);
+                ui.add_space(8.0);
+                if ui.button("关闭").clicked() {
+                    self.show_advanced = false;
+                }
+            });
+        }
     }
 
     /// 控制设备离线时的状态同步：标记离线并复位所有输入/粘贴 UI 状态，
@@ -208,9 +244,9 @@ impl DesktopApp {
                     ui.close();
                 }
             });
-            ui.menu_button("高级设置", |ui| {
-                self.advanced_ui(ui);
-            });
+            if ui.button("高级设置…").clicked() {
+                self.show_advanced = true;
+            }
         });
     }
 
@@ -241,34 +277,10 @@ impl DesktopApp {
                 egui::Button::new("截图保存（当前平台暂不支持保存对话框）"),
             );
         }
-        ui.menu_button("发送特殊键", |ui| {
-            for (label, key) in [
-                ("Ctrl+Alt+Del", SpecialKey::CtrlAltDel),
-                ("Esc", SpecialKey::Escape),
-                ("Insert", SpecialKey::Insert),
-                ("Delete", SpecialKey::Delete),
-                ("Home", SpecialKey::Home),
-                ("End", SpecialKey::End),
-                ("PageUp", SpecialKey::PageUp),
-                ("PageDown", SpecialKey::PageDown),
-                ("←", SpecialKey::ArrowLeft),
-                ("↑", SpecialKey::ArrowUp),
-                ("→", SpecialKey::ArrowRight),
-                ("↓", SpecialKey::ArrowDown),
-            ] {
-                if ui.button(label).clicked() {
-                    self.send_special(key);
-                    ui.close();
-                }
-            }
-            ui.separator();
-            for n in 1..=12 {
-                if ui.button(format!("F{n}")).clicked() {
-                    self.send_special(SpecialKey::F(n));
-                    ui.close();
-                }
-            }
-        });
+        if ui.button("发送特殊键…").clicked() {
+            self.show_special_keys = true;
+            ui.close();
+        }
     }
 
     fn device_dialog(&mut self, ctx: &egui::Context) {
