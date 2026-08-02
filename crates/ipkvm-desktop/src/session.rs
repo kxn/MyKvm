@@ -231,6 +231,14 @@ where
         })
     }
 
+    /// 在线切换鼠标模式（不经重连，UI 与 CH9329 sink 原子一致）。
+    pub fn set_mouse_mode(&self, mode: MouseMode) -> Result<(), DesktopSessionError> {
+        self.send_event(RfbServerEvent::SetMouseMode {
+            client_id: RfbClientId::local_desktop(),
+            mode,
+        })
+    }
+
     /// 粘贴文本：以 CutText 进入文本键入服务。
     pub fn paste_text(&self, text: String) -> Result<(), DesktopSessionError> {
         self.send_event(RfbServerEvent::CutText {
@@ -358,11 +366,13 @@ mod tests {
     struct Recorded {
         key_batches: usize,
         pointer_batches: usize,
+        mouse_mode_calls: usize,
         release_count: usize,
     }
 
     impl InputSink for RecordingSink {
         fn set_mouse_mode(&mut self, _mode: MouseMode) -> InputResult<()> {
+            self.recorded.lock().unwrap().mouse_mode_calls += 1;
             Ok(())
         }
 
@@ -636,6 +646,20 @@ mod tests {
             .spawn_frame_repainter(eframe::egui::Context::default())
             .expect("connected session must expose frame watcher");
         task.abort();
+        controller.stop().unwrap();
+    }
+
+    #[test]
+    fn set_mouse_mode_reaches_sink() {
+        let (mut controller, sink) = controller_with_sink();
+        controller.connect(request()).unwrap();
+
+        controller.set_mouse_mode(MouseMode::Absolute).unwrap();
+
+        wait_until(
+            || sink.recorded.lock().unwrap().mouse_mode_calls == 1,
+            "set_mouse_mode 未到达记录型 sink",
+        );
         controller.stop().unwrap();
     }
 }

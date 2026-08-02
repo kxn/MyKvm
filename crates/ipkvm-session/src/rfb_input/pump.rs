@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 
-use ipkvm_core::{FramebufferSize, InputError, InputSink};
+use ipkvm_core::{FramebufferSize, InputError, InputSink, MouseMode};
 use ipkvm_rfb::RfbRectangle;
 use thiserror::Error;
 use tokio::sync::{mpsc, watch};
@@ -72,6 +72,10 @@ pub enum RfbInputNotice {
         peer_addr: SocketAddr,
         reason: RfbControllerReleaseReason,
     },
+    MouseModeChanged {
+        client_id: RfbClientId,
+        mode: MouseMode,
+    },
 }
 
 impl From<TextInputNotice> for RfbInputNotice {
@@ -99,6 +103,7 @@ pub enum RfbInputEventKind {
     Key,
     Pointer,
     PointerRelative,
+    SetMouseMode,
     CutText,
     ContinuousUpdates,
     Disconnected,
@@ -377,6 +382,9 @@ impl<S: InputSink> RfbInputPump<S> {
                 dy,
                 wheel,
             } => self.handle_pointer_relative(*client_id, *button_mask, *dx, *dy, *wheel),
+            RfbServerEvent::SetMouseMode { client_id, mode } => {
+                self.set_mouse_mode(*client_id, *mode)
+            }
             RfbServerEvent::CutText { client_id, bytes } => {
                 self.require_active(*client_id, RfbInputEventKind::CutText)?;
                 let text = String::from_utf8_lossy(bytes).into_owned();
@@ -510,6 +518,22 @@ impl<S: InputSink> RfbInputPump<S> {
         }
     }
 
+    fn set_mouse_mode(
+        &mut self,
+        client_id: RfbClientId,
+        mode: MouseMode,
+    ) -> Result<RfbInputNotice, RfbInputError> {
+        self.require_active(client_id, RfbInputEventKind::SetMouseMode)?;
+        self.sink
+            .set_mouse_mode(mode)
+            .map_err(|source| RfbInputError::Sink {
+                client_id,
+                operation: RfbInputOperation::Pointer,
+                source,
+            })?;
+        Ok(RfbInputNotice::MouseModeChanged { client_id, mode })
+    }
+
     fn disconnect(
         &mut self,
         client_id: RfbClientId,
@@ -604,6 +628,7 @@ mod tests {
     struct RecordingSink {
         key_batches: Vec<Vec<KeyEvent>>,
         pointer_batches: Vec<Vec<PointerEvent>>,
+        mouse_modes: Vec<MouseMode>,
         release_count: usize,
         fail_next_key: bool,
         fail_next_pointer: bool,
@@ -611,7 +636,8 @@ mod tests {
     }
 
     impl InputSink for RecordingSink {
-        fn set_mouse_mode(&mut self, _mode: MouseMode) -> InputResult<()> {
+        fn set_mouse_mode(&mut self, mode: MouseMode) -> InputResult<()> {
+            self.mouse_modes.push(mode);
             Ok(())
         }
 
@@ -1548,5 +1574,25 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[tokio::test]
+    async fn set_mouse_mode_routes_to_sink_and_notifies() {
+        let client_id = client(22);
+        let peer_addr = peer(5922);
+        let mut pump = RfbInputPump::new(RecordingSink::default());
+        pump.handle_event(connected(client_id, peer_addr)).unwrap();
+
+        assert_eq!(
+            pump.handle_event(RfbServerEvent::SetMouseMode {
+                client_id,
+                mode: MouseMode::Absolute,
+            }),
+            Ok(RfbInputNotice::MouseModeChanged {
+                client_id,
+                mode: MouseMode::Absolute,
+            })
+        );
+        assert_eq!(pump.sink().mouse_modes, vec![MouseMode::Absolute]);
     }
 }
