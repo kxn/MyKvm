@@ -420,20 +420,20 @@ impl DesktopApp {
         })
     }
 
-    fn toggle_mouse_mode(&mut self, ctx: &egui::Context) {
-        self.selection.advanced.mouse_mode = match self.selection.advanced.mouse_mode {
+    fn toggle_mouse_mode(&mut self) {
+        let next = match self.selection.advanced.mouse_mode {
             MouseMode::Absolute => MouseMode::Relative,
             MouseMode::Relative => MouseMode::Absolute,
         };
-        if let Err(error) = self.session.release_all() {
-            self.status_message = Some(format!("释放输入失败：{error}"));
-        }
-        match self.connect(ctx) {
+        // 在线切换：经输入泵原子更新 sink 模式，避免“UI 模式与会话 sink 分叉”
+        // （此前靠重连切换，串口被旧会话占用时重连失败导致绝对/相对错位）。
+        match self.session.set_mouse_mode(next) {
             Ok(()) => {
-                self.status_message = Some(format!(
-                    "已切换为{}鼠标",
-                    mouse_mode_label(self.selection.advanced.mouse_mode)
-                ));
+                self.selection.advanced.mouse_mode = next;
+                self.relative_remainder = (0.0, 0.0);
+                self.relative_wheel = 0;
+                self.last_pointer_sent = None;
+                self.status_message = Some(format!("已切换为{}鼠标", mouse_mode_label(next)));
             }
             Err(error) => {
                 self.status_message = Some(format!("切换鼠标模式失败：{error}"));
@@ -599,7 +599,7 @@ impl DesktopApp {
                 .ctx
                 .input(|input| input.events.iter().any(crate::input::is_mode_toggle_combo));
             if toggle_requested {
-                self.toggle_mouse_mode(&response.ctx);
+                self.toggle_mouse_mode();
                 return;
             }
         }

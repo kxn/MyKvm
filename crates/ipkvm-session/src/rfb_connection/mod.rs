@@ -7,6 +7,7 @@ mod transport;
 
 use std::{io::ErrorKind, net::SocketAddr, time::Duration};
 
+use ipkvm_core::MouseMode;
 use ipkvm_rfb::{
     RfbConfigError, RfbEncodeError, RfbFramebufferError, RfbProtocolError, RfbProtocolLimits,
     RfbRectangle, RfbSecurity, RfbSize,
@@ -101,6 +102,10 @@ pub enum RfbServerEvent {
         dx: i16,
         dy: i16,
         wheel: i8,
+    },
+    SetMouseMode {
+        client_id: RfbClientId,
+        mode: MouseMode,
     },
     CutText {
         client_id: RfbClientId,
