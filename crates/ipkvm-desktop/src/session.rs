@@ -124,6 +124,16 @@ where
             .and_then(|source| source.latest_frame())
     }
 
+    /// 会话输入泵是否仍在运行。
+    pub fn is_running(&self) -> bool {
+        self.manager.state() == ipkvm_session::session_manager::SessionState::Running
+    }
+
+    /// 本地控制器是否在线：已连接且输入泵运行（串口写失败等导致泵退出时为 false）。
+    pub fn is_control_online(&self) -> bool {
+        self.event_tx.is_some() && self.is_running()
+    }
+
     /// 发送键盘事件（内存直喂输入泵，不经网络）。
     pub fn send_key(&self, down: bool, keysym: u32) -> Result<(), DesktopSessionError> {
         self.send_event(RfbServerEvent::Key {
@@ -367,5 +377,16 @@ mod tests {
         );
 
         controller.stop().unwrap();
+    }
+
+    #[test]
+    fn stop_marks_controller_offline() {
+        let (mut controller, _sink) = controller_with_sink();
+
+        controller.connect(request()).unwrap();
+        assert!(controller.is_control_online());
+
+        controller.stop().unwrap();
+        assert!(!controller.is_control_online());
     }
 }

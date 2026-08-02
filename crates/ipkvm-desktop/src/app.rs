@@ -81,6 +81,9 @@ impl DesktopApp {
     fn update_impl(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_notices();
         self.refresh_video();
+        if !self.showing_device_dialog && !self.session.is_control_online() {
+            self.selection.mark_control_offline();
+        }
 
         egui::TopBottomPanel::top("menu").show(ctx, |ui| self.menu_bar(ui));
         if self.showing_device_dialog {
@@ -401,6 +404,11 @@ impl DesktopApp {
         video_rect: egui::Rect,
         frame: FrameSize,
     ) {
+        if !self.session.is_control_online() {
+            self.pointer_mask = 0;
+            self.last_pointer = None;
+            return;
+        }
         let focused = response.has_focus();
         if focused && !self.video_focused {
             // 刚获得焦点：以当前修饰键为基线，避免把历史按住状态当新按下。
@@ -641,7 +649,11 @@ impl DesktopApp {
         ui.horizontal(|ui| {
             ui.label(format!(
                 "控制设备：{}",
-                control_status_text(&self.selection.control_status)
+                if !self.showing_device_dialog && !self.session.is_control_online() {
+                    "离线".to_owned()
+                } else {
+                    control_status_text(&self.selection.control_status)
+                }
             ));
             ui.separator();
             ui.label(format!(

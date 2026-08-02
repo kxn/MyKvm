@@ -119,6 +119,12 @@ impl DeviceSelectionState {
             self.control_status = ControlProbeStatus::Disconnected;
         }
     }
+
+    /// 正式会话期间控制设备离线（输入泵退出/事件发送失败）：标记为断开，
+    /// 状态栏显示离线；用户刷新检测后可重新探测并连接。
+    pub fn mark_control_offline(&mut self) {
+        self.control_status = ControlProbeStatus::Disconnected;
+    }
 }
 
 #[cfg(test)]
@@ -174,5 +180,18 @@ mod tests {
         assert_eq!(state.video_status, VideoProbeStatus::Disconnected);
         assert_eq!(state.control_status, ControlProbeStatus::Disconnected);
         assert!(!state.can_connect());
+    }
+
+    #[test]
+    fn mark_control_offline_sets_disconnected_status() {
+        let mut state = DeviceSelectionState::default();
+        state.control_status = ControlProbeStatus::Ready(ControlInfo {
+            version: 0x31,
+            usb_enumerated: true,
+        });
+
+        state.mark_control_offline();
+
+        assert_eq!(state.control_status, ControlProbeStatus::Disconnected);
     }
 }
