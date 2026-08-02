@@ -16,6 +16,18 @@ pub fn bgra_to_rgba(frame: &ipkvm_video::VideoFrame) -> Result<RgbaFrame, String
     let width = frame.width as usize;
     let height = frame.height as usize;
     let stride = frame.stride as usize;
+    let Some(required) = stride
+        .checked_mul(height.saturating_sub(1))
+        .and_then(|rows| rows.checked_add(width * 4))
+    else {
+        return Err("frame stride or size overflow".into());
+    };
+    if frame.data.len() < required {
+        return Err(format!(
+            "frame data too short: need {required} bytes, got {}",
+            frame.data.len()
+        ));
+    }
     let mut pixels = vec![0; width * height * 4];
     for y in 0..height {
         let src = &frame.data[y * stride..y * stride + width * 4];
@@ -92,6 +104,13 @@ mod tests {
             PixelFormat::Yuy2,
             Arc::from(vec![0, 1, 2].into_boxed_slice()),
         );
+
+        assert!(bgra_to_rgba(&frame).is_err());
+    }
+
+    #[test]
+    fn bgra_to_rgba_rejects_truncated_data() {
+        let frame = bgra_frame(2, 2, 8, vec![0; 4]);
 
         assert!(bgra_to_rgba(&frame).is_err());
     }
