@@ -3,6 +3,7 @@
 /.worktrees/
 /browser-tests/node_modules/
 /.research/
+/dist/
 *.pdb
 *.log
 .env

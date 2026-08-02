@@ -17,6 +17,10 @@ jpeg-encoder.workspace = true
 serialport.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"] }
+# eframe 的 wgpu 依赖只开 std，不会启用任何图形后端；这里显式开启
+# dx12/vulkan/gles/metal，否则运行时创建 wgpu 实例会 panic
+# （"No wgpu backend feature that is implemented for the target platform was enabled"）。
+wgpu = { version = "27.0.1", default-features = false, features = ["dx12", "vulkan", "gles", "metal"] }
 
 [target.'cfg(windows)'.dependencies]
 rfd = { version = "0.15.4", default-features = false, features = ["common-controls-v6"] }
