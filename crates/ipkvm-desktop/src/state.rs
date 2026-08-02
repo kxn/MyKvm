@@ -63,12 +63,13 @@ impl Default for VideoScaleMode {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct AdvancedSettings {
     pub baud_rate: u32,
     pub mouse_mode: ipkvm_core::MouseMode,
     pub preview_fps: u64,
     pub scale_mode: VideoScaleMode,
+    pub relative_sensitivity: f32,
 }
 
 impl Default for AdvancedSettings {
@@ -78,6 +79,7 @@ impl Default for AdvancedSettings {
             mouse_mode: ipkvm_core::MouseMode::Absolute,
             preview_fps: 30,
             scale_mode: VideoScaleMode::FitWindow,
+            relative_sensitivity: 1.0,
         }
     }
 }
@@ -130,6 +132,7 @@ impl DeviceSelectionState {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ipkvm_core::MouseMode;
 
     fn option(id: &str, label: &str) -> DeviceOption {
         DeviceOption {
@@ -197,5 +200,12 @@ mod tests {
         state.mark_control_offline();
 
         assert_eq!(state.control_status, ControlProbeStatus::Disconnected);
+    }
+
+    #[test]
+    fn advanced_defaults_use_absolute_mouse_and_unity_sensitivity() {
+        let advanced = AdvancedSettings::default();
+        assert_eq!(advanced.mouse_mode, MouseMode::Absolute);
+        assert_eq!(advanced.relative_sensitivity, 1.0);
     }
 }

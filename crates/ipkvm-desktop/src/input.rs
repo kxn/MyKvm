@@ -208,6 +208,40 @@ pub fn is_remote_exit_combo(event: &eframe::egui::Event) -> bool {
     )
 }
 
+/// Ctrl+Alt+M：本地切换绝对/相对鼠标模式（本地拦截，不转发远端）。
+pub fn is_mode_toggle_combo(event: &eframe::egui::Event) -> bool {
+    matches!(
+        event,
+        eframe::egui::Event::Key {
+            key: eframe::egui::Key::M,
+            pressed: true,
+            repeat: false,
+            modifiers,
+            ..
+        } if modifiers.ctrl && modifiers.alt
+    )
+}
+
+/// 把浮点增量累积到余数并返回可发送的整数增量（避免亚像素漂移）。
+pub fn accumulate_delta(remainder: &mut (f32, f32), dx: f32, dy: f32) -> (i16, i16) {
+    remainder.0 += dx;
+    remainder.1 += dy;
+    let ix = remainder.0.trunc().clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+    let iy = remainder.1.trunc().clamp(i16::MIN as f32, i16::MAX as f32) as i16;
+    remainder.0 -= ix as f32;
+    remainder.1 -= iy as f32;
+    (ix, iy)
+}
+
+/// 把 egui 滚轮增量换算成滚轮步数（Line/Page 直接取整，Point 按 50 点一步）。
+pub fn wheel_steps(unit: eframe::egui::MouseWheelUnit, delta_y: f32) -> i8 {
+    let steps = match unit {
+        eframe::egui::MouseWheelUnit::Line | eframe::egui::MouseWheelUnit::Page => delta_y,
+        eframe::egui::MouseWheelUnit::Point => delta_y / 50.0,
+    };
+    steps.round().clamp(i8::MIN as f32, i8::MAX as f32) as i8
+}
+
 #[cfg(test)]
 mod tests {
     use eframe::egui;
@@ -416,5 +450,54 @@ mod tests {
             }
         ));
         assert!(!combo(egui::Key::A, true, false, ctrl_alt));
+    }
+
+    #[test]
+    fn mode_toggle_combo_requires_ctrl_alt_m_pressed_once() {
+        let combo = |key: egui::Key, pressed: bool, repeat: bool, modifiers: egui::Modifiers| {
+            is_mode_toggle_combo(&egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed,
+                repeat,
+                modifiers,
+            })
+        };
+        let ctrl_alt = egui::Modifiers {
+            ctrl: true,
+            alt: true,
+            ..Default::default()
+        };
+        assert!(combo(egui::Key::M, true, false, ctrl_alt));
+        assert!(!combo(egui::Key::M, false, false, ctrl_alt));
+        assert!(!combo(egui::Key::M, true, true, ctrl_alt));
+        assert!(!combo(
+            egui::Key::M,
+            true,
+            false,
+            egui::Modifiers {
+                ctrl: true,
+                ..Default::default()
+            }
+        ));
+        assert!(!combo(egui::Key::K, true, false, ctrl_alt));
+    }
+
+    #[test]
+    fn accumulate_delta_sends_integer_parts_and_keeps_remainder() {
+        let mut remainder = (0.0, 0.0);
+        assert_eq!(accumulate_delta(&mut remainder, 1.6, 2.4), (1, 2));
+        assert!((remainder.0 - 0.6).abs() < 1e-6);
+        assert!((remainder.1 - 0.4).abs() < 1e-6);
+        assert_eq!(accumulate_delta(&mut remainder, 0.4, 0.6), (1, 1));
+        assert!((remainder.0 - 0.0).abs() < 1e-6);
+        assert!((remainder.1 - 0.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn wheel_steps_converts_lines_and_points() {
+        assert_eq!(wheel_steps(egui::MouseWheelUnit::Line, 2.0), 2);
+        assert_eq!(wheel_steps(egui::MouseWheelUnit::Point, -100.0), -2);
+        assert_eq!(wheel_steps(egui::MouseWheelUnit::Page, 1.0), 1);
     }
 }

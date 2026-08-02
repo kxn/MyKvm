@@ -12,7 +12,7 @@ use crate::input::{
 };
 use crate::probe::{ProbeBackend, ProductionProbeBackend, refresh_detection};
 use crate::render::{FrameSize, VideoViewport};
-use crate::session::{ConnectRequest, ProductionDesktopSessionController};
+use crate::session::{ConnectRequest, DesktopSessionError, ProductionDesktopSessionController};
 use crate::state::{ControlProbeStatus, DeviceSelectionState, VideoProbeStatus, VideoScaleMode};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -53,6 +53,8 @@ struct DesktopApp {
     pointer_mask: u8,
     last_pointer: Option<(u16, u16)>,
     last_modifiers: egui::Modifiers,
+    cursor_grabbed: bool,
+    relative_remainder: (f32, f32),
     video_focused: bool,
     paste_busy: bool,
     status_message: Option<String>,
@@ -85,6 +87,8 @@ impl DesktopApp {
             pointer_mask: 0,
             last_pointer: None,
             last_modifiers: egui::Modifiers::NONE,
+            cursor_grabbed: false,
+            relative_remainder: (0.0, 0.0),
             video_focused: false,
             paste_busy: false,
             status_message: None,
@@ -118,6 +122,8 @@ impl DesktopApp {
             self.pointer_mask = 0;
             self.last_pointer = None;
             self.last_modifiers = egui::Modifiers::NONE;
+            self.cursor_grabbed = false;
+            self.relative_remainder = (0.0, 0.0);
         }
     }
 
@@ -270,7 +276,9 @@ impl DesktopApp {
                     .add_enabled(can_connect, egui::Button::new("连接"))
                     .clicked()
                 {
-                    self.connect();
+                    if let Err(error) = self.connect() {
+                        self.status_message = Some(format!("连接失败：{error}"));
+                    }
                 }
             });
 
@@ -345,20 +353,9 @@ impl DesktopApp {
         }
     }
 
-    fn connect(&mut self) {
-        let Some(video_device_id) = self.selection.selected_video_id.clone() else {
-            return;
-        };
-        let Some(control_device_id) = self.selection.selected_control_id.clone() else {
-            return;
-        };
-        let advanced = self.selection.advanced.clone();
-        let request = ConnectRequest {
-            video_device_id,
-            control_device_id,
-            baud_rate: advanced.baud_rate,
-            mouse_mode: advanced.mouse_mode,
-            preview_fps: advanced.preview_fps,
+    fn connect(&mut self) -> Result<(), DesktopSessionError> {
+        let Some(request) = self.connect_request() else {
+            return Ok(());
         };
         match self.session.connect(request) {
             Ok(()) => {
@@ -366,9 +363,40 @@ impl DesktopApp {
                 self.status_message = None;
                 self.pointer_mask = 0;
                 self.last_pointer = None;
+                self.relative_remainder = (0.0, 0.0);
+                Ok(())
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn connect_request(&self) -> Option<ConnectRequest> {
+        Some(ConnectRequest {
+            video_device_id: self.selection.selected_video_id.clone()?,
+            control_device_id: self.selection.selected_control_id.clone()?,
+            baud_rate: self.selection.advanced.baud_rate,
+            mouse_mode: self.selection.advanced.mouse_mode,
+            preview_fps: self.selection.advanced.preview_fps,
+        })
+    }
+
+    fn toggle_mouse_mode(&mut self) {
+        self.selection.advanced.mouse_mode = match self.selection.advanced.mouse_mode {
+            MouseMode::Absolute => MouseMode::Relative,
+            MouseMode::Relative => MouseMode::Absolute,
+        };
+        if let Err(error) = self.session.release_all() {
+            self.status_message = Some(format!("释放输入失败：{error}"));
+        }
+        match self.connect() {
+            Ok(()) => {
+                self.status_message = Some(format!(
+                    "已切换为{}鼠标",
+                    mouse_mode_label(self.selection.advanced.mouse_mode)
+                ));
             }
             Err(error) => {
-                self.status_message = Some(format!("连接失败：{error}"));
+                self.status_message = Some(format!("切换鼠标模式失败：{error}"));
             }
         }
     }
@@ -481,6 +509,17 @@ impl DesktopApp {
             }
         }
 
+        // Ctrl+Alt+M：本地切换绝对/相对鼠标模式（重连应用）。
+        if remote_active {
+            let toggle_requested = response
+                .ctx
+                .input(|input| input.events.iter().any(crate::input::is_mode_toggle_combo));
+            if toggle_requested {
+                self.toggle_mouse_mode();
+                return;
+            }
+        }
+
         if remote_active {
             // 锁住焦点导航：Tab/方向键/Esc 都转发远端，不让 egui 拿去移动焦点。
             response.ctx.memory_mut(|memory| {
@@ -505,14 +544,68 @@ impl DesktopApp {
         }
         self.video_focused = remote_active;
 
-        // 指针：悬停或拖动中发送坐标；点击视频区会先获得焦点。
+        // 相对模式锁定并隐藏本地光标，绝对模式恢复光标。
+        let relative_mode = self.selection.advanced.mouse_mode == MouseMode::Relative;
+        if remote_active && relative_mode {
+            if !self.cursor_grabbed {
+                response
+                    .ctx
+                    .send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::CursorGrab::Locked));
+                response
+                    .ctx
+                    .send_viewport_cmd(egui::ViewportCommand::CursorVisible(false));
+                self.cursor_grabbed = true;
+            }
+        } else if self.cursor_grabbed {
+            response
+                .ctx
+                .send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::CursorGrab::None));
+            response
+                .ctx
+                .send_viewport_cmd(egui::ViewportCommand::CursorVisible(true));
+            self.cursor_grabbed = false;
+        }
+
+        // 指针：相对模式用增量（本地光标已锁定），绝对模式用窗口坐标。
         let mask = pointer_button_mask(response, self.pointer_mask);
-        if pointer_active(remote_active, mask, self.pointer_mask)
+        if remote_active && relative_mode {
+            // 光标锁定后位置不变，位置增量恒为 0；必须用原始鼠标运动事件
+            // （eframe 从 DeviceEvent::MouseMotion 转发，物理像素）。
+            let (raw_dx, raw_dy) = response.ctx.input(|input| {
+                input.events.iter().fold((0.0f32, 0.0f32), |acc, event| {
+                    if let egui::Event::MouseMoved(delta) = event {
+                        (acc.0 + delta.x, acc.1 + delta.y)
+                    } else {
+                        acc
+                    }
+                })
+            });
+            let sensitivity = self.selection.advanced.relative_sensitivity;
+            let pixels_per_point = response.ctx.pixels_per_point();
+            let dx_points = raw_dx / pixels_per_point * sensitivity;
+            let dy_points = raw_dy / pixels_per_point * sensitivity;
+            let dx = dx_points * (frame.width as f32 / video_rect.width());
+            let dy = dy_points * (frame.height as f32 / video_rect.height());
+            let (dx, dy) = crate::input::accumulate_delta(&mut self.relative_remainder, dx, dy);
+            let wheel = self.wheel_steps_from_events(response);
+            if dx != 0 || dy != 0 || wheel != 0 || mask != self.pointer_mask {
+                if let Err(error) = self.session.send_pointer_relative(mask, dx, dy, wheel) {
+                    self.status_message = Some(format!("指针发送失败：{error}"));
+                }
+            }
+            self.pointer_mask = mask;
+        } else if pointer_active(remote_active, mask, self.pointer_mask)
             && let Some(position) = response.ctx.input(|input| input.pointer.latest_pos())
             && let Some((x, y)) = VideoViewport::map_pointer(position, video_rect, frame)
         {
             if let Err(error) = self.session.send_pointer(mask, x, y, frame) {
                 self.status_message = Some(format!("指针发送失败：{error}"));
+            }
+            let wheel = self.wheel_steps_from_events(response);
+            if wheel != 0 {
+                if let Err(error) = self.session.send_pointer_relative(mask, 0, 0, wheel) {
+                    self.status_message = Some(format!("滚轮发送失败：{error}"));
+                }
             }
             self.last_pointer = Some((x, y));
             self.pointer_mask = mask;
@@ -553,6 +646,24 @@ impl DesktopApp {
                 }
             }
         }
+    }
+
+    /// 汇总本帧滚轮事件为滚轮步数（egui Line/Page 直接取整，Point 按 50 点一步）。
+    fn wheel_steps_from_events(&self, response: &egui::Response) -> i8 {
+        response.ctx.input(|input| {
+            let total: i32 = input
+                .events
+                .iter()
+                .filter_map(|event| {
+                    if let egui::Event::MouseWheel { unit, delta, .. } = event {
+                        Some(i32::from(crate::input::wheel_steps(*unit, delta.y)))
+                    } else {
+                        None
+                    }
+                })
+                .sum();
+            total.clamp(i32::from(i8::MIN), i32::from(i8::MAX)) as i8
+        })
     }
 
     fn send_key_action(&mut self, action: KeyAction) {
@@ -621,6 +732,8 @@ impl DesktopApp {
         self.pointer_mask = 0;
         self.last_pointer = None;
         self.last_modifiers = egui::Modifiers::NONE;
+        self.cursor_grabbed = false;
+        self.relative_remainder = (0.0, 0.0);
         self.last_frame_seq = None;
         self.last_frame_at = None;
     }
@@ -660,6 +773,14 @@ impl DesktopApp {
                         self.selection.advanced.mouse_mode = MouseMode::Relative;
                     }
                 });
+        });
+        ui.horizontal(|ui| {
+            ui.label("相对灵敏度");
+            ui.add(
+                egui::DragValue::new(&mut self.selection.advanced.relative_sensitivity)
+                    .range(0.1..=5.0)
+                    .speed(0.05),
+            );
         });
         ui.horizontal(|ui| {
             ui.label("缩放");
@@ -748,10 +869,14 @@ impl DesktopApp {
         } else {
             "失焦".to_owned()
         };
-        let pointer = self
-            .last_pointer
-            .map(|(x, y)| format!("({x}, {y})"))
-            .unwrap_or_else(|| "窗口外".into());
+        let pointer =
+            if self.selection.advanced.mouse_mode == MouseMode::Relative && self.video_focused {
+                "相对模式".to_owned()
+            } else {
+                self.last_pointer
+                    .map(|(x, y)| format!("({x}, {y})"))
+                    .unwrap_or_else(|| "窗口外".into())
+            };
         StatusBarTexts {
             control,
             keyboard,
@@ -943,5 +1068,17 @@ mod tests {
         let texts = app.status_bar_texts();
 
         assert_eq!(texts.keyboard, "远程输入中 · Ctrl+Alt+K 退出");
+    }
+
+    #[test]
+    fn status_texts_show_relative_mode_hint_when_video_focused() {
+        let mut app = DesktopApp::empty();
+        app.showing_device_dialog = false;
+        app.video_focused = true;
+        app.selection.advanced.mouse_mode = MouseMode::Relative;
+
+        let texts = app.status_bar_texts();
+
+        assert_eq!(texts.pointer, "相对模式");
     }
 }
