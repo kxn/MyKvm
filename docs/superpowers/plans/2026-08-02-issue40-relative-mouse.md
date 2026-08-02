@@ -1,6 +1,6 @@
 # Issue #40 鼠标相对模式实现计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 让桌面 app 在 BIOS/启动菜单阶段可用相对鼠标（不依赖目标机分辨率），并保留系统内绝对模式；模式可一键切换。
 
@@ -41,7 +41,7 @@
 **Interfaces:**
 - Produces: `RfbServerEvent::PointerRelative { client_id, button_mask: u8, dx: i16, dy: i16, wheel: i8 }`；`RfbInputEventKind::PointerRelative`；`RfbInputPump::handle_pointer_relative`。
 
-- [ ] **Step 1: 写失败测试**（追加到 `pump.rs` 测试模块）
+- [x] **Step 1: 写失败测试**（追加到 `pump.rs` 测试模块）
 
 ```rust
     #[tokio::test]
@@ -100,12 +100,12 @@
 
 （第二个测试需要 `let mut pump = RfbInputPump::new(RecordingSink::default());`。）
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `cargo test -p ipkvm-session rfb_input::pump::tests::routes_relative_pointer`
 Expected: 编译失败，`RfbServerEvent::PointerRelative` 不存在。
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `mod.rs` 的 `RfbServerEvent` 枚举中 `Pointer` 变体之后追加：
 
@@ -163,7 +163,7 @@ Expected: 编译失败，`RfbServerEvent::PointerRelative` 不存在。
     }
 ```
 
-- [ ] **Step 4: 运行确认通过**
+- [x] **Step 4: 运行确认通过**
 
 Run: `cargo test -p ipkvm-session rfb_input::pump::tests::`
 Expected: 新增 2 个测试 PASS（Task 2 实现前 `handle_relative_pointer` 不存在，会编译失败——因此 Task 1 与 Task 2 合并验证）。
@@ -178,7 +178,7 @@ Expected: 新增 2 个测试 PASS（Task 2 实现前 `handle_relative_pointer` �
 **Interfaces:**
 - Produces: `pub fn handle_relative_pointer(&mut self, sink: &mut impl InputSink, button_mask: u8, dx: i16, dy: i16, wheel: i8) -> Result<RfbPointerOutcome, RfbPointerError>`
 
-- [ ] **Step 1: 写失败测试**（追加到 `pointer.rs` 测试模块）
+- [x] **Step 1: 写失败测试**（追加到 `pointer.rs` 测试模块）
 
 ```rust
     #[test]
@@ -232,12 +232,12 @@ Expected: 新增 2 个测试 PASS（Task 2 实现前 `handle_relative_pointer` �
 
 （`pointer.rs` 测试模块已有 `button(PointerButton, bool)` 辅助函数与 `RecordingSink`。）
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `cargo test -p ipkvm-session rfb_input::pointer::tests::relative_`
 Expected: 编译失败，`handle_relative_pointer` 不存在。
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 在 `handle_pointer` 之后追加：
 
@@ -295,12 +295,12 @@ fn button_events(committed: u8, new_mask: u8) -> Vec<PointerEvent> {
 
 `handle_pointer` 中原来的两个按键循环替换为 `events.extend(button_events(self.committed_button_mask, button_mask));`。
 
-- [ ] **Step 4: 运行确认通过**
+- [x] **Step 4: 运行确认通过**
 
 Run: `cargo test -p ipkvm-session rfb_input::pointer::tests::` 与 `cargo test -p ipkvm-session rfb_input::pump::tests::`
 Expected: 全部 PASS。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add crates/ipkvm-session/src/rfb_connection/mod.rs crates/ipkvm-session/src/rfb_input/pump.rs crates/ipkvm-session/src/rfb_input/pointer.rs
@@ -317,7 +317,7 @@ git commit -m "feat: route relative pointer events through the input pump"
 **Interfaces:**
 - Produces: `pub fn send_pointer_relative(&self, button_mask: u8, dx: i16, dy: i16, wheel: i8) -> Result<(), DesktopSessionError>`
 
-- [ ] **Step 1: 写失败测试**（追加到 `session.rs` 测试模块）
+- [x] **Step 1: 写失败测试**（追加到 `session.rs` 测试模块）
 
 ```rust
     #[test]
@@ -337,12 +337,12 @@ git commit -m "feat: route relative pointer events through the input pump"
     }
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `cargo test -p ipkvm-desktop session::tests::connect_then_relative_pointer_reaches_sink`
 Expected: 编译失败，`send_pointer_relative` 不存在。
 
-- [ ] **Step 3: 实现**（`send_pointer` 之后追加）
+- [x] **Step 3: 实现**（`send_pointer` 之后追加）
 
 ```rust
     /// 发送相对指针事件（桌面相对鼠标模式；dx/dy 为帧像素增量）。
@@ -363,12 +363,12 @@ Expected: 编译失败，`send_pointer_relative` 不存在。
     }
 ```
 
-- [ ] **Step 4: 运行确认通过**
+- [x] **Step 4: 运行确认通过**
 
 Run: `cargo test -p ipkvm-desktop session::tests::`
 Expected: 新增测试 PASS。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add crates/ipkvm-desktop/src/session.rs
@@ -385,7 +385,7 @@ git commit -m "feat: send relative pointer events from the desktop controller"
 **Interfaces:**
 - Produces: `pub fn is_mode_toggle_combo(event: &eframe::egui::Event) -> bool`；`pub fn accumulate_delta(remainder: &mut (f32, f32), dx: f32, dy: f32) -> (i16, i16)`；`pub fn wheel_steps(unit: eframe::egui::MouseWheelUnit, delta_y: f32) -> i8`
 
-- [ ] **Step 1: 写失败测试**（追加到 `input.rs` 测试模块）
+- [x] **Step 1: 写失败测试**（追加到 `input.rs` 测试模块）
 
 ```rust
     #[test]
@@ -437,12 +437,12 @@ git commit -m "feat: send relative pointer events from the desktop controller"
     }
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `cargo test -p ipkvm-desktop input::tests::mode_toggle_combo_requires`
 Expected: 编译失败，函数未定义。
 
-- [ ] **Step 3: 实现**（`is_remote_exit_combo` 之后追加）
+- [x] **Step 3: 实现**（`is_remote_exit_combo` 之后追加）
 
 ```rust
 /// Ctrl+Alt+M：本地切换绝对/相对鼠标模式（本地拦截，不转发远端）。
@@ -486,12 +486,12 @@ pub fn wheel_steps(unit: eframe::egui::MouseWheelUnit, delta_y: f32) -> i8 {
 }
 ```
 
-- [ ] **Step 4: 运行确认通过**
+- [x] **Step 4: 运行确认通过**
 
 Run: `cargo test -p ipkvm-desktop input::tests::`
 Expected: 全部 PASS。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add crates/ipkvm-desktop/src/input.rs
@@ -510,7 +510,7 @@ git commit -m "test: cover relative mouse input helpers"
 - Consumes: `is_mode_toggle_combo`、`accumulate_delta`、`wheel_steps`、`send_pointer_relative`。
 - Produces: `DesktopApp::connect_request()`（从当前选择构造请求）；`DesktopApp::toggle_mouse_mode()`。
 
-- [ ] **Step 1: 写失败测试**（追加到 `app.rs` 测试模块；`state.rs` 追加默认值测试）
+- [x] **Step 1: 写失败测试**（追加到 `app.rs` 测试模块；`state.rs` 追加默认值测试）
 
 ```rust
     #[test]
@@ -537,12 +537,12 @@ git commit -m "test: cover relative mouse input helpers"
     }
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `cargo test -p ipkvm-desktop app::tests::status_texts_show_relative_mode_hint`、`cargo test -p ipkvm-desktop state::tests::advanced_defaults_use_absolute_mouse`
 Expected: 编译失败，`relative_sensitivity` 字段不存在；状态栏断言失败。
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `state.rs` 的 `AdvancedSettings` 追加字段：
 
@@ -735,12 +735,12 @@ Expected: 编译失败，`relative_sensitivity` 字段不存在；状态栏断�
         });
 ```
 
-- [ ] **Step 4: 运行确认通过**
+- [x] **Step 4: 运行确认通过**
 
 Run: `cargo test -p ipkvm-desktop`
 Expected: 全部 PASS。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add crates/ipkvm-desktop/src/app.rs crates/ipkvm-desktop/src/state.rs
@@ -754,7 +754,7 @@ git commit -m "feat: relative mouse mode with cursor grab and ctrl-alt-m toggle"
 **Files:**
 - Modify: `docs/ipkvm-coarse-design.md`
 
-- [ ] **Step 1: 更新设计文档**
+- [x] **Step 1: 更新设计文档**
 
 在“桌面远程输入模式”小节追加：
 
@@ -765,21 +765,21 @@ git commit -m "feat: relative mouse mode with cursor grab and ctrl-alt-m toggle"
 - 滚轮通过相对事件通道发送，绝对与相对模式均可用。
 ```
 
-- [ ] **Step 2: 提交**
+- [x] **Step 2: 提交**
 
 ```bash
 git add docs/ipkvm-coarse-design.md
 git commit -m "docs: document relative mouse mode"
 ```
 
-- [ ] **Step 3: 全量验证**
+- [x] **Step 3: 全量验证**
 
 Run: `cargo fmt --all --check`、`cargo test --workspace --all-features`
 Expected: 全部通过。
 
-- [ ] **Step 4: 自审**：检查实现与计划是否一致（模式切换需重连、绝对模式行为不变、无协议改动、光标状态在退出/断开时复位）。
+- [x] **Step 4: 自审**：检查实现与计划是否一致（模式切换需重连、绝对模式行为不变、无协议改动、光标状态在退出/断开时复位）。
 
-- [ ] **Step 5: 推送、PR、合并、关闭 issue #40**（按用户既定流程）。
+- [x] **Step 5: 推送、PR、合并、关闭 issue #40**（按用户既定流程）。
 
 ---
 
