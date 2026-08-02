@@ -17,6 +17,8 @@ use crate::state::{ControlProbeStatus, DeviceSelectionState, VideoProbeStatus, V
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 const NO_SIGNAL_TIMEOUT: Duration = Duration::from_secs(2);
+/// 菜单栏 + 状态栏占用的窗口内容区高度估算（ResizeWindowToVideo 用）。
+const FOLLOW_CHROME: f32 = 48.0;
 
 pub fn run() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
@@ -42,6 +44,7 @@ struct DesktopApp {
     texture: Option<egui::TextureHandle>,
     latest_frame: Option<crate::frame::RgbaFrame>,
     frame_size: Option<FrameSize>,
+    last_follow_resize: Option<FrameSize>,
     pointer_mask: u8,
     last_pointer: Option<(u16, u16)>,
     last_modifiers: egui::Modifiers,
@@ -73,6 +76,7 @@ impl DesktopApp {
             texture: None,
             latest_frame: None,
             frame_size: None,
+            last_follow_resize: None,
             pointer_mask: 0,
             last_pointer: None,
             last_modifiers: egui::Modifiers::NONE,
@@ -378,6 +382,14 @@ impl DesktopApp {
                 width: 1920,
                 height: 1080,
             });
+            if self.selection.advanced.scale_mode == VideoScaleMode::ResizeWindowToVideo
+                && let Some(actual) = self.frame_size
+                && self.last_follow_resize != Some(actual)
+            {
+                let size = desired_window_inner_size(actual, FOLLOW_CHROME);
+                ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
+                self.last_follow_resize = Some(actual);
+            }
             let video_rect =
                 VideoViewport::frame_rect(response.rect, frame, self.selection.advanced.scale_mode);
             if let Some(texture) = &self.texture {
@@ -552,6 +564,7 @@ impl DesktopApp {
         let _ = self.session.stop();
         self.latest_frame = None;
         self.frame_size = None;
+        self.last_follow_resize = None;
         self.texture = None;
         self.paste_busy = false;
         self.video_focused = false;
@@ -757,6 +770,11 @@ fn control_status_text(status: &ControlProbeStatus) -> String {
     }
 }
 
+/// ResizeWindowToVideo 模式下窗口内容区目标尺寸：视频尺寸 + 菜单/状态栏高度。
+fn desired_window_inner_size(frame: FrameSize, chrome: f32) -> egui::Vec2 {
+    egui::vec2(frame.width as f32, frame.height as f32 + chrome)
+}
+
 fn mouse_mode_label(mode: MouseMode) -> &'static str {
     match mode {
         MouseMode::Absolute => "绝对坐标",
@@ -851,5 +869,18 @@ mod tests {
         assert!(!app.paste_busy);
         assert!(!app.video_focused);
         assert_eq!(app.pointer_mask, 0);
+    }
+
+    #[test]
+    fn desired_window_inner_size_adds_chrome() {
+        let size = desired_window_inner_size(
+            FrameSize {
+                width: 1280,
+                height: 720,
+            },
+            48.0,
+        );
+
+        assert_eq!(size, egui::vec2(1280.0, 768.0));
     }
 }
