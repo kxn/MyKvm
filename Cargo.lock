@@ -727,6 +727,8 @@ dependencies = [
 name = "ipkvm-session"
 version = "0.1.0"
 dependencies = [
+ "cipher",
+ "des",
  "ipkvm-core",
  "ipkvm-rfb",
  "ipkvm-video",

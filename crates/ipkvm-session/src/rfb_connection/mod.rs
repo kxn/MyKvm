@@ -9,7 +9,7 @@ use std::{io::ErrorKind, net::SocketAddr, time::Duration};
 
 use ipkvm_rfb::{
     RfbConfigError, RfbEncodeError, RfbFramebufferError, RfbProtocolError, RfbProtocolLimits,
-    RfbRectangle, RfbSize,
+    RfbRectangle, RfbSecurity, RfbSize,
 };
 use ipkvm_video::PixelFormat;
 use thiserror::Error;
@@ -25,6 +25,7 @@ pub struct RfbConnectionSettings {
     pub desktop_name: String,
     pub handshake_timeout: Duration,
     pub protocol_limits: RfbProtocolLimits,
+    pub security: RfbSecurity,
 }
 
 impl RfbConnectionSettings {
@@ -42,6 +43,7 @@ impl Default for RfbConnectionSettings {
             desktop_name: "my_ipkvm".to_string(),
             handshake_timeout: Duration::from_secs(10),
             protocol_limits: RfbProtocolLimits::default(),
+            security: RfbSecurity::None,
         }
     }
 }
@@ -106,6 +108,7 @@ pub enum RfbDisconnectReason {
     ClientClosed,
     ServerShutdown,
     HandshakeTimeout,
+    AuthenticationFailed,
     CoreConfig(RfbConfigError),
     Protocol(RfbProtocolError),
     Encode(RfbEncodeError),
@@ -156,6 +159,28 @@ mod tests {
         assert_eq!(
             settings.validate(),
             Err(RfbConnectionSettingsError::ZeroHandshakeTimeout)
+        );
+    }
+
+    #[test]
+    fn default_connection_settings_use_none_security() {
+        let settings = RfbConnectionSettings::default();
+        assert_eq!(settings.security, ipkvm_rfb::RfbSecurity::None);
+    }
+
+    #[test]
+    fn vnc_security_is_derivable_from_connection_settings() {
+        let settings = RfbConnectionSettings {
+            security: ipkvm_rfb::RfbSecurity::Vnc {
+                password: *b"secret12",
+            },
+            ..RfbConnectionSettings::default()
+        };
+        assert_eq!(
+            settings.security,
+            ipkvm_rfb::RfbSecurity::Vnc {
+                password: *b"secret12"
+            }
         );
     }
 }
