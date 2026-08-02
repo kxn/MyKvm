@@ -73,7 +73,7 @@
 - 产出：`pub fn run() -> Result<(), DesktopError>`
 - 产出：`DesktopError::Gui(String)`
 
-- [ ] **步骤 1：修改 workspace 依赖**
+- [x] **步骤 1：修改 workspace 依赖**
 
 在 `Cargo.toml` 的 `[workspace.dependencies]` 中加入：
 
@@ -82,7 +82,7 @@ arboard = "3.6.1"
 eframe = { version = "0.33.2", default-features = false, features = ["default_fonts", "wgpu", "x11", "wayland"] }
 ```
 
-- [ ] **步骤 2：修改 desktop crate 依赖**
+- [x] **步骤 2：修改 desktop crate 依赖**
 
 把 `crates/ipkvm-desktop/Cargo.toml` 的依赖改成：
 
@@ -102,7 +102,7 @@ tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"] }
 rfd = { version = "0.15.4", default-features = false, features = ["common-controls-v6"] }
 ```
 
-- [ ] **步骤 3：建立模块入口**
+- [x] **步骤 3：建立模块入口**
 
 `crates/ipkvm-desktop/src/lib.rs` 写入：
 
@@ -140,7 +140,7 @@ fn main() {
 }
 ```
 
-- [ ] **步骤 4：先放最小 app 壳**
+- [x] **步骤 4：先放最小 app 壳**
 
 `crates/ipkvm-desktop/src/app.rs` 先写最小可编译实现：
 
@@ -166,7 +166,7 @@ impl eframe::App for DesktopApp {
 }
 ```
 
-- [ ] **步骤 5：验证依赖和入口**
+- [x] **步骤 5：验证依赖和入口**
 
 Run:
 
@@ -178,7 +178,7 @@ cargo check -p ipkvm-desktop --all-features
 
 Expected: 全部 PASS。若许可证检查失败，先移除或替换新依赖，不进入后续任务。
 
-- [ ] **步骤 6：提交**
+- [x] **步骤 6：提交**
 
 ```powershell
 git add Cargo.toml crates/ipkvm-desktop
@@ -196,7 +196,7 @@ git commit -m "feat: add desktop gui shell"
 - 产出：`DeviceSelectionState::refresh_devices(&mut self, video: Vec<DeviceOption>, control: Vec<DeviceOption>)`
 - 产出：`AdvancedSettings`
 
-- [ ] **步骤 1：编写状态模型红灯测试**
+- [x] **步骤 1：编写状态模型红灯测试**
 
 在 `state.rs` 中先写测试：
 
@@ -258,7 +258,7 @@ mod tests {
 }
 ```
 
-- [ ] **步骤 2：实现状态模型**
+- [x] **步骤 2：实现状态模型**
 
 在测试上方实现：
 
@@ -387,7 +387,7 @@ impl DeviceSelectionState {
 }
 ```
 
-- [ ] **步骤 3：验证**
+- [x] **步骤 3：验证**
 
 Run:
 
@@ -397,7 +397,7 @@ cargo test -p ipkvm-desktop --all-features state::tests -- --nocapture
 
 Expected: PASS。
 
-- [ ] **步骤 4：提交**
+- [x] **步骤 4：提交**
 
 ```powershell
 git add crates/ipkvm-desktop/src/state.rs crates/ipkvm-desktop/src/lib.rs
@@ -417,7 +417,7 @@ git commit -m "feat: add desktop device selection state"
 - 产出：`probe_ch9329(path: &str, baud_rate: u32, timeout: Duration) -> ControlProbeStatus`
 - 产出：`capture_preview(device_id: &str, fps: u64, timeout: Duration) -> VideoPreviewResult`
 
-- [ ] **步骤 1：编写 fake backend 测试**
+- [x] **步骤 1：编写 fake backend 测试**
 
 在 `probe.rs` 写测试，先锁定“刷新检测同时刷新两类设备并重探当前选择”：
 
@@ -502,7 +502,7 @@ mod tests {
 }
 ```
 
-- [ ] **步骤 2：实现 probe trait 与 refresh**
+- [x] **步骤 2：实现 probe trait 与 refresh**
 
 ```rust
 use std::io::{Read, Write};
@@ -556,7 +556,7 @@ pub fn refresh_detection(
 }
 ```
 
-- [ ] **步骤 3：实现生产 backend**
+- [x] **步骤 3：实现生产 backend**
 
 生产枚举映射使用现有共享库：
 
@@ -612,7 +612,7 @@ impl ProbeBackend for ProductionProbeBackend {
 }
 ```
 
-- [ ] **步骤 4：实现 CH9329 探测**
+- [x] **步骤 4：实现 CH9329 探测**
 
 ```rust
 pub fn probe_ch9329(path: &str, baud_rate: u32, timeout: Duration) -> ControlProbeStatus {
@@ -663,7 +663,7 @@ pub fn probe_ch9329(path: &str, baud_rate: u32, timeout: Duration) -> ControlPro
 }
 ```
 
-- [ ] **步骤 5：实现视频预览**
+- [x] **步骤 5：实现视频预览**
 
 在 `frame.rs` 定义 `RgbaFrame` 和 BGRA 转换；`probe.rs` 的 `capture_preview` 打开 `CameraSource` 后等一帧，函数返回前 drop 预览源，避免正式连接被预览句柄占住。
 
@@ -698,7 +698,7 @@ pub fn bgra_to_rgba(frame: &ipkvm_video::VideoFrame) -> Result<RgbaFrame, String
 }
 ```
 
-- [ ] **步骤 6：验证**
+- [x] **步骤 6：验证**
 
 Run:
 
@@ -708,7 +708,7 @@ cargo test -p ipkvm-desktop --all-features probe::tests frame::tests -- --nocapt
 
 Expected: PASS。
 
-- [ ] **步骤 7：提交**
+- [x] **步骤 7：提交**
 
 ```powershell
 git add crates/ipkvm-desktop/src/probe.rs crates/ipkvm-desktop/src/frame.rs crates/ipkvm-desktop/src/lib.rs
@@ -725,7 +725,7 @@ git commit -m "feat: add desktop device probing"
 - 产出：`VideoViewport::frame_rect(container: egui::Rect, frame: FrameSize, mode: VideoScaleMode) -> egui::Rect`
 - 产出：`VideoViewport::map_pointer(point: egui::Pos2, rect: egui::Rect, frame: FrameSize) -> Option<(u16, u16)>`
 
-- [ ] **步骤 1：编写坐标和缩放测试**
+- [x] **步骤 1：编写坐标和缩放测试**
 
 ```rust
 #[cfg(test)]
@@ -761,7 +761,7 @@ mod tests {
 }
 ```
 
-- [ ] **步骤 2：实现渲染模型**
+- [x] **步骤 2：实现渲染模型**
 
 ```rust
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -818,7 +818,7 @@ impl VideoViewport {
 }
 ```
 
-- [ ] **步骤 3：验证并提交**
+- [x] **步骤 3：验证并提交**
 
 ```powershell
 cargo test -p ipkvm-desktop --all-features render::tests -- --nocapture
@@ -838,7 +838,7 @@ git commit -m "feat: add desktop video viewport mapping"
 - 产出：`ConsoleSession::set_notice_mirror(Option<mpsc::UnboundedSender<RfbInputNotice>>)`
 - 产出：`SessionManager::set_notice_mirror(Option<mpsc::UnboundedSender<RfbInputNotice>>)`
 
-- [ ] **步骤 1：为本地桌面 client 写测试**
+- [x] **步骤 1：为本地桌面 client 写测试**
 
 在 `rfb_connection/mod.rs` tests 中加入：
 
@@ -857,7 +857,7 @@ pub fn local_desktop() -> Self {
 }
 ```
 
-- [ ] **步骤 2：为 notice mirror 写 session 测试**
+- [x] **步骤 2：为 notice mirror 写 session 测试**
 
 在 `console_session.rs` tests 中加入：启动会话、发送 `Connected` 和 `CutText`，从 mirror receiver 收到 `ControllerAcquired`、`TextDispatched`、`TextTyped`。
 
@@ -906,7 +906,7 @@ async fn notice_mirror_receives_input_and_text_notices() {
 }
 ```
 
-- [ ] **步骤 3：实现 `ConsoleSession` mirror**
+- [x] **步骤 3：实现 `ConsoleSession` mirror**
 
 给 `ConsoleSession` 增加字段：
 
@@ -948,11 +948,11 @@ let task = tokio::spawn(async move {
 });
 ```
 
-- [ ] **步骤 4：让 `SessionManager` 保持 mirror**
+- [x] **步骤 4：让 `SessionManager` 保持 mirror**
 
 给 `SessionManager` 增加同名字段和 setter；在 `new`/`create`/`replace_and_start` 组装新 `ConsoleSession` 后调用 `session.set_notice_mirror(self.notice_mirror.clone())`。
 
-- [ ] **步骤 5：验证并提交**
+- [x] **步骤 5：验证并提交**
 
 ```powershell
 cargo test -p ipkvm-session --all-features rfb_connection::tests::local_desktop_client_id_is_reserved console_session::tests::notice_mirror_receives_input_and_text_notices -- --nocapture
@@ -973,11 +973,11 @@ git commit -m "feat: mirror session input notices"
 - 产出：`DesktopSessionController::paste_text(&self, text: String)`
 - 产出：`DesktopSessionController::release_all(&self)`
 
-- [ ] **步骤 1：编写 controller 事件测试**
+- [x] **步骤 1：编写 controller 事件测试**
 
 用 fake sink + `SessionManager` 覆盖本地 controller 会先发 `Connected`，再能发键盘/指针，`release_all` 通过 disconnect+reconnect 复位后仍能继续输入。
 
-- [ ] **步骤 2：实现生产连接**
+- [x] **步骤 2：实现生产连接**
 
 生产 `connect` 需要：
 
@@ -993,7 +993,7 @@ let sink = ipkvm_core::Ch9329InputSink::new(queue, 0, request.mouse_mode);
 
 `SessionManager::replace_and_start` 必须在 `runtime.block_on` 内执行；调用 `start`/`replace_and_start` 前进入 runtime，避免 `tokio::spawn` 找不到 runtime。
 
-- [ ] **步骤 3：建立本地 controller lifecycle**
+- [x] **步骤 3：建立本地 controller lifecycle**
 
 连接成功后，拿 `manager.event_publisher().borrow().clone()` 当前 sender，并 `try_send`：
 
@@ -1017,7 +1017,7 @@ RfbServerEvent::Disconnected {
 
 随后重新发送 `Connected`，让后续键鼠继续有 active controller。
 
-- [ ] **步骤 4：处理 notice**
+- [x] **步骤 4：处理 notice**
 
 `DesktopSessionController` 持有 `notice_rx`，暴露：
 
@@ -1027,7 +1027,7 @@ pub fn drain_notices(&mut self) -> Vec<ipkvm_session::rfb_input::RfbInputNotice>
 
 app 每帧调用并更新粘贴、输入状态栏和错误提示。
 
-- [ ] **步骤 5：验证并提交**
+- [x] **步骤 5：验证并提交**
 
 ```powershell
 cargo test -p ipkvm-desktop --all-features session::tests -- --nocapture
@@ -1046,7 +1046,7 @@ git commit -m "feat: add desktop session controller"
 - 产出：`modifier_diff(previous: egui::Modifiers, current: egui::Modifiers) -> Vec<KeyAction>`
 - 产出：`pointer_button_mask(response: &egui::Response, previous_mask: u8) -> u8`
 
-- [ ] **步骤 1：编写特殊键测试**
+- [x] **步骤 1：编写特殊键测试**
 
 ```rust
 #[cfg(test)]
@@ -1076,7 +1076,7 @@ mod tests {
 }
 ```
 
-- [ ] **步骤 2：实现 keysym 常量和特殊键**
+- [x] **步骤 2：实现 keysym 常量和特殊键**
 
 ```rust
 pub const XK_BACKSPACE: u32 = 0xff08;
@@ -1121,11 +1121,11 @@ pub enum SpecialKey {
 }
 ```
 
-- [ ] **步骤 3：实现普通键映射**
+- [x] **步骤 3：实现普通键映射**
 
 字母按 `modifiers.shift` 决定大小写；数字按 Shift 映射 `!@#$%^&*()`；控制键走 X11 keysym。未覆盖的键返回 `None` 并在状态栏短暂显示“不支持的按键”。
 
-- [ ] **步骤 4：验证并提交**
+- [x] **步骤 4：验证并提交**
 
 ```powershell
 cargo test -p ipkvm-desktop --all-features input::tests -- --nocapture
@@ -1143,7 +1143,7 @@ git commit -m "feat: map desktop input events"
 - 产出：`ClipboardService::copy_image(frame: &RgbaFrame) -> Result<(), ClipboardError>`
 - 产出：`save_jpeg(path: &Path, frame: &RgbaFrame) -> Result<(), ClipboardError>`
 
-- [ ] **步骤 1：编写保存 JPEG 测试**
+- [x] **步骤 1：编写保存 JPEG 测试**
 
 ```rust
 #[cfg(test)]
@@ -1174,11 +1174,11 @@ mod tests {
 }
 ```
 
-- [ ] **步骤 2：实现剪贴板和 JPEG 保存**
+- [x] **步骤 2：实现剪贴板和 JPEG 保存**
 
 `copy_image` 用 `arboard::ImageData`；`save_jpeg` 用已有 `jpeg-encoder`，避免再引入图片编码大依赖。
 
-- [ ] **步骤 3：Windows 保存对话框**
+- [x] **步骤 3：Windows 保存对话框**
 
 在 app 层用：
 
@@ -1194,7 +1194,7 @@ fn choose_screenshot_path() -> Option<std::path::PathBuf> {
 
 非 Windows 先不启用文件对话框，菜单项显示“当前平台暂不支持保存对话框”，但截图复制到剪贴板仍可用。
 
-- [ ] **步骤 4：验证并提交**
+- [x] **步骤 4：验证并提交**
 
 ```powershell
 cargo test -p ipkvm-desktop --all-features clipboard::tests -- --nocapture
@@ -1211,7 +1211,7 @@ git commit -m "feat: add desktop clipboard actions"
 - 消费：`DeviceSelectionState`、`ProductionProbeBackend`、`DesktopSessionController`、`VideoViewport`、`ClipboardService`
 - 产出：启动先显示设备选择 dialog；连接后显示视频控制台；菜单可重新选择设备。
 
-- [ ] **步骤 1：实现 app 状态**
+- [x] **步骤 1：实现 app 状态**
 
 `DesktopApp` 至少持有：
 
@@ -1229,7 +1229,7 @@ struct DesktopApp {
 }
 ```
 
-- [ ] **步骤 2：设备 dialog**
+- [x] **步骤 2：设备 dialog**
 
 第一屏只画：
 
@@ -1243,7 +1243,7 @@ struct DesktopApp {
 
 设备选择变化时立即对选中项探测；刷新按钮调用任务 3 的 `refresh_detection`。
 
-- [ ] **步骤 3：连接行为**
+- [x] **步骤 3：连接行为**
 
 点击连接：
 
@@ -1252,15 +1252,15 @@ struct DesktopApp {
 3. 调用 `session.connect(...)`。
 4. 成功后关闭 dialog，进入控制台；失败时留在 dialog 并显示错误。
 
-- [ ] **步骤 4：控制台画面**
+- [x] **步骤 4：控制台画面**
 
 `CentralPanel` 显示视频纹理。无帧或连续 2 秒没有新 seq 时显示“无信号”，但 app 不退出。分辨率变化时更新 texture 尺寸、状态栏和坐标换算。
 
-- [ ] **步骤 5：输入只在视频区域聚焦时发送**
+- [x] **步骤 5：输入只在视频区域聚焦时发送**
 
 视频区域获得焦点时处理 egui key/pointer 事件；失焦、停止连接、重新选择设备、退出 app 前调用 `session.release_all()`。
 
-- [ ] **步骤 6：控制菜单**
+- [x] **步骤 6：控制菜单**
 
 菜单包含：
 
@@ -1274,7 +1274,7 @@ struct DesktopApp {
 
 粘贴按钮在 `paste_busy` 为 true 时禁用；收到 `RfbInputNotice::TextTyped` 或 `TextInputFailed` 后解除。
 
-- [ ] **步骤 7：状态栏**
+- [x] **步骤 7：状态栏**
 
 底部四段：
 
@@ -1283,7 +1283,7 @@ struct DesktopApp {
 - 鼠标坐标：当前 framebuffer 坐标或窗口外。
 - 视频：分辨率、无信号、断流、预览/正式会话错误。
 
-- [ ] **步骤 8：验证并提交**
+- [x] **步骤 8：验证并提交**
 
 ```powershell
 cargo test -p ipkvm-desktop --all-features
@@ -1304,11 +1304,11 @@ git commit -m "feat: build desktop app flow"
 - 产出：视频分辨率变化更新坐标和 texture。
 - 产出：输入泵因串口写失败停止时 UI 进入控制设备离线；刷新检测可重新探测并连接。
 
-- [ ] **步骤 1：视频断流状态**
+- [x] **步骤 1：视频断流状态**
 
 app 每帧读取正式 `FrameSource::latest_frame()`。若没有帧或连续 2 秒没有新 seq，状态栏显示“无信号”；若重新出现新 seq，恢复“视频正常”。
 
-- [ ] **步骤 2：分辨率变化**
+- [x] **步骤 2：分辨率变化**
 
 当最新帧的 `width/height` 与当前 `latest_frame` 不同：
 
@@ -1316,7 +1316,7 @@ app 每帧读取正式 `FrameSource::latest_frame()`。若没有帧或连续 2 �
 2. 更新 `FrameSize`。
 3. 下一次 pointer event 使用新尺寸。
 
-- [ ] **步骤 3：控制设备离线**
+- [x] **步骤 3：控制设备离线**
 
 如果 session notice 或 state 表明输入泵退出、串口写失败或当前 event sender 不可用：
 
@@ -1327,7 +1327,7 @@ app 每帧读取正式 `FrameSource::latest_frame()`。若没有帧或连续 2 �
 
 第一版不做后台自动重连；这避免在目标机反复上下电时反复抢串口。后续 headless/desktop 共享恢复计划再决定是否增加可配置自动重试。
 
-- [ ] **步骤 4：验证**
+- [x] **步骤 4：验证**
 
 自动化覆盖状态机，真实硬件覆盖断流与掉电：
 
@@ -1335,7 +1335,7 @@ app 每帧读取正式 `FrameSource::latest_frame()`。若没有帧或连续 2 �
 cargo test -p ipkvm-desktop --all-features state::tests session::tests -- --nocapture
 ```
 
-- [ ] **步骤 5：提交**
+- [x] **步骤 5：提交**
 
 ```powershell
 git add crates/ipkvm-desktop/src/app.rs crates/ipkvm-desktop/src/session.rs crates/ipkvm-desktop/src/state.rs
@@ -1352,7 +1352,7 @@ git commit -m "feat: handle desktop hardware interruptions"
 - 产出：README 中有 desktop 启动和硬件验证步骤。
 - 产出：设计文档状态从“设计稿”更新为“第一版实施中/已实施”，并记录 headless 恢复拆分。
 
-- [ ] **步骤 1：更新 README**
+- [x] **步骤 1：更新 README**
 
 增加命令和行为说明：
 
@@ -1362,7 +1362,7 @@ cargo run -p ipkvm-desktop --all-features
 
 说明：启动后选择视频设备和控制设备；控制设备必须探测为 CH9329；连接后菜单可发送特殊键、粘贴、截图和重新选设备。
 
-- [ ] **步骤 2：运行自动化验证**
+- [x] **步骤 2：运行自动化验证**
 
 ```powershell
 cargo fmt --all --check
@@ -1376,7 +1376,7 @@ cargo test --workspace --all-features
 
 Expected: 全部 PASS。
 
-- [ ] **步骤 3：真实硬件验证**
+- [x] **步骤 3：真实硬件验证**
 
 在 PR 描述写明以下人工验证证据：
 
@@ -1392,7 +1392,7 @@ Expected: 全部 PASS。
 - 视频分辨率变化后鼠标坐标仍对应目标画面。
 - CH9329 掉电后输入停止，刷新检测恢复后可重新连接。
 
-- [ ] **步骤 4：拆 headless 恢复 issue**
+- [x] **步骤 4：拆 headless 恢复 issue**
 
 如果本 PR 只实现 desktop，则创建独立 Gitea issue，标题：
 
@@ -1402,7 +1402,7 @@ headless：视频断流与 CH9329 掉线恢复模型
 
 正文包含 #33 产品要求、当前 desktop 第一版处理方式、headless 需要补的 `/api/status` 状态、输入离线、重新探测和恢复策略。
 
-- [ ] **步骤 5：提交**
+- [x] **步骤 5：提交**
 
 ```powershell
 git add README.md docs/superpowers/specs/2026-08-02-desktop-app-product-design.md
