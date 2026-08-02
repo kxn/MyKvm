@@ -60,6 +60,9 @@ impl ConnectionEnd {
             Self::Failed(RfbConnectionError::HandshakeTimeout) => {
                 RfbDisconnectReason::HandshakeTimeout
             }
+            Self::Failed(RfbConnectionError::Protocol(RfbProtocolError::AuthenticationFailed)) => {
+                RfbDisconnectReason::AuthenticationFailed
+            }
             Self::Failed(RfbConnectionError::CoreConfig(error)) => {
                 RfbDisconnectReason::CoreConfig(error.clone())
             }
@@ -135,6 +138,7 @@ async fn drive_connection<T: RfbTransport>(
         desktop_name: settings.desktop_name.clone(),
         initial_size: initial_view.size(),
         limits: settings.protocol_limits,
+        security: settings.security.clone(),
     })?;
     write_core_output(transport, &mut core).await?;
 
@@ -584,6 +588,49 @@ mod tests {
         stream.write_all(&[1]).await.unwrap();
         assert_eq!(read_exact_vec(stream, 4).await, [0, 0, 0, 0]);
         stream.write_all(&[u8::from(shared)]).await.unwrap();
+
+        let header = read_exact_vec(stream, 24).await;
+        let width = u16::from_be_bytes([header[0], header[1]]);
+        let height = u16::from_be_bytes([header[2], header[3]]);
+        let name_length =
+            u32::from_be_bytes([header[20], header[21], header[22], header[23]]) as usize;
+        let name = String::from_utf8(read_exact_vec(stream, name_length).await).unwrap();
+        (width, height, name)
+    }
+
+    /// 独立于产品实现的 VNC 响应复刻（RFC 6143 §7.2）——用测试自己的
+    /// 派生与 des 加密，避免产品函数自证。密钥 = 密码补零到 8 字节后
+    /// 每字节位反转（Erratum 4951，与 libvncserver/noVNC 互证）。
+    fn vnc_response(password: &[u8; 8], challenge: &[u8; 16]) -> [u8; 16] {
+        use cipher::{BlockEncrypt, KeyInit, generic_array::GenericArray};
+        let mut key = [0_u8; 8];
+        for (index, byte) in password.iter().copied().enumerate() {
+            key[index] = byte.reverse_bits();
+        }
+        let cipher = des::Des::new_from_slice(&key).unwrap();
+        let mut response = *challenge;
+        for chunk in response.chunks_exact_mut(8) {
+            cipher.encrypt_block(GenericArray::from_mut_slice(chunk));
+        }
+        response
+    }
+
+    /// 在真实 TCP 对上完成 VNC 密码握手（`security` 配置的 settings）。
+    async fn finish_vnc_handshake(
+        stream: &mut TcpStream,
+        password: &[u8; 8],
+    ) -> (u16, u16, String) {
+        assert_eq!(read_exact_vec(stream, 12).await, b"RFB 003.008\n");
+        write_fragmented(stream, b"RFB 003.008\n").await;
+        assert_eq!(read_exact_vec(stream, 2).await, [1, 2]);
+        stream.write_all(&[2]).await.unwrap();
+        let challenge: [u8; 16] = read_exact_vec(stream, 16).await.try_into().unwrap();
+        stream
+            .write_all(&vnc_response(password, &challenge))
+            .await
+            .unwrap();
+        assert_eq!(read_exact_vec(stream, 4).await, [0, 0, 0, 0]);
+        stream.write_all(&[1]).await.unwrap();
 
         let header = read_exact_vec(stream, 24).await;
         let width = u16::from_be_bytes([header[0], header[1]]);
@@ -1150,5 +1197,100 @@ mod tests {
         let mut remaining = Vec::new();
         client.read_to_end(&mut remaining).await.unwrap();
         assert!(remaining.is_empty());
+    }
+
+    #[tokio::test]
+    async fn vnc_password_handshake_emits_connected_event() {
+        let frame_source = MockFrameSource::new();
+        frame_source.publish_frame(shared_bgra_frame(1, 2, 1, &[1, 2, 3, 0, 4, 5, 6, 0]));
+        let (server_stream, mut client_stream, peer_addr) = tcp_pair().await;
+        let (event_tx, mut event_rx) = mpsc::channel(8);
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let settings = RfbConnectionSettings {
+            security: ipkvm_rfb::RfbSecurity::Vnc {
+                password: *b"12345678",
+            },
+            ..RfbConnectionSettings::default()
+        };
+        let mut task = spawn_connection(
+            RfbClientId(1),
+            peer_addr,
+            server_stream,
+            &frame_source,
+            event_tx,
+            settings,
+            shutdown_rx,
+        );
+
+        let handshake = tokio::select! {
+            handshake = finish_vnc_handshake(&mut client_stream, b"12345678") => handshake,
+            end = &mut task => panic!("connection ended before handshake: {end:?}"),
+        };
+        assert_eq!(handshake, (2, 1, "my_ipkvm".to_string()));
+        assert!(matches!(
+            event_rx.recv().await,
+            Some(RfbServerEvent::Connected {
+                client_id: RfbClientId(1),
+                shared: true,
+                ..
+            })
+        ));
+
+        drop(client_stream);
+        assert!(matches!(task.await.unwrap(), ConnectionEnd::ClientClosed));
+    }
+
+    #[tokio::test]
+    async fn wrong_vnc_password_ends_with_authentication_failed() {
+        let frame_source = MockFrameSource::new();
+        frame_source.publish_frame(shared_bgra_frame(1, 1, 1, &[0; 4]));
+        let (server_stream, mut client_stream, peer_addr) = tcp_pair().await;
+        let (event_tx, _event_rx) = mpsc::channel(8);
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let settings = RfbConnectionSettings {
+            security: ipkvm_rfb::RfbSecurity::Vnc {
+                password: *b"12345678",
+            },
+            ..RfbConnectionSettings::default()
+        };
+        let task = spawn_connection(
+            RfbClientId(2),
+            peer_addr,
+            server_stream,
+            &frame_source,
+            event_tx,
+            settings,
+            shutdown_rx,
+        );
+
+        assert_eq!(
+            read_exact_vec(&mut client_stream, 12).await,
+            b"RFB 003.008\n"
+        );
+        client_stream.write_all(b"RFB 003.008\n").await.unwrap();
+        assert_eq!(read_exact_vec(&mut client_stream, 2).await, [1, 2]);
+        client_stream.write_all(&[2]).await.unwrap();
+        let challenge: [u8; 16] = read_exact_vec(&mut client_stream, 16)
+            .await
+            .try_into()
+            .unwrap();
+        let wrong = vnc_response(b"wrongpas", &challenge);
+        client_stream.write_all(&wrong).await.unwrap();
+        let failed = read_exact_vec(&mut client_stream, 4).await;
+        assert_eq!(failed, [0, 0, 0, 1]);
+
+        assert!(matches!(
+            task.await.unwrap(),
+            ConnectionEnd::Failed(RfbConnectionError::Protocol(
+                ipkvm_rfb::RfbProtocolError::AuthenticationFailed
+            ))
+        ));
+        assert_eq!(
+            ConnectionEnd::Failed(RfbConnectionError::Protocol(
+                ipkvm_rfb::RfbProtocolError::AuthenticationFailed
+            ))
+            .reason(),
+            Some(RfbDisconnectReason::AuthenticationFailed)
+        );
     }
 }

@@ -37,10 +37,10 @@ struct TestWebServer {
 
 impl TestWebServer {
     async fn start() -> Self {
-        Self::start_with_frame(Some(test_frame())).await
+        Self::start_with_frame(Some(test_frame()), None).await
     }
 
-    async fn start_with_frame(frame: Option<SharedVideoFrame>) -> Self {
+    async fn start_with_frame(frame: Option<SharedVideoFrame>, auth: Option<String>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let source = Arc::new(MockFrameSource::new());
@@ -55,6 +55,7 @@ impl TestWebServer {
             RfbWebSocketConfig::default(),
             shutdown_rx,
             RfbConnectionGate::new(),
+            auth, // HTTP 鉴权 token；None 表示仅放行本机来源
         )
         .unwrap();
         let task = tokio::spawn(service.serve(listener));
@@ -72,11 +73,24 @@ impl TestWebServer {
     }
 
     async fn request(&self, method: &str, path: &str) -> HttpResponse {
+        self.request_with_headers(method, path, &[]).await
+    }
+
+    async fn request_with_headers(
+        &self,
+        method: &str,
+        path: &str,
+        headers: &[(&str, &str)],
+    ) -> HttpResponse {
         let mut stream = TcpStream::connect(self.address).await.unwrap();
-        let request = format!(
-            "{method} {path} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+        let mut request = format!(
+            "{method} {path} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\nContent-Length: 0\r\n",
             self.address
         );
+        for (name, value) in headers {
+            request.push_str(&format!("{name}: {value}\r\n"));
+        }
+        request.push_str("\r\n");
         stream.write_all(request.as_bytes()).await.unwrap();
         let mut response = Vec::new();
         stream.read_to_end(&mut response).await.unwrap();
@@ -273,12 +287,76 @@ async fn api_screenshot_returns_red_jpeg_when_bgra_frame_available() {
 
 #[tokio::test]
 async fn api_screenshot_503_when_no_frame() {
-    let server = TestWebServer::start_with_frame(None).await;
+    let server = TestWebServer::start_with_frame(None, None).await;
 
     let response = server.request("GET", "/api/screenshot").await;
 
     assert_eq!(response.status, 503);
     assert!(response.body.is_empty());
+
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn configured_token_requires_credentials_everywhere() {
+    let server =
+        TestWebServer::start_with_frame(Some(test_frame()), Some("secret".to_string())).await;
+
+    let anonymous = server.request("GET", "/api/status").await;
+    assert_eq!(anonymous.status, 401);
+    assert_eq!(
+        anonymous
+            .headers
+            .get("www-authenticate")
+            .map(String::as_str),
+        Some("Bearer")
+    );
+
+    let wrong = server
+        .request_with_headers("GET", "/api/status", &[("Authorization", "Bearer wrong")])
+        .await;
+    assert_eq!(wrong.status, 401);
+
+    let correct = server
+        .request_with_headers("GET", "/api/status", &[("Authorization", "Bearer secret")])
+        .await;
+    assert_eq!(correct.status, 200);
+
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn configured_token_accepts_cookie_and_query_and_sets_cookie() {
+    let server =
+        TestWebServer::start_with_frame(Some(test_frame()), Some("secret".to_string())).await;
+
+    let cookie = server
+        .request_with_headers("GET", "/api/status", &[("Cookie", "ipkvm_token=secret")])
+        .await;
+    assert_eq!(cookie.status, 200);
+
+    let query = server.request("GET", "/?token=secret").await;
+    assert_eq!(query.status, 200);
+    let set_cookie = query.headers.get("set-cookie").cloned().unwrap_or_default();
+    assert!(
+        set_cookie.contains("ipkvm_token=secret"),
+        "应种下 ipkvm_token cookie：{set_cookie}"
+    );
+
+    // 静态页与 /rfb 升级同样被中间件覆盖。
+    let page_without_credentials = server.request("GET", "/").await;
+    assert_eq!(page_without_credentials.status, 401);
+    assert!(
+        server
+            .request_with_headers(
+                "GET",
+                "/vendor/novnc/core/rfb.js",
+                &[("Authorization", "Bearer secret")],
+            )
+            .await
+            .status
+            == 200
+    );
 
     server.stop().await;
 }

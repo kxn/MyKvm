@@ -11,7 +11,11 @@ let disconnectRequested = false;
 
 function websocketUrl() {
   const scheme = location.protocol === "https:" ? "wss" : "ws";
-  return `${scheme}://${location.host}/rfb`;
+  // token 在服务端配置校验中已限制为 RFC 3986 无保留字符（字母数字与 -_.~），
+  // 因此 encodeURIComponent 对它是恒等变换；服务端按原始字节比较、不做 URL 解码。
+  const token = new URLSearchParams(location.search).get("token");
+  const query = token ? `?token=${encodeURIComponent(token)}` : "";
+  return `${scheme}://${location.host}/rfb${query}`;
 }
 
 function setConnectionState(state, text) {

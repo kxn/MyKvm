@@ -1,8 +1,10 @@
 use crate::protocol::client::{ClientMessage, ClientMessageDecoder};
 use crate::protocol::server::{
-    NONE_SECURITY_TYPES, PROTOCOL_VERSION, SECURITY_RESULT_OK, checked_output_len,
-    encode_desktop_size_update, encode_empty_update, encode_raw_update, encode_server_init,
+    AUTH_FAILED_REASON, NONE_SECURITY_TYPES, PROTOCOL_VERSION, SECURITY_RESULT_FAILED,
+    SECURITY_RESULT_OK, VNC_SECURITY_TYPES, checked_output_len, encode_desktop_size_update,
+    encode_empty_update, encode_raw_update, encode_server_init,
 };
+use crate::security::{RfbSecurity, constant_time_eq, vnc_expected_response};
 use crate::{
     BgraFrameView, FramebufferUpdateRequest, RfbPixelFormat, RfbProtocolError, RfbProtocolLimits,
     RfbRectangle, RfbSize,
@@ -14,12 +16,14 @@ pub struct RfbConnectionConfig {
     pub desktop_name: String,
     pub initial_size: RfbSize,
     pub limits: RfbProtocolLimits,
+    pub security: RfbSecurity,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RfbConnectionState {
     AwaitingVersion,
     AwaitingSecuritySelection,
+    AwaitingChallengeResponse,
     AwaitingClientInit,
     Normal,
     Failed,
@@ -72,6 +76,7 @@ pub enum RfbEncodeError {
 pub struct RfbConnectionCore {
     config: RfbConnectionConfig,
     state: RfbConnectionState,
+    vnc_challenge: [u8; 16],
     handshake_input: Vec<u8>,
     client_decoder: ClientMessageDecoder,
     output: Vec<u8>,
@@ -86,6 +91,8 @@ pub struct RfbConnectionCore {
 impl RfbConnectionCore {
     pub fn new(config: RfbConnectionConfig) -> Result<Self, RfbConfigError> {
         validate_config(&config)?;
+        let mut vnc_challenge = [0_u8; 16];
+        rand::RngCore::fill_bytes(&mut rand::rng(), &mut vnc_challenge);
         let pixel_format = RfbPixelFormat::default_bgrx8888();
         let server_init =
             encode_server_init(config.initial_size, pixel_format, &config.desktop_name)?;
@@ -95,6 +102,7 @@ impl RfbConnectionCore {
             client_decoder: ClientMessageDecoder::new(config.limits),
             config,
             state: RfbConnectionState::AwaitingVersion,
+            vnc_challenge,
             handshake_input: Vec::new(),
             output: PROTOCOL_VERSION.to_vec(),
             server_init,
@@ -139,7 +147,10 @@ impl RfbConnectionCore {
                         results.extend(self.fail(RfbProtocolError::UnsupportedVersion(version)));
                         break;
                     }
-                    self.output.extend_from_slice(&NONE_SECURITY_TYPES);
+                    self.output.extend_from_slice(match &self.config.security {
+                        RfbSecurity::None => &NONE_SECURITY_TYPES,
+                        RfbSecurity::Vnc { .. } => &VNC_SECURITY_TYPES,
+                    });
                     self.state = RfbConnectionState::AwaitingSecuritySelection;
                 }
                 RfbConnectionState::AwaitingSecuritySelection => {
@@ -147,14 +158,48 @@ impl RfbConnectionCore {
                         break;
                     };
                     self.handshake_input.drain(..1);
-                    if selection != 1 {
-                        results.extend(
-                            self.fail(RfbProtocolError::UnsupportedSecurityType(selection)),
-                        );
+                    match (selection, &self.config.security) {
+                        (1, RfbSecurity::None) => {
+                            self.output.extend_from_slice(&SECURITY_RESULT_OK);
+                            self.state = RfbConnectionState::AwaitingClientInit;
+                        }
+                        (2, RfbSecurity::Vnc { .. }) => {
+                            self.output.extend_from_slice(&self.vnc_challenge);
+                            self.state = RfbConnectionState::AwaitingChallengeResponse;
+                        }
+                        _ => {
+                            results.extend(
+                                self.fail(RfbProtocolError::UnsupportedSecurityType(selection)),
+                            );
+                            break;
+                        }
+                    }
+                }
+                RfbConnectionState::AwaitingChallengeResponse => {
+                    if self.handshake_input.len() < 16 {
                         break;
                     }
-                    self.output.extend_from_slice(&SECURITY_RESULT_OK);
-                    self.state = RfbConnectionState::AwaitingClientInit;
+                    let mut response = [0_u8; 16];
+                    response.copy_from_slice(&self.handshake_input[..16]);
+                    self.handshake_input.drain(..16);
+                    let RfbSecurity::Vnc { password } = self.config.security else {
+                        unreachable!("AwaitingChallengeResponse 只在 Vnc 配置下进入");
+                    };
+                    let expected = vnc_expected_response(password, self.vnc_challenge);
+                    if constant_time_eq(&expected, &response) {
+                        self.output.extend_from_slice(&SECURITY_RESULT_OK);
+                        self.state = RfbConnectionState::AwaitingClientInit;
+                    } else {
+                        // RFC 6143 §7.2.3：失败发 SecurityResultFailed + 原因，
+                        // 随后连接关闭（状态置 Failed）。
+                        let reason = AUTH_FAILED_REASON;
+                        self.output.extend_from_slice(&SECURITY_RESULT_FAILED);
+                        self.output
+                            .extend_from_slice(&(reason.len() as u32).to_be_bytes());
+                        self.output.extend_from_slice(reason);
+                        results.extend(self.fail(RfbProtocolError::AuthenticationFailed));
+                        break;
+                    }
                 }
                 RfbConnectionState::AwaitingClientInit => {
                     let Some(shared) = self.handshake_input.first().copied() else {
@@ -406,12 +451,160 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
-    fn config() -> RfbConnectionConfig {
+    fn config_with_security(security: RfbSecurity) -> RfbConnectionConfig {
         RfbConnectionConfig {
             desktop_name: "my_ipkvm".to_owned(),
             initial_size: RfbSize::new(640, 480).unwrap(),
             limits: RfbProtocolLimits::default(),
+            security,
         }
+    }
+
+    fn config() -> RfbConnectionConfig {
+        config_with_security(RfbSecurity::None)
+    }
+
+    fn vnc_config() -> RfbConnectionConfig {
+        config_with_security(RfbSecurity::Vnc {
+            password: *b"12345678",
+        })
+    }
+
+    /// 完整 VNC 密码握手：读 challenge 并生成响应（协议测试里直接用产品
+    /// 实现生成响应是自证——这里特意用 des crate + 内联派生交叉验证）。
+    fn vnc_response(password: &[u8; 8], challenge: &[u8; 16]) -> [u8; 16] {
+        use cipher::{BlockEncrypt, KeyInit, generic_array::GenericArray};
+        let mut key = [0_u8; 8];
+        for (index, byte) in password.iter().copied().enumerate() {
+            key[index] = byte.reverse_bits();
+        }
+        let cipher = des::Des::new_from_slice(&key).unwrap();
+        let mut response = *challenge;
+        for chunk in response.chunks_exact_mut(8) {
+            cipher.encrypt_block(GenericArray::from_mut_slice(chunk));
+        }
+        response
+    }
+
+    #[test]
+    fn vnc_handshake_succeeds_with_correct_password() {
+        let mut connection = RfbConnectionCore::new(vnc_config()).unwrap();
+        assert_eq!(connection.take_output(), b"RFB 003.008\n");
+
+        assert!(connection.push_input(b"RFB 003.008\n").is_empty());
+        assert_eq!(
+            connection.state(),
+            RfbConnectionState::AwaitingSecuritySelection
+        );
+        // 安全类型列表只提供 VNC（一个类型：2）。
+        assert_eq!(connection.take_output(), [1, 2]);
+
+        assert!(connection.push_input(&[2]).is_empty());
+        assert_eq!(
+            connection.state(),
+            RfbConnectionState::AwaitingChallengeResponse
+        );
+        let challenge: [u8; 16] = connection.take_output().try_into().unwrap();
+
+        let response = vnc_response(b"12345678", &challenge);
+        assert!(connection.push_input(&response).is_empty());
+        assert_eq!(connection.take_output(), [0, 0, 0, 0]);
+        assert_eq!(connection.state(), RfbConnectionState::AwaitingClientInit);
+
+        assert_eq!(
+            connection.push_input(&[1]),
+            vec![Ok(RfbEvent::HandshakeCompleted { shared: true })]
+        );
+        assert_eq!(connection.state(), RfbConnectionState::Normal);
+        assert!(!connection.take_output().is_empty());
+    }
+
+    #[test]
+    fn vnc_handshake_rejects_wrong_password() {
+        let mut connection = RfbConnectionCore::new(vnc_config()).unwrap();
+        connection.take_output();
+        connection.push_input(b"RFB 003.008\n");
+        connection.take_output();
+        connection.push_input(&[2]);
+        let challenge: [u8; 16] = connection.take_output().try_into().unwrap();
+
+        let wrong = vnc_response(b"wrongpas", &challenge);
+        assert_eq!(
+            connection.push_input(&wrong),
+            vec![Err(RfbProtocolError::AuthenticationFailed)]
+        );
+        assert_eq!(connection.state(), RfbConnectionState::Failed);
+        // 失败响应：SecurityResultFailed + 原因字符串（RFC 6143 §7.2.3）。
+        let output = connection.take_output();
+        let mut expected = vec![0, 0, 0, 1];
+        expected.extend_from_slice(&(21_u32).to_be_bytes());
+        expected.extend_from_slice(b"authentication failed");
+        assert_eq!(output, expected);
+        assert_eq!(
+            connection.push_input(&[1]),
+            vec![Err(RfbProtocolError::ConnectionFailed)]
+        );
+    }
+
+    #[test]
+    fn vnc_response_accepted_across_arbitrary_chunks() {
+        let mut connection = RfbConnectionCore::new(vnc_config()).unwrap();
+        connection.take_output();
+        connection.push_input(b"RFB 003.008\n");
+        connection.take_output();
+        connection.push_input(&[2]);
+        let challenge: [u8; 16] = connection.take_output().try_into().unwrap();
+        let response = vnc_response(b"12345678", &challenge);
+
+        // 7 + 9 字节分块到达。
+        assert!(connection.push_input(&response[..7]).is_empty());
+        assert!(connection.push_input(&response[7..]).is_empty());
+        assert_eq!(connection.take_output(), [0, 0, 0, 0]);
+        assert_eq!(connection.state(), RfbConnectionState::AwaitingClientInit);
+    }
+
+    #[test]
+    fn vnc_challenge_is_random_across_connections() {
+        // 两个 core 的 challenge 必须不同（CSPRNG）。相同概率 2^-128，
+        // 可忽略；该断言防「challenge 硬编码」回归。
+        let first: [u8; 16] = {
+            let mut connection = RfbConnectionCore::new(vnc_config()).unwrap();
+            connection.take_output();
+            connection.push_input(b"RFB 003.008\n");
+            connection.take_output();
+            connection.push_input(&[2]);
+            connection.take_output().try_into().unwrap()
+        };
+        let second: [u8; 16] = {
+            let mut connection = RfbConnectionCore::new(vnc_config()).unwrap();
+            connection.take_output();
+            connection.push_input(b"RFB 003.008\n");
+            connection.take_output();
+            connection.push_input(&[2]);
+            connection.take_output().try_into().unwrap()
+        };
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn vnc_mode_rejects_none_selection_and_none_mode_rejects_vnc() {
+        let mut vnc = RfbConnectionCore::new(vnc_config()).unwrap();
+        vnc.take_output();
+        vnc.push_input(b"RFB 003.008\n");
+        vnc.take_output();
+        assert_eq!(
+            vnc.push_input(&[1]),
+            vec![Err(RfbProtocolError::UnsupportedSecurityType(1))]
+        );
+
+        let mut none = RfbConnectionCore::new(config_with_security(RfbSecurity::None)).unwrap();
+        none.take_output();
+        none.push_input(b"RFB 003.008\n");
+        none.take_output();
+        assert_eq!(
+            none.push_input(&[2]),
+            vec![Err(RfbProtocolError::UnsupportedSecurityType(2))]
+        );
     }
 
     #[test]
@@ -485,6 +678,7 @@ mod tests {
             desktop_name: "my_ipkvm".to_owned(),
             initial_size: RfbSize::new(width, height).unwrap(),
             limits: RfbProtocolLimits::default(),
+            security: RfbSecurity::None,
         }
     }
 

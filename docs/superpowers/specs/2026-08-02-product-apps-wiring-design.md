@@ -73,6 +73,8 @@ session 新增 `ipkvm-rfb`、`tokio`、`serialport`（可选，随 serial featur
 
 ### 配置：TOML 文件 + CLI 覆盖
 
+> **状态：已实现**（issue #31）
+
 - 新增 `--config <路径>` 读 TOML；CLI 参数覆盖文件字段（CLI 优先级最高）。
 - 默认字段与现状一致（`bind=127.0.0.1`、`tcp=5900`、`http=6080`、`fps=10`、`baud=9600`）。
 - 示例：
@@ -92,12 +94,15 @@ serial = "COM9"
 baud = 9600
 
 [auth]
-token = "..."                    # 可选；配置了才启用鉴权
+token = "..."                    # 可选；HTTP/WS 鉴权 token（非空、仅含 RFC 3986 无保留字符），配置了才启用
+vnc_password = "abc12345"        # 可选；RFB VNC 密码（1-8 个 ASCII 字符），配置了才启用
 ```
 
 - 配置文件错误、字段冲突有明确报错和帮助。
 
 ### HTTP 管理 API（蓝图全量）
+
+> **状态：待办**（issue #32）
 
 按 coarse-design 蓝图补全，全部走鉴权（token 或禁配时拒绝非本机）：
 
@@ -110,7 +115,10 @@ token = "..."                    # 可选；配置了才启用鉴权
 
 ### 鉴权（最小）
 
+> **状态：已实现**（issue #31）
+
 - 配置 `[auth] token` 则启用；未配置默认拒绝非 `127.0.0.1` 来源（防默认暴露）。
+- `token`（非空、仅含 RFC 3986 无保留字符——字母数字与 `-_.~`，保证 query 通道免百分号编码）管 HTTP/WS 凭证，`vnc_password`（1-8 个 ASCII 字符）管 RFB VNC 密码挑战，两者独立。
 - HTTP：`Authorization: Bearer <token>` 或 cookie；RFB TCP 与 WS 同样校验（VNC 密码/WS token）。
 - 统一在传输层前的一个中间件/包装点做，不散落在每个路由。
 
@@ -176,7 +184,7 @@ FrameSource（相机）     ──latest_frame──▶ wgpu 纹理 ──▶ �
 
 ## 后续工作（不在本设计内）
 
-- 鉴权/TLS 完整子系统（RFB 加密、证书）仍留后续。
+- 最小鉴权已落地（issue #31：HTTP/WS token、RFB VNC 密码、未配置时本机限制）；完整安全子系统（TLS、RFB 加密、证书）仍留后续。
 - 多查看者并发观察同一帧缓冲（`ipkvm-session` 负责跨入口控制权仲裁）留后续。
 - 视频压缩（脏块检测、ZRLE/Tight/JPEG）留后续。
 - 会话创建/重启（`/api/session`）依赖帧源热替换，实现细节后续细化；初始会话由 CLI/配置启动。

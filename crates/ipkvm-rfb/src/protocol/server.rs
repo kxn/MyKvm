@@ -4,7 +4,10 @@ use crate::{BgraFrameView, RfbConfigError, RfbEncodeError, RfbRectangle, RfbSize
 
 pub(crate) const PROTOCOL_VERSION: &[u8; 12] = b"RFB 003.008\n";
 pub(crate) const NONE_SECURITY_TYPES: [u8; 2] = [1, 1];
+pub(crate) const VNC_SECURITY_TYPES: [u8; 2] = [1, 2];
 pub(crate) const SECURITY_RESULT_OK: [u8; 4] = [0, 0, 0, 0];
+pub(crate) const SECURITY_RESULT_FAILED: [u8; 4] = [0, 0, 0, 1];
+pub(crate) const AUTH_FAILED_REASON: &[u8] = b"authentication failed";
 
 pub(crate) fn encode_server_init(
     size: RfbSize,
@@ -125,6 +128,8 @@ mod tests {
         assert_eq!(PROTOCOL_VERSION, b"RFB 003.008\n");
         assert_eq!(NONE_SECURITY_TYPES, [1, 1]);
         assert_eq!(SECURITY_RESULT_OK, [0, 0, 0, 0]);
+        assert_eq!(VNC_SECURITY_TYPES, [1, 2]);
+        assert_eq!(SECURITY_RESULT_FAILED, [0, 0, 0, 1]);
     }
 
     #[test]

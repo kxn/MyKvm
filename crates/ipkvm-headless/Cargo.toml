@@ -17,9 +17,11 @@ jpeg-encoder.workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 thiserror.workspace = true
+toml.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-multi-thread", "signal"] }
 
 [dev-dependencies]
+des.workspace = true
 futures-util.workspace = true
 ipkvm-core = { path = "../ipkvm-core", features = ["mock"] }
 ipkvm-video = { path = "../ipkvm-video", features = ["mock"] }

@@ -29,6 +29,8 @@ pub enum RfbProtocolError {
     LengthOverflow,
     #[error("connection is already in the failed state")]
     ConnectionFailed,
+    #[error("VNC password authentication failed")]
+    AuthenticationFailed,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
