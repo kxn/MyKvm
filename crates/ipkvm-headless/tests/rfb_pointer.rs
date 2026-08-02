@@ -91,11 +91,13 @@ fn first_button_message_is_one_atomic_command_batch() {
     let batches = queue.accepted_batches();
     assert_eq!(batches.len(), 1);
     assert_eq!(batches[0].frames().len(), 2);
-    let move_report = batches[0].frames()[0].data();
-    let button_report = batches[0].frames()[1].data();
-    assert_eq!(move_report[1], 0);
-    assert_eq!(button_report[1], 1);
-    assert_eq!(&move_report[2..6], &button_report[2..6]);
+    // frame[0]: 绝对移动（0x04），buttons=0。
+    assert_eq!(batches[0].frames()[0].command(), 0x04);
+    assert_eq!(batches[0].frames()[0].data()[1], 0);
+    // frame[1]: 左键按下（0x05 相对命令），buttons=1，dx/dy/wheel=0。
+    assert_eq!(batches[0].frames()[1].command(), 0x05);
+    assert_eq!(batches[0].frames()[1].data()[1], 1);
+    assert_eq!(batches[0].frames()[1].data(), &[0x01, 0x01, 0, 0, 0]);
 }
 
 #[test]
@@ -106,7 +108,7 @@ fn queue_failure_rolls_back_mapper_and_real_sink_together() {
     queue.fail_next(CommandQueueError::Closed);
 
     assert_eq!(
-        mapper.handle_pointer(&mut sink, 0x09, 100, 200, full_hd()),
+        mapper.handle_pointer(&mut sink, 0x03, 100, 200, full_hd()),
         Err(RfbPointerError::Input(InputError::CommandQueue(
             CommandQueueError::Closed
         )))
@@ -114,21 +116,28 @@ fn queue_failure_rolls_back_mapper_and_real_sink_together() {
     assert!(queue.accepted_batches().is_empty());
 
     mapper
-        .handle_pointer(&mut sink, 0x09, 100, 200, full_hd())
+        .handle_pointer(&mut sink, 0x03, 100, 200, full_hd())
         .unwrap();
     mapper
-        .handle_pointer(&mut sink, 0x09, 101, 201, full_hd())
+        .handle_pointer(&mut sink, 0x03, 101, 201, full_hd())
         .unwrap();
 
     let batches = queue.accepted_batches();
     assert_eq!(batches.len(), 2);
+    // batches[0]：移动(0x04,buttons=0) + 左键down(0x05,buttons=1) + 中键down(0x05,buttons=5)。
+    // 注意：RFB 按钮掩码位序（bit0=左 bit1=中 bit2=右）经 PointerButton 转换后，
+    // CH9329 帧里中键落在 bit2，所以左+中 = 0x05（而非 0x03）。
     assert_eq!(batches[0].frames().len(), 3);
+    assert_eq!(batches[0].frames()[0].command(), 0x04);
     assert_eq!(batches[0].frames()[0].data()[1], 0);
+    assert_eq!(batches[0].frames()[1].command(), 0x05);
     assert_eq!(batches[0].frames()[1].data()[1], 1);
-    assert_eq!(batches[0].frames()[2].data()[6], 1);
+    assert_eq!(batches[0].frames()[2].command(), 0x05);
+    assert_eq!(batches[0].frames()[2].data()[1], 0x05);
+    // batches[1]：仅移动（button_mask 未变，buttons=0x05 持续）。
     assert_eq!(batches[1].frames().len(), 1);
-    assert_eq!(batches[1].frames()[0].data()[1], 1);
-    assert_eq!(batches[1].frames()[0].data()[6], 0);
+    assert_eq!(batches[1].frames()[0].command(), 0x04);
+    assert_eq!(batches[1].frames()[0].data()[1], 0x05);
 }
 
 #[test]
@@ -190,8 +199,13 @@ fn wheel_release_does_not_generate_another_step() {
 
     let batches = queue.accepted_batches();
     assert_eq!(batches.len(), 2);
+    // batches[0]：移动(0x04) + 滚轮(0x05 相对，wheel=1)。滚轮走相对命令（协议修正）。
     assert_eq!(batches[0].frames().len(), 2);
-    assert_eq!(batches[0].frames()[1].data()[6], 1);
+    assert_eq!(batches[0].frames()[1].command(), 0x05);
+    assert_eq!(batches[0].frames()[1].data()[4], 1);
+    // batches[1]：滚轮释放（mask 0x00 → 无 pressed edge）→ 只产生移动帧(0x04)。
+    // wheel 释放不产生帧，测试名即「不生成额外步进」。
     assert_eq!(batches[1].frames().len(), 1);
+    assert_eq!(batches[1].frames()[0].command(), 0x04);
     assert_eq!(batches[1].frames()[0].data()[6], 0);
 }

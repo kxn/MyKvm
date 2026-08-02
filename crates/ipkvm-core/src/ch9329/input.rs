@@ -110,14 +110,10 @@ impl MouseState {
     }
 
     fn release_command(&self) -> InputResult<Ch9329Command> {
-        match (self.mode, self.last_absolute) {
-            (MouseMode::Absolute, Some((x, y))) => Ok(Ch9329Command::MouseAbsolute(
-                AbsoluteMouseReport::new(0, x, y, 0)?,
-            )),
-            _ => Ok(Ch9329Command::MouseRelative(RelativeMouseReport::new(
-                0, 0, 0, 0,
-            )?)),
-        }
+        // 释放鼠标按键：走相对命令 buttons=0（与按键逻辑一致；绝对帧的按键位不被识别）。
+        Ok(Ch9329Command::MouseRelative(RelativeMouseReport::new(
+            0, 0, 0, 0,
+        )?))
     }
 
     fn apply_events(
@@ -192,18 +188,16 @@ impl MouseState {
         } else {
             self.buttons &= !mask;
         }
-        let command = match self.mode {
-            MouseMode::Absolute => {
-                let (x, y) = self
-                    .last_absolute
-                    .ok_or(InputError::PointerPositionUnknown)?;
-                Ch9329Command::MouseAbsolute(AbsoluteMouseReport::new(self.buttons, x, y, 0)?)
-            }
-            MouseMode::Relative => {
-                Ch9329Command::MouseRelative(RelativeMouseReport::new(self.buttons, 0, 0, 0)?)
-            }
-        };
-        commands.push(command);
+        // 鼠标按键始终走相对命令（cmd 0x05），即使处于绝对定位模式。
+        // 实测与参考实现（kvm-serial）一致：绝对帧（0x04）只承载坐标，按键位在绝对帧
+        // 里不被目标机识别；按键必须用相对帧 [0x01, buttons, 0,0,0] 发送。
+        // 这也让按键不再依赖已知绝对位置（可在移动前点击）。
+        commands.push(Ch9329Command::MouseRelative(RelativeMouseReport::new(
+            self.buttons,
+            0,
+            0,
+            0,
+        )?));
         Ok(())
     }
 
@@ -212,25 +206,8 @@ impl MouseState {
         if chunks.is_empty() {
             return Ok(());
         }
-
-        match self.mode {
-            MouseMode::Absolute => {
-                let (x, y) = self
-                    .last_absolute
-                    .ok_or(InputError::PointerPositionUnknown)?;
-                for (_, _, wheel) in chunks {
-                    commands.push(Ch9329Command::MouseAbsolute(AbsoluteMouseReport::new(
-                        self.buttons,
-                        x,
-                        y,
-                        wheel,
-                    )?));
-                }
-            }
-            MouseMode::Relative => {
-                commands.extend(relative_commands(self.buttons, chunks)?);
-            }
-        }
+        // 滚轮同样始终走相对命令（与按键同理，参考 kvm-serial）。
+        commands.extend(relative_commands(self.buttons, chunks)?);
         Ok(())
     }
 
@@ -576,53 +553,27 @@ mod tests {
                         } else {
                             next.buttons &= !mask;
                         }
-                        match next.mode {
-                            MouseMode::Absolute => {
-                                let (x, y) = next.last_absolute.ok_or(())?;
-                                frames.push(ExpectedPointerFrame::Absolute {
-                                    buttons: next.buttons,
-                                    x,
-                                    y,
-                                    wheel: 0,
-                                });
-                            }
-                            MouseMode::Relative => {
-                                frames.push(ExpectedPointerFrame::Relative {
-                                    buttons: next.buttons,
-                                    dx: 0,
-                                    dy: 0,
-                                    wheel: 0,
-                                });
-                            }
-                        }
+                        // 协议修正：按键始终走相对命令（不论模式），不依赖 last_absolute。
+                        frames.push(ExpectedPointerFrame::Relative {
+                            buttons: next.buttons,
+                            dx: 0,
+                            dy: 0,
+                            wheel: 0,
+                        });
                     }
                     PointerEvent::Wheel { delta } => {
                         let chunks = test_split_delta(0, 0, delta);
                         if chunks.is_empty() {
                             continue;
                         }
-                        match next.mode {
-                            MouseMode::Absolute => {
-                                let (x, y) = next.last_absolute.ok_or(())?;
-                                for (_, _, wheel) in chunks {
-                                    frames.push(ExpectedPointerFrame::Absolute {
-                                        buttons: next.buttons,
-                                        x,
-                                        y,
-                                        wheel,
-                                    });
-                                }
-                            }
-                            MouseMode::Relative => {
-                                for (dx, dy, wheel) in chunks {
-                                    frames.push(ExpectedPointerFrame::Relative {
-                                        buttons: next.buttons,
-                                        dx,
-                                        dy,
-                                        wheel,
-                                    });
-                                }
-                            }
+                        // 协议修正：滚轮始终走相对命令（不论模式）。
+                        for (dx, dy, wheel) in chunks {
+                            frames.push(ExpectedPointerFrame::Relative {
+                                buttons: next.buttons,
+                                dx,
+                                dy,
+                                wheel,
+                            });
                         }
                     }
                 }
@@ -954,17 +905,22 @@ mod tests {
     }
 
     #[test]
-    fn absolute_button_requires_known_position() {
+    fn absolute_button_works_without_known_position() {
+        // 协议修正：鼠标按键始终走相对命令，不依赖已知绝对位置。
+        // 即使未移动过（无 last_absolute），按键也能成功发送。
         let queue = FakeCommandQueue::new();
         let mut sink = Ch9329InputSink::new(queue.clone(), 0, MouseMode::Absolute);
-        assert_eq!(
-            sink.handle_pointer(PointerEvent::Button {
-                button: PointerButton::Left,
-                down: true,
-            }),
-            Err(InputError::PointerPositionUnknown)
-        );
-        assert!(queue.accepted_batches().is_empty());
+        sink.handle_pointer(PointerEvent::Button {
+            button: PointerButton::Left,
+            down: true,
+        })
+        .unwrap();
+        let batches = queue.accepted_batches();
+        assert_eq!(batches.len(), 1);
+        // 按键走相对命令 0x05，data=[0x01, buttons=0x01, 0,0,0]。
+        let frame = &batches[0].frames()[0];
+        assert_eq!(frame.command(), 0x05);
+        assert_eq!(frame.data(), &[0x01, 0x01, 0, 0, 0]);
     }
 
     #[test]
@@ -993,10 +949,16 @@ mod tests {
         let batches = queue.accepted_batches();
         assert_eq!(batches.len(), 1);
         assert_eq!(batches[0].frames().len(), 3);
+        // frame[0]: AbsoluteMove → 绝对命令 0x04，buttons=0。
+        assert_eq!(batches[0].frames()[0].command(), 0x04);
         assert_eq!(batches[0].frames()[0].data()[1], 0);
+        // frame[1]: Button down → 相对命令 0x05，buttons=1。
+        assert_eq!(batches[0].frames()[1].command(), 0x05);
         assert_eq!(batches[0].frames()[1].data()[1], 1);
+        // frame[2]: Wheel → 相对命令 0x05，buttons=1，wheel(data[4])=1。
+        assert_eq!(batches[0].frames()[2].command(), 0x05);
         assert_eq!(batches[0].frames()[2].data()[1], 1);
-        assert_eq!(batches[0].frames()[2].data()[6], 1);
+        assert_eq!(batches[0].frames()[2].data()[4], 1);
     }
 
     #[test]
@@ -1027,13 +989,6 @@ mod tests {
             })
         );
         assert!(queue.accepted_batches().is_empty());
-        assert_eq!(
-            sink.handle_pointer(PointerEvent::Button {
-                button: PointerButton::Left,
-                down: true,
-            }),
-            Err(InputError::PointerPositionUnknown)
-        );
     }
 
     #[test]
@@ -1214,7 +1169,8 @@ mod tests {
     }
 
     #[test]
-    fn absolute_wheel_is_split_at_last_position() {
+    fn absolute_wheel_uses_relative_command_split_by_delta() {
+        // 协议修正：滚轮始终走相对命令（cmd 0x05），与绝对模式无关；按 delta 拆分。
         let queue = FakeCommandQueue::new();
         let mut sink = Ch9329InputSink::new(queue.clone(), 0, MouseMode::Absolute);
         sink.handle_pointer(PointerEvent::AbsoluteMove {
@@ -1229,11 +1185,16 @@ mod tests {
         sink.handle_pointer(PointerEvent::Wheel { delta: 200 })
             .unwrap();
         let batches = queue.accepted_batches();
+        // batches[0]=AbsoluteMove, batches[1]=Wheel（2 帧拆分）。
         let wheel_frames = batches.last().unwrap().frames();
         assert_eq!(wheel_frames.len(), 2);
-        assert_eq!(wheel_frames[0].data()[6], 127);
-        assert_eq!(wheel_frames[1].data()[6], 73);
-        assert_eq!(&wheel_frames[0].data()[2..6], &wheel_frames[1].data()[2..6]);
+        // 相对帧 [0x01, buttons=0, dx=0, dy=0, wheel]，wheel 在 data[4]。
+        assert_eq!(wheel_frames[0].command(), 0x05);
+        assert_eq!(wheel_frames[1].command(), 0x05);
+        assert_eq!(wheel_frames[0].data()[4], 127);
+        assert_eq!(wheel_frames[1].data()[4], 73);
+        // dx/dy 为 0。
+        assert_eq!(&wheel_frames[0].data()[2..4], &[0, 0]);
     }
 
     #[test]
@@ -1303,24 +1264,23 @@ mod tests {
     }
 
     #[test]
-    fn release_all_uses_last_absolute_position_when_available() {
+    fn release_all_uses_relative_command_regardless_of_position() {
+        // 协议修正：release_all 的鼠标释放始终走相对命令 buttons=0，
+        // 不依赖是否已移动（无 last_absolute 也能成功），也不发绝对帧。
         let queue = FakeCommandQueue::new();
         let mut sink = Ch9329InputSink::new(queue.clone(), 0, MouseMode::Absolute);
-        sink.handle_pointer(PointerEvent::AbsoluteMove {
-            x: 100,
-            y: 100,
-            framebuffer_size: FramebufferSize {
-                width: 1280,
-                height: 720,
-            },
-        })
-        .unwrap();
+        // 未移动过（last_absolute=None）直接释放：应成功且只发相对帧。
         sink.release_all().unwrap();
         let batches = queue.accepted_batches();
         let release = &batches.last().unwrap().frames()[1];
-        assert_eq!(release.command(), 0x04);
-        assert_eq!(release.data()[1], 0);
-        assert_eq!(&release.data()[2..6], &[0x40, 0x01, 0x38, 0x02]);
+        assert_eq!(release.command(), 0x05);
+        assert_eq!(release.data(), &[0x01, 0, 0, 0, 0]);
+        assert!(
+            batches
+                .iter()
+                .all(|batch| batch.frames().iter().all(|f| f.command() != 0x04)),
+            "release 不应产生绝对帧"
+        );
     }
 
     #[test]
@@ -1441,10 +1401,10 @@ mod tests {
             expected_frame(0x02, &[0x02, 0x00, 0x04, 0, 0, 0, 0, 0]),
             expected_frame(0x02, &[0x02, 0x00, 0x00, 0, 0, 0, 0, 0]),
             expected_frame(0x04, &[0x02, 0x00, 0x40, 0x01, 0x38, 0x02, 0x00]),
-            expected_frame(0x04, &[0x02, 0x01, 0x40, 0x01, 0x38, 0x02, 0x00]),
-            expected_frame(0x04, &[0x02, 0x00, 0x40, 0x01, 0x38, 0x02, 0x00]),
+            expected_frame(0x05, &[0x01, 0x01, 0, 0, 0]),
+            expected_frame(0x05, &[0x01, 0x00, 0, 0, 0]),
             expected_frame(0x02, &[0x00, 0x00, 0x00, 0, 0, 0, 0, 0]),
-            expected_frame(0x04, &[0x02, 0x00, 0x40, 0x01, 0x38, 0x02, 0x00]),
+            expected_frame(0x05, &[0x01, 0x00, 0, 0, 0]),
         ];
 
         assert_eq!(frames, expected);
