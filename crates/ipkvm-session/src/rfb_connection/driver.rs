@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 
 use ipkvm_rfb::{
     FramebufferUpdateOutcome, FramebufferUpdateRequest, RfbConfigError, RfbConnectionConfig,
-    RfbConnectionCore, RfbConnectionState, RfbEncodeError, RfbEvent, RfbProtocolError,
+    RfbConnectionCore, RfbConnectionState, RfbEncodeError, RfbEvent, RfbProtocolError, RfbSecurity,
 };
 use ipkvm_video::{FrameReceiver, SharedVideoFrame};
 use thiserror::Error;
@@ -135,6 +135,9 @@ async fn drive_connection<T: RfbTransport>(
         desktop_name: settings.desktop_name.clone(),
         initial_size: initial_view.size(),
         limits: settings.protocol_limits,
+        // 暂用匿名安全类型（行为与加字段前完全一致）；T2 将 security 并入
+        // RfbConnectionSettings 后由此处透传。
+        security: RfbSecurity::None,
     })?;
     write_core_output(transport, &mut core).await?;
 

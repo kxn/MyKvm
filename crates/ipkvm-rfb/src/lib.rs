@@ -3,6 +3,7 @@
 mod connection;
 mod framebuffer;
 mod protocol;
+mod security;
 
 pub use connection::{
     FramebufferUpdateOutcome, RfbConfigError, RfbConnectionConfig, RfbConnectionCore,
@@ -11,6 +12,7 @@ pub use connection::{
 pub use framebuffer::{BgraFrameView, RfbFramebufferError, RfbRectangle, RfbSize};
 pub use protocol::client::{FramebufferUpdateRequest, RfbProtocolError};
 pub use protocol::pixel_format::{RfbColorChannel, RfbPixelFormat, RfbPixelFormatError};
+pub use security::RfbSecurity;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RfbServerConfig {

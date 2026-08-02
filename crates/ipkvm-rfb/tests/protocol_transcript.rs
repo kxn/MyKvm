@@ -1,6 +1,6 @@
 use ipkvm_rfb::{
     BgraFrameView, FramebufferUpdateRequest, RfbConnectionConfig, RfbConnectionCore, RfbEvent,
-    RfbProtocolLimits, RfbRectangle, RfbSize,
+    RfbProtocolLimits, RfbRectangle, RfbSecurity, RfbSize,
 };
 
 #[test]
@@ -10,6 +10,7 @@ fn completes_handshake_negotiation_request_and_raw_update() {
         desktop_name: "my_ipkvm".to_owned(),
         initial_size: size,
         limits: RfbProtocolLimits::default(),
+        security: RfbSecurity::None,
     };
     let mut connection = RfbConnectionCore::new(config).unwrap();
 
