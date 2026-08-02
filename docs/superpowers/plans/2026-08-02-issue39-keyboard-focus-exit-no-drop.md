@@ -1,6 +1,6 @@
 # Issue #39 键盘方向键/组合错乱实现计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 修复桌面 app 方向键被 egui 焦点导航截胡、失焦误触发全量释放、事件通道满时丢事件导致的组合键错乱与粘键。
 
@@ -38,7 +38,7 @@
 **Interfaces:**
 - Produces: `pub fn remote_focus_filter() -> eframe::egui::EventFilter`；`pub fn is_remote_exit_combo(event: &eframe::egui::Event) -> bool`
 
-- [ ] **Step 1: 写失败测试**（追加到 `input.rs` 测试模块末尾）
+- [x] **Step 1: 写失败测试**（追加到 `input.rs` 测试模块末尾）
 
 ```rust
     #[test]
@@ -107,12 +107,12 @@
     }
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `cargo test -p ipkvm-desktop input::tests::remote_`
 Expected: 编译失败，`remote_focus_filter` / `is_remote_exit_combo` 未定义。
 
-- [ ] **Step 3: 实现**（追加到 `modifier_diff` 之后、测试模块之前）
+- [x] **Step 3: 实现**（追加到 `modifier_diff` 之后、测试模块之前）
 
 ```rust
 /// 远程输入模式下的 egui 焦点锁：Tab/方向键/Esc 都留在视频面板，
@@ -141,12 +141,12 @@ pub fn is_remote_exit_combo(event: &eframe::egui::Event) -> bool {
 }
 ```
 
-- [ ] **Step 4: 运行确认通过**
+- [x] **Step 4: 运行确认通过**
 
 Run: `cargo test -p ipkvm-desktop input::tests::remote_`
 Expected: 两个测试 PASS。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add crates/ipkvm-desktop/src/input.rs
@@ -165,7 +165,7 @@ git commit -m "test: cover remote focus filter and exit combo"
 - Consumes: `RfbServerEvent`（Clone），`DesktopSessionError`。
 - Produces: `fn flush_pending_events(pending: &mut VecDeque<RfbServerEvent>, try_send: impl FnMut(RfbServerEvent) -> Result<(), TrySendError<RfbServerEvent>>) -> Result<(), DesktopSessionError>`；`DesktopSessionController::send_event` 改为无损提交。
 
-- [ ] **Step 1: 写失败测试**（追加到 `session.rs` 测试模块，测试内 `use tokio::sync::mpsc::error::TrySendError;`）
+- [x] **Step 1: 写失败测试**（追加到 `session.rs` 测试模块，测试内 `use tokio::sync::mpsc::error::TrySendError;`）
 
 ```rust
     fn key_event(tag: u8) -> RfbServerEvent {
@@ -251,12 +251,12 @@ git commit -m "test: cover remote focus filter and exit combo"
     }
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `cargo test -p ipkvm-desktop session::tests::flush_pending_`
 Expected: 编译失败，`flush_pending_events` 未定义。
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 顶部导入追加：
 
@@ -349,12 +349,12 @@ use std::collections::VecDeque;
             .clear();
 ```
 
-- [ ] **Step 4: 运行确认通过**
+- [x] **Step 4: 运行确认通过**
 
 Run: `cargo test -p ipkvm-desktop`
 Expected: 新增 3 个测试及原有 session 测试全部 PASS。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add crates/ipkvm-desktop/src/session.rs
@@ -373,7 +373,7 @@ git commit -m "fix: make desktop event submission lossless with pending retry qu
 - Consumes: `crate::input::remote_focus_filter()`、`crate::input::is_remote_exit_combo()`、`crate::input::KeyAction`。
 - Produces: 远程模式门控逻辑与状态栏提示文案。
 
-- [ ] **Step 1: 写失败测试**（追加到 `app.rs` 测试模块）
+- [x] **Step 1: 写失败测试**（追加到 `app.rs` 测试模块）
 
 ```rust
     #[test]
@@ -388,12 +388,12 @@ git commit -m "fix: make desktop event submission lossless with pending retry qu
     }
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `cargo test -p ipkvm-desktop app::tests::status_texts_show_remote_input_hint_when_video_focused`
 Expected: FAIL，实际为 `"聚焦可输入"`。
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `status_bar_texts` 中键盘分支改为：
 
@@ -516,12 +516,12 @@ Expected: FAIL，实际为 `"聚焦可输入"`。
     }
 ```
 
-- [ ] **Step 4: 运行确认通过**
+- [x] **Step 4: 运行确认通过**
 
 Run: `cargo test -p ipkvm-desktop`
 Expected: 新增测试及全部桌面测试 PASS。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add crates/ipkvm-desktop/src/app.rs
@@ -535,7 +535,7 @@ git commit -m "feat: lock remote input focus with ctrl-alt-k exit and window blu
 **Files:**
 - Modify: `docs/ipkvm-coarse-design.md`（若无桌面小节则在文档末尾追加）
 
-- [ ] **Step 1: 更新设计文档**
+- [x] **Step 1: 更新设计文档**
 
 在 `docs/ipkvm-coarse-design.md` 追加：
 
@@ -550,19 +550,19 @@ git commit -m "feat: lock remote input focus with ctrl-alt-k exit and window blu
   补发，不丢按键 down/up；发送失败在状态栏可见。
 ```
 
-- [ ] **Step 2: 提交**
+- [x] **Step 2: 提交**
 
 ```bash
 git add docs/ipkvm-coarse-design.md
 git commit -m "docs: document desktop remote input mode and lossless event submission"
 ```
 
-- [ ] **Step 3: 全量验证**
+- [x] **Step 3: 全量验证**
 
 Run: `cargo fmt --all --check`、`cargo test --workspace --all-features`
 Expected: 全部通过。
 
-- [ ] **Step 4: 在 issue #39 评论实施记录与人工验证清单**
+- [x] **Step 4: 在 issue #39 评论实施记录与人工验证清单**
 
 ```powershell
 $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
