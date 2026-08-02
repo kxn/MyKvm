@@ -1,5 +1,6 @@
 mod app;
 mod fonts;
+mod state;
 
 use thiserror::Error;
 
