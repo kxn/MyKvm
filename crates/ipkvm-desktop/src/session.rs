@@ -84,17 +84,28 @@ where
     /// 连接：会话级停旧启新（`replace_and_start`），然后以本地桌面控制器身份
     /// 发送 `Connected` 成为当前唯一活动控制器。
     pub fn connect(&mut self, request: ConnectRequest) -> Result<(), DesktopSessionError> {
+        // 先停旧会话并销毁，释放相机/串口句柄，再构建新组件：Windows 串口
+        // 独占，旧句柄不释放时重连/重建必然失败（此前 factory 先于停旧执行，
+        // 重连打不开串口，还会造成 UI 模式与 sink 模式分叉）。
+        if let Err(error) = self
+            .runtime
+            .block_on(self.manager.stop_and_destroy())
+            .map_err(|error| DesktopSessionError::Session(error.to_string()))
+        {
+            self.rollback();
+            return Err(error);
+        }
         let (frame_source, sink, gate) = (self.factory)(&request)?;
         let session_frame_source = Arc::clone(&frame_source);
         // 先建 notice 镜像再启动，避免错过泵的早期 notice；unbounded 通道缓冲
         // 到本控制器持有 receiver 为止。
         let (notice_tx, notice_rx) = mpsc::unbounded_channel();
         self.manager.set_notice_mirror(Some(notice_tx));
-        if let Err(error) = self.runtime.block_on(self.manager.replace_and_start(
-            session_frame_source,
-            sink,
-            gate,
-        )) {
+        if let Err(error) = self.runtime.block_on(async {
+            self.manager.create(session_frame_source, sink, gate)?;
+            self.manager.start()?;
+            Ok::<(), ipkvm_session::console_session::SessionError>(())
+        }) {
             self.rollback();
             return Err(DesktopSessionError::Session(error.to_string()));
         }
@@ -659,6 +670,31 @@ mod tests {
         wait_until(
             || sink.recorded.lock().unwrap().mouse_mode_calls == 1,
             "set_mouse_mode 未到达记录型 sink",
+        );
+        controller.stop().unwrap();
+    }
+
+    #[test]
+    fn reconnect_stops_old_session_before_building_new() {
+        let (mut controller, sink) = controller_with_sink();
+        controller.connect(request()).unwrap();
+        controller.send_key(true, 0x61).unwrap();
+        wait_until(
+            || sink.recorded.lock().unwrap().key_batches == 1,
+            "首个会话键盘事件未到达",
+        );
+
+        // 再次连接：旧会话必须先停止（旧 sink 收到 release），新会话才能起。
+        controller.connect(request()).unwrap();
+        assert!(
+            sink.recorded.lock().unwrap().release_count >= 1,
+            "重连前旧会话必须先释放（串口独占语义）"
+        );
+
+        controller.send_key(true, 0x62).unwrap();
+        wait_until(
+            || sink.recorded.lock().unwrap().key_batches == 2,
+            "重连后新会话输入未到达",
         );
         controller.stop().unwrap();
     }
