@@ -171,7 +171,7 @@ impl<S: InputSink + Clone + Send + 'static> ConsoleSession<S> {
     /// 自然退出；本方法返回旧泵任务的 join handle（`#[must_use]`），供调用方
     /// 在 async 上下文中 join，构成「释放完成」屏障——方法返回时 pump 可能
     /// 仍在收尾，join（await handle）之后才保证 release_all 已执行。不需要
-    /// 屏障的调用方需显式丢弃（`let _ = ...`）。
+    /// 屏障的调用方需显式丢弃（`drop(handle)`）。
     pub fn stop(
         &mut self,
     ) -> Result<tokio::task::JoinHandle<Result<(), RfbInputRunError>>, SessionError> {
@@ -265,7 +265,7 @@ mod tests {
         assert!(matches!(session.start(), Err(SessionError::AlreadyRunning)));
 
         // stop() 自 T7 起返回 `#[must_use]` 的 join handle，此测试不关心屏障。
-        let _ = session.stop().unwrap();
+        drop(session.stop().unwrap());
     }
 
     #[tokio::test]
@@ -321,7 +321,7 @@ mod tests {
         drop(event_tx);
         // stop() 自 T7 起返回 join handle（#[must_use]）；此处异步释放由
         // 下方 yield_until 观察，句柄显式丢弃。
-        let _ = session.stop().unwrap();
+        drop(session.stop().unwrap());
         assert!(!session.is_running());
 
         // 释放是异步完成的：pump 自身 release_all 一次，其文本键入服务在收到
@@ -411,7 +411,7 @@ mod tests {
         );
 
         drop(event_tx);
-        let _ = session.stop().unwrap();
+        drop(session.stop().unwrap());
     }
 
     /// observe_frame 经帧源 latest_frame().seq 检测丢帧：1→3 缺 2 计 1 帧；
