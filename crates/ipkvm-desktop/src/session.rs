@@ -81,31 +81,52 @@ where
     /// 发送 `Connected` 成为当前唯一活动控制器。
     pub fn connect(&mut self, request: ConnectRequest) -> Result<(), DesktopSessionError> {
         let (frame_source, sink, gate) = (self.factory)(&request)?;
-        self.frame_source = Some(Arc::clone(&frame_source));
+        let session_frame_source = Arc::clone(&frame_source);
         // 先建 notice 镜像再启动，避免错过泵的早期 notice；unbounded 通道缓冲
         // 到本控制器持有 receiver 为止。
         let (notice_tx, notice_rx) = mpsc::unbounded_channel();
         self.manager.set_notice_mirror(Some(notice_tx));
-        self.runtime
-            .block_on(self.manager.replace_and_start(frame_source, sink, gate))
-            .map_err(|error| DesktopSessionError::Session(error.to_string()))?;
+        if let Err(error) = self.runtime.block_on(self.manager.replace_and_start(
+            session_frame_source,
+            sink,
+            gate,
+        )) {
+            self.rollback();
+            return Err(DesktopSessionError::Session(error.to_string()));
+        }
+        self.frame_source = Some(frame_source);
         self.notice_rx = notice_rx;
 
-        let sender = self
+        let Some(sender) = self
             .manager
             .event_publisher()
             .borrow()
             .clone()
-            .ok_or(DesktopSessionError::NoEventSender)?;
-        sender
-            .try_send(RfbServerEvent::Connected {
+        else {
+            self.rollback();
+            return Err(DesktopSessionError::NoEventSender);
+        };
+        if let Err(error) = sender.try_send(RfbServerEvent::Connected {
                 client_id: RfbClientId::local_desktop(),
                 peer_addr: LOCAL_PEER,
                 shared: true,
             })
-            .map_err(|error| DesktopSessionError::Input(error.to_string()))?;
+        {
+            self.rollback();
+            return Err(DesktopSessionError::Input(error.to_string()));
+        }
         self.event_tx = Some(sender);
         Ok(())
+    }
+
+    /// 回滚到未连接状态：销毁已组装会话（释放相机/串口）、清空事件出口与
+    /// 帧源，并换新 notice 通道，保证失败后状态一致、可再次连接。
+    fn rollback(&mut self) {
+        self.event_tx = None;
+        self.frame_source = None;
+        let _ = self.runtime.block_on(self.manager.stop_and_destroy());
+        let (_notice_tx, notice_rx) = mpsc::unbounded_channel();
+        self.notice_rx = notice_rx;
     }
 
     /// 停止连接并销毁会话组件（释放相机/串口），之后可重新连接。
@@ -387,5 +408,48 @@ mod tests {
 
         controller.stop().unwrap();
         assert!(!controller.is_control_online());
+    }
+
+    #[test]
+    fn rollback_clears_state_and_releases_session() {
+        let (mut controller, _sink) = controller_with_sink();
+        controller.connect(request()).unwrap();
+        assert!(controller.is_control_online());
+
+        controller.rollback();
+
+        assert!(!controller.is_control_online());
+        assert!(controller.latest_frame().is_none());
+        controller.connect(request()).unwrap();
+        assert!(controller.is_control_online());
+        controller.stop().unwrap();
+    }
+
+    #[test]
+    fn failed_connect_keeps_controller_offline_and_recoverable() {
+        let sink = RecordingSink::default();
+        let sink_for_factory = sink.clone();
+        let mut calls = 0;
+        let factory: TestSessionFactory = Box::new(move |_request| {
+            calls += 1;
+            if calls == 1 {
+                return Err(DesktopSessionError::Build("boom".into()));
+            }
+            let frame_source: Arc<dyn FrameSource> = Arc::new(MockFrameSource::new());
+            Ok((
+                frame_source,
+                sink_for_factory.clone(),
+                RfbConnectionGate::new(),
+            ))
+        });
+        let mut controller = DesktopSessionController::with_factory(factory);
+
+        assert!(controller.connect(request()).is_err());
+        assert!(!controller.is_control_online());
+        assert!(controller.latest_frame().is_none());
+
+        controller.connect(request()).unwrap();
+        assert!(controller.is_control_online());
+        controller.stop().unwrap();
     }
 }
