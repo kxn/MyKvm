@@ -19,10 +19,8 @@ use tokio::{
 };
 
 use super::assets::find_asset;
-use crate::{
-    rfb_connection::{RfbConnectionGate, RfbServerEvent, RfbTransportKind},
-    rfb_ws::{RfbWebSocketConfig, RfbWebSocketService, RfbWebSocketServiceError},
-};
+use crate::rfb_ws::{RfbWebSocketConfig, RfbWebSocketService, RfbWebSocketServiceError};
+use ipkvm_session::rfb_connection::{RfbConnectionGate, RfbServerEvent, RfbTransportKind};
 
 const CONTENT_TYPE_OPTIONS: &str = "x-content-type-options";
 const JPEG_QUALITY: u8 = 85;

@@ -3,7 +3,7 @@ use std::{error::Error, io};
 use thiserror::Error;
 
 #[allow(dead_code)]
-pub(crate) enum RfbTransportRead {
+pub enum RfbTransportRead {
     Data,
     Continue,
     Closed,
@@ -11,7 +11,7 @@ pub(crate) enum RfbTransportRead {
 
 #[allow(dead_code)]
 #[derive(Debug, Error)]
-pub(crate) enum RfbTransportError {
+pub enum RfbTransportError {
     #[error("TCP I/O error: {0}")]
     Io(#[from] io::Error),
     #[error("WebSocket transport error")]
@@ -24,7 +24,7 @@ pub(crate) enum RfbTransportError {
 }
 
 impl RfbTransportError {
-    pub(crate) fn websocket(error: impl Error + Send + Sync + 'static) -> Self {
+    pub fn websocket(error: impl Error + Send + Sync + 'static) -> Self {
         Self::WebSocket {
             source: Box::new(error),
         }
@@ -36,7 +36,7 @@ impl RfbTransportError {
 /// Each receive clears `buffer` before returning. `Data` requires a non-empty
 /// buffer; `Continue` and `Closed` require an empty buffer. Message boundaries
 /// are transport details and do not delimit RFB protocol input.
-pub(crate) trait RfbTransport {
+pub trait RfbTransport {
     async fn receive_into(
         &mut self,
         buffer: &mut Vec<u8>,

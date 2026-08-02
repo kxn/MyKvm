@@ -14,13 +14,11 @@ use ipkvm_rfb::{
 use ipkvm_video::PixelFormat;
 use thiserror::Error;
 
-pub(crate) use driver::ConnectionEnd;
-pub(crate) use finalize::{
-    RfbConnectionFinalizeError, finalize_connection, run_managed_connection,
-};
-pub(crate) use gate::RfbConnectionReservation;
+pub use driver::ConnectionEnd;
+pub use finalize::{RfbConnectionFinalizeError, finalize_connection, run_managed_connection};
+pub use gate::RfbConnectionReservation;
 pub use gate::{ActiveController, RfbConnectionGate, RfbConnectionGateError, RfbTransportKind};
-pub(crate) use transport::{RfbTransport, RfbTransportError, RfbTransportRead};
+pub use transport::{RfbTransport, RfbTransportError, RfbTransportRead};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RfbConnectionSettings {

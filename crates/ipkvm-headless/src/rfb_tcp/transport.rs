@@ -3,7 +3,7 @@ use tokio::{
     net::TcpStream,
 };
 
-use crate::rfb_connection::{RfbTransport, RfbTransportError, RfbTransportRead};
+use ipkvm_session::rfb_connection::{RfbTransport, RfbTransportError, RfbTransportRead};
 
 pub(super) struct TcpTransport {
     stream: TcpStream,

@@ -1,6 +1,6 @@
 use axum::extract::ws::{Message, WebSocket};
 
-use crate::rfb_connection::{RfbTransport, RfbTransportError, RfbTransportRead};
+use ipkvm_session::rfb_connection::{RfbTransport, RfbTransportError, RfbTransportRead};
 
 pub(super) struct WebSocketTransport {
     socket: WebSocket,

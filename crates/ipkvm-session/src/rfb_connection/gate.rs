@@ -56,7 +56,7 @@ pub enum RfbConnectionGateError {
 }
 
 #[derive(Debug)]
-pub(crate) struct RfbConnectionReservation {
+pub struct RfbConnectionReservation {
     semaphore_permit: Option<OwnedSemaphorePermit>,
     inner: Arc<GateInner>,
     client_id: RfbClientId,
@@ -83,7 +83,7 @@ impl RfbConnectionGate {
         }
     }
 
-    pub(crate) async fn acquire(
+    pub async fn acquire(
         &self,
         transport: RfbTransportKind,
         peer_addr: SocketAddr,
@@ -106,7 +106,7 @@ impl RfbConnectionGate {
         })
     }
 
-    pub(crate) fn try_acquire(
+    pub fn try_acquire(
         &self,
         transport: RfbTransportKind,
         peer_addr: SocketAddr,
@@ -138,7 +138,7 @@ impl RfbConnectionGate {
         self.inner.status.subscribe()
     }
 
-    pub(crate) fn active_controller(&self) -> Option<ActiveController> {
+    pub fn active_controller(&self) -> Option<ActiveController> {
         let mut active = self.inner.status.borrow().clone();
         if let Some(controller) = &mut active {
             controller.connected_since_ms = controller.connected_since.elapsed().as_millis() as u64;
