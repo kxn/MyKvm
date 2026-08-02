@@ -17,6 +17,8 @@ use crate::state::{ControlProbeStatus, DeviceSelectionState, VideoProbeStatus, V
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 const NO_SIGNAL_TIMEOUT: Duration = Duration::from_secs(2);
+/// 指针最小发送间隔（约 30Hz 限频），按键状态变化不受此限制。
+const POINTER_MIN_INTERVAL: Duration = Duration::from_millis(33);
 /// 菜单栏 + 状态栏占用的窗口内容区高度估算（ResizeWindowToVideo 用）。
 const FOLLOW_CHROME: f32 = 48.0;
 /// 视频画面外留白（信箱/黑边区域）的填充色：与黑色视频内容可区分，
@@ -55,6 +57,10 @@ struct DesktopApp {
     last_modifiers: egui::Modifiers,
     cursor_grabbed: bool,
     relative_remainder: (f32, f32),
+    pending_pointer: Option<(u8, u16, u16)>,
+    pending_relative: (i16, i16, i8),
+    last_pointer_sent: Option<(u8, u16, u16)>,
+    last_pointer_sent_at: Option<Instant>,
     video_focused: bool,
     paste_busy: bool,
     status_message: Option<String>,
@@ -89,6 +95,10 @@ impl DesktopApp {
             last_modifiers: egui::Modifiers::NONE,
             cursor_grabbed: false,
             relative_remainder: (0.0, 0.0),
+            pending_pointer: None,
+            pending_relative: (0, 0, 0),
+            last_pointer_sent: None,
+            last_pointer_sent_at: None,
             video_focused: false,
             paste_busy: false,
             status_message: None,
@@ -100,7 +110,7 @@ impl DesktopApp {
 
     fn update_impl(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_notices();
-        self.refresh_video();
+        self.refresh_video(ctx);
         self.sync_control_state();
 
         egui::TopBottomPanel::top("menu").show(ctx, |ui| self.menu_bar(ui));
@@ -124,10 +134,14 @@ impl DesktopApp {
             self.last_modifiers = egui::Modifiers::NONE;
             self.cursor_grabbed = false;
             self.relative_remainder = (0.0, 0.0);
+            self.pending_pointer = None;
+            self.pending_relative = (0, 0, 0);
+            self.last_pointer_sent = None;
+            self.last_pointer_sent_at = None;
         }
     }
 
-    fn refresh_video(&mut self) {
+    fn refresh_video(&mut self, ctx: &egui::Context) {
         let Some(frame) = self.session.latest_frame() else {
             return;
         };
@@ -135,6 +149,8 @@ impl DesktopApp {
         if self.last_frame_seq != Some(frame.seq) {
             self.last_frame_seq = Some(frame.seq);
             self.last_frame_at = Some(now);
+            // eframe 事件驱动重绘：新帧到达必须请求重绘，否则空闲时画面停滞。
+            ctx.request_repaint();
         }
         if let Ok(rgba) = bgra_to_rgba(&frame) {
             let size = FrameSize {
@@ -364,6 +380,10 @@ impl DesktopApp {
                 self.pointer_mask = 0;
                 self.last_pointer = None;
                 self.relative_remainder = (0.0, 0.0);
+                self.pending_pointer = None;
+                self.pending_relative = (0, 0, 0);
+                self.last_pointer_sent = None;
+                self.last_pointer_sent_at = None;
                 Ok(())
             }
             Err(error) => Err(error),
@@ -419,7 +439,8 @@ impl DesktopApp {
                 && let Some(actual) = self.frame_size
                 && self.last_follow_resize != Some(actual)
             {
-                let size = desired_window_inner_size(actual, FOLLOW_CHROME);
+                let size =
+                    desired_window_inner_size(actual, FOLLOW_CHROME, ctx.pixels_per_point());
                 ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
                 self.last_follow_resize = Some(actual);
             }
@@ -588,23 +609,69 @@ impl DesktopApp {
             let dy = dy_points * (frame.height as f32 / video_rect.height());
             let (dx, dy) = crate::input::accumulate_delta(&mut self.relative_remainder, dx, dy);
             let wheel = self.wheel_steps_from_events(response);
-            if dx != 0 || dy != 0 || wheel != 0 || mask != self.pointer_mask {
-                if let Err(error) = self.session.send_pointer_relative(mask, dx, dy, wheel) {
-                    self.status_message = Some(format!("指针发送失败：{error}"));
+            self.pending_relative.0 = self.pending_relative.0.saturating_add(dx);
+            self.pending_relative.1 = self.pending_relative.1.saturating_add(dy);
+            self.pending_relative.2 = self.pending_relative.2.saturating_add(wheel);
+            let now = Instant::now();
+            let mask_changed =
+                self.last_pointer_sent
+                    .is_some_and(|(last_mask, _, _)| last_mask != mask);
+            let (pending_dx, pending_dy, pending_wheel) = self.pending_relative;
+            if mask_changed
+                || crate::input::throttle_elapsed(
+                    now,
+                    self.last_pointer_sent_at,
+                    POINTER_MIN_INTERVAL,
+                )
+            {
+                if pending_dx != 0 || pending_dy != 0 || pending_wheel != 0 || mask_changed {
+                    if let Err(error) = self
+                        .session
+                        .send_pointer_relative(mask, pending_dx, pending_dy, pending_wheel)
+                    {
+                        self.status_message = Some(format!("指针发送失败：{error}"));
+                    }
+                    self.last_pointer_sent = Some((mask, u16::MAX, u16::MAX));
+                    self.last_pointer_sent_at = Some(now);
                 }
+                self.pending_relative = (0, 0, 0);
             }
             self.pointer_mask = mask;
         } else if pointer_active(remote_active, mask, self.pointer_mask)
             && let Some(position) = response.ctx.input(|input| input.pointer.latest_pos())
             && let Some((x, y)) = VideoViewport::map_pointer(position, video_rect, frame)
         {
-            if let Err(error) = self.session.send_pointer(mask, x, y, frame) {
-                self.status_message = Some(format!("指针发送失败：{error}"));
+            self.pending_pointer = Some((mask, x, y));
+            let now = Instant::now();
+            let mask_changed =
+                self.last_pointer_sent
+                    .is_some_and(|(last_mask, _, _)| last_mask != mask);
+            if mask_changed
+                || crate::input::throttle_elapsed(
+                    now,
+                    self.last_pointer_sent_at,
+                    POINTER_MIN_INTERVAL,
+                )
+            {
+                if let Some((send_mask, send_x, send_y)) = self.pending_pointer
+                    && crate::input::pointer_changed(
+                        (send_mask, send_x, send_y),
+                        self.last_pointer_sent,
+                    )
+                {
+                    if let Err(error) = self.session.send_pointer(send_mask, send_x, send_y, frame)
+                    {
+                        self.status_message = Some(format!("指针发送失败：{error}"));
+                    }
+                    self.last_pointer_sent = Some((send_mask, send_x, send_y));
+                    self.last_pointer_sent_at = Some(now);
+                }
+                self.pending_pointer = None;
             }
             let wheel = self.wheel_steps_from_events(response);
             if wheel != 0 {
                 if let Err(error) = self.session.send_pointer_relative(mask, 0, 0, wheel) {
-                    self.status_message = Some(format!("滚轮发送失败：{error}"));
+                    self.status_message = Some(format!("指针发送失败：{error}"));
                 }
             }
             self.last_pointer = Some((x, y));
@@ -734,6 +801,10 @@ impl DesktopApp {
         self.last_modifiers = egui::Modifiers::NONE;
         self.cursor_grabbed = false;
         self.relative_remainder = (0.0, 0.0);
+        self.pending_pointer = None;
+        self.pending_relative = (0, 0, 0);
+        self.last_pointer_sent = None;
+        self.last_pointer_sent_at = None;
         self.last_frame_seq = None;
         self.last_frame_at = None;
     }
@@ -945,9 +1016,14 @@ fn control_status_text(status: &ControlProbeStatus) -> String {
     }
 }
 
-/// ResizeWindowToVideo 模式下窗口内容区目标尺寸：视频尺寸 + 菜单/状态栏高度。
-fn desired_window_inner_size(frame: FrameSize, chrome: f32) -> egui::Vec2 {
-    egui::vec2(frame.width as f32, frame.height as f32 + chrome)
+/// ResizeWindowToVideo 模式下窗口内容区目标尺寸（点）：视频物理像素按
+/// pixels_per_point 换算 + 菜单/状态栏高度。
+fn desired_window_inner_size(frame: FrameSize, chrome: f32, pixels_per_point: f32) -> egui::Vec2 {
+    let ppp = pixels_per_point.max(1.0);
+    egui::vec2(
+        frame.width as f32 / ppp,
+        frame.height as f32 / ppp + chrome,
+    )
 }
 
 fn mouse_mode_label(mode: MouseMode) -> &'static str {
@@ -1054,6 +1130,7 @@ mod tests {
                 height: 720,
             },
             48.0,
+            1.0,
         );
 
         assert_eq!(size, egui::vec2(1280.0, 768.0));
@@ -1080,5 +1157,19 @@ mod tests {
         let texts = app.status_bar_texts();
 
         assert_eq!(texts.pointer, "相对模式");
+    }
+
+    #[test]
+    fn desired_window_inner_size_scales_physical_pixels_to_points() {
+        let size = desired_window_inner_size(
+            FrameSize {
+                width: 1920,
+                height: 1080,
+            },
+            48.0,
+            2.5,
+        );
+        assert!((size.x - 768.0).abs() < 0.01);
+        assert!((size.y - 480.0).abs() < 0.01);
     }
 }

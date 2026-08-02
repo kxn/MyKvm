@@ -528,7 +528,8 @@ mod tests {
     #[test]
     fn throttle_elapsed_requires_interval_to_pass() {
         let start = std::time::Instant::now();
-        assert!(!throttle_elapsed(
+        // 从未发送过且有待发数据时立即发送，不等间隔。
+        assert!(throttle_elapsed(
             start,
             None,
             std::time::Duration::from_millis(33)
