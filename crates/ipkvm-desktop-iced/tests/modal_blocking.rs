@@ -31,6 +31,10 @@ impl TestApp {
                 ModalAction::Save | ModalAction::LoadPicked(_) => {}
                 ModalAction::SetLetterboxColor(_) => {}
                 ModalAction::SetDarkMode(dark) => self.modal.dark = dark,
+                ModalAction::SetBaudRate(baud) => self.modal.baud_rate = baud,
+                ModalAction::SetPreviewFps(fps) => self.modal.preview_fps = fps,
+                ModalAction::SetAutoBaud(enabled) => self.modal.auto_baud = enabled,
+                ModalAction::SetMouseMode(mode) => self.modal.mouse_mode = mode,
                 ModalAction::Noop => {}
             },
             Msg::BackgroundPressed => self.bg_hits += 1,

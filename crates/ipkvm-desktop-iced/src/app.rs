@@ -428,6 +428,12 @@ where
                 if kind == ModalKind::Settings {
                     self.modal.dark = self.dark;
                 }
+                if kind == ModalKind::Connection {
+                    self.modal.baud_rate = self.connection.baud_rate;
+                    self.modal.preview_fps = self.connection.preview_fps;
+                    self.modal.auto_baud = self.connection.auto_baud;
+                    self.modal.mouse_mode = self.connection.mouse_mode;
+                }
                 if kind == ModalKind::LoadProfile {
                     self.modal.load_names = self.store.list_profiles();
                 }
@@ -647,6 +653,12 @@ where
                 if kind == ModalKind::Settings {
                     self.modal.dark = self.dark;
                 }
+                if kind == ModalKind::Connection {
+                    self.modal.baud_rate = self.connection.baud_rate;
+                    self.modal.preview_fps = self.connection.preview_fps;
+                    self.modal.auto_baud = self.connection.auto_baud;
+                    self.modal.mouse_mode = self.connection.mouse_mode;
+                }
                 if kind == ModalKind::LoadProfile {
                     self.modal.load_names = self.store.list_profiles();
                 }
@@ -690,6 +702,22 @@ where
             }
             ModalAction::SetLetterboxColor(color) => self.letterbox_color = color,
             ModalAction::SetDarkMode(dark) => self.dark = dark,
+            ModalAction::SetBaudRate(baud) => {
+                self.connection.baud_rate = baud;
+                self.active_profile = None;
+            }
+            ModalAction::SetPreviewFps(fps) => {
+                self.connection.preview_fps = fps;
+                self.active_profile = None;
+            }
+            ModalAction::SetAutoBaud(enabled) => {
+                self.connection.auto_baud = enabled;
+                self.active_profile = None;
+            }
+            ModalAction::SetMouseMode(mode) => {
+                self.connection.mouse_mode = mode;
+                self.active_profile = None;
+            }
             ModalAction::Noop => {}
         }
     }
@@ -1001,20 +1029,23 @@ where
             Some(handle) => PreloadedImage::new(handle.clone())
                 .content_fit(iced::ContentFit::Contain)
                 .into(),
-            None => text("等待帧…").into(),
+            None => text(t!("preview.no_signal")).size(28).into(),
         };
         let video_area = container(video)
             .width(Length::Fill)
             .height(Length::Fill)
             .style(move |_| container::Style {
                 background: Some(self.letterbox_color.into()),
+                border: Border::default()
+                    .width(1.0)
+                    .color(Color::from_rgba(1.0, 1.0, 1.0, 0.20)),
                 ..Default::default()
             });
         column![video_area].into()
     }
 
     fn connection_view(&self) -> Element<'_, Message> {
-        use iced::widget::{Checkbox, PickList, button, column, container, row, text};
+        use iced::widget::{PickList, button, column, container, row, space, text};
         let video_pick = PickList::new(
             self.video_labels(),
             self.selected_video_label(),
@@ -1027,36 +1058,26 @@ where
             Message::SelectControl,
         )
         .placeholder(t!("common.not_selected"));
-        let baud_pick = PickList::new(
-            vec![9600u32, 19200, 38400, 57600, 115200],
-            Some(self.connection.baud_rate),
-            Message::SetBaudRate,
-        );
-        let fps_pick = PickList::new(
-            vec![10u64, 15, 30, 60],
-            Some(self.connection.preview_fps),
-            Message::SetPreviewFps,
-        );
-        let auto_baud = Checkbox::new(self.connection.auto_baud)
-            .label(t!("settings.auto_baud"))
-            .on_toggle(Message::SetAutoBaud);
-        let relative = Checkbox::new(self.connection.mouse_mode == MouseMode::Relative)
-            .label(t!("mouse_mode.relative"))
-            .on_toggle(|on| {
-                Message::SetMouseMode(if on {
-                    MouseMode::Relative
-                } else {
-                    MouseMode::Absolute
-                })
-            });
+        let profile_pick = PickList::new(
+            self.store.list_profiles(),
+            self.active_profile.clone(),
+            Message::LoadProfile,
+        )
+        .width(Length::Fixed(240.0))
+        .placeholder(t!("profile.no_recent"));
         let connect = button(text(t!("device.connect")))
             .on_press_maybe(self.selection.can_connect().then_some(Message::Connect))
-            .style(iced::widget::button::primary);
-        let refresh = button(text(t!("device.refresh"))).on_press(Message::RefreshDevices);
+            .style(iced::widget::button::primary)
+            .width(Length::Fixed(140.0))
+            .height(Length::Fixed(36.0));
+        let refresh = button(text(t!("device.refresh")))
+            .on_press(Message::RefreshDevices)
+            .width(Length::Fixed(140.0))
+            .height(Length::Fixed(36.0));
         let save_profile =
             button(text(t!("profile.save"))).on_press(Message::OpenModal(ModalKind::SaveProfile));
-        let load_profile = button(text(t!("file.load_profile")))
-            .on_press(Message::OpenModal(ModalKind::LoadProfile));
+        let connection_settings = button(text(t!("modal.connection_title")))
+            .on_press(Message::OpenModal(ModalKind::Connection));
         let preview: Element<'_, Message> = match &self.preview_handle {
             Some(handle) => PreloadedImage::new(handle.clone())
                 .content_fit(iced::ContentFit::Contain)
@@ -1064,29 +1085,42 @@ where
             None => text(self.preview_placeholder()).into(),
         };
         let preview_area = container(preview)
-            .width(Length::Fill)
+            .width(Length::Fixed(320.0))
             .height(Length::Fixed(180.0))
             .style(|_theme| container::Style {
                 background: Some(Color::from_rgb(0.08, 0.08, 0.08).into()),
                 ..Default::default()
             });
-        let content = column![
-            text(t!("device.title")).size(18),
+        let left_pane = column![
             text(t!("device.video")),
             video_pick,
             self.video_status_text(),
             text(t!("device.control")),
             control_pick,
             self.control_status_text(),
-            row![baud_pick, fps_pick].spacing(8),
-            auto_baud,
-            relative,
-            row![refresh, connect, save_profile, load_profile].spacing(8),
-            preview_area,
+            row![refresh, connect].spacing(8),
             self.status_message_view(),
         ]
+        .spacing(8);
+        let left = container(left_pane).width(Length::Fixed(380.0));
+        let divider = container(space())
+            .width(Length::Fixed(1.0))
+            .height(Length::Fill)
+            .style(|theme: &iced::Theme| container::Style {
+                background: Some(crate::theme::border_color(theme.palette()).into()),
+                ..Default::default()
+            });
+        let profile_row = row![
+            text(t!("device.title")).size(18),
+            profile_pick,
+            save_profile,
+            connection_settings,
+        ]
         .spacing(8)
-        .padding(12);
+        .align_y(iced::alignment::Vertical::Center);
+        let content = column![profile_row, row![left, divider, preview_area].spacing(12),]
+            .spacing(8)
+            .padding(12);
         container(content)
             .width(Length::Fill)
             .padding(16)
@@ -1102,8 +1136,38 @@ where
     }
 
     fn status_line(&self) -> Element<'_, Message> {
-        use iced::widget::{container, text};
-        container(text(self.status.label(self.zh)))
+        use iced::widget::{container, row, text};
+        let control = if self.controller.is_control_online() {
+            self.control_status_value()
+        } else {
+            t!("status.offline").to_string()
+        };
+        let keyboard = if self.paste_busy {
+            t!("status.pasting").to_string()
+        } else if self.remote_input {
+            t!("status.remote_input").to_string()
+        } else {
+            t!("status.keyboard_lost").to_string()
+        };
+        let pointer = if self.connection.mouse_mode == MouseMode::Relative && self.remote_input {
+            t!("status.relative_mode").to_string()
+        } else {
+            t!("status.pointer_outside").to_string()
+        };
+        let video = match self.frame_size {
+            Some(size) => format!("{}×{}", size.width, size.height),
+            None => t!("status.video_no_signal").to_string(),
+        };
+        let message = self.status_message.clone().unwrap_or_default();
+        let fields = row![
+            text(t!("status.control_device", value = control)),
+            text(t!("status.keyboard", value = keyboard)),
+            text(t!("status.pointer", value = pointer)),
+            text(t!("status.video", value = video)),
+            text(t!("status.message", message = message)),
+        ]
+        .spacing(16);
+        container(fields)
             .width(Length::Fill)
             .padding(6)
             .style(|theme: &iced::Theme| container::Style {
@@ -1111,6 +1175,26 @@ where
                 ..Default::default()
             })
             .into()
+    }
+
+    fn control_status_value(&self) -> String {
+        match &self.selection.control_status {
+            ControlProbeStatus::NotSelected => t!("control_status_label.not_selected").to_string(),
+            ControlProbeStatus::Checking => t!("control_status_label.checking").to_string(),
+            ControlProbeStatus::Ready(_) => t!(
+                "control_status_label.ready",
+                port = self.selection.selected_control_id.as_deref().unwrap_or("?")
+            )
+            .to_string(),
+            ControlProbeStatus::NotCh9329(reason) => {
+                t!("control_status_label.not_ch9329", reason = reason).to_string()
+            }
+            ControlProbeStatus::NoResponse => t!("control_status_label.no_response").to_string(),
+            ControlProbeStatus::OpenFailed(error) => {
+                t!("control_status_label.open_failed", error = error).to_string()
+            }
+            ControlProbeStatus::Disconnected => t!("control_status_label.disconnected").to_string(),
+        }
     }
 
     fn status_message_view(&self) -> Element<'_, Message> {
@@ -1913,5 +1997,81 @@ mod tests {
         let mut ui = iced_test::simulator::simulator(app.view());
         assert!(ui.find("Select device").is_ok(), "连接页标题必须渲染");
         assert!(ui.find("Refresh detection").is_ok(), "刷新按钮必须渲染");
+        // #90 布局：profile 行 + 左栏 380 + 右栏 320x180 预览 + 连接设置入口。
+        assert!(
+            ui.find("Save current options…").is_ok(),
+            "profile 行必须包含保存按钮"
+        );
+        assert!(
+            ui.find("Connection settings").is_ok(),
+            "profile 行必须包含连接设置入口"
+        );
+        assert!(ui.find("Connect").is_ok(), "左栏必须包含连接按钮");
+        assert!(
+            ui.find("No preview").is_ok(),
+            "右栏预览区无帧时必须显示占位文字"
+        );
+    }
+
+    #[test]
+    fn video_view_shows_no_signal_when_connected_without_frame() {
+        let _guard = crate::I18N_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        rust_i18n::set_locale("en");
+        // new_mock 构造即在线且无帧 → 视频页。
+        let (app, _) = MockApp::new_mock();
+        let mut ui = iced_test::simulator::simulator(app.view());
+        assert!(
+            ui.find("No signal").is_ok(),
+            "视频页无帧时必须显示 28px 无信号文字"
+        );
+    }
+
+    #[test]
+    fn status_line_shows_five_fields() {
+        let _guard = crate::I18N_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        rust_i18n::set_locale("en");
+        let (mut app, _) = MockApp::new_mock();
+        let _ = app.update(Message::Disconnect);
+        app.status_message = Some("hello".into());
+        let mut ui = iced_test::simulator::simulator(app.view());
+        assert!(
+            ui.find("Control device: Offline").is_ok(),
+            "状态栏必须显示控制设备字段"
+        );
+        assert!(
+            ui.find("Keyboard: Click video to enter").is_ok(),
+            "状态栏必须显示键盘字段"
+        );
+        assert!(
+            ui.find("Mouse: Mouse outside").is_ok(),
+            "状态栏必须显示指针字段"
+        );
+        assert!(
+            ui.find("Video: No signal").is_ok(),
+            "状态栏必须显示视频字段"
+        );
+        assert!(ui.find("Status: hello").is_ok(), "状态栏必须显示消息字段");
+    }
+
+    #[test]
+    fn connection_modal_contains_connection_params() {
+        let _guard = crate::I18N_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        rust_i18n::set_locale("en");
+        let (mut app, _) = MockApp::new_mock();
+        let _ = app.update(Message::OpenModal(ModalKind::Connection));
+        let mut ui = iced_test::simulator::simulator(app.view());
+        assert!(ui.find("Baud rate").is_ok(), "连接设置模态必须含波特率");
+        assert!(ui.find("Preview FPS").is_ok(), "连接设置模态必须含预览帧率");
+        assert!(
+            ui.find("Auto-detect baud rate on connect").is_ok(),
+            "连接设置模态必须含自动波特率开关"
+        );
+        assert!(ui.find("Mouse mode").is_ok(), "连接设置模态必须含鼠标模式");
     }
 }
