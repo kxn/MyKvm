@@ -296,8 +296,28 @@ where
 {
     button(text(label.into()).font(crate::fonts::ui_font()))
         .padding([4, 8])
-        .style(menu_item_style)
+        .style(root_label_style)
         .into()
+}
+
+/// 顶层根标签：永不用 Disabled 置灰（无 on_press 的按钮在 iced 里是 Disabled 态，
+/// 但根标签的点击由 iced_aw 菜单管理，文字必须保持正常色）。
+fn root_label_style(theme: &iced::Theme, status: button::Status) -> iced::widget::button::Style {
+    use iced::Background;
+    let palette = theme.palette();
+    let background = match status {
+        button::Status::Hovered | button::Status::Pressed => {
+            Some(Background::Color(crate::theme::hover(palette)))
+        }
+        _ => Some(Background::Color(iced::Color::TRANSPARENT)),
+    };
+    iced::widget::button::Style {
+        background,
+        text_color: palette.text,
+        border: Default::default(),
+        shadow: Default::default(),
+        snap: false,
+    }
 }
 
 /// 叶子菜单项：透明底按钮，点击发布业务动作；悬停高亮用主题主色半透明。
@@ -398,5 +418,24 @@ fn menu_item_style(theme: &iced::Theme, status: button::Status) -> iced::widget:
         border: Default::default(),
         shadow: Default::default(),
         snap: false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn root_label_style_disabled_keeps_full_alpha() {
+        let theme = iced::Theme::Light;
+        let style = root_label_style(&theme, button::Status::Disabled);
+        assert_eq!(style.text_color.a, 1.0);
+    }
+
+    #[test]
+    fn menu_item_style_disabled_is_muted() {
+        let theme = iced::Theme::Light;
+        let style = menu_item_style(&theme, button::Status::Disabled);
+        assert!(style.text_color.a < 1.0);
     }
 }

@@ -8,7 +8,8 @@ use iced::border::Border;
 use iced::widget::image::Handle;
 use iced::{Color, Element, Length, Size, Subscription, Task};
 use ipkvm_core::{
-    Ch9329InputSink, InputError, InputSink, KeyEvent, MouseMode, PointerEvent, SerialCommandQueue,
+    Ch9329InputSink, InputError, InputSink, KeyEvent, MouseMode, PointerButton, PointerEvent,
+    SerialCommandQueue,
 };
 use ipkvm_desktop::{
     ConnectRequest, DesktopSessionController, DesktopSessionError,
@@ -47,7 +48,7 @@ use crate::relative::{
 use crate::scale::{FrameSize, ScaleMode};
 use crate::status::{ConnectionStatus, derive_status};
 use crate::video::handle_from_frame;
-use crate::{WINDOW_SIZE, WINDOW_TITLE};
+use crate::{DEFAULT_WINDOW_SIZE, WINDOW_TITLE};
 
 /// mock 实例序号：每个 new_mock 用独立临时目录，避免测试并行互踩。
 static MOCK_STORE_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -73,6 +74,10 @@ pub struct RecordingSink {
     pub absolute_moves: Arc<std::sync::Mutex<Vec<(u16, u16)>>>,
     /// 按到达顺序记录的相对指针增量（dx, dy）。
     pub relative_deltas: Arc<std::sync::Mutex<Vec<(i16, i16)>>>,
+    /// 按到达顺序记录的相对指针发送（mask, dx, dy, wheel）。
+    pub relative_events: Arc<std::sync::Mutex<Vec<(u8, i16, i16, i8)>>>,
+    /// 重建按钮掩码：sink 只收到事件流，跨批次跟踪当前掩码。
+    relative_mask: Arc<std::sync::Mutex<u8>>,
     /// release_all 调用次数。
     pub releases: Arc<std::sync::Mutex<usize>>,
 }
@@ -98,14 +103,46 @@ impl InputSink for RecordingSink {
         *self.pointer_batches.lock().unwrap() += 1;
         let mut absolute_moves = self.absolute_moves.lock().unwrap();
         let mut relative_deltas = self.relative_deltas.lock().unwrap();
+        let mut relative_events = self.relative_events.lock().unwrap();
+        let mut mask = self.relative_mask.lock().unwrap();
+        let mut has_absolute = false;
+        let mut has_relative = false;
+        let mut dx = 0i16;
+        let mut dy = 0i16;
+        let mut wheel = 0i8;
         for event in _events {
             match event {
                 PointerEvent::AbsoluteMove { x, y, .. } => {
+                    has_absolute = true;
                     absolute_moves.push((*x as u16, *y as u16));
                 }
-                PointerEvent::RelativeMove { dx, dy } => relative_deltas.push((*dx, *dy)),
-                _ => {}
+                PointerEvent::RelativeMove { dx: rx, dy: ry } => {
+                    has_relative = true;
+                    dx = dx.saturating_add(*rx);
+                    dy = dy.saturating_add(*ry);
+                    relative_deltas.push((*rx, *ry));
+                }
+                PointerEvent::Button { button, down } => {
+                    has_relative = true;
+                    let bit = match button {
+                        PointerButton::Left => 0b001,
+                        PointerButton::Right => 0b010,
+                        PointerButton::Middle => 0b100,
+                    };
+                    if *down {
+                        *mask |= bit;
+                    } else {
+                        *mask &= !bit;
+                    }
+                }
+                PointerEvent::Wheel { delta } => {
+                    has_relative = true;
+                    wheel = wheel.saturating_add(*delta as i8);
+                }
             }
+        }
+        if has_relative && !has_absolute {
+            relative_events.push((*mask, dx, dy, wheel));
         }
         Ok(())
     }
@@ -234,6 +271,7 @@ where
     relative_sampler: DeltaSampler,
     relative_wheel: i8,
     pointer_mask: u8,
+    last_relative_mask: u8,
     video_bounds: std::rc::Rc<std::cell::RefCell<Option<iced::Rectangle>>>,
     last_cursor: Option<iced::Point>,
     scale_factor: f32,
@@ -279,7 +317,7 @@ impl App<RecordingSink, MockFactory> {
             latest_frame: None,
             language: crate::locale::AppLanguage::System,
             scale_mode: ScaleMode::FitWindow,
-            letterbox_color: Color::from_rgb(0.0, 0.0, 0.0),
+            letterbox_color: Color::from_rgb(0.91, 0.91, 0.91),
             status,
             subscribed: true,
             zh: true,
@@ -309,6 +347,7 @@ impl App<RecordingSink, MockFactory> {
             relative_sampler: DeltaSampler::new(Duration::from_millis(33)),
             relative_wheel: 0,
             pointer_mask: 0,
+            last_relative_mask: 0,
             video_bounds: std::rc::Rc::new(std::cell::RefCell::new(None)),
             last_cursor: None,
             scale_factor: 1.0,
@@ -347,7 +386,7 @@ impl App<Ch9329InputSink<SerialCommandQueue>, ProductionSessionFactory> {
             latest_frame: None,
             language: crate::locale::AppLanguage::System,
             scale_mode: ScaleMode::FitWindow,
-            letterbox_color: Color::from_rgb(0.0, 0.0, 0.0),
+            letterbox_color: Color::from_rgb(0.91, 0.91, 0.91),
             status: ConnectionStatus::Disconnected,
             subscribed: true,
             zh,
@@ -374,6 +413,7 @@ impl App<Ch9329InputSink<SerialCommandQueue>, ProductionSessionFactory> {
             relative_sampler: DeltaSampler::new(Duration::from_millis(33)),
             relative_wheel: 0,
             pointer_mask: 0,
+            last_relative_mask: 0,
             video_bounds: std::rc::Rc::new(std::cell::RefCell::new(None)),
             last_cursor: None,
             scale_factor: 1.0,
@@ -1156,6 +1196,7 @@ where
         self.sync_cursor();
         self.pointer_mask = 0;
         self.last_pointer = None;
+        self.last_relative_mask = 0;
         // 对齐 egui 退出语义：复位去重/限频状态，避免重进同位置点击被节流吞掉。
         self.last_pointer_sent = None;
         self.last_pointer_sent_at = None;
@@ -1306,21 +1347,22 @@ where
         let now = Instant::now();
         let sensitivity = self.connection.relative_sensitivity;
         let ratio = self.video_ratio();
-        let (dx, dy) =
+        let (sx, sy) =
             crate::input::scale_relative_delta(acc.0, acc.1, self.scale_factor, sensitivity, ratio);
-        if let Some((dx, dy)) = self.relative_sampler.feed(dx, dy, now) {
-            let wheel = self.relative_wheel;
-            if dx != 0 || dy != 0 || wheel != 0 || self.pointer_mask != 0 {
-                if let Err(error) =
-                    self.controller
-                        .send_pointer_relative(self.pointer_mask, dx, dy, wheel)
-                {
-                    self.status_message = Some(
-                        t!("message.pointer_send_failed", error = error.to_string()).to_string(),
-                    );
-                }
-                self.relative_wheel = 0;
+        let mask_changed = self.pointer_mask != self.last_relative_mask;
+        let sampled = self.relative_sampler.feed(sx, sy, now);
+        let (dx, dy) = sampled.unwrap_or((0, 0));
+        let wheel = self.relative_wheel;
+        if dx != 0 || dy != 0 || wheel != 0 || mask_changed {
+            if let Err(error) =
+                self.controller
+                    .send_pointer_relative(self.pointer_mask, dx, dy, wheel)
+            {
+                self.status_message =
+                    Some(t!("message.pointer_send_failed", error = error.to_string()).to_string());
             }
+            self.relative_wheel = 0;
+            self.last_relative_mask = self.pointer_mask;
         }
     }
 
@@ -1355,6 +1397,7 @@ where
         self.frame_size = None;
         self.remote_input = false;
         self.last_pointer = None;
+        self.last_relative_mask = 0;
         self.sync_cursor();
         self.stop_relative_source();
     }
@@ -1559,7 +1602,7 @@ where
             .width(Length::Fixed(320.0))
             .height(Length::Fixed(180.0))
             .style(|_theme| container::Style {
-                background: Some(Color::from_rgb(0.08, 0.08, 0.08).into()),
+                background: Some(Color::from_rgb(0.91, 0.91, 0.91).into()),
                 ..Default::default()
             });
         let left_pane = column![
@@ -1892,7 +1935,10 @@ pub fn run() -> iced::Result {
         .subscription(App::subscription)
         .theme(App::theme)
         .title(WINDOW_TITLE)
-        .window_size(WINDOW_SIZE)
+        .window_size(crate::fit_initial_size(
+            DEFAULT_WINDOW_SIZE,
+            crate::desktop_work_area(),
+        ))
         .default_font(crate::fonts::ui_font())
         .run()
 }
@@ -2102,6 +2148,62 @@ mod tests {
         let color = Color::from_rgb(0.1, 0.2, 0.3);
         let _ = app.update(Message::SetLetterboxColor(color));
         assert_eq!(app.letterbox_color(), color);
+    }
+
+    #[test]
+    fn default_letterbox_is_light() {
+        let (app, _) = MockApp::new_mock();
+        assert_eq!(app.letterbox_color(), Color::from_rgb(0.91, 0.91, 0.91));
+    }
+
+    #[test]
+    fn relative_mode_button_press_sends_without_motion() {
+        let (mut app, _) = MockApp::new_mock();
+        app.connection.mouse_mode = MouseMode::Relative;
+        *app.video_bounds.borrow_mut() = Some(iced::Rectangle::new(
+            iced::Point::ORIGIN,
+            iced::Size::new(320.0, 180.0),
+        ));
+        app.frame_size = Some(FrameSize {
+            width: 320,
+            height: 180,
+        });
+        move_cursor(&mut app, 160.0, 90.0);
+        press_button(&mut app, iced::mouse::Button::Left);
+        assert!(app.remote_input, "点击视频区必须进入远程输入");
+        let _ = app.update(Message::UiTick);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if let Some(sink) = app.recording_sink() {
+                let events = sink.relative_events.lock().unwrap();
+                if events.iter().any(|&event| event == (1, 0, 0, 0)) {
+                    break;
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "按钮按下事件 (1,0,0,0) 未达 sink"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        let _ = app.update(Message::IcedEvent(iced::Event::Mouse(
+            iced::mouse::Event::ButtonReleased(iced::mouse::Button::Left),
+        )));
+        let _ = app.update(Message::UiTick);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if let Some(sink) = app.recording_sink() {
+                let events = sink.relative_events.lock().unwrap();
+                if events.iter().any(|&event| event == (0, 0, 0, 0)) {
+                    break;
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "按钮释放事件 (0,0,0,0) 未达 sink"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
     }
 
     #[test]
