@@ -6,11 +6,12 @@
 use iced::advanced::layout;
 use iced::advanced::widget::{Operation, Tree, Widget, tree};
 use iced::advanced::{Clipboard, Shell, mouse, overlay, renderer};
+use iced::border::Border;
 use iced::keyboard;
 use iced::widget::{
     button, button::Status, column, container, mouse_area, space, stack, text, text_input,
 };
-use iced::{Color, Element, Event, Length, Rectangle, Size, Vector};
+use iced::{Color, Element, Event, Length, Rectangle, Shadow, Size, Vector};
 use rust_i18n::t;
 
 /// 四种模态（对应 egui 端）。
@@ -141,7 +142,7 @@ pub fn overlay<'a>(content: Element<'a, ModalAction>) -> Element<'a, ModalAction
         .width(Length::Fill)
         .height(Length::Fill)
         .style(|_theme| container::Style {
-            background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.45).into()),
+            background: Some(Color::from_rgba(0.0, 0.0, 0.0, 0.55).into()),
             ..Default::default()
         });
     let catcher = mouse_area(dim).on_press(ModalAction::Close);
@@ -171,8 +172,17 @@ fn modal_card<'a>(title: String, content: Element<'a, ModalAction>) -> Element<'
         .spacing(12)
         .padding(20);
     container(card)
-        .style(|_theme| container::Style {
-            background: Some(Color::from_rgb(1.0, 1.0, 1.0).into()),
+        .style(|theme| container::Style {
+            background: Some(theme.palette().background.into()),
+            border: Border::default()
+                .rounded(10)
+                .width(1.0)
+                .color(crate::theme::border_color(theme.palette())),
+            shadow: Shadow {
+                color: Color::from_rgba(0.0, 0.0, 0.0, 0.35),
+                offset: Vector::new(0.0, 4.0),
+                blur_radius: 16.0,
+            },
             ..Default::default()
         })
         .into()

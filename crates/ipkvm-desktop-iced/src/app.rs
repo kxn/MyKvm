@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use iced::border::Border;
 use iced::widget::image::Handle;
 use iced::{Color, Element, Length, Size, Subscription, Task};
 use ipkvm_core::{
@@ -982,7 +983,8 @@ where
                 })
             });
         let connect = button(text(t!("device.connect")))
-            .on_press_maybe(self.selection.can_connect().then_some(Message::Connect));
+            .on_press_maybe(self.selection.can_connect().then_some(Message::Connect))
+            .style(iced::widget::button::primary);
         let refresh = button(text(t!("device.refresh"))).on_press(Message::RefreshDevices);
         let save_profile =
             button(text(t!("profile.save"))).on_press(Message::OpenModal(ModalKind::SaveProfile));
@@ -1001,7 +1003,7 @@ where
                 background: Some(Color::from_rgb(0.08, 0.08, 0.08).into()),
                 ..Default::default()
             });
-        column![
+        let content = column![
             text(t!("device.title")).size(18),
             text(t!("device.video")),
             video_pick,
@@ -1017,8 +1019,19 @@ where
             self.status_message_view(),
         ]
         .spacing(8)
-        .padding(12)
-        .into()
+        .padding(12);
+        container(content)
+            .width(Length::Fill)
+            .padding(16)
+            .style(|theme: &iced::Theme| container::Style {
+                background: Some(crate::theme::surface(theme.palette()).into()),
+                border: Border::default()
+                    .rounded(10)
+                    .width(1.0)
+                    .color(crate::theme::border_color(theme.palette())),
+                ..Default::default()
+            })
+            .into()
     }
 
     fn status_line(&self) -> Element<'_, Message> {
@@ -1026,6 +1039,10 @@ where
         container(text(self.status.label(self.zh)))
             .width(Length::Fill)
             .padding(6)
+            .style(|theme: &iced::Theme| container::Style {
+                background: Some(crate::theme::surface(theme.palette()).into()),
+                ..Default::default()
+            })
             .into()
     }
 
@@ -1681,5 +1698,19 @@ mod tests {
             assert!(std::time::Instant::now() < deadline);
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+    }
+
+    #[test]
+    fn connection_page_view_renders_after_theme_wiring() {
+        let _guard = crate::I18N_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        rust_i18n::set_locale("en");
+        let (mut app, _) = MockApp::new_mock();
+        let _ = app.update(Message::Disconnect);
+        let _ = app.update(Message::RefreshDevices);
+        let mut ui = iced_test::simulator::simulator(app.view());
+        assert!(ui.find("Select device").is_ok(), "连接页标题必须渲染");
+        assert!(ui.find("Refresh detection").is_ok(), "刷新按钮必须渲染");
     }
 }
