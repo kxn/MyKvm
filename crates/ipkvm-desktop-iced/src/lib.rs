@@ -13,6 +13,7 @@ use rust_i18n::t;
 pub mod app;
 pub mod frames;
 pub mod locale;
+pub mod menu;
 pub mod modal;
 pub mod perf;
 pub mod scale;
