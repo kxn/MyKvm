@@ -711,10 +711,17 @@ where
                 self.copy_screenshot();
                 Task::none()
             }
-            MenuAction::Simple("save_screenshot") => Task::perform(
-                crate::dialog::choose_screenshot_path(),
-                Message::ScreenshotPath,
-            ),
+            MenuAction::Simple("save_screenshot") => {
+                if self.latest_frame.is_none() {
+                    self.status_message = Some(t!("message.no_frame_screenshot").to_string());
+                    Task::none()
+                } else {
+                    Task::perform(
+                        crate::dialog::choose_screenshot_path(),
+                        Message::ScreenshotPath,
+                    )
+                }
+            }
             MenuAction::Simple("exit") => {
                 if let Some(id) = self.window_id {
                     iced::window::close(id)
@@ -999,10 +1006,10 @@ where
         diag::log("disconnect");
         let _ = self.controller.stop();
         self.sync_status();
-        self.selection.control_status = ControlProbeStatus::Disconnected;
-        self.selection.video_status = VideoProbeStatus::NotSelected;
-        self.preview.reset();
-        self.reset_preview_handle();
+        // 保留已探测状态（对齐 egui stop_session）：Connect 立即恢复可点，
+        // 预览源保持常驻，由 PreviewTick 继续出帧。
+        self.latest_frame = None;
+        self.frame_size = None;
         self.remote_input = false;
         self.stop_relative_source();
     }
@@ -1117,7 +1124,14 @@ where
     fn menu_view(&self) -> Element<'_, Message> {
         let recent: Vec<String> = self.store.recent_profiles();
         let recent_refs: Vec<&str> = recent.iter().map(String::as_str).collect();
-        menu_bar(&recent_refs, self.paste_busy, self.language).map(Message::Menu)
+        menu_bar(
+            &recent_refs,
+            self.paste_busy,
+            self.language,
+            self.controller.is_control_online(),
+            self.latest_frame.is_some(),
+        )
+        .map(Message::Menu)
     }
 
     fn main_view(&self) -> Element<'_, Message> {
@@ -1791,9 +1805,9 @@ mod tests {
         assert_eq!(app.status(), &ConnectionStatus::Connected);
         let _ = app.update(Message::Disconnect);
         assert_eq!(app.status(), &ConnectionStatus::Disconnected);
-        assert_eq!(
-            app.selection.control_status,
-            ControlProbeStatus::Disconnected
+        assert!(
+            app.selection.can_connect(),
+            "断开后应保留探测状态，Connect 可点"
         );
     }
 
@@ -1801,15 +1815,41 @@ mod tests {
     fn menu_disconnect_returns_to_connection_page() {
         let (mut app, _) = MockApp::new_mock(); // 构造即在线 → 视频页
         assert_eq!(app.status(), &ConnectionStatus::Connected);
+        // 建立 Ready 探测状态并准备一帧，再通过菜单断开（保留状态的断言前提）。
+        let _ = app.update(Message::Disconnect);
+        let _ = app.update(Message::RefreshDevices);
+        let _ = app.update(Message::SelectVideo("Camera 0".into()));
+        let _ = app.update(Message::PreviewTick);
+        let _ = app.update(Message::SelectControl("CH9329 (COM9)".into()));
+        let _ = app.update(Message::FrameReady(make_bgra_frame(1, 16, 9)));
+        assert!(app.latest_frame.is_some());
         let _ = app.update(Message::Menu(MenuAction::Disconnect));
         assert_eq!(app.status(), &ConnectionStatus::Disconnected);
-        assert_eq!(
-            app.selection.control_status,
-            ControlProbeStatus::Disconnected
+        assert!(
+            app.selection.can_connect(),
+            "断开后应保留探测状态，Connect 可点"
         );
+        assert!(app.latest_frame.is_none(), "断开后截图应不可用");
         assert!(!app.remote_input, "断开后必须退出远程输入");
         let mut ui = iced_test::simulator::simulator(app.view());
         assert!(ui.find("Connect").is_ok(), "断开后必须回到连接页");
+    }
+
+    #[test]
+    fn disconnect_keeps_probe_state_and_clears_frame() {
+        let (mut app, _) = MockApp::new_mock();
+        // 先建立 Ready 探测状态（new_mock 默认 NotSelected，无状态可保留）。
+        let _ = app.update(Message::Disconnect);
+        let _ = app.update(Message::RefreshDevices);
+        let _ = app.update(Message::SelectVideo("Camera 0".into()));
+        let _ = app.update(Message::PreviewTick);
+        let _ = app.update(Message::SelectControl("CH9329 (COM9)".into()));
+        let _ = app.update(Message::FrameReady(make_bgra_frame(1, 16, 9)));
+        assert!(app.latest_frame.is_some());
+        let _ = app.update(Message::Disconnect);
+        assert_eq!(app.status(), &ConnectionStatus::Disconnected);
+        assert!(app.selection.can_connect(), "探测状态必须保留");
+        assert!(app.latest_frame.is_none(), "latest_frame 必须清空");
     }
 
     #[test]

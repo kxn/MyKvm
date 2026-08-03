@@ -69,13 +69,18 @@ pub fn menu_bar<'a, R>(
     recent_profiles: &[&str],
     paste_busy: bool,
     language: crate::locale::AppLanguage,
+    online: bool,
+    has_frame: bool,
 ) -> iced::Element<'a, MenuAction, iced::Theme, R>
 where
     R: iced::advanced::Renderer + iced::advanced::text::Renderer + 'a,
 {
     menu_bar_macro!(
-        (root_label(t!("menu.file")), file_menu(recent_profiles)),
-        (root_label(t!("menu.edit")), edit_menu(language)),
+        (
+            root_label(t!("menu.file")),
+            file_menu(recent_profiles, online)
+        ),
+        (root_label(t!("menu.edit")), edit_menu(language, has_frame)),
         (root_label(t!("menu.send")), send_menu(paste_busy)),
         (root_label(t!("menu.about")), about_menu()),
     )
@@ -88,12 +93,12 @@ where
 // 菜单数据（复刻 egui 端结构）
 // ---------------------------------------------------------------------------
 
-fn file_menu<'a, R>(recent_profiles: &[&str]) -> Menu<'a, MenuAction, iced::Theme, R>
+fn file_menu<'a, R>(recent_profiles: &[&str], online: bool) -> Menu<'a, MenuAction, iced::Theme, R>
 where
     R: iced::advanced::Renderer + iced::advanced::text::Renderer + 'a,
 {
     Menu::new(menu_items_macro!(
-        (item_button(t!("menu.disconnect"), MenuAction::Disconnect)),
+        action_item(t!("menu.disconnect"), MenuAction::Disconnect, online),
         (separator()),
         (item_button(t!("file.load_profile"), MenuAction::Simple("load_profile"))),
         recent_item(recent_profiles),
@@ -144,16 +149,20 @@ where
     )
 }
 
-fn edit_menu<'a, R>(language: crate::locale::AppLanguage) -> Menu<'a, MenuAction, iced::Theme, R>
+fn edit_menu<'a, R>(
+    language: crate::locale::AppLanguage,
+    has_frame: bool,
+) -> Menu<'a, MenuAction, iced::Theme, R>
 where
     R: iced::advanced::Renderer + iced::advanced::text::Renderer + 'a,
 {
     Menu::new(menu_items_macro!(
-        (item_button(
+        action_item(
             t!("edit.copy_screenshot"),
-            MenuAction::Simple("copy_screenshot")
-        )),
-        save_screenshot_item(),
+            MenuAction::Simple("copy_screenshot"),
+            has_frame
+        ),
+        save_screenshot_item(has_frame),
         (separator()),
         language_item(language),
         (item_button(
@@ -164,16 +173,17 @@ where
     .width(240.0)
 }
 
-fn save_screenshot_item<'a, R>() -> Item<'a, MenuAction, iced::Theme, R>
+fn save_screenshot_item<'a, R>(has_frame: bool) -> Item<'a, MenuAction, iced::Theme, R>
 where
     R: iced::advanced::Renderer + iced::advanced::text::Renderer + 'a,
 {
     #[cfg(windows)]
     {
-        Item::new(item_button(
+        action_item(
             t!("edit.save_screenshot"),
             MenuAction::Simple("save_screenshot"),
-        ))
+            has_frame,
+        )
     }
     #[cfg(not(windows))]
     {
@@ -222,36 +232,16 @@ where
     R: iced::advanced::Renderer + iced::advanced::text::Renderer + 'a,
 {
     Menu::new(menu_items_macro!(
-        paste_item(paste_busy),
+        action_item(
+            t!("send.paste_text"),
+            MenuAction::Simple("paste"),
+            !paste_busy
+        ),
         (item_button(t!("send.release_all"), MenuAction::Simple("release_all"))),
         (separator()),
         special_keys_item(),
     ))
     .width(240.0)
-}
-
-fn paste_item<'a, R>(paste_busy: bool) -> Item<'a, MenuAction, iced::Theme, R>
-where
-    R: iced::advanced::Renderer + iced::advanced::text::Renderer + 'a,
-{
-    if paste_busy {
-        // 无 on_press 的按钮 = 不可点（对齐 egui add_enabled(false)）。
-        Item::new(
-            button(
-                text(t!("send.paste_text"))
-                    .width(Length::Fill)
-                    .align_y(alignment::Vertical::Center),
-            )
-            .width(Length::Fill)
-            .padding([4, 10])
-            .style(menu_item_style),
-        )
-    } else {
-        Item::new(item_button(
-            t!("send.paste_text"),
-            MenuAction::Simple("paste"),
-        ))
-    }
 }
 
 fn special_keys_item<'a, R>() -> Item<'a, MenuAction, iced::Theme, R>
@@ -328,6 +318,32 @@ where
     .into()
 }
 
+/// 菜单项：可用时发布动作，禁用时无 `on_press`（iced 渲染为禁用态）+ 置灰。
+fn action_item<'a, R>(
+    label: impl Into<String>,
+    action: MenuAction,
+    enabled: bool,
+) -> Item<'a, MenuAction, iced::Theme, R>
+where
+    R: iced::advanced::Renderer + iced::advanced::text::Renderer + 'a,
+{
+    let label = label.into();
+    if enabled {
+        Item::new(item_button(label, action))
+    } else {
+        Item::new(
+            button(
+                text(label)
+                    .width(Length::Fill)
+                    .align_y(alignment::Vertical::Center),
+            )
+            .width(Length::Fill)
+            .padding([4, 10])
+            .style(menu_item_style),
+        )
+    }
+}
+
 /// 子菜单父项：标签 + 右箭头（文本 "›"，不依赖 iced_aw 图标字体）。
 fn submenu_label<'a, R>(label: impl Into<String>) -> iced::Element<'a, MenuAction, iced::Theme, R>
 where
@@ -359,9 +375,17 @@ fn menu_item_style(theme: &iced::Theme, status: button::Status) -> iced::widget:
         }
         _ => Some(Background::Color(iced::Color::TRANSPARENT)),
     };
+    let text_color = if matches!(status, button::Status::Disabled) {
+        iced::Color {
+            a: palette.text.a * 0.45,
+            ..palette.text
+        }
+    } else {
+        palette.text
+    };
     iced::widget::button::Style {
         background,
-        text_color: palette.text,
+        text_color,
         border: Default::default(),
         shadow: Default::default(),
         snap: false,

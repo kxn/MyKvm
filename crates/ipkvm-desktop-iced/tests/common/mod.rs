@@ -18,8 +18,10 @@ impl MenuHarness {
         recent: &[&str],
         paste_busy: bool,
         language: ipkvm_desktop_iced::locale::AppLanguage,
+        online: bool,
+        has_frame: bool,
     ) -> Element<'a, MenuAction> {
-        let bar = menu::menu_bar(recent, paste_busy, language);
+        let bar = menu::menu_bar(recent, paste_busy, language, online, has_frame);
         let background: Element<'a, MenuAction, iced::Theme, iced::Renderer> =
             button(text("Hit me"))
                 .on_press(MenuAction::Simple("bg"))
@@ -32,6 +34,8 @@ impl MenuHarness {
             &RECENT,
             false,
             ipkvm_desktop_iced::locale::AppLanguage::System,
+            true,
+            true,
         )
     }
 
@@ -45,8 +49,12 @@ impl MenuHarness {
         recent: &[&str],
         paste_busy: bool,
         language: ipkvm_desktop_iced::locale::AppLanguage,
+        online: bool,
+        has_frame: bool,
     ) -> Simulator<'static, MenuAction> {
-        simulator::simulator(Self::view_with(recent, paste_busy, language))
+        simulator::simulator(Self::view_with(
+            recent, paste_busy, language, online, has_frame,
+        ))
     }
 
     /// 把光标移到指定位置并注入 CursorMoved。
@@ -65,5 +73,19 @@ impl MenuHarness {
             bounds.x + bounds.width / 2.0,
             bounds.y + bounds.height / 2.0,
         )
+    }
+
+    /// 在指定位置模拟一次完整点击（先更新内部 cursor，再注入鼠标事件序列）。
+    // 共享 harness 按测试二进制编译，部分二进制只走 ui()，不视为死代码。
+    #[allow(dead_code)]
+    pub fn click_at(ui: &mut Simulator<'static, MenuAction>, position: iced::Point) {
+        ui.point_at(position);
+        ui.simulate([
+            iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }),
+            iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left)),
+            iced::Event::Mouse(iced::mouse::Event::ButtonReleased(
+                iced::mouse::Button::Left,
+            )),
+        ]);
     }
 }
