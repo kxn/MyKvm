@@ -90,6 +90,11 @@ status:
   video: "Video: %{value}"
   message: "Status: %{message}"
   offline: "Offline"
+  pasting: "Pasting…"
+  remote_input: "Remote input"
+  keyboard_lost: "Click video to enter"
+  relative_mode: "Relative mouse"
+  pointer_outside: "Mouse outside"
   video_no_signal: "No signal"
   video_stalled: "Stalled / no signal"
 

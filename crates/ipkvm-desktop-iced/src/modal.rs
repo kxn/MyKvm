@@ -8,10 +8,12 @@ use iced::advanced::widget::{Operation, Tree, Widget, tree};
 use iced::advanced::{Clipboard, Shell, mouse, overlay, renderer};
 use iced::border::Border;
 use iced::keyboard;
+use iced::widget::PickList;
 use iced::widget::{
     button, button::Status, column, container, mouse_area, space, stack, text, text_input,
 };
 use iced::{Color, Element, Event, Length, Rectangle, Shadow, Size, Vector};
+use ipkvm_core::MouseMode;
 use rust_i18n::t;
 
 /// 四种模态（对应 egui 端）。
@@ -24,8 +26,8 @@ pub enum ModalKind {
     About,
 }
 
-/// 模态状态：当前打开的模态（或 None）+ save profile 的输入文本。
-#[derive(Clone, Debug, Default)]
+/// 模态状态：当前打开的模态（或 None）+ save profile 的输入文本 + 设置同步值。
+#[derive(Clone, Debug)]
 pub struct ModalState {
     pub open: Option<ModalKind>,
     pub save_name: String,
@@ -33,6 +35,26 @@ pub struct ModalState {
     pub load_names: Vec<String>,
     /// 设置模态显示用的暗色开关（app 打开前同步）。
     pub dark: bool,
+    /// 连接设置模态显示用的连接参数（app 打开前同步）。
+    pub baud_rate: u32,
+    pub preview_fps: u64,
+    pub auto_baud: bool,
+    pub mouse_mode: MouseMode,
+}
+
+impl Default for ModalState {
+    fn default() -> Self {
+        Self {
+            open: None,
+            save_name: String::new(),
+            load_names: Vec::new(),
+            dark: true,
+            baud_rate: ipkvm_core::DEFAULT_BAUD_RATE,
+            preview_fps: 30,
+            auto_baud: true,
+            mouse_mode: MouseMode::Relative,
+        }
+    }
 }
 
 /// 模态产生的动作。
@@ -50,6 +72,14 @@ pub enum ModalAction {
     SetLetterboxColor(Color),
     /// 切换暗色模式。
     SetDarkMode(bool),
+    /// 连接设置：波特率。
+    SetBaudRate(u32),
+    /// 连接设置：预览帧率。
+    SetPreviewFps(u64),
+    /// 连接设置：自动波特率。
+    SetAutoBaud(bool),
+    /// 连接设置：鼠标模式。
+    SetMouseMode(MouseMode),
     /// 点击卡片空白区域：吞掉事件但不关闭（避免落到下层遮罩）。
     Noop,
 }
@@ -118,7 +148,40 @@ impl ModalState {
     }
 
     fn connection_content(&self) -> Element<'_, ModalAction> {
-        column![close_button()].into()
+        let baud_pick = PickList::new(
+            vec![9600u32, 19200, 38400, 57600, 115200],
+            Some(self.baud_rate),
+            ModalAction::SetBaudRate,
+        );
+        let fps_pick = PickList::new(
+            vec![10u64, 15, 30, 60],
+            Some(self.preview_fps),
+            ModalAction::SetPreviewFps,
+        );
+        let auto_baud = iced::widget::Checkbox::new(self.auto_baud)
+            .label(t!("settings.auto_baud"))
+            .on_toggle(ModalAction::SetAutoBaud);
+        let relative = iced::widget::Checkbox::new(self.mouse_mode == MouseMode::Relative)
+            .label(t!("mouse_mode.relative"))
+            .on_toggle(|on| {
+                ModalAction::SetMouseMode(if on {
+                    MouseMode::Relative
+                } else {
+                    MouseMode::Absolute
+                })
+            });
+        column![
+            text(t!("settings.baud_rate")),
+            baud_pick,
+            text(t!("settings.preview_fps")),
+            fps_pick,
+            auto_baud,
+            text(t!("settings.mouse_mode")),
+            relative,
+            close_button(),
+        ]
+        .spacing(8)
+        .into()
     }
 
     fn save_profile_content(&self) -> Element<'_, ModalAction> {
