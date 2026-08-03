@@ -17,6 +17,7 @@ pub mod locale;
 pub mod menu;
 pub mod modal;
 pub mod perf;
+pub mod profile;
 pub mod scale;
 pub mod status;
 pub mod video;
