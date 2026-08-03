@@ -38,8 +38,8 @@
 ## 当前进度
 
 - **阶段 0**：✅ 已完成（脚手架 + controller 接线 + 本文件骨架）
-- 阶段 1（Spike 1 视频渲染）：⏳ 待做
-- 阶段 2（Spike 2 菜单模态）：⏳ 待做
+- 阶段 1（Spike 1 视频渲染）：✅ 已完成（见下）
+- 阶段 2（Spike 2 菜单模态）：✅ 已完成（自绘菜单，见下）
 - 阶段 3（Spike 3 输入层）：⏳ 待做
 - 阶段 4（收口）：⏳ 待做
 
@@ -103,23 +103,29 @@
 
 ### 前置 probe（先做，结果回来再继续）
 
-- [x] **probe（已通过）**：`iced_aw::menu::MenuBar` 在 iced_test headless 下**完全响应事件注入**——`click("File")` 打开菜单（Open 子项变可见），`CursorMoved` 注入后菜单保持打开（走廊逻辑工作）。结论：走廊 hover 验证可用 Simulator 脚本化测真实 iced_aw，**无需降级**。见 `tests/menu_probe.rs`。
+- [x] **probe（已通过）**：`iced_aw::menu::MenuBar` 在 iced_test headless 下响应 click/CursorMoved（当时结论：走廊可脚本化）。
+- [x] **iced_aw 0.14.1 树状态 bug（本 spike 关键发现）**：打开「编辑 → Language」等嵌套子菜单后，`operate`（find）在 `iced_aw/src/widget/menu/menu_bar_overlay.rs:574` 处 `tree.children[1]` 越界 panic（`len is 1`）。根因：`menu_tree.rs` 的 `Item::children()` 把菜单子树**注释掉了**（`// [Tree::new(&self.item), m.tree()]`），`Item::diff` 在 menu 存在时也只会 `*tree = self.tree()`（同样只有 1 个孩子）。**修复仅在 iced_aw master（iced 0.15-dev）已合入，未发版**；0.14 线无可 pin 的修复提交。→ **结论：iced_aw 不能用于 0.14 迁移，改自绘菜单**（本 spike 的既定降级路径）。
 
 ### 任务
 
-- [ ] `menu.rs`：iced_aw MenuBar 复刻 4 顶层（文件/编辑/发送/关于）+ 语言子菜单 + 最近使用（含「更多…」二级）+ 特殊键子菜单，文案 `rust-i18n::t!`
-- [ ] `modal.rs`：自绘 overlay（settings/connection/save profile/about），遮罩 + 事件拦截 + Esc/按钮/点遮罩三关闭路径
+- [x] `menu.rs`：**自绘菜单**（弃用 iced_aw）：`MenuBar` Widget（顶层根按钮）+ `MenuPopup` Overlay（绝对定位、可嵌套），4 顶层（文件/编辑/发送/关于）+ 语言子菜单 + 最近使用（含「更多…」二级）+ 特殊键子菜单，文案 `rust-i18n::t!`；状态机 `MenuState`（open_root/open_path）在 app 侧持有，widget 纯展示 + 事件转发。
+- [x] `modal.rs`：自绘 overlay（settings/connection/save profile/about），遮罩 + 事件拦截 + Esc/按钮/点遮罩三关闭路径（卡片用透明 Button 命中卡片区域；遮罩用 mouse_area）。
 
 ### 自动化验证
 
-- [ ] `tests/menu_interact.rs`：click 开 4 顶层、子菜单深度≥3、tap_key Esc 关
-- [ ] `tests/corridor_hover.rs`：`Simulator::simulate` 注入 `CursorMoved`，父→子连续穿越 100 次断言误关=0（测真实 iced_aw）
-- [ ] `tests/i18n_switch.rs`：set_locale zh↔en 后 snapshot 断言文案变、无换行/截断（沿用 `I18N_TEST_LOCK` 串行）
-- [ ] `tests/modal_blocking.rs`：click 背景断言不触发下层消息；三关闭路径逐一断言；关闭后焦点恢复
+- [x] `tests/menu_interact.rs`：click 开 4 顶层、子菜单深度≥3、业务动作发布并关菜单、Esc 关、点击外部关且不穿透背景（8 项全过）
+- [x] `tests/corridor_hover.rs`：自绘 overlay 真实 bounds 计算走廊中点，父→子连续穿越 100 次断言误关=0（已过；0 误关）
+- [x] `tests/i18n_switch.rs`：set_locale zh↔en 后文案切换、显示译文而非 key 原文、单行无换行（4 项全过）
+- [x] `tests/modal_blocking.rs`：click 背景断言不触发下层消息；三关闭路径逐一断言；关闭后交互恢复（4 项全过）
 
 ### Spike 2 结论
 
-—（待填：iced_aw 可用 / 改自绘菜单 + 证据）
+**改自绘菜单，且验证通过。**
+
+- iced_aw 0.14.1 的嵌套子菜单树状态 bug 是真实缺陷（见上），修复只在 0.15-dev，无法在 0.14 上安全使用；依赖未发版修复 = 不可控，故按计划降级自绘。
+- 自绘方案验证结果：4 顶层菜单、深度≥3 子菜单、i18n 切换、Esc/外点关闭、背景拦截、**hover 走廊 100 次穿越 0 误关**全部通过 headless 自动化测试。
+- 关键机制：菜单/子菜单用 `Overlay` 实现（绝对定位、可嵌套），走廊连通区域 = 父菜单 bounds ∪ 子菜单 bounds ∪ 二者间水平走廊，由子菜单持父项矩形计算；打开状态由 app 侧 `MenuState` 驱动，widget 无私有状态，因此每条交互都可脚本化（click → 消息 → 状态 → 重建 view）。
+- 附带修正：菜单栏 `mouse_interaction` 只能对根按钮文字声明 Pointer，整行声明会导致 stack 把下层控件光标置为 Unavailable、收不到点击（modal 背景按钮同款问题，已一并验证）。
 
 ---
 

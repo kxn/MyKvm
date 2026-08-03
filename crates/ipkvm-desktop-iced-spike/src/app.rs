@@ -271,11 +271,11 @@ mod tests {
         assert_eq!(app.rendered_frames(), 0);
         assert!(app.handle.is_none());
 
-        app.update(Message::FrameReady(make_bgra_frame(1)));
+        let _ = app.update(Message::FrameReady(make_bgra_frame(1)));
         assert_eq!(app.rendered_frames(), 1);
         assert!(app.handle.is_some(), "FrameReady 后 Handle 必须存入 state");
 
-        app.update(Message::FrameReady(make_bgra_frame(2)));
+        let _ = app.update(Message::FrameReady(make_bgra_frame(2)));
         assert_eq!(app.rendered_frames(), 2);
 
         let _ = app.controller.stop();
@@ -288,7 +288,7 @@ mod tests {
         let (mut app, _) = SpikeApp::new(frame_source, stats);
 
         assert!(app.subscribed);
-        app.update(Message::FrameClosed);
+        let _ = app.update(Message::FrameClosed);
         assert!(
             !app.subscribed,
             "FrameClosed 后订阅标志必须为 false（subscription 据此返回 none）"

@@ -10,8 +10,7 @@ publish = false
 [dependencies]
 async-stream = "0.3"
 futures-util = { workspace = true }
-iced = { version = "0.14", features = ["tokio", "image"] }
-iced_aw = { version = "0.14", default-features = false, features = ["menu"] }
+iced = { version = "0.14", features = ["tokio", "image", "advanced"] }
 iced_futures = "0.14"
 ipkvm-core = { path = "../ipkvm-core" }
 ipkvm-desktop = { path = "../ipkvm-desktop" }
