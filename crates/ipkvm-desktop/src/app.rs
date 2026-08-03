@@ -192,13 +192,16 @@ impl DesktopApp {
 
         let menu = egui::TopBottomPanel::top("menu").show(ctx, |ui| self.menu_bar(ui));
         self.menu_chrome = menu.response.rect.height();
+        // 面板注册顺序必须是 顶 → 底 → 中央：CentralPanel 最后注册才会在
+        // 布局时扣除菜单栏和状态栏高度，否则视频底部会被后注册的状态栏盖住
+        // （FitWindow/ActualSize 下表现为“最下面一条被截掉”）。
+        let status = egui::TopBottomPanel::bottom("status").show(ctx, |ui| self.status_bar(ui));
+        self.status_chrome = status.response.rect.height();
         if self.showing_device_dialog {
             self.device_dialog(ctx);
         } else {
             self.console_ui(ctx);
         }
-        let status = egui::TopBottomPanel::bottom("status").show(ctx, |ui| self.status_bar(ui));
-        self.status_chrome = status.response.rect.height();
 
         if self.show_settings {
             egui::Modal::new(egui::Id::new("settings_modal")).show(ctx, |ui| {
@@ -455,8 +458,8 @@ impl DesktopApp {
     fn language_menu(&mut self, ui: &mut egui::Ui) {
         for option in AppLanguage::ALL {
             let selected = self.language == option;
-            let label = format!("{} {}", if selected { "✓" } else { " " }, option.label());
-            if ui.selectable_label(selected, label).clicked() {
+            // selectable_label 自带选中高亮，不额外加勾选符号（主字体可能缺字形）。
+            if ui.selectable_label(selected, option.label()).clicked() {
                 self.language = option;
                 option.apply();
             }
@@ -2234,5 +2237,79 @@ mod tests {
     #[test]
     fn window_icon_is_32x32_rgba() {
         assert_eq!(WINDOW_ICON.len(), 32 * 32 * 4);
+    }
+
+    /// 菜单弹出项必须单行渲染（换行说明弹出宽度被错误约束）。
+    #[test]
+    fn menu_items_render_on_single_line() {
+        use eframe::egui::{self, Event, PointerButton, RawInput, Rect};
+
+        let ctx = egui::Context::default();
+        crate::fonts::install(&ctx);
+        // 250% DPI 下 1280x720 窗口对应的逻辑尺寸。
+        let screen = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(512.0, 288.0));
+        let mut captured: Vec<(String, egui::Rect)> = Vec::new();
+
+        let render = |captured: &mut Vec<(String, egui::Rect)>, events: Vec<Event>| -> () {
+            let _ = ctx.run(
+                RawInput {
+                    screen_rect: Some(screen),
+                    events,
+                    ..Default::default()
+                },
+                |ctx| {
+                    egui::TopBottomPanel::top("menu").show(ctx, |ui| {
+                        egui::MenuBar::new().ui(ui, |ui| {
+                            ui.menu_button("文件", |ui| {
+                                captured.clear();
+                                for text in ["加载连接 profile…", "最近使用", "更多…", "退出"]
+                                {
+                                    let response = ui.button(text);
+                                    captured.push((text.to_string(), response.rect));
+                                }
+                            });
+                        });
+                    });
+                },
+            );
+        };
+
+        // 帧 1：打开前基线。
+        render(&mut captured, Vec::new());
+        assert!(captured.is_empty(), "菜单未打开前不应有内容");
+
+        // 帧 2-3：点击“文件”菜单按钮打开弹出菜单。
+        let click_at = egui::pos2(16.0, 12.0);
+        render(
+            &mut captured,
+            vec![Event::PointerButton {
+                pos: click_at,
+                button: PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        render(
+            &mut captured,
+            vec![Event::PointerButton {
+                pos: click_at,
+                button: PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        // 帧 4+：菜单已打开，捕获当前内容。
+        for _ in 0..4 {
+            render(&mut captured, Vec::new());
+        }
+
+        assert_eq!(captured.len(), 4, "菜单应渲染 4 个菜单项");
+        for (text, rect) in &captured {
+            assert!(
+                rect.height() <= 26.0,
+                "菜单项「{text}」换行渲染：height={:.1} rect={rect:?}",
+                rect.height()
+            );
+        }
     }
 }

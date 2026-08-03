@@ -37,6 +37,35 @@ pub fn system_font_candidates() -> Vec<PathBuf> {
     candidates
 }
 
+/// 符号 fallback 字体候选：补充主字体缺失的 UI 符号（勾选 ✓、子菜单箭头 ⏵、
+/// 省略号 … 等）。egui 按 families 列表顺序逐字体查找字形。
+pub fn symbol_font_candidates() -> Vec<PathBuf> {
+    #[cfg(target_os = "windows")]
+    let candidates = {
+        let windows_dir = std::env::var("WINDIR").unwrap_or_else(|_| "C:\\Windows".to_owned());
+        vec![
+            PathBuf::from(&windows_dir).join("Fonts\\seguisym.ttf"),
+            PathBuf::from(&windows_dir).join("Fonts\\segoeuiemj.ttf"),
+        ]
+    };
+
+    #[cfg(target_os = "linux")]
+    let candidates = vec![
+        PathBuf::from("/usr/share/fonts/opentype/noto/NotoSansSymbols-Regular.ttf"),
+        PathBuf::from("/usr/share/fonts/truetype/noto/NotoSansSymbols-Regular.ttf"),
+        PathBuf::from("/usr/share/fonts/opentype/noto/NotoSansSymbols2-Regular.ttf"),
+        PathBuf::from("/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf"),
+    ];
+
+    #[cfg(target_os = "macos")]
+    let candidates = vec![PathBuf::from("/System/Library/Fonts/Apple Symbols.ttf")];
+
+    #[cfg(not(any(target_os = "windows", target_os = "linux", target_os = "macos")))]
+    let candidates: Vec<PathBuf> = Vec::new();
+
+    candidates
+}
+
 /// 内置兜底字体（Roboto-Regular，Apache-2.0，许可证文本见 assets/ROBOTO-LICENSE.txt）。
 ///
 /// 任何环境都保证至少一个字体可用，避免 egui 空字体集渲染文本时 panic。
@@ -61,15 +90,26 @@ pub fn install(ctx: &eframe::egui::Context) {
         "system".to_owned(),
         eframe::egui::FontData::from_owned(bytes).into(),
     );
+    // 符号 fallback：能读到的符号字体按顺序追加到 families 末尾，
+    // 主字体缺字形时 egui 自动回退（子菜单箭头/勾选等符号）。
+    let mut symbol_names = Vec::new();
+    for (index, path) in symbol_font_candidates().iter().enumerate() {
+        if let Ok(symbol_bytes) = std::fs::read(path) {
+            let name = format!("symbols{index}");
+            fonts.font_data.insert(
+                name.clone(),
+                eframe::egui::FontData::from_owned(symbol_bytes).into(),
+            );
+            symbol_names.push(name);
+        }
+    }
     for family in [
         eframe::egui::FontFamily::Proportional,
         eframe::egui::FontFamily::Monospace,
     ] {
-        fonts
-            .families
-            .entry(family)
-            .or_default()
-            .insert(0, "system".to_owned());
+        let list = fonts.families.entry(family).or_default();
+        list.insert(0, "system".to_owned());
+        list.extend(symbol_names.iter().cloned());
     }
     ctx.set_fonts(fonts);
 }
