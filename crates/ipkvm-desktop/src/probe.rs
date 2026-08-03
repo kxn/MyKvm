@@ -38,7 +38,7 @@ pub trait ProbeBackend {
 /// `app::preview_refresh_action`。
 pub fn refresh_detection(
     state: &mut DeviceSelectionState,
-    backend: &mut impl ProbeBackend,
+    backend: &mut dyn ProbeBackend,
     baud_rate: u32,
     timeout: Duration,
 ) -> Result<(), ProbeError> {

@@ -2668,6 +2668,8 @@ dependencies = [
  "ipkvm-desktop",
  "ipkvm-session",
  "ipkvm-video",
+ "rust-i18n",
+ "sys-locale",
  "tokio",
 ]
 

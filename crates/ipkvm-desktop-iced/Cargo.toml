@@ -12,10 +12,12 @@ async-stream = "0.3"
 futures-util = { workspace = true }
 iced = { version = "0.14", features = ["tokio", "image", "advanced"] }
 iced_futures = "0.14"
-ipkvm-core = { path = "../ipkvm-core" }
+ipkvm-core = { path = "../ipkvm-core", features = ["serial"] }
 ipkvm-desktop = { path = "../ipkvm-desktop" }
 ipkvm-session = { path = "../ipkvm-session" }
-ipkvm-video = { path = "../ipkvm-video", features = ["mock"] }
+ipkvm-video = { path = "../ipkvm-video", features = ["mock", "mf"] }
+rust-i18n = "4.2.1"
+sys-locale = "0.3.2"
 
 [dev-dependencies]
 iced_test = "0.14"

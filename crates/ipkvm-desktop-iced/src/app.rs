@@ -1,24 +1,44 @@
-//! 应用状态/消息/视图/订阅（M1）：连接 mock 帧源，消费帧订阅并渲染。
+//! 应用状态/消息/视图/订阅（M2）：菜单/模态/连接页/profile + M1 视频链路。
 
 use std::sync::Arc;
-use std::time::Instant;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 use iced::widget::image::Handle;
 use iced::{Color, Element, Length, Size, Subscription, Task};
-use ipkvm_core::{InputError, InputSink, KeyEvent, MouseMode, PointerEvent};
-use ipkvm_desktop::{ConnectRequest, DesktopSessionController, DesktopSessionError, SessionParts};
+use ipkvm_core::{
+    Ch9329InputSink, InputError, InputSink, KeyEvent, MouseMode, PointerEvent, SerialCommandQueue,
+};
+use ipkvm_desktop::{
+    ConnectRequest, DesktopSessionController, DesktopSessionError,
+    ProductionDesktopSessionController, ProductionSessionFactory, SessionParts,
+};
 use ipkvm_session::rfb_connection::RfbConnectionGate;
 use ipkvm_video::mock::MockFrameSource;
 use ipkvm_video::{FrameSource, VideoFrame};
+use rust_i18n::t;
 
+use crate::connect::{
+    CameraPreviewFactory, ConnectionSettings, ControlProbeStatus, DeviceSelectionState,
+    PROBE_TIMEOUT, PreviewRefreshAction, PreviewRuntime, PreviewSourceFactory,
+    ProductionProbeBackend, VideoProbeStatus, detect_baud_rate, preview_refresh_action,
+    refresh_detection,
+};
 use crate::frames::{FrameUpdate, frame_subscription};
+use crate::locale::AppLanguage;
+use crate::menu::{MenuAction, MenuState, menu_bar};
+use crate::modal::{ModalAction, ModalKind, ModalState};
 use crate::perf::FrameStats;
+use crate::profile::{apply_profile_to_selection, build_profile};
 use crate::scale::{FrameSize, ScaleMode};
 use crate::status::{ConnectionStatus, derive_status};
 use crate::video::handle_from_frame;
 use crate::{WINDOW_SIZE, WINDOW_TITLE};
 
-/// 记录型 sink：测试与 mock 连接用，观察键/指针批次。
+/// mock 实例序号：每个 new_mock 用独立临时目录，避免测试并行互踩。
+static MOCK_STORE_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// 记录型 sink：测试与 mock 连接用。
 #[derive(Clone, Debug, Default)]
 pub struct RecordingSink {
     pub key_batches: Arc<std::sync::Mutex<usize>>,
@@ -43,31 +63,83 @@ impl InputSink for RecordingSink {
     }
 }
 
-type MockFactory =
+pub type MockFactory =
     Box<dyn FnMut(&ConnectRequest) -> Result<SessionParts<RecordingSink>, DesktopSessionError>>;
-type MockController = DesktopSessionController<RecordingSink, MockFactory>;
+
+/// 测试/示例用 App 类型。
+pub type MockApp = App<RecordingSink, MockFactory>;
+/// 生产 App 类型（真实相机 + CH9329 串口）。
+pub type ProductionApp = App<Ch9329InputSink<SerialCommandQueue>, ProductionSessionFactory>;
+
+/// 测试用探测后端：控制设备永远 Ready。
+#[derive(Default)]
+struct FakeProbeBackend;
+
+impl ipkvm_desktop::probe::ProbeBackend for FakeProbeBackend {
+    fn list_video_devices(
+        &mut self,
+    ) -> Result<Vec<crate::connect::DeviceOption>, ipkvm_desktop::probe::ProbeError> {
+        Ok(vec![crate::connect::DeviceOption {
+            id: "cam0".into(),
+            label: "Camera 0".into(),
+        }])
+    }
+
+    fn list_control_devices(
+        &mut self,
+    ) -> Result<Vec<crate::connect::DeviceOption>, ipkvm_desktop::probe::ProbeError> {
+        Ok(vec![crate::connect::DeviceOption {
+            id: "COM9".into(),
+            label: "CH9329 (COM9)".into(),
+        }])
+    }
+
+    fn probe_control(
+        &mut self,
+        _device_id: &str,
+        _baud_rate: u32,
+        _timeout: Duration,
+    ) -> ControlProbeStatus {
+        ControlProbeStatus::Ready(crate::connect::ControlInfo {
+            version: 0x31,
+            usb_enumerated: true,
+        })
+    }
+}
 
 /// 应用消息。
 #[derive(Clone, Debug)]
 pub enum Message {
-    /// 新帧到达（来自 iced Subscription）。
     FrameReady(VideoFrame),
-    /// 帧源关闭。
     FrameClosed,
-    /// 切换缩放模式。
     SetScaleMode(ScaleMode),
-    /// 设置黑边颜色。
     SetLetterboxColor(Color),
-    /// 切换界面语言。
     ToggleLocale,
-    /// 主窗口已打开（iced 0.14 无 Id::MAIN，需运行时捕获窗口 Id）。
     WindowOpened(iced::window::Id),
+    Menu(MenuAction),
+    Modal(ModalAction),
+    OpenModal(ModalKind),
+    SelectVideo(String),
+    SelectControl(String),
+    RefreshDevices,
+    Connect,
+    Disconnect,
+    PreviewTick,
+    SetBaudRate(u32),
+    SetAutoBaud(bool),
+    SetPreviewFps(u64),
+    SetMouseMode(MouseMode),
+    LoadProfile(String),
 }
 
-/// 应用状态：controller + 当前帧 Handle + 缩放/黑边/状态栏。
-pub struct App {
-    pub(crate) controller: MockController,
-    frame_source: Arc<MockFrameSource>,
+/// 应用状态：controller + 连接页 + 菜单/模态 + 视频。
+pub struct App<S, F>
+where
+    S: InputSink + Clone + Send + 'static,
+    F: FnMut(&ConnectRequest) -> Result<SessionParts<S>, DesktopSessionError>,
+{
+    pub(crate) controller: DesktopSessionController<S, F>,
+    frame_source: Option<Arc<MockFrameSource>>,
     handle: Option<Handle>,
     frame_size: Option<FrameSize>,
     scale_mode: ScaleMode,
@@ -78,10 +150,21 @@ pub struct App {
     window_id: Option<iced::window::Id>,
     pending_resize: Option<Size>,
     stats: Option<Arc<FrameStats>>,
+    menu: MenuState,
+    modal: ModalState,
+    selection: DeviceSelectionState,
+    connection: ConnectionSettings,
+    probe: Box<dyn ipkvm_desktop::probe::ProbeBackend>,
+    preview: PreviewRuntime,
+    preview_factory: Arc<dyn PreviewSourceFactory>,
+    preview_handle: Option<Handle>,
+    store: ipkvm_desktop::config::ProfileStore,
+    active_profile: Option<String>,
+    status_message: Option<String>,
 }
 
-impl App {
-    /// 构造并连接 mock 会话（注入 MockFrameSource + RecordingSink）。
+impl App<RecordingSink, MockFactory> {
+    /// 构造并连接 mock 会话（测试/示例用）。
     pub fn new_mock() -> (Self, Task<Message>) {
         let frame_source = Arc::new(MockFrameSource::new());
         let fs = Arc::clone(&frame_source);
@@ -95,10 +178,11 @@ impl App {
             controller.is_control_online(),
             controller.input_offline_reason(),
         );
+        let seq = MOCK_STORE_SEQ.fetch_add(1, Ordering::Relaxed);
         (
             Self {
                 controller,
-                frame_source,
+                frame_source: Some(frame_source),
                 handle: None,
                 frame_size: None,
                 scale_mode: ScaleMode::FitWindow,
@@ -109,12 +193,67 @@ impl App {
                 window_id: None,
                 pending_resize: None,
                 stats: None,
+                menu: MenuState::default(),
+                modal: ModalState::default(),
+                selection: DeviceSelectionState::default(),
+                connection: ConnectionSettings::default(),
+                probe: Box::new(FakeProbeBackend),
+                preview: PreviewRuntime::default(),
+                preview_factory: Arc::new(MockPreviewFactory),
+                preview_handle: None,
+                store: ipkvm_desktop::config::ProfileStore::new(
+                    std::env::temp_dir()
+                        .join(format!("my-ipkvm-iced-mock-{}-{seq}", std::process::id())),
+                ),
+                active_profile: None,
+                status_message: None,
             },
             Task::none(),
         )
     }
+}
 
-    /// 附加帧到达统计（perf 示例用；不传则 update 不记录）。
+impl App<Ch9329InputSink<SerialCommandQueue>, ProductionSessionFactory> {
+    /// 构造生产应用（真实 controller + 设备探测 + 相机预览 + 磁盘 profile）。
+    pub fn production() -> (Self, Task<Message>) {
+        let controller = ProductionDesktopSessionController::production();
+        let store = ipkvm_desktop::config::ProfileStore::production();
+        (
+            Self {
+                controller,
+                frame_source: None,
+                handle: None,
+                frame_size: None,
+                scale_mode: ScaleMode::FitWindow,
+                letterbox_color: Color::from_rgb(0.0, 0.0, 0.0),
+                status: ConnectionStatus::Disconnected,
+                subscribed: true,
+                zh: true,
+                window_id: None,
+                pending_resize: None,
+                stats: None,
+                menu: MenuState::default(),
+                modal: ModalState::default(),
+                selection: DeviceSelectionState::default(),
+                connection: ConnectionSettings::default(),
+                probe: Box::new(ProductionProbeBackend),
+                preview: PreviewRuntime::default(),
+                preview_factory: Arc::new(CameraPreviewFactory),
+                preview_handle: None,
+                store,
+                active_profile: None,
+                status_message: None,
+            },
+            Task::none(),
+        )
+    }
+}
+
+impl<S, F> App<S, F>
+where
+    S: InputSink + Clone + Send + 'static,
+    F: FnMut(&ConnectRequest) -> Result<SessionParts<S>, DesktopSessionError>,
+{
     pub fn with_stats(mut self, stats: Arc<FrameStats>) -> Self {
         self.stats = Some(stats);
         self
@@ -165,13 +304,305 @@ impl App {
                 }
                 Task::none()
             }
+            Message::Menu(action) => {
+                if let Some(business) = self.menu.apply(action) {
+                    self.handle_menu_action(business);
+                }
+                Task::none()
+            }
+            Message::Modal(action) => {
+                self.handle_modal_action(action);
+                Task::none()
+            }
+            Message::OpenModal(kind) => {
+                if kind == ModalKind::LoadProfile {
+                    self.modal.load_names = self.store.list_profiles();
+                }
+                self.modal.open(kind);
+                Task::none()
+            }
+            Message::SelectVideo(label) => {
+                if let Some(device) = self
+                    .selection
+                    .video_devices
+                    .iter()
+                    .find(|device| device.label == label)
+                {
+                    self.selection.selected_video_id = Some(device.id.clone());
+                    self.selection.video_status = VideoProbeStatus::Checking;
+                    self.preview.reset();
+                    self.preview_handle = None;
+                    self.active_profile = None;
+                }
+                Task::none()
+            }
+            Message::SelectControl(label) => {
+                if let Some(device) = self
+                    .selection
+                    .control_devices
+                    .iter()
+                    .find(|device| device.label == label)
+                {
+                    self.selection.selected_control_id = Some(device.id.clone());
+                    self.selection.control_status = self.probe.probe_control(
+                        &device.id,
+                        self.connection.baud_rate,
+                        PROBE_TIMEOUT,
+                    );
+                    self.active_profile = None;
+                }
+                Task::none()
+            }
+            Message::RefreshDevices => {
+                let mut selection = self.selection.clone();
+                match refresh_detection(
+                    &mut selection,
+                    self.probe.as_mut(),
+                    self.connection.baud_rate,
+                    PROBE_TIMEOUT,
+                ) {
+                    Ok(()) => {
+                        self.selection = selection;
+                        self.status_message = None;
+                        let selected_present = self
+                            .selection
+                            .selected_video_id
+                            .as_deref()
+                            .is_some_and(|id| {
+                                self.selection
+                                    .video_devices
+                                    .iter()
+                                    .any(|device| device.id == id)
+                            });
+                        match preview_refresh_action(&self.selection.video_status, selected_present)
+                        {
+                            PreviewRefreshAction::Skip => {}
+                            PreviewRefreshAction::Reopen => {
+                                self.preview.reset();
+                                self.preview_handle = None;
+                                self.selection.video_status = VideoProbeStatus::Checking;
+                            }
+                            PreviewRefreshAction::KeepDisconnected => {
+                                self.preview.reset();
+                                self.preview_handle = None;
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        self.status_message = Some(
+                            t!("message.enumeration_failed", error = error.to_string()).to_string(),
+                        );
+                    }
+                }
+                Task::none()
+            }
+            Message::Connect => {
+                self.preview.reset();
+                self.preview_handle = None;
+                if self.connection.auto_baud
+                    && let Some(control_id) = self.selection.selected_control_id.clone()
+                    && let Some(baud) = detect_baud_rate(&control_id, PROBE_TIMEOUT)
+                {
+                    self.connection.baud_rate = baud;
+                    self.status_message =
+                        Some(t!("message.baud_selected", baud = baud).to_string());
+                }
+                let Some(request) = self.connect_request() else {
+                    return Task::none();
+                };
+                match self.controller.connect(request) {
+                    Ok(()) => {
+                        self.status_message = None;
+                        self.sync_status();
+                        if let Some(name) = self.active_profile.clone() {
+                            if let Err(error) = self.store.add_recent_profile(&name) {
+                                self.status_message = Some(
+                                    t!("profile.save_failed", error = error.to_string())
+                                        .to_string(),
+                                );
+                            }
+                        } else {
+                            let snapshot = ipkvm_desktop::config::ManualSnapshot {
+                                video_device: crate::profile::selected_device_ref(
+                                    &self.selection.video_devices,
+                                    self.selection.selected_video_id.as_deref(),
+                                ),
+                                control_device: crate::profile::selected_device_ref(
+                                    &self.selection.control_devices,
+                                    self.selection.selected_control_id.as_deref(),
+                                ),
+                                connection: self.connection.clone(),
+                            };
+                            if let Err(error) = self.store.set_last_manual(&snapshot) {
+                                self.status_message = Some(
+                                    t!("profile.save_failed", error = error.to_string())
+                                        .to_string(),
+                                );
+                            }
+                        }
+                    }
+                    Err(error) => {
+                        self.status_message = Some(
+                            t!("message.connect_failed", error = error.to_string()).to_string(),
+                        );
+                    }
+                }
+                Task::none()
+            }
+            Message::Disconnect => {
+                let _ = self.controller.stop();
+                self.sync_status();
+                self.selection.control_status = ControlProbeStatus::Disconnected;
+                self.selection.video_status = VideoProbeStatus::NotSelected;
+                self.preview.reset();
+                self.preview_handle = None;
+                Task::none()
+            }
+            Message::PreviewTick => {
+                if self.controller.is_control_online() {
+                    return Task::none();
+                }
+                if self.preview.tick(
+                    &mut self.selection,
+                    self.preview_factory.as_ref(),
+                    self.connection.preview_fps,
+                    Instant::now(),
+                ) && let Some(source) = self.preview.source()
+                    && let Some(frame) = source.latest_frame()
+                {
+                    self.preview_handle = Some(handle_from_frame(&frame));
+                }
+                Task::none()
+            }
+            Message::SetBaudRate(baud) => {
+                self.connection.baud_rate = baud;
+                self.active_profile = None;
+                Task::none()
+            }
+            Message::SetAutoBaud(enabled) => {
+                self.connection.auto_baud = enabled;
+                self.active_profile = None;
+                Task::none()
+            }
+            Message::SetPreviewFps(fps) => {
+                self.connection.preview_fps = fps;
+                self.active_profile = None;
+                Task::none()
+            }
+            Message::SetMouseMode(mode) => {
+                self.connection.mouse_mode = mode;
+                self.active_profile = None;
+                Task::none()
+            }
+            Message::LoadProfile(name) => {
+                self.load_profile(&name);
+                Task::none()
+            }
         }
+    }
+
+    fn handle_menu_action(&mut self, action: MenuAction) {
+        match action {
+            MenuAction::OpenModal(kind) => {
+                if kind == ModalKind::LoadProfile {
+                    self.modal.load_names = self.store.list_profiles();
+                }
+                self.modal.open(kind);
+            }
+            MenuAction::SetLanguage(choice) => {
+                let language = match choice {
+                    crate::menu::LanguageChoice::System => AppLanguage::System,
+                    crate::menu::LanguageChoice::Chinese => AppLanguage::Chinese,
+                    crate::menu::LanguageChoice::English => AppLanguage::English,
+                };
+                language.apply();
+                self.zh = rust_i18n::locale().starts_with("zh");
+            }
+            MenuAction::LoadRecent(name) => self.load_profile(&name),
+            MenuAction::OpenRoot(_)
+            | MenuAction::OpenSubmenu(_)
+            | MenuAction::CloseSubmenus
+            | MenuAction::CloseMenus
+            | MenuAction::SpecialKey(_)
+            | MenuAction::Simple(_) => {}
+        }
+    }
+
+    fn handle_modal_action(&mut self, action: ModalAction) {
+        match action {
+            ModalAction::Close => self.modal.close(),
+            ModalAction::SaveNameChanged(name) => self.modal.save_name = name,
+            ModalAction::Save => self.save_profile(),
+            ModalAction::LoadPicked(name) => {
+                self.modal.close();
+                self.load_profile(&name);
+            }
+            ModalAction::Noop => {}
+        }
+    }
+
+    fn load_profile(&mut self, name: &str) {
+        match self.store.load_profile(name) {
+            Ok(profile) => {
+                let missing = apply_profile_to_selection(&mut self.selection, &profile);
+                self.connection = profile.connection;
+                self.active_profile = Some(profile.name);
+                self.preview.reset();
+                self.preview_handle = None;
+                let mut notes = Vec::new();
+                if missing.video {
+                    notes.push(t!("profile.device_missing").to_string());
+                }
+                if missing.control {
+                    notes.push(t!("profile.control_missing").to_string());
+                }
+                self.status_message = if notes.is_empty() {
+                    None
+                } else {
+                    Some(notes.join("；"))
+                };
+            }
+            Err(error) => {
+                self.status_message =
+                    Some(t!("profile.load_failed", error = error.to_string()).to_string());
+            }
+        }
+    }
+
+    fn save_profile(&mut self) {
+        let name = self.modal.save_name.trim().to_string();
+        if name.is_empty() {
+            return;
+        }
+        let profile = build_profile(name.clone(), &self.selection, &self.connection);
+        match self.store.save_profile(&profile) {
+            Ok(()) => {
+                self.status_message = Some(t!("profile.saved", name = name).to_string());
+                self.modal.close();
+            }
+            Err(error) => {
+                self.status_message =
+                    Some(t!("profile.save_failed", error = error.to_string()).to_string());
+            }
+        }
+    }
+
+    fn connect_request(&self) -> Option<ConnectRequest> {
+        Some(ConnectRequest {
+            video_device_id: self.selection.selected_video_id.clone()?,
+            control_device_id: self.selection.selected_control_id.clone()?,
+            baud_rate: self.connection.baud_rate,
+            mouse_mode: self.connection.mouse_mode,
+            preview_fps: self.connection.preview_fps,
+        })
     }
 
     pub fn subscription(&self) -> Subscription<Message> {
         let window_events = iced::window::open_events().map(Message::WindowOpened);
+        let preview_timer =
+            iced::time::every(Duration::from_millis(100)).map(|_| Message::PreviewTick);
         if !self.subscribed {
-            return window_events;
+            return Subscription::batch([window_events, preview_timer]);
         }
         let frames = self
             .controller
@@ -183,10 +614,34 @@ impl App {
                 })
             })
             .unwrap_or_else(Subscription::none);
-        Subscription::batch([frames, window_events])
+        Subscription::batch([frames, window_events, preview_timer])
     }
 
     pub fn view(&self) -> Element<'_, Message> {
+        use iced::widget::{column, stack};
+        let page = column![self.menu_view(), self.main_view(), self.status_line()];
+        let page: Element<'_, Message> = page.into();
+        match self.modal.view() {
+            Some(modal) => stack![page, crate::modal::overlay(modal).map(Message::Modal)].into(),
+            None => page,
+        }
+    }
+
+    fn menu_view(&self) -> Element<'_, Message> {
+        let recent: Vec<String> = self.store.recent_profiles();
+        let recent_refs: Vec<&str> = recent.iter().map(String::as_str).collect();
+        menu_bar(&self.menu, &recent_refs).map(Message::Menu)
+    }
+
+    fn main_view(&self) -> Element<'_, Message> {
+        if self.controller.is_control_online() {
+            self.video_view()
+        } else {
+            self.connection_view()
+        }
+    }
+
+    fn video_view(&self) -> Element<'_, Message> {
         use iced::widget::{column, container, image, text};
         let video: Element<'_, Message> = match self.handle.as_ref() {
             Some(handle) => image::Image::<Handle>::new(handle.clone())
@@ -201,10 +656,188 @@ impl App {
                 background: Some(self.letterbox_color.into()),
                 ..Default::default()
             });
-        let status_line = container(text(self.status.label(self.zh)))
+        column![video_area].into()
+    }
+
+    fn connection_view(&self) -> Element<'_, Message> {
+        use iced::widget::{Checkbox, PickList, button, column, container, image, row, text};
+        let video_pick = PickList::new(
+            self.video_labels(),
+            self.selected_video_label(),
+            Message::SelectVideo,
+        )
+        .placeholder(t!("common.not_selected"));
+        let control_pick = PickList::new(
+            self.control_labels(),
+            self.selected_control_label(),
+            Message::SelectControl,
+        )
+        .placeholder(t!("common.not_selected"));
+        let baud_pick = PickList::new(
+            vec![9600u32, 19200, 38400, 57600, 115200],
+            Some(self.connection.baud_rate),
+            Message::SetBaudRate,
+        );
+        let fps_pick = PickList::new(
+            vec![10u64, 15, 30, 60],
+            Some(self.connection.preview_fps),
+            Message::SetPreviewFps,
+        );
+        let auto_baud = Checkbox::new(self.connection.auto_baud)
+            .label(t!("settings.auto_baud"))
+            .on_toggle(Message::SetAutoBaud);
+        let relative = Checkbox::new(self.connection.mouse_mode == MouseMode::Relative)
+            .label(t!("mouse_mode.relative"))
+            .on_toggle(|on| {
+                Message::SetMouseMode(if on {
+                    MouseMode::Relative
+                } else {
+                    MouseMode::Absolute
+                })
+            });
+        let connect = button(text(t!("device.connect")))
+            .on_press_maybe(self.selection.can_connect().then_some(Message::Connect));
+        let refresh = button(text(t!("device.refresh"))).on_press(Message::RefreshDevices);
+        let save_profile =
+            button(text(t!("profile.save"))).on_press(Message::OpenModal(ModalKind::SaveProfile));
+        let load_profile = button(text(t!("file.load_profile")))
+            .on_press(Message::OpenModal(ModalKind::LoadProfile));
+        let preview: Element<'_, Message> = match &self.preview_handle {
+            Some(handle) => image::Image::<Handle>::new(handle.clone())
+                .content_fit(iced::ContentFit::Contain)
+                .into(),
+            None => text(self.preview_placeholder()).into(),
+        };
+        let preview_area = container(preview)
             .width(Length::Fill)
-            .padding(6);
-        column![video_area, status_line].into()
+            .height(Length::Fixed(180.0))
+            .style(|_theme| container::Style {
+                background: Some(Color::from_rgb(0.08, 0.08, 0.08).into()),
+                ..Default::default()
+            });
+        column![
+            text(t!("device.title")).size(18),
+            text(t!("device.video")),
+            video_pick,
+            self.video_status_text(),
+            text(t!("device.control")),
+            control_pick,
+            self.control_status_text(),
+            row![baud_pick, fps_pick].spacing(8),
+            auto_baud,
+            relative,
+            row![refresh, connect, save_profile, load_profile].spacing(8),
+            preview_area,
+            self.status_message_view(),
+        ]
+        .spacing(8)
+        .padding(12)
+        .into()
+    }
+
+    fn status_line(&self) -> Element<'_, Message> {
+        use iced::widget::{container, text};
+        container(text(self.status.label(self.zh)))
+            .width(Length::Fill)
+            .padding(6)
+            .into()
+    }
+
+    fn status_message_view(&self) -> Element<'_, Message> {
+        use iced::widget::{container, text};
+        match &self.status_message {
+            Some(message) => container(text(message.clone())).padding(4).into(),
+            None => container(text("")).into(),
+        }
+    }
+
+    fn preview_placeholder(&self) -> String {
+        match &self.selection.video_status {
+            VideoProbeStatus::NoSignal => t!("preview.no_signal").to_string(),
+            VideoProbeStatus::OpenFailed(_) => t!("preview.open_failed").to_string(),
+            _ => t!("device.no_preview").to_string(),
+        }
+    }
+
+    fn video_status_text(&self) -> Element<'_, Message> {
+        use iced::widget::text;
+        let label = match &self.selection.video_status {
+            VideoProbeStatus::NotSelected => t!("video_status.not_selected"),
+            VideoProbeStatus::Checking => t!("video_status.checking"),
+            VideoProbeStatus::Ready(info) => t!(
+                "video_status.ready",
+                width = info.width,
+                height = info.height,
+                label = info.label
+            ),
+            VideoProbeStatus::NoSignal => t!("video_status.no_signal"),
+            VideoProbeStatus::OpenFailed(error) => {
+                t!("video_status.open_failed", error = error)
+            }
+            VideoProbeStatus::Disconnected => t!("video_status.disconnected"),
+        };
+        text(label).into()
+    }
+
+    fn control_status_text(&self) -> Element<'_, Message> {
+        use iced::widget::text;
+        let label = match &self.selection.control_status {
+            ControlProbeStatus::NotSelected => t!("control_status_label.not_selected"),
+            ControlProbeStatus::Checking => t!("control_status_label.checking"),
+            ControlProbeStatus::Ready(_) => t!(
+                "control_status_label.ready",
+                port = self.selection.selected_control_id.as_deref().unwrap_or("?")
+            ),
+            ControlProbeStatus::NotCh9329(reason) => {
+                t!("control_status_label.not_ch9329", reason = reason)
+            }
+            ControlProbeStatus::NoResponse => t!("control_status_label.no_response"),
+            ControlProbeStatus::OpenFailed(error) => {
+                t!("control_status_label.open_failed", error = error)
+            }
+            ControlProbeStatus::Disconnected => t!("control_status_label.disconnected"),
+        };
+        text(label).into()
+    }
+
+    fn video_labels(&self) -> Vec<String> {
+        self.selection
+            .video_devices
+            .iter()
+            .map(|device| device.label.clone())
+            .collect()
+    }
+
+    fn control_labels(&self) -> Vec<String> {
+        self.selection
+            .control_devices
+            .iter()
+            .map(|device| device.label.clone())
+            .collect()
+    }
+
+    fn selected_video_label(&self) -> Option<String> {
+        let id = self.selection.selected_video_id.as_deref()?;
+        Some(
+            self.selection
+                .video_devices
+                .iter()
+                .find(|device| device.id == id)
+                .map(|device| device.label.clone())
+                .unwrap_or_default(),
+        )
+    }
+
+    fn selected_control_label(&self) -> Option<String> {
+        let id = self.selection.selected_control_id.as_deref()?;
+        Some(
+            self.selection
+                .control_devices
+                .iter()
+                .find(|device| device.id == id)
+                .map(|device| device.label.clone())
+                .unwrap_or_default(),
+        )
     }
 
     pub fn sync_status(&mut self) {
@@ -238,8 +871,34 @@ impl App {
         self.letterbox_color
     }
 
-    pub fn frame_source(&self) -> &Arc<MockFrameSource> {
-        &self.frame_source
+    pub fn frame_source(&self) -> Option<&Arc<MockFrameSource>> {
+        self.frame_source.as_ref()
+    }
+}
+
+/// mock 预览源：open 即返回已有一帧 64×48 的 MockFrameSource。
+#[derive(Default)]
+struct MockPreviewFactory;
+
+impl PreviewSourceFactory for MockPreviewFactory {
+    fn open(&self, _device_id: &str, _fps: u64) -> Result<Arc<dyn FrameSource>, String> {
+        let mock = Arc::new(MockFrameSource::new());
+        let mut data = vec![0u8; 64 * 48 * 4];
+        data[0] = 10;
+        data[1] = 20;
+        data[2] = 30;
+        data[3] = 255;
+        let frame = VideoFrame::new(
+            1,
+            ipkvm_video::MonotonicTimestamp::from_nanos(1),
+            64,
+            48,
+            256,
+            ipkvm_video::PixelFormat::Bgra8888,
+            Arc::from(data.into_boxed_slice()),
+        );
+        mock.publish_frame(Arc::new(frame));
+        Ok(mock as Arc<dyn FrameSource>)
     }
 }
 
@@ -253,15 +912,6 @@ pub fn desired_window_size(frame: Option<FrameSize>, mode: ScaleMode) -> Option<
     }
 }
 
-/// 启动 iced 应用（bin 入口调用；测试不启动真实窗口）。
-pub fn run() -> iced::Result {
-    iced::application(App::new_mock, App::update, App::view)
-        .subscription(App::subscription)
-        .title(WINDOW_TITLE)
-        .window_size(WINDOW_SIZE)
-        .run()
-}
-
 fn connect_request() -> ConnectRequest {
     ConnectRequest {
         video_device_id: "mock".into(),
@@ -270,6 +920,15 @@ fn connect_request() -> ConnectRequest {
         mouse_mode: MouseMode::Absolute,
         preview_fps: 30,
     }
+}
+
+/// 启动生产 iced 应用（bin 入口调用；测试不启动真实窗口）。
+pub fn run() -> iced::Result {
+    iced::application(App::production, App::update, App::view)
+        .subscription(App::subscription)
+        .title(WINDOW_TITLE)
+        .window_size(WINDOW_SIZE)
+        .run()
 }
 
 #[cfg(test)]
@@ -296,7 +955,7 @@ mod tests {
 
     #[test]
     fn frame_ready_stores_handle_and_frame_size_and_status_connected() {
-        let (mut app, _) = App::new_mock();
+        let (mut app, _) = MockApp::new_mock();
         let _ = app.update(Message::FrameReady(make_bgra_frame(1, 320, 240)));
         assert!(app.handle().is_some(), "FrameReady 后 Handle 必须存 state");
         assert_eq!(
@@ -311,7 +970,7 @@ mod tests {
 
     #[test]
     fn frame_closed_stops_subscription() {
-        let (mut app, _) = App::new_mock();
+        let (mut app, _) = MockApp::new_mock();
         assert!(app.subscribed());
         let _ = app.update(Message::FrameClosed);
         assert!(!app.subscribed(), "FrameClosed 后订阅必须停");
@@ -319,7 +978,7 @@ mod tests {
 
     #[test]
     fn scale_mode_and_letterbox_transitions() {
-        let (mut app, _) = App::new_mock();
+        let (mut app, _) = MockApp::new_mock();
         let _ = app.update(Message::SetScaleMode(ScaleMode::ActualSize));
         assert_eq!(app.scale_mode(), ScaleMode::ActualSize);
         let color = Color::from_rgb(0.1, 0.2, 0.3);
@@ -346,9 +1005,126 @@ mod tests {
 
     #[test]
     fn stop_session_derives_disconnected_status() {
-        let (mut app, _) = App::new_mock();
+        let (mut app, _) = MockApp::new_mock();
         app.controller.stop().unwrap();
         app.sync_status();
         assert_eq!(app.status(), &ConnectionStatus::Disconnected);
+    }
+
+    #[test]
+    fn select_video_then_preview_tick_reaches_ready() {
+        let (mut app, _) = MockApp::new_mock();
+        // new_mock 构造时已连接（M1 语义），先断开进入连接页流程。
+        let _ = app.update(Message::Disconnect);
+        let _ = app.update(Message::RefreshDevices);
+        let _ = app.update(Message::SelectVideo("Camera 0".into()));
+        let _ = app.update(Message::PreviewTick);
+        assert!(matches!(
+            app.selection.video_status,
+            VideoProbeStatus::Ready(info) if info.width == 64 && info.height == 48
+        ));
+        assert!(
+            app.preview_handle.is_some(),
+            "预览 tick 后必须有预览 Handle"
+        );
+    }
+
+    #[test]
+    fn select_control_reaches_ready_and_can_connect() {
+        let (mut app, _) = MockApp::new_mock();
+        let _ = app.update(Message::RefreshDevices);
+        let _ = app.update(Message::SelectControl("CH9329 (COM9)".into()));
+        assert!(matches!(
+            app.selection.control_status,
+            ControlProbeStatus::Ready(_)
+        ));
+    }
+
+    #[test]
+    fn connect_then_disconnect_transitions() {
+        let (mut app, _) = MockApp::new_mock();
+        // 断开后从连接页重走 选设备→预览→连接→断开。
+        let _ = app.update(Message::Disconnect);
+        let _ = app.update(Message::RefreshDevices);
+        let _ = app.update(Message::SelectVideo("Camera 0".into()));
+        let _ = app.update(Message::PreviewTick);
+        let _ = app.update(Message::SelectControl("CH9329 (COM9)".into()));
+        let _ = app.update(Message::Connect);
+        assert_eq!(app.status(), &ConnectionStatus::Connected);
+        let _ = app.update(Message::Disconnect);
+        assert_eq!(app.status(), &ConnectionStatus::Disconnected);
+        assert_eq!(
+            app.selection.control_status,
+            ControlProbeStatus::Disconnected
+        );
+    }
+
+    #[test]
+    fn save_profile_flow_writes_store() {
+        let (mut app, _) = MockApp::new_mock();
+        let _ = app.update(Message::OpenModal(ModalKind::SaveProfile));
+        let _ = app.update(Message::Modal(ModalAction::SaveNameChanged(
+            "办公室".into(),
+        )));
+        let _ = app.update(Message::Modal(ModalAction::Save));
+        assert!(app.store.profile_exists("办公室"));
+        assert!(app.modal.open.is_none(), "保存成功后模态必须关闭");
+    }
+
+    #[test]
+    fn load_profile_applies_selection() {
+        let (mut app, _) = MockApp::new_mock();
+        let _ = app.update(Message::RefreshDevices);
+        let _ = app.update(Message::SelectVideo("Camera 0".into()));
+        let _ = app.update(Message::SelectControl("CH9329 (COM9)".into()));
+        let _ = app.update(Message::OpenModal(ModalKind::SaveProfile));
+        let _ = app.update(Message::Modal(ModalAction::SaveNameChanged(
+            "办公室".into(),
+        )));
+        let _ = app.update(Message::Modal(ModalAction::Save));
+        // 清空选择再加载。
+        app.selection.selected_video_id = None;
+        app.selection.selected_control_id = None;
+        let _ = app.update(Message::LoadProfile("办公室".into()));
+        assert_eq!(app.selection.selected_video_id.as_deref(), Some("cam0"));
+        assert_eq!(app.selection.selected_control_id.as_deref(), Some("COM9"));
+    }
+
+    #[test]
+    fn menu_action_opens_and_closes_modal() {
+        let (mut app, _) = MockApp::new_mock();
+        let _ = app.update(Message::Menu(MenuAction::OpenModal(ModalKind::Settings)));
+        assert_eq!(app.modal.open, Some(ModalKind::Settings));
+        let _ = app.update(Message::Modal(ModalAction::Close));
+        assert!(app.modal.open.is_none());
+    }
+
+    #[test]
+    fn locale_switch_updates_zh_flag() {
+        let _guard = crate::I18N_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let (mut app, _) = MockApp::new_mock();
+        let _ = app.update(Message::Menu(MenuAction::SetLanguage(
+            crate::menu::LanguageChoice::Chinese,
+        )));
+        assert!(app.zh);
+        let _ = app.update(Message::Menu(MenuAction::SetLanguage(
+            crate::menu::LanguageChoice::English,
+        )));
+        assert!(!app.zh);
+    }
+
+    #[test]
+    fn settings_fields_update_connection() {
+        let (mut app, _) = MockApp::new_mock();
+        let _ = app.update(Message::SetBaudRate(115200));
+        let _ = app.update(Message::SetAutoBaud(false));
+        let _ = app.update(Message::SetPreviewFps(15));
+        let _ = app.update(Message::SetMouseMode(MouseMode::Relative));
+        assert_eq!(app.connection.baud_rate, 115200);
+        assert!(!app.connection.auto_baud);
+        assert_eq!(app.connection.preview_fps, 15);
+        assert_eq!(app.connection.mouse_mode, MouseMode::Relative);
     }
 }
