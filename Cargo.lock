@@ -2664,6 +2664,9 @@ dependencies = [
  "iced",
  "iced_futures",
  "iced_test",
+ "ipkvm-core",
+ "ipkvm-desktop",
+ "ipkvm-session",
  "ipkvm-video",
  "tokio",
 ]

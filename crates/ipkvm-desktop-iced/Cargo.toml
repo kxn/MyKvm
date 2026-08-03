@@ -12,6 +12,9 @@ async-stream = "0.3"
 futures-util = { workspace = true }
 iced = { version = "0.14", features = ["tokio", "image", "advanced"] }
 iced_futures = "0.14"
+ipkvm-core = { path = "../ipkvm-core" }
+ipkvm-desktop = { path = "../ipkvm-desktop" }
+ipkvm-session = { path = "../ipkvm-session" }
 ipkvm-video = { path = "../ipkvm-video", features = ["mock"] }
 
 [dev-dependencies]
