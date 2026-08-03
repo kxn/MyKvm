@@ -39,10 +39,6 @@ const VIDEO_BORDER_COLOR: egui::Color32 = egui::Color32::from_gray(110);
 const WINDOW_ICON: &[u8] = include_bytes!("../assets/icon-32.rgba");
 /// 项目主页（实际仓库为内网 Gitea）。
 const PROJECT_URL: &str = "http://10.10.10.5:3000/kxn/my_ipkvm";
-/// 菜单最小宽度：egui 会缓存弹出菜单上次的宽度并按该宽度强制布局（justified），
-/// 语言切换后若缓存宽度小于新语言最长菜单项，文本会换行且不会自动恢复。
-/// 设一个覆盖中英文最长菜单项的下限，保证任何语言下单行显示。
-const MENU_MIN_WIDTH: f32 = 260.0;
 
 pub fn run() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
@@ -365,22 +361,10 @@ impl DesktopApp {
 
     fn menu_bar(&mut self, ui: &mut egui::Ui) {
         egui::MenuBar::new().ui(ui, |ui| {
-            ui.menu_button(t!("menu.file"), |ui| {
-                ui.set_min_width(MENU_MIN_WIDTH);
-                self.file_menu(ui);
-            });
-            ui.menu_button(t!("menu.edit"), |ui| {
-                ui.set_min_width(MENU_MIN_WIDTH);
-                self.edit_menu(ui);
-            });
-            ui.menu_button(t!("menu.send"), |ui| {
-                ui.set_min_width(MENU_MIN_WIDTH);
-                self.send_menu(ui);
-            });
-            ui.menu_button(t!("menu.about"), |ui| {
-                ui.set_min_width(MENU_MIN_WIDTH);
-                self.about_menu(ui);
-            });
+            crate::menus::menu_button(ui, t!("menu.file"), |ui| self.file_menu(ui));
+            crate::menus::menu_button(ui, t!("menu.edit"), |ui| self.edit_menu(ui));
+            crate::menus::menu_button(ui, t!("menu.send"), |ui| self.send_menu(ui));
+            crate::menus::menu_button(ui, t!("menu.about"), |ui| self.about_menu(ui));
         });
     }
 
@@ -411,10 +395,7 @@ impl DesktopApp {
                 egui::Button::new(t!("file.load_profile_unsupported")),
             );
         }
-        ui.menu_button(t!("file.recent"), |ui| {
-            ui.set_min_width(MENU_MIN_WIDTH);
-            self.recent_menu(ui);
-        });
+        crate::menus::submenu_button(ui, t!("file.recent"), |ui| self.recent_menu(ui));
         ui.separator();
         if ui.button(t!("file.exit")).clicked() {
             ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
@@ -436,8 +417,7 @@ impl DesktopApp {
             }
         }
         if recent.len() > 3 {
-            ui.menu_button(t!("file.recent_more"), |ui| {
-                ui.set_min_width(MENU_MIN_WIDTH);
+            crate::menus::submenu_button(ui, t!("file.recent_more"), |ui| {
                 for name in recent.iter().skip(3) {
                     if ui.button(name).clicked() {
                         self.load_profile_by_name(name);
@@ -468,10 +448,7 @@ impl DesktopApp {
         }
         ui.separator();
         // 语言菜单项固定显示英文 Language，任何界面语言下都能找到。
-        ui.menu_button(t!("edit.language"), |ui| {
-            ui.set_min_width(MENU_MIN_WIDTH);
-            self.language_menu(ui);
-        });
+        crate::menus::submenu_button(ui, t!("edit.language"), |ui| self.language_menu(ui));
         if ui.button(t!("edit.settings")).clicked() {
             self.show_settings = true;
             ui.close();
@@ -502,8 +479,7 @@ impl DesktopApp {
             ui.close();
         }
         ui.separator();
-        ui.menu_button(t!("send.special_keys"), |ui| {
-            ui.set_min_width(MENU_MIN_WIDTH);
+        crate::menus::submenu_button(ui, t!("send.special_keys"), |ui| {
             self.special_keys_menu(ui);
         });
     }
@@ -2263,12 +2239,13 @@ mod tests {
         assert_eq!(WINDOW_ICON.len(), 32 * 32 * 4);
     }
 
-    /// 菜单弹出项必须单行渲染（换行说明弹出宽度被错误约束）。
+    /// 菜单弹出项必须单行渲染，且语言切换后宽度自动重新评估：
+    /// 英文菜单应比中文菜单更宽，且所有项都不得换行。
     #[test]
-    /// 菜单弹出项必须单行渲染，且语言切换后不得换行：egui 会缓存弹出菜单
-    /// 上次宽度并按该宽度强制布局，若缓存宽度小于新语言最长项（中文→英文），
-    /// justified 布局会把文本挤成多行且不会自动恢复。
     fn menu_items_do_not_wrap_after_language_switch() {
+        let _guard = crate::I18N_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         use eframe::egui::{self, Event, PointerButton, RawInput, Rect};
 
         let ctx = egui::Context::default();
@@ -2276,6 +2253,8 @@ mod tests {
         // 250% DPI 下 1280x720 窗口对应的逻辑尺寸。
         let screen = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(512.0, 288.0));
         let mut captured: Vec<(String, egui::Rect)> = Vec::new();
+        let mut zh_width = 0.0_f32;
+        let mut en_width = 0.0_f32;
 
         let render =
             |captured: &mut Vec<(String, egui::Rect)>, items: &[&str], events: Vec<Event>| {
@@ -2294,8 +2273,7 @@ mod tests {
                                 } else {
                                     "File"
                                 };
-                                ui.menu_button(label, |ui| {
-                                    ui.set_min_width(260.0);
+                                crate::menus::menu_button(ui, label, |ui| {
                                     captured.clear();
                                     for &text in items {
                                         let response = ui.button(text);
@@ -2311,6 +2289,7 @@ mod tests {
         let zh_items = ["加载连接 profile…", "最近使用", "更多…", "退出"];
         let en_items = ["Load connection profile…", "Recent", "More…", "Exit"];
 
+        rust_i18n::set_locale("zh-CN");
         // 帧 1：打开前基线。
         render(&mut captured, &zh_items, Vec::new());
         assert!(captured.is_empty(), "菜单未打开前不应有内容");
@@ -2348,9 +2327,32 @@ mod tests {
                 "中文菜单项「{text}」换行渲染：height={:.1} rect={rect:?}",
                 rect.height()
             );
+            zh_width = zh_width.max(rect.width());
         }
 
-        // 模拟语言切换：同一菜单位置换成更长的英文文本（复用中文宽度缓存）。
+        // 模拟语言切换：locale 变化使弹出层 id 变化，旧宽度缓存失效；
+        // 旧菜单随语言切换关闭，重新点击打开时按英文文本重新测量。
+        rust_i18n::set_locale("en");
+        render(
+            &mut captured,
+            &en_items,
+            vec![Event::PointerButton {
+                pos: click_at,
+                button: PointerButton::Primary,
+                pressed: true,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+        render(
+            &mut captured,
+            &en_items,
+            vec![Event::PointerButton {
+                pos: click_at,
+                button: PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
         for _ in 0..4 {
             render(&mut captured, &en_items, Vec::new());
         }
@@ -2361,6 +2363,21 @@ mod tests {
                 rect.height() <= 26.0,
                 "切换语言后菜单项「{text}」换行渲染：height={:.1} rect={rect:?}",
                 rect.height()
+            );
+            en_width = en_width.max(rect.width());
+        }
+
+        // 宽度必须按当前语言内容自动重新评估（英文长于中文），而不是固定值。
+        assert!(
+            en_width > zh_width + 10.0,
+            "切换语言后菜单宽度未重新评估：zh={zh_width:.1} en={en_width:.1}"
+        );
+        // 菜单项宽度应接近文本自然宽度，而不是被拉伸到固定/缓存宽度。
+        for (text, rect) in &captured {
+            assert!(
+                rect.width() < 300.0,
+                "菜单项「{text}」宽度异常（可能被拉伸）：width={:.1}",
+                rect.width()
             );
         }
     }
