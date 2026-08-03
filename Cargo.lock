@@ -2656,6 +2656,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ipkvm-desktop-iced"
+version = "0.1.0"
+dependencies = [
+ "iced",
+]
+
+[[package]]
 name = "ipkvm-desktop-iced-spike"
 version = "0.1.0"
 dependencies = [
