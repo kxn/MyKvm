@@ -15,14 +15,39 @@ pub trait CursorController: Send + Sync {
     fn set_clipped(&self, clipped: bool);
 }
 
+/// 只在状态变化时放行（ShowCursor 是计数 API，必须幂等同步）。
+#[derive(Default)]
+pub struct VisibilityGate {
+    last: std::sync::atomic::AtomicBool,
+}
+
+impl VisibilityGate {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 返回 true 表示状态发生变化（应真正调用 ShowCursor）。
+    pub fn update(&self, visible: bool) -> bool {
+        let previous = self
+            .last
+            .swap(visible, std::sync::atomic::Ordering::Relaxed);
+        previous != visible
+    }
+}
+
 /// 生产实现（Windows）。
 #[cfg(target_os = "windows")]
 #[derive(Default)]
-pub struct WindowsCursorController;
+pub struct WindowsCursorController {
+    gate: VisibilityGate,
+}
 
 #[cfg(target_os = "windows")]
 impl CursorController for WindowsCursorController {
     fn set_visible(&self, visible: bool) {
+        if !self.gate.update(visible) {
+            return;
+        }
         unsafe {
             use windows::Win32::UI::WindowsAndMessaging::ShowCursor;
             let _ = ShowCursor(visible);
@@ -65,3 +90,19 @@ impl CursorController for NoopCursorController {
 pub type ProductionCursorController = WindowsCursorController;
 #[cfg(not(target_os = "windows"))]
 pub type ProductionCursorController = NoopCursorController;
+
+#[cfg(test)]
+mod tests {
+    use super::VisibilityGate;
+
+    #[test]
+    fn visibility_gate_only_passes_on_change() {
+        let gate = VisibilityGate::new();
+        // 首 true 也算变化：true → false → false → true 共 3 次放行。
+        assert!(gate.update(true), "首次 true 必须放行");
+        assert!(!gate.update(true), "重复 true 不得放行");
+        assert!(gate.update(false), "true→false 必须放行");
+        assert!(!gate.update(false), "重复 false 不得放行");
+        assert!(gate.update(true), "false→true 必须放行");
+    }
+}

@@ -380,6 +380,7 @@ impl App<Ch9329InputSink<SerialCommandQueue>, ProductionSessionFactory> {
             clipboard: Arc::new(SystemClipboard),
             relative_factory: Arc::new(crate::platform::PlatformRelativeSourceFactory),
             cursor: Arc::new(crate::platform::cursor::ProductionCursorController::default()),
+            // 仅测试构建存在：production() 在 test 构建也需初始化该字段，运行期不会被使用。
             #[cfg(test)]
             cursor_records: Arc::new(RecordingCursorController::default()),
             dark: false,
@@ -702,6 +703,8 @@ where
                 Task::none()
             }
             Message::SetMouseMode(mode) => {
+                // 当前路径仅设置页/测试可达，不会在远程输入态生效；
+                // 若未来远程输入态可达，需在此接 sync_cursor()。
                 self.connection.mouse_mode = mode;
                 self.active_profile = None;
                 Task::none()
@@ -2581,6 +2584,16 @@ mod tests {
             repeat: false,
         }));
         assert!(!app.remote_input(), "Ctrl+Alt+K 必须退出远程输入");
+        assert_eq!(
+            last_visible(&app),
+            Some(true),
+            "Ctrl+Alt+K 退出必须恢复光标可见"
+        );
+        assert_eq!(
+            last_clipped(&app),
+            Some(false),
+            "Ctrl+Alt+K 退出必须解除裁剪"
+        );
         let _ = app.update(press_key(iced::keyboard::key::Code::KeyA));
         std::thread::sleep(std::time::Duration::from_millis(50));
         if let Some(sink) = app.recording_sink() {
