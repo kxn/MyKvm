@@ -107,9 +107,8 @@ status:
   offline: "离线"
   pasting: "正在粘贴…"
   remote_input: "远程输入"
-  keyboard_lost: "点击视频进入"
+  ready: "就绪"
   relative_mode: "相对鼠标"
-  pointer_outside: "鼠标在窗口外"
   video_no_signal: "无信号"
   video_stalled: "断流/无信号"
 

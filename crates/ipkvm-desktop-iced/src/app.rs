@@ -238,6 +238,7 @@ where
     scale_factor: f32,
     last_pointer_sent: Option<(u8, u16, u16)>,
     last_pointer_sent_at: Option<std::time::Instant>,
+    last_pointer: Option<(u16, u16)>,
     paste_busy: bool,
     recording: Option<RecordingSink>,
     clipboard: Arc<dyn ClipboardReader>,
@@ -312,6 +313,7 @@ impl App<RecordingSink, MockFactory> {
             scale_factor: 1.0,
             last_pointer_sent: None,
             last_pointer_sent_at: None,
+            last_pointer: None,
             paste_busy: false,
             recording: Some(recording),
             clipboard: Arc::new(SystemClipboard),
@@ -375,6 +377,7 @@ impl App<Ch9329InputSink<SerialCommandQueue>, ProductionSessionFactory> {
             scale_factor: 1.0,
             last_pointer_sent: None,
             last_pointer_sent_at: None,
+            last_pointer: None,
             paste_busy: false,
             recording: None,
             clipboard: Arc::new(SystemClipboard),
@@ -1132,6 +1135,7 @@ where
         self.remote_input = false;
         self.sync_cursor();
         self.pointer_mask = 0;
+        self.last_pointer = None;
         // 对齐 egui 退出语义：复位去重/限频状态，避免重进同位置点击被节流吞掉。
         self.last_pointer_sent = None;
         self.last_pointer_sent_at = None;
@@ -1162,6 +1166,7 @@ where
         else {
             return;
         };
+        self.last_pointer = Some((x, y));
         let now = Instant::now();
         let mask_changed = self
             .last_pointer_sent
@@ -1329,6 +1334,7 @@ where
         self.latest_frame = None;
         self.frame_size = None;
         self.remote_input = false;
+        self.last_pointer = None;
         self.sync_cursor();
         self.stop_relative_source();
     }
@@ -1581,7 +1587,7 @@ where
     }
 
     fn status_line(&self) -> Element<'_, Message> {
-        use iced::widget::{container, row, text};
+        use iced::widget::{container, text};
         let control = if self.controller.is_control_online() {
             self.control_status_value()
         } else {
@@ -1592,26 +1598,28 @@ where
         } else if self.remote_input {
             t!("status.remote_input").to_string()
         } else {
-            t!("status.keyboard_lost").to_string()
+            t!("status.ready").to_string()
         };
         let pointer = if self.connection.mouse_mode == MouseMode::Relative && self.remote_input {
             t!("status.relative_mode").to_string()
+        } else if let Some((x, y)) = self.last_pointer {
+            format!("({x}, {y})")
         } else {
-            t!("status.pointer_outside").to_string()
+            t!("status.ready").to_string()
         };
         let video = match self.frame_size {
             Some(size) => format!("{}×{}", size.width, size.height),
             None => t!("status.video_no_signal").to_string(),
         };
-        let message = self.status_message.clone().unwrap_or_default();
-        let fields = row![
-            text(t!("status.control_device", value = control)),
-            text(t!("status.keyboard", value = keyboard)),
-            text(t!("status.pointer", value = pointer)),
-            text(t!("status.video", value = video)),
-            text(t!("status.message", message = message)),
-        ]
-        .spacing(16);
+        let mut fields = iced::widget::Row::new()
+            .spacing(16)
+            .push(text(t!("status.control_device", value = control)))
+            .push(text(t!("status.keyboard", value = keyboard)))
+            .push(text(t!("status.pointer", value = pointer)))
+            .push(text(t!("status.video", value = video)));
+        if let Some(message) = &self.status_message {
+            fields = fields.push(text(t!("status.message", message = message)));
+        }
         container(fields)
             .width(Length::Fill)
             .padding(6)
@@ -1624,21 +1632,21 @@ where
 
     fn control_status_value(&self) -> String {
         match &self.selection.control_status {
-            ControlProbeStatus::NotSelected => t!("control_status_label.not_selected").to_string(),
-            ControlProbeStatus::Checking => t!("control_status_label.checking").to_string(),
+            ControlProbeStatus::NotSelected => t!("control_status.not_selected").to_string(),
+            ControlProbeStatus::Checking => t!("control_status.checking").to_string(),
             ControlProbeStatus::Ready(_) => t!(
-                "control_status_label.ready",
+                "control_status.ready",
                 port = self.selection.selected_control_id.as_deref().unwrap_or("?")
             )
             .to_string(),
             ControlProbeStatus::NotCh9329(reason) => {
-                t!("control_status_label.not_ch9329", reason = reason).to_string()
+                t!("control_status.not_ch9329", reason = reason).to_string()
             }
-            ControlProbeStatus::NoResponse => t!("control_status_label.no_response").to_string(),
+            ControlProbeStatus::NoResponse => t!("control_status.no_response").to_string(),
             ControlProbeStatus::OpenFailed(error) => {
-                t!("control_status_label.open_failed", error = error).to_string()
+                t!("control_status.open_failed", error = error).to_string()
             }
-            ControlProbeStatus::Disconnected => t!("control_status_label.disconnected").to_string(),
+            ControlProbeStatus::Disconnected => t!("control_status.offline").to_string(),
         }
     }
 
@@ -3052,25 +3060,80 @@ mod tests {
         rust_i18n::set_locale("en");
         let (mut app, _) = MockApp::new_mock();
         let _ = app.update(Message::Disconnect);
+        {
+            let mut ui = iced_test::simulator::simulator(app.view());
+            assert!(
+                ui.find("Control device: Offline").is_ok(),
+                "状态栏必须显示控制设备字段"
+            );
+            assert!(
+                ui.find("Keyboard: Ready").is_ok(),
+                "断开后键盘状态必须为就绪"
+            );
+            assert!(ui.find("Mouse: Ready").is_ok(), "断开后鼠标状态必须为就绪");
+            assert!(
+                ui.find("Video: No signal").is_ok(),
+                "状态栏必须显示视频字段"
+            );
+            assert!(
+                ui.find("Status: ").is_err(),
+                "无消息时状态栏不得渲染 Status:"
+            );
+        }
         app.status_message = Some("hello".into());
         let mut ui = iced_test::simulator::simulator(app.view());
-        assert!(
-            ui.find("Control device: Offline").is_ok(),
-            "状态栏必须显示控制设备字段"
-        );
-        assert!(
-            ui.find("Keyboard: Click video to enter").is_ok(),
-            "状态栏必须显示键盘字段"
-        );
-        assert!(
-            ui.find("Mouse: Mouse outside").is_ok(),
-            "状态栏必须显示指针字段"
-        );
-        assert!(
-            ui.find("Video: No signal").is_ok(),
-            "状态栏必须显示视频字段"
-        );
         assert!(ui.find("Status: hello").is_ok(), "状态栏必须显示消息字段");
+    }
+
+    #[test]
+    fn status_line_control_has_no_redundant_prefix() {
+        let _guard = crate::I18N_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        rust_i18n::set_locale("en");
+        let (mut app, _) = MockApp::new_mock();
+        let _ = app.update(Message::Disconnect);
+        let _ = app.update(Message::RefreshDevices);
+        let _ = app.update(Message::SelectVideo("Camera 0".into()));
+        let _ = app.update(Message::PreviewTick);
+        let _ = app.update(Message::SelectControl("CH9329 (COM9)".into()));
+        let _ = app.update(Message::Connect);
+        let mut ui = iced_test::simulator::simulator(app.view());
+        assert!(
+            ui.find("Control device: CH9329(COM9)").is_ok(),
+            "状态栏控制设备不得再带 Control: 前缀"
+        );
+        assert!(
+            ui.find("Control device: Control:").is_err(),
+            "不得出现冗余的 Control: 前缀"
+        );
+    }
+
+    #[test]
+    fn absolute_mode_shows_last_pointer_coordinates() {
+        let _guard = crate::I18N_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        rust_i18n::set_locale("en");
+        let mut app = absolute_video_app();
+        app.remote_input = true;
+        move_cursor(&mut app, 160.0, 90.0);
+        let mut ui = iced_test::simulator::simulator(app.view());
+        assert!(
+            ui.find("Mouse: (160, 90)").is_ok(),
+            "绝对模式必须显示最近指针坐标"
+        );
+    }
+
+    #[test]
+    fn status_line_hides_empty_message() {
+        let _guard = crate::I18N_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        rust_i18n::set_locale("en");
+        let (app, _) = MockApp::new_mock();
+        let mut ui = iced_test::simulator::simulator(app.view());
+        assert!(ui.find("Status: ").is_err(), "无消息时不得渲染 Status: ");
     }
 
     #[test]
