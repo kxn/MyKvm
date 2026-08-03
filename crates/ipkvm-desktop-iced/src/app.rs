@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
+use iced::border::Border;
 use iced::widget::image::Handle;
 use iced::{Color, Element, Length, Size, Subscription, Task};
 use ipkvm_core::{
@@ -197,6 +198,7 @@ where
     recording: Option<RecordingSink>,
     clipboard: Arc<dyn ClipboardReader>,
     relative_factory: Arc<dyn RelativeSourceFactory>,
+    dark: bool,
 }
 
 impl App<RecordingSink, MockFactory> {
@@ -256,6 +258,7 @@ impl App<RecordingSink, MockFactory> {
                 recording: Some(recording),
                 clipboard: Arc::new(SystemClipboard),
                 relative_factory: Arc::new(ChannelRelativeFactory::new()),
+                dark: true,
             },
             Task::none(),
         )
@@ -303,6 +306,7 @@ impl App<Ch9329InputSink<SerialCommandQueue>, ProductionSessionFactory> {
                 recording: None,
                 clipboard: Arc::new(SystemClipboard),
                 relative_factory: Arc::new(crate::platform::PlatformRelativeSourceFactory),
+                dark: true,
             },
             Task::none(),
         )
@@ -375,6 +379,9 @@ where
                 Task::none()
             }
             Message::OpenModal(kind) => {
+                if kind == ModalKind::Settings {
+                    self.modal.dark = self.dark;
+                }
                 if kind == ModalKind::LoadProfile {
                     self.modal.load_names = self.store.list_profiles();
                 }
@@ -580,6 +587,9 @@ where
     fn handle_menu_action(&mut self, action: MenuAction) {
         match action {
             MenuAction::OpenModal(kind) => {
+                if kind == ModalKind::Settings {
+                    self.modal.dark = self.dark;
+                }
                 if kind == ModalKind::LoadProfile {
                     self.modal.load_names = self.store.list_profiles();
                 }
@@ -621,6 +631,8 @@ where
                 self.modal.close();
                 self.load_profile(&name);
             }
+            ModalAction::SetLetterboxColor(color) => self.letterbox_color = color,
+            ModalAction::SetDarkMode(dark) => self.dark = dark,
             ModalAction::Noop => {}
         }
     }
@@ -979,7 +991,8 @@ where
                 })
             });
         let connect = button(text(t!("device.connect")))
-            .on_press_maybe(self.selection.can_connect().then_some(Message::Connect));
+            .on_press_maybe(self.selection.can_connect().then_some(Message::Connect))
+            .style(iced::widget::button::primary);
         let refresh = button(text(t!("device.refresh"))).on_press(Message::RefreshDevices);
         let save_profile =
             button(text(t!("profile.save"))).on_press(Message::OpenModal(ModalKind::SaveProfile));
@@ -998,7 +1011,7 @@ where
                 background: Some(Color::from_rgb(0.08, 0.08, 0.08).into()),
                 ..Default::default()
             });
-        column![
+        let content = column![
             text(t!("device.title")).size(18),
             text(t!("device.video")),
             video_pick,
@@ -1014,8 +1027,19 @@ where
             self.status_message_view(),
         ]
         .spacing(8)
-        .padding(12)
-        .into()
+        .padding(12);
+        container(content)
+            .width(Length::Fill)
+            .padding(16)
+            .style(|theme: &iced::Theme| container::Style {
+                background: Some(crate::theme::surface(theme.palette()).into()),
+                border: Border::default()
+                    .rounded(10)
+                    .width(1.0)
+                    .color(crate::theme::border_color(theme.palette())),
+                ..Default::default()
+            })
+            .into()
     }
 
     fn status_line(&self) -> Element<'_, Message> {
@@ -1023,6 +1047,10 @@ where
         container(text(self.status.label(self.zh)))
             .width(Length::Fill)
             .padding(6)
+            .style(|theme: &iced::Theme| container::Style {
+                background: Some(crate::theme::surface(theme.palette()).into()),
+                ..Default::default()
+            })
             .into()
     }
 
@@ -1169,6 +1197,11 @@ where
     pub fn paste_busy(&self) -> bool {
         self.paste_busy
     }
+
+    /// 应用主题（iced builder 的 theme 回调）。
+    pub fn theme(&self) -> iced::Theme {
+        crate::theme::app_theme(self.dark)
+    }
 }
 
 /// mock 预览源：open 即返回已有一帧 64×48 的 MockFrameSource。
@@ -1231,6 +1264,7 @@ fn connect_request() -> ConnectRequest {
 pub fn run() -> iced::Result {
     iced::application(App::production, App::update, App::view)
         .subscription(App::subscription)
+        .theme(App::theme)
         .title(WINDOW_TITLE)
         .window_size(WINDOW_SIZE)
         .run()
@@ -1431,6 +1465,18 @@ mod tests {
         assert!(!app.connection.auto_baud);
         assert_eq!(app.connection.preview_fps, 15);
         assert_eq!(app.connection.mouse_mode, MouseMode::Relative);
+    }
+
+    #[test]
+    fn settings_modal_updates_letterbox_and_dark_mode() {
+        let (mut app, _) = MockApp::new_mock();
+        let _ = app.update(Message::OpenModal(ModalKind::Settings));
+        let _ = app.update(Message::Modal(ModalAction::SetLetterboxColor(
+            iced::Color::WHITE,
+        )));
+        assert_eq!(app.letterbox_color(), iced::Color::WHITE);
+        let _ = app.update(Message::Modal(ModalAction::SetDarkMode(false)));
+        assert!(!app.dark);
     }
 
     fn press_key(code: iced::keyboard::key::Code) -> Message {
@@ -1672,5 +1718,19 @@ mod tests {
             assert!(std::time::Instant::now() < deadline);
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+    }
+
+    #[test]
+    fn connection_page_view_renders_after_theme_wiring() {
+        let _guard = crate::I18N_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        rust_i18n::set_locale("en");
+        let (mut app, _) = MockApp::new_mock();
+        let _ = app.update(Message::Disconnect);
+        let _ = app.update(Message::RefreshDevices);
+        let mut ui = iced_test::simulator::simulator(app.view());
+        assert!(ui.find("Select device").is_ok(), "连接页标题必须渲染");
+        assert!(ui.find("Refresh detection").is_ok(), "刷新按钮必须渲染");
     }
 }

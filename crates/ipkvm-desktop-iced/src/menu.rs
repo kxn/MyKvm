@@ -11,13 +11,17 @@
 //! 状态机（open_root/open_path）在 app 侧持有，widget 是纯展示 + 事件转发；
 //! 这样 headless 测试可以逐条驱动：点击 → 收集消息 → 更新状态 → 重建 view。
 
+use iced::advanced::Renderer as _;
 use iced::advanced::layout;
 use iced::advanced::overlay::{self, Overlay};
+use iced::advanced::renderer::Quad;
 use iced::advanced::widget::{Operation, Tree, Widget, tree};
 use iced::advanced::{Clipboard, Layout, Shell, mouse, renderer};
+use iced::border;
+use iced::border::Border;
 use iced::keyboard;
 use iced::widget::text;
-use iced::{Element, Event, Length, Point, Rectangle, Size, Vector};
+use iced::{Color, Element, Event, Length, Point, Rectangle, Shadow, Size, Vector};
 use rust_i18n::t;
 
 use crate::modal::ModalKind;
@@ -106,6 +110,8 @@ pub struct MenuItem {
     pub label: String,
     pub action: Option<MenuAction>,
     pub submenu: Vec<MenuItem>,
+    /// true = 分隔线（不参与命中/悬停，draw 画横线）。
+    pub separator: bool,
 }
 
 impl MenuItem {
@@ -114,6 +120,7 @@ impl MenuItem {
             label: label.into(),
             action: Some(action),
             submenu: Vec::new(),
+            separator: false,
         }
     }
 
@@ -122,14 +129,16 @@ impl MenuItem {
             label: label.into(),
             action: None,
             submenu: items,
+            separator: false,
         }
     }
 
     pub fn separator() -> Self {
         Self {
-            label: "──────────────".into(),
+            label: String::new(),
             action: None,
             submenu: Vec::new(),
+            separator: true,
         }
     }
 }
@@ -148,7 +157,17 @@ pub fn menu_bar<'a>(state: &MenuState, recent_profiles: &[&str]) -> MenuElement<
         send_menu(),
         about_menu(),
     ];
-    let labels = roots.iter().map(|r| label_element(&r.label)).collect();
+    let labels = roots
+        .iter()
+        .map(|r| {
+            label_element(&MenuItem {
+                label: r.label.clone(),
+                action: None,
+                submenu: Vec::new(),
+                separator: false,
+            })
+        })
+        .collect();
     MenuBar {
         roots,
         open_root: state.open_root,
@@ -185,6 +204,7 @@ fn recent_menu(recent_profiles: &[&str]) -> MenuItem {
             label: "(none)".into(),
             action: None,
             submenu: Vec::new(),
+            separator: false,
         });
     } else {
         for name in recent_profiles.iter().take(3) {
@@ -472,6 +492,17 @@ impl Widget<MenuAction, iced::Theme, iced::Renderer> for MenuBar<'_> {
         cursor: mouse::Cursor,
         viewport: &Rectangle,
     ) {
+        if let Some(open) = self.open_root {
+            let rect = self.root_label_rect(layout, open);
+            if rect.width > 0.0 && rect.height > 0.0 {
+                let quad = Quad {
+                    bounds: rect,
+                    border: border::rounded(4),
+                    ..Quad::default()
+                };
+                renderer.fill_quad(quad, crate::theme::hover(theme.palette()));
+            }
+        }
         for (i, (label, child)) in self.labels.iter().zip(layout.children()).enumerate() {
             label.as_widget().draw(
                 &tree.children[i],
@@ -498,7 +529,7 @@ impl Widget<MenuAction, iced::Theme, iced::Renderer> for MenuBar<'_> {
         let anchor = self.root_label_rect(layout, index);
         let popup = MenuPopup {
             items: root.items.clone(),
-            widgets: root.items.iter().map(|i| label_element(&i.label)).collect(),
+            widgets: root.items.iter().map(label_element).collect(),
             tree: popup_tree(&root.items),
             prefix: Vec::new(),
             open_path: self.open_path.clone(),
@@ -641,8 +672,56 @@ impl Overlay<MenuAction, iced::Theme, iced::Renderer> for MenuPopup<'_> {
         layout: Layout<'_>,
         cursor: mouse::Cursor,
     ) {
-        let viewport = layout.bounds();
+        let palette = theme.palette();
+        let panel = layout.bounds();
+        if panel.width > 0.0 && panel.height > 0.0 {
+            let quad = Quad {
+                bounds: panel,
+                border: Border::default()
+                    .rounded(6)
+                    .width(1.0)
+                    .color(crate::theme::border_color(palette)),
+                shadow: Shadow {
+                    color: Color::from_rgba(0.0, 0.0, 0.0, 0.35),
+                    offset: Vector::new(0.0, 4.0),
+                    blur_radius: 12.0,
+                },
+                snap: false,
+            };
+            renderer.fill_quad(quad, crate::theme::surface(palette));
+        }
+        let item_rects: Vec<Rectangle> = layout.children().map(|child| child.bounds()).collect();
+        let hovered = cursor
+            .position()
+            .and_then(|pos| hit_rects(pos, &item_rects))
+            .filter(|i| !self.items.get(*i).is_some_and(|item| item.separator));
+        if let Some(i) = hovered {
+            let rect = item_rects[i];
+            let quad = Quad {
+                bounds: rect,
+                border: border::rounded(4),
+                ..Quad::default()
+            };
+            renderer.fill_quad(quad, crate::theme::hover(palette));
+        }
         for (i, (widget, child)) in self.widgets.iter().zip(layout.children()).enumerate() {
+            if self.items.get(i).is_some_and(|item| item.separator) {
+                let rect = child.bounds();
+                let line = Rectangle {
+                    x: rect.x + 8.0,
+                    y: rect.y + rect.height / 2.0,
+                    width: rect.width - 16.0,
+                    height: 1.0,
+                };
+                renderer.fill_quad(
+                    Quad {
+                        bounds: line,
+                        ..Quad::default()
+                    },
+                    crate::theme::border_color(palette),
+                );
+                continue;
+            }
             widget.as_widget().draw(
                 &self.tree.children[i],
                 renderer,
@@ -650,7 +729,7 @@ impl Overlay<MenuAction, iced::Theme, iced::Renderer> for MenuPopup<'_> {
                 style,
                 child,
                 cursor,
-                &viewport,
+                &panel,
             );
         }
     }
@@ -670,11 +749,7 @@ impl Overlay<MenuAction, iced::Theme, iced::Renderer> for MenuPopup<'_> {
         prefix.push(i);
         let child = MenuPopup {
             items: item.submenu.clone(),
-            widgets: item
-                .submenu
-                .iter()
-                .map(|child| label_element(&child.label))
-                .collect(),
+            widgets: item.submenu.iter().map(label_element).collect(),
             tree: popup_tree(&item.submenu),
             prefix,
             open_path: self.open_path[1..].to_vec(),
@@ -699,6 +774,9 @@ impl MenuPopup<'_> {
         let Some(item) = self.items.get(i) else {
             return;
         };
+        if item.separator {
+            return;
+        }
         if !item.submenu.is_empty() {
             let mut path = self.prefix.clone();
             path.push(i);
@@ -719,6 +797,9 @@ impl MenuPopup<'_> {
         let Some(item) = self.items.get(i) else {
             return;
         };
+        if item.separator {
+            return;
+        }
         if self.open_path.first() == Some(&i) {
             return;
         }
@@ -736,8 +817,28 @@ impl MenuPopup<'_> {
 // 工具
 // ---------------------------------------------------------------------------
 
-fn label_element<'a>(label: &str) -> MenuElement<'a> {
-    text(label.to_string()).into()
+/// 菜单项显示文本：分隔线为空；子菜单箭头由 draw 层/Row 单独呈现，
+/// 不并入文本（iced_test 精确匹配依赖）。
+pub fn item_label(item: &MenuItem) -> String {
+    if item.separator {
+        return String::new();
+    }
+    item.label.clone()
+}
+
+/// 子菜单项是否带箭头指示。
+pub fn item_has_arrow(item: &MenuItem) -> bool {
+    !item.separator && !item.submenu.is_empty()
+}
+
+fn label_element<'a>(item: &MenuItem) -> MenuElement<'a> {
+    if item_has_arrow(item) {
+        iced::widget::row![text(item_label(item)), text("›")]
+            .spacing(8)
+            .into()
+    } else {
+        text(item_label(item)).into()
+    }
 }
 
 /// 为弹出层构造子控件树：每个 item 一个 text 子树。
@@ -747,7 +848,7 @@ fn popup_tree(items: &[MenuItem]) -> Tree {
         state: tree::State::None,
         children: items
             .iter()
-            .map(|item| Tree::new(label_element(&item.label)))
+            .map(|item| Tree::new(label_element(item)))
             .collect(),
     }
 }
@@ -766,4 +867,26 @@ fn corridor_union(parent: Rectangle, child: Rectangle, parent_bounds: Rectangle)
         Size::new((child.x - (parent.x + parent.width)).max(0.0), bottom - top),
     );
     parent_bounds.union(&parent).union(&child).union(&corridor)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn item_label_shows_arrow_for_submenu_and_empty_for_separator() {
+        let sub = MenuItem::with_submenu(
+            "Recent",
+            vec![MenuItem::action("p1", MenuAction::LoadRecent("p1".into()))],
+        );
+        assert_eq!(item_label(&sub), "Recent", "标签保持纯文本");
+        assert!(item_has_arrow(&sub), "子菜单项必须带箭头指示");
+        let sep = MenuItem::separator();
+        assert!(sep.separator, "separator() 必须标记分隔线");
+        assert_eq!(item_label(&sep), "");
+        assert!(!item_has_arrow(&sep));
+        let plain = MenuItem::action("Paste text", MenuAction::Simple("paste"));
+        assert_eq!(item_label(&plain), "Paste text");
+        assert!(!item_has_arrow(&plain));
+    }
 }

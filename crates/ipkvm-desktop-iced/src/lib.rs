@@ -25,6 +25,7 @@ pub mod profile;
 pub mod relative;
 pub mod scale;
 pub mod status;
+pub mod theme;
 pub mod video;
 
 /// 窗口标题（M5 将嵌入 GIT_COMMIT）。
@@ -97,6 +98,8 @@ pub fn translate_key(key: &str) -> String {
         "settings.auto_baud" => t!("settings.auto_baud").to_string(),
         "settings.preview_fps" => t!("settings.preview_fps").to_string(),
         "settings.mouse_mode" => t!("settings.mouse_mode").to_string(),
+        "settings.letterbox_color" => t!("settings.letterbox_color").to_string(),
+        "settings.dark_mode" => t!("settings.dark_mode").to_string(),
         "mouse_mode.absolute" => t!("mouse_mode.absolute").to_string(),
         "mouse_mode.relative" => t!("mouse_mode.relative").to_string(),
         "status.control_device" => t!("status.control_device", value = "x").to_string(),
@@ -210,6 +213,8 @@ pub const I18N_KEYS: &[&str] = &[
     "settings.auto_baud",
     "settings.preview_fps",
     "settings.mouse_mode",
+    "settings.letterbox_color",
+    "settings.dark_mode",
     "mouse_mode.absolute",
     "mouse_mode.relative",
     "status.control_device",

@@ -76,6 +76,8 @@ settings:
   auto_baud: "Auto-detect baud rate on connect"
   preview_fps: "Preview FPS"
   mouse_mode: "Mouse mode"
+  letterbox_color: "Letterbox color"
+  dark_mode: "Dark mode"
 
 mouse_mode:
   absolute: "Absolute"

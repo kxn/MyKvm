@@ -28,7 +28,10 @@ impl TestApp {
             Msg::Modal(action) => match action {
                 ModalAction::Close => self.modal.close(),
                 ModalAction::SaveNameChanged(name) => self.modal.save_name = name,
-                ModalAction::Save | ModalAction::LoadPicked(_) | ModalAction::Noop => {}
+                ModalAction::Save | ModalAction::LoadPicked(_) => {}
+                ModalAction::SetLetterboxColor(_) => {}
+                ModalAction::SetDarkMode(dark) => self.modal.dark = dark,
+                ModalAction::Noop => {}
             },
             Msg::BackgroundPressed => self.bg_hits += 1,
         }
@@ -184,5 +187,26 @@ fn load_profile_modal_lists_names_and_picks() {
     assert!(
         msgs.contains(&Msg::Modal(ModalAction::LoadPicked("a".into()))),
         "点击 profile 名必须产生 LoadPicked（实际消息: {msgs:?}）"
+    );
+}
+
+#[test]
+fn settings_modal_emits_letterbox_and_dark_messages() {
+    let _lock = ipkvm_desktop_iced::I18N_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    rust_i18n::set_locale("en");
+
+    let mut app = TestApp::default();
+    app.open(ModalKind::Settings);
+    let mut ui = simulator::simulator(app.view());
+    assert!(ui.click("Black").is_ok(), "黑边色预设必须可点击");
+    let msgs = messages_of(ui);
+    assert!(
+        msgs.iter().any(|m| matches!(
+            m,
+            Msg::Modal(ModalAction::SetLetterboxColor(c)) if c == &iced::Color::BLACK
+        )),
+        "点击 Black 必须产生 SetLetterboxColor(black)（实际 {msgs:?}）"
     );
 }
