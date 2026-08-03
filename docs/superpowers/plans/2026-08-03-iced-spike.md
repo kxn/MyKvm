@@ -103,7 +103,7 @@
 
 ### 前置 probe（先做，结果回来再继续）
 
-- [ ] **probe**：验证 `iced_aw::menu::MenuBar` 在 iced_test headless 下能否响应注入的 `mouse::Event::CursorMoved`。能 → 继续；不能 → 降级「开关状态机纯函数 + 人工」并回 #73 记录。
+- [x] **probe（已通过）**：`iced_aw::menu::MenuBar` 在 iced_test headless 下**完全响应事件注入**——`click("File")` 打开菜单（Open 子项变可见），`CursorMoved` 注入后菜单保持打开（走廊逻辑工作）。结论：走廊 hover 验证可用 Simulator 脚本化测真实 iced_aw，**无需降级**。见 `tests/menu_probe.rs`。
 
 ### 任务
 
