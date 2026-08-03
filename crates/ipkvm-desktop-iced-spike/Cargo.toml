@@ -8,8 +8,11 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
-iced = { version = "0.14", features = ["tokio"] }
+async-stream = "0.3"
+futures-util = { workspace = true }
+iced = { version = "0.14", features = ["tokio", "image"] }
 iced_aw = { version = "0.14", default-features = false, features = ["menu"] }
+iced_futures = "0.14"
 ipkvm-core = { path = "../ipkvm-core" }
 ipkvm-desktop = { path = "../ipkvm-desktop" }
 ipkvm-session = { path = "../ipkvm-session" }
@@ -23,6 +26,7 @@ windows = { version = "0.61", default-features = false }
 [dev-dependencies]
 iced_test = "0.14"
 ipkvm-video = { path = "../ipkvm-video", features = ["mock"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [[example]]
 name = "video_1080p"

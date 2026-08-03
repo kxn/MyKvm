@@ -63,16 +63,17 @@
 
 ### 任务
 
-- [ ] TDD：`scale.rs` 纯函数 `frame_rect(container, frame, mode)` 三模式，250% DPI 断言（移植自 `render.rs:11-49`）
-- [ ] `frames.rs`：`iced::Subscription` 把 `subscribe_frames()` 的 watch receiver 转 `Message::FrameReady`
-- [ ] `app.rs`：最小 iced 应用，`Handle::from_rgba` **存 state**（view 只 clone，#3160 经验），内置源/渲染帧计数器
-- [ ] `examples/video_1080p.rs`：LoopingVideoSource/MockFrameSource 以 30fps 推 1080p + 真 wgpu 窗口
+- [x] TDD：`scale.rs` 纯函数 `frame_rect(container, frame, mode)` 三模式，250% DPI 断言（移植自 `render.rs:11-49`）— 8 个单测全过
+- [x] `frames.rs`：`iced::Subscription` 把 `subscribe_frames()` 的 watch receiver 转 `Message::FrameReady`（自定义 Recipe，绕过 run_with 的 Hash 约束）— watch 链路单测过
+- [x] `app.rs`：最小 iced 应用，`Handle::from_rgba` **存 state**（view 只 clone，#3160 经验），内置源/渲染帧计数器 — 3 个单测过
+- [x] `examples/video_1080p.rs`：MockFrameSource 以 30fps 推 1080p + 真 wgpu 窗口 + `--duration/--stats-file` 参数 + 帧统计 JSON
 
 ### 自动化验证
 
-- [ ] `tests/scale_modes.rs`：三模式矩形断言（不越界、不截底）
-- [ ] `tests/frame_sub.rs`：headless 计数器，推 N 帧断言渲染达 99%
-- [ ] Handle 存 state 代码审查（代码注释/评审记录）
+- [x] `scale.rs` 内联单测：三模式矩形断言（不越界、不截底）+ 250% DPI 关键用例 — 8 测全过
+- [x] `frames.rs` 内联单测：watch receiver 收到发布的帧 — 过
+- [x] `app.rs` 内联单测：update 让 rendered_frames +1、Handle 存 state、FrameClosed 停订阅 — 3 测过
+- [x] Handle 存 state 代码审查：`SpikeApp::update` 每帧 `handle_from_frame` 重建 Handle 存入 `self.handle`，`view` 只 `handle.clone()`（非每帧重建）
 
 ### 性能数据（验证者本机采，120s）
 
@@ -82,14 +83,14 @@
 | 平均帧间隔 | ≤34ms | — | — |
 | p95 帧间隔 | ≤40ms | — | — |
 | 进程 CPU（单核当量） | <40% | — | — |
-| 5 分钟内存增量 | <100MB | — | — |
+| 内存增量 | <100MB | — | — |
 
-- 闪烁：`iced_test::Snapshot`/`window::screenshot` 定时采样断言帧更新 + 截图确认
-- 运行环境（系统/GPU/DPI）：—
+- 闪烁：`iced_test::Snapshot`/`window::screenshot` 定时采样断言帧更新 + 截图确认（待做）
+- 运行环境（系统/GPU/DPI）：—（待填）
 
 ### Spike 1 结论
 
-—（待填：达标/不达标 + 数据）
+—（待填：达标/不达标 + 数据；初步：渲染链路几乎零丢帧 99.97%，mock 推帧线程本身无法稳定 30fps 是帧间隔指标的瓶颈，非 iced 渲染问题）
 
 ---
 

@@ -11,3 +11,5 @@ pub mod menu;
 pub mod modal;
 pub mod relative;
 pub mod scale;
+
+pub use app::{FrameStats, Message, RecordingSink, SpikeApp, handle_from_frame};
