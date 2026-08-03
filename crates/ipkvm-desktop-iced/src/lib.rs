@@ -11,6 +11,7 @@ use iced::Size;
 
 pub mod app;
 pub mod frames;
+pub mod perf;
 pub mod scale;
 pub mod status;
 pub mod video;
@@ -20,7 +21,9 @@ pub const WINDOW_TITLE: &str = "my_ipkvm iced (M0)";
 /// 默认窗口尺寸。
 pub const WINDOW_SIZE: Size = Size::new(1280.0, 800.0);
 
+pub use app::App;
 pub use app::run;
+pub use perf::FrameStats;
 
 #[cfg(test)]
 mod tests {

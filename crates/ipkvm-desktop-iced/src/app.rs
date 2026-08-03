@@ -1,6 +1,7 @@
 //! 应用状态/消息/视图/订阅（M1）：连接 mock 帧源，消费帧订阅并渲染。
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use iced::widget::image::Handle;
 use iced::{Color, Element, Length, Size, Subscription, Task};
@@ -11,6 +12,7 @@ use ipkvm_video::mock::MockFrameSource;
 use ipkvm_video::{FrameSource, VideoFrame};
 
 use crate::frames::{FrameUpdate, frame_subscription};
+use crate::perf::FrameStats;
 use crate::scale::{FrameSize, ScaleMode};
 use crate::status::{ConnectionStatus, derive_status};
 use crate::video::handle_from_frame;
@@ -75,6 +77,7 @@ pub struct App {
     zh: bool,
     window_id: Option<iced::window::Id>,
     pending_resize: Option<Size>,
+    stats: Option<Arc<FrameStats>>,
 }
 
 impl App {
@@ -105,15 +108,25 @@ impl App {
                 zh: true,
                 window_id: None,
                 pending_resize: None,
+                stats: None,
             },
             Task::none(),
         )
+    }
+
+    /// 附加帧到达统计（perf 示例用；不传则 update 不记录）。
+    pub fn with_stats(mut self, stats: Arc<FrameStats>) -> Self {
+        self.stats = Some(stats);
+        self
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::FrameReady(frame) => {
                 self.handle = Some(handle_from_frame(&frame));
+                if let Some(stats) = &self.stats {
+                    stats.record_at(Instant::now());
+                }
                 self.frame_size = Some(FrameSize {
                     width: frame.width,
                     height: frame.height,

@@ -29,3 +29,7 @@ path = "src/main.rs"
 [lib]
 name = "ipkvm_desktop_iced"
 path = "src/lib.rs"
+
+[[example]]
+name = "video_1080p"
+path = "examples/video_1080p.rs"
