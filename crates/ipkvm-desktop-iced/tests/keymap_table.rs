@@ -1,4 +1,4 @@
-﻿//! Spike 3 键盘映射表验证：≥60 个代表键全部可映射（100% 通过）。
+//! Spike 3 键盘映射表验证：≥60 个代表键全部可映射（100% 通过）。
 
 use iced::keyboard::key::Code;
 use ipkvm_desktop_iced::keymap::{
@@ -162,4 +162,3 @@ fn uncovered_keys_return_none() {
     assert_eq!(physical_code_to_keysym(Code::KanaMode), None);
     assert_eq!(physical_code_to_keysym(Code::Lang1), None);
 }
-
