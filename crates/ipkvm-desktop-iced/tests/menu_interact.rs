@@ -117,7 +117,7 @@ fn item_action_publishes_and_closes_menus() {
 
     ui.click("p1").expect("点击最近使用项 p1");
     assert!(
-        ui.find("Reselect device…").is_err(),
+        ui.find("Disconnect").is_err(),
         "点击业务项后菜单必须全部关闭"
     );
 
