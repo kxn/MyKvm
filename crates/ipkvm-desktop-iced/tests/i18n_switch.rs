@@ -25,11 +25,11 @@ fn english_menu_shows_translated_labels_not_keys() {
     let mut ui = MenuHarness::ui();
     assert!(ui.click("File").is_ok(), "点击 File 必须成功");
     assert!(
-        ui.find("Reselect device…").is_ok(),
+        ui.find("Disconnect").is_ok(),
         "File 菜单项必须显示译文（而非 key 原文）"
     );
     assert!(
-        ui.find("menu.reselect_device").is_err(),
+        ui.find("menu.disconnect").is_err(),
         "File 菜单项不得显示 i18n key 原文"
     );
     assert!(ui.find("Recent").is_ok(), "Recent 子菜单触发项必须可见");
@@ -44,10 +44,7 @@ fn chinese_menu_switches_all_labels() {
 
     let mut ui = MenuHarness::ui();
     assert!(ui.click("文件").is_ok(), "点击「文件」必须成功");
-    assert!(
-        ui.find("重新选择设备…").is_ok(),
-        "中文模式下必须显示中文菜单项"
-    );
+    assert!(ui.find("断开连接").is_ok(), "中文模式下必须显示中文菜单项");
     assert!(ui.find("最近使用").is_ok(), "「最近使用」必须可见");
     assert!(ui.find("File").is_err(), "中文模式下不得残留英文顶层菜单");
 }
@@ -85,8 +82,7 @@ fn labels_are_single_line_no_newline() {
             "menu.edit",
             "menu.send",
             "menu.about",
-            "menu.reselect_device",
-            "menu.stop_connection",
+            "menu.disconnect",
             "file.load_profile",
             "file.recent",
             "file.recent_more",

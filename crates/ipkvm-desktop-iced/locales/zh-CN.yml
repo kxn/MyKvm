@@ -5,8 +5,7 @@ menu:
   edit: "编辑"
   send: "发送"
   about: "关于"
-  reselect_device: "重新选择设备…"
-  stop_connection: "停止连接"
+  disconnect: "断开连接"
 
 file:
   load_profile: "加载连接 profile…"

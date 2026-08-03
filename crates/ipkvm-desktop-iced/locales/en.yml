@@ -5,8 +5,7 @@ menu:
   edit: "Edit"
   send: "Send"
   about: "About"
-  reselect_device: "Reselect device…"
-  stop_connection: "Stop connection"
+  disconnect: "Disconnect"
 
 file:
   load_profile: "Load connection profile…"
