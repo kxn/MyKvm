@@ -76,6 +76,8 @@ settings:
   auto_baud: "连接时自动检测波特率"
   preview_fps: "预览帧率"
   mouse_mode: "鼠标模式"
+  letterbox_color: "黑边颜色"
+  dark_mode: "暗色模式"
 
 mouse_mode:
   absolute: "绝对坐标"

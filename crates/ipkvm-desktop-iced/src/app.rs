@@ -379,6 +379,9 @@ where
                 Task::none()
             }
             Message::OpenModal(kind) => {
+                if kind == ModalKind::Settings {
+                    self.modal.dark = self.dark;
+                }
                 if kind == ModalKind::LoadProfile {
                     self.modal.load_names = self.store.list_profiles();
                 }
@@ -584,6 +587,9 @@ where
     fn handle_menu_action(&mut self, action: MenuAction) {
         match action {
             MenuAction::OpenModal(kind) => {
+                if kind == ModalKind::Settings {
+                    self.modal.dark = self.dark;
+                }
                 if kind == ModalKind::LoadProfile {
                     self.modal.load_names = self.store.list_profiles();
                 }
@@ -625,6 +631,8 @@ where
                 self.modal.close();
                 self.load_profile(&name);
             }
+            ModalAction::SetLetterboxColor(color) => self.letterbox_color = color,
+            ModalAction::SetDarkMode(dark) => self.dark = dark,
             ModalAction::Noop => {}
         }
     }
@@ -1457,6 +1465,18 @@ mod tests {
         assert!(!app.connection.auto_baud);
         assert_eq!(app.connection.preview_fps, 15);
         assert_eq!(app.connection.mouse_mode, MouseMode::Relative);
+    }
+
+    #[test]
+    fn settings_modal_updates_letterbox_and_dark_mode() {
+        let (mut app, _) = MockApp::new_mock();
+        let _ = app.update(Message::OpenModal(ModalKind::Settings));
+        let _ = app.update(Message::Modal(ModalAction::SetLetterboxColor(
+            iced::Color::WHITE,
+        )));
+        assert_eq!(app.letterbox_color(), iced::Color::WHITE);
+        let _ = app.update(Message::Modal(ModalAction::SetDarkMode(false)));
+        assert!(!app.dark);
     }
 
     fn press_key(code: iced::keyboard::key::Code) -> Message {

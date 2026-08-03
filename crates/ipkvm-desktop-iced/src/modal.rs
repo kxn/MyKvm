@@ -31,6 +31,8 @@ pub struct ModalState {
     pub save_name: String,
     /// 加载 profile 模态的候选名（app 打开前填充）。
     pub load_names: Vec<String>,
+    /// 设置模态显示用的暗色开关（app 打开前同步）。
+    pub dark: bool,
 }
 
 /// 模态产生的动作。
@@ -44,6 +46,10 @@ pub enum ModalAction {
     Save,
     /// 点击某个候选 profile 名。
     LoadPicked(String),
+    /// 设置黑边颜色。
+    SetLetterboxColor(Color),
+    /// 切换暗色模式。
+    SetDarkMode(bool),
     /// 点击卡片空白区域：吞掉事件但不关闭（避免落到下层遮罩）。
     Noop,
 }
@@ -83,7 +89,32 @@ impl ModalState {
     }
 
     fn settings_content(&self) -> Element<'_, ModalAction> {
-        column![close_button()].into()
+        use iced::widget::{Checkbox, button, button::Style as ButtonStyle, text};
+        let swatches = [
+            ("Black", Color::BLACK),
+            ("White", Color::WHITE),
+            ("Gray", Color::from_rgb(0.35, 0.35, 0.35)),
+            ("Blue", Color::from_rgb(0.2, 0.4, 0.8)),
+        ];
+        let dark_toggle = Checkbox::new(self.dark)
+            .label(t!("settings.dark_mode"))
+            .on_toggle(ModalAction::SetDarkMode);
+        let mut content = iced::widget::Column::new().spacing(8);
+        content = content.push(text(t!("settings.letterbox_color")));
+        for (label, color) in swatches {
+            let style = move |_theme: &iced::Theme, _status: Status| ButtonStyle {
+                background: Some(color.into()),
+                text_color: Color::WHITE,
+                border: Border::default().rounded(6),
+                ..Default::default()
+            };
+            content = content.push(
+                button(text(label))
+                    .on_press(ModalAction::SetLetterboxColor(color))
+                    .style(style),
+            );
+        }
+        content.push(dark_toggle).push(close_button()).into()
     }
 
     fn connection_content(&self) -> Element<'_, ModalAction> {
