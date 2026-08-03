@@ -142,6 +142,7 @@ mod tests {
             control_status: ControlProbeStatus::Ready(ControlInfo {
                 version: 0x31,
                 usb_enumerated: true,
+                baud: 115200,
             }),
         }
     }

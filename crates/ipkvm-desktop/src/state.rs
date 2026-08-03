@@ -15,6 +15,9 @@ pub struct PreviewInfo {
 pub struct ControlInfo {
     pub version: u8,
     pub usb_enumerated: bool,
+    /// 探测成功（`Ready`）时使用的波特率：表示“该波特率已验证”。
+    /// 连接前据此跳过重复的自动波特率检测（#97）。
+    pub baud: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -105,6 +108,21 @@ impl DeviceSelectionState {
     pub fn mark_control_offline(&mut self) {
         self.control_status = ControlProbeStatus::Disconnected;
     }
+
+    /// 记录一次控制设备探测结果：`Ready` 时把探测所用波特率写入结果，
+    /// 作为“当前波特率已验证”的唯一事实来源（#97）。
+    ///
+    /// 之后若用户改动波特率，`Ready(baud)` 与新波特率不再匹配，
+    /// 连接前会自动走一次兜底检测，无需散落的失效逻辑。
+    pub fn record_control_probe(&mut self, baud: u32, status: ControlProbeStatus) {
+        self.control_status = match status {
+            ControlProbeStatus::Ready(mut info) => {
+                info.baud = baud;
+                ControlProbeStatus::Ready(info)
+            }
+            other => other,
+        };
+    }
 }
 
 #[cfg(test)]
@@ -134,6 +152,7 @@ mod tests {
         state.control_status = ControlProbeStatus::Ready(ControlInfo {
             version: 0x31,
             usb_enumerated: true,
+            baud: 115200,
         });
         assert!(state.can_connect());
     }
@@ -153,6 +172,7 @@ mod tests {
             control_status: ControlProbeStatus::Ready(ControlInfo {
                 version: 0x31,
                 usb_enumerated: true,
+                baud: 115200,
             }),
         };
 
@@ -169,6 +189,7 @@ mod tests {
             control_status: ControlProbeStatus::Ready(ControlInfo {
                 version: 0x31,
                 usb_enumerated: true,
+                baud: 115200,
             }),
             ..DeviceSelectionState::default()
         };
@@ -176,5 +197,30 @@ mod tests {
         state.mark_control_offline();
 
         assert_eq!(state.control_status, ControlProbeStatus::Disconnected);
+    }
+
+    #[test]
+    fn record_control_probe_stamps_baud_into_ready_result() {
+        let mut state = DeviceSelectionState::default();
+        state.record_control_probe(
+            57600,
+            ControlProbeStatus::Ready(ControlInfo {
+                version: 0x31,
+                usb_enumerated: true,
+                baud: 0,
+            }),
+        );
+        assert_eq!(
+            state.control_status,
+            ControlProbeStatus::Ready(ControlInfo {
+                version: 0x31,
+                usb_enumerated: true,
+                baud: 57600,
+            })
+        );
+
+        // 失败结果不携带波特率，也不应误标为已验证。
+        state.record_control_probe(9600, ControlProbeStatus::NoResponse);
+        assert_eq!(state.control_status, ControlProbeStatus::NoResponse);
     }
 }
