@@ -254,13 +254,13 @@ impl ModalState {
         column![
             text(t!("settings.baud_rate")),
             baud,
+            auto_baud,
             text(t!("settings.preview_fps")),
             fps,
             text(t!("settings.mouse_mode")),
             mouse,
             text(t!("settings.relative_sensitivity")),
             sensitivity,
-            auto_baud,
         ]
         .spacing(8)
     }
