@@ -2660,6 +2660,7 @@ name = "ipkvm-desktop-iced"
 version = "0.1.0"
 dependencies = [
  "iced",
+ "iced_test",
 ]
 
 [[package]]

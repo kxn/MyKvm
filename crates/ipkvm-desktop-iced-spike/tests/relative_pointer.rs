@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 #[cfg(windows)]
 mod windows_smoke {
+    use std::collections::VecDeque;
     use std::mem::size_of;
 
     use windows::Win32::UI::Input::KeyboardAndMouse::{
@@ -42,33 +43,42 @@ mod windows_smoke {
         let rx = source.receiver().expect("start capture");
         assert!(source.receiver().is_err(), "重复启动必须被拒绝");
 
+        // RIDEV_INPUTSINK 会收到系统内全部鼠标移动（含用户物理鼠标）。
+        // 测试不能假设期间无其它输入：改为「按序匹配注入序列」——
+        // 物理鼠标事件允许穿插，只要注入的 (3,0)/(0,3) 序列原样出现在流中。
+        let mut expected: VecDeque<(i16, i16)> = (0..20)
+            .map(|i| if i % 2 == 0 { (3, 0) } else { (0, 3) })
+            .collect();
         let mut latencies = Vec::new();
-        let mut received = 0u32;
-        for _ in 0..20 {
-            // 排空可能的外部鼠标移动，避免干扰判定。
-            while rx.recv_timeout(Duration::from_millis(1)).is_ok() {}
+        let mut matched = 0u32;
+        while let Some(want) = expected.front().copied() {
             // 留出间隔避免 SendInput 合并事件。
             std::thread::sleep(Duration::from_millis(10));
-
-            let (want_x, want_y) = if received % 2 == 0 {
-                (3i16, 0i16)
-            } else {
-                (0i16, 3i16)
-            };
             let start = Instant::now();
-            send_mouse_move(i32::from(want_x), i32::from(want_y));
-            if let Ok((dx, dy)) = rx.recv_timeout(Duration::from_millis(1000)) {
-                latencies.push(start.elapsed());
-                assert_eq!((dx, dy), (want_x, want_y), "注入增量必须 1:1 到达");
-                received += 1;
+            send_mouse_move(i32::from(want.0), i32::from(want.1));
+
+            let deadline = Instant::now() + Duration::from_millis(1000);
+            while Instant::now() < deadline {
+                match rx.recv_timeout(Duration::from_millis(50)) {
+                    Ok((dx, dy)) if (dx, dy) == want => {
+                        latencies.push(start.elapsed());
+                        matched += 1;
+                        expected.pop_front();
+                        break;
+                    }
+                    // 物理鼠标事件穿插：继续等目标增量。
+                    Ok(_) => {}
+                    Err(_) => break,
+                }
             }
         }
         source.stop();
 
         assert!(
-            received >= 18,
-            "至少 90% 注入事件被接收（实际 {received}/20）"
+            matched >= 18,
+            "至少 90% 注入事件被按序匹配（实际 {matched}/20）"
         );
+        assert!(latencies.len() as u32 == matched);
         latencies.sort_unstable();
         let p95 = latencies[(latencies.len() as f64 * 0.95) as usize];
         assert!(
