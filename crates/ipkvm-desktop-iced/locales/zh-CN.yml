@@ -38,6 +38,10 @@ language:
 
 about:
   project_home: "项目主页"
+  title: "关于 my_ipkvm"
+  version: "版本：%{commit}"
+  license: "许可证：MIT"
+  project_url: "项目地址：%{url}"
 
 modal:
   settings_title: "设置"
@@ -45,7 +49,6 @@ modal:
   close: "关闭"
   about_title: "关于"
   save_title: "保存 profile"
-  load_title: "加载 profile"
   name_label: "名称："
   save: "保存"
 
@@ -70,6 +73,9 @@ profile:
   device_missing: "视频设备未找到"
   control_missing: "控制设备未找到"
   no_recent: "暂无"
+  overwrite_body: "“%{name}”已存在，是否覆盖？"
+  overwrite_confirm: "覆盖"
+  restore_defaults: "恢复默认"
 
 connection_settings:
   title: "连接设置"
@@ -80,12 +86,17 @@ settings:
   auto_baud: "连接时自动检测波特率"
   preview_fps: "预览帧率"
   mouse_mode: "鼠标模式"
-  letterbox_color: "黑边颜色"
-  dark_mode: "暗色模式"
+  relative_sensitivity: "相对灵敏度"
+  scale_mode: "缩放"
 
 mouse_mode:
   absolute: "绝对坐标"
   relative: "相对坐标"
+
+scale_mode:
+  fit_window: "适配窗口"
+  actual_size: "原始大小"
+  resize_to_video: "窗口跟随视频"
 
 status:
   control_device: "控制设备：%{value}"
@@ -151,3 +162,4 @@ dialog:
 
 common:
   not_selected: "未选择"
+  cancel: "取消"

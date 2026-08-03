@@ -38,6 +38,10 @@ language:
 
 about:
   project_home: "Project home"
+  title: "About my_ipkvm"
+  version: "Version: %{commit}"
+  license: "License: MIT"
+  project_url: "Project: %{url}"
 
 modal:
   settings_title: "Settings"
@@ -45,7 +49,6 @@ modal:
   close: "Close"
   about_title: "About"
   save_title: "Save profile"
-  load_title: "Load profile"
   name_label: "Name:"
   save: "Save"
 
@@ -70,6 +73,9 @@ profile:
   device_missing: "Video device not found"
   control_missing: "Control device not found"
   no_recent: "None yet"
+  overwrite_body: "\"%{name}\" already exists. Overwrite?"
+  overwrite_confirm: "Overwrite"
+  restore_defaults: "Restore defaults"
 
 connection_settings:
   title: "Connection settings"
@@ -80,12 +86,17 @@ settings:
   auto_baud: "Auto-detect baud rate on connect"
   preview_fps: "Preview FPS"
   mouse_mode: "Mouse mode"
-  letterbox_color: "Letterbox color"
-  dark_mode: "Dark mode"
+  relative_sensitivity: "Relative sensitivity"
+  scale_mode: "Scaling"
 
 mouse_mode:
   absolute: "Absolute"
   relative: "Relative"
+
+scale_mode:
+  fit_window: "Fit window"
+  actual_size: "Actual size"
+  resize_to_video: "Resize window to video"
 
 status:
   control_device: "Control device: %{value}"
@@ -151,3 +162,4 @@ dialog:
 
 common:
   not_selected: "Not selected"
+  cancel: "Cancel"

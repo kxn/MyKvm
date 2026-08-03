@@ -57,7 +57,7 @@ static MOCK_STORE_SEQ: AtomicU64 = AtomicU64::new(0);
 const UI_TICK_INTERVAL: Duration = Duration::from_millis(33);
 
 /// 项目主页（实际仓库为内网 Gitea）。
-const PROJECT_URL: &str = "http://10.10.10.5:3000/kxn/my_ipkvm";
+pub const PROJECT_URL: &str = "http://10.10.10.5:3000/kxn/my_ipkvm";
 
 /// 记录型 sink：测试与 mock 连接用。
 #[derive(Clone, Debug, Default)]
@@ -164,6 +164,7 @@ pub enum Message {
     SetPreviewFps(u64),
     SetMouseMode(MouseMode),
     LoadProfile(String),
+    ProfilePath(Option<std::path::PathBuf>),
     Keyboard(iced::keyboard::Event),
     IcedEvent(iced::Event),
     UiTick,
@@ -192,6 +193,7 @@ where
     modal: ModalState,
     selection: DeviceSelectionState,
     connection: ConnectionSettings,
+    default_connection: ConnectionSettings,
     probe: Box<dyn ipkvm_desktop::probe::ProbeBackend>,
     preview: PreviewRuntime,
     preview_factory: Arc<dyn PreviewSourceFactory>,
@@ -253,6 +255,7 @@ impl App<RecordingSink, MockFactory> {
             modal: ModalState::default(),
             selection: DeviceSelectionState::default(),
             connection: ConnectionSettings::default(),
+            default_connection: ConnectionSettings::default(),
             probe: Box::new(FakeProbeBackend),
             preview: PreviewRuntime::default(),
             preview_factory: Arc::new(MockPreviewFactory),
@@ -307,6 +310,7 @@ impl App<Ch9329InputSink<SerialCommandQueue>, ProductionSessionFactory> {
             modal: ModalState::default(),
             selection: DeviceSelectionState::default(),
             connection: ConnectionSettings::default(),
+            default_connection: ConnectionSettings::default(),
             probe: Box::new(ProductionProbeBackend),
             preview: PreviewRuntime::default(),
             preview_factory: Arc::new(CameraPreviewFactory),
@@ -436,16 +440,29 @@ where
             }
             Message::OpenModal(kind) => {
                 if kind == ModalKind::Settings {
-                    self.modal.dark = self.dark;
+                    self.modal.baud_rate = self.default_connection.baud_rate;
+                    self.modal.preview_fps = self.default_connection.preview_fps;
+                    self.modal.auto_baud = self.default_connection.auto_baud;
+                    self.modal.mouse_mode = self.default_connection.mouse_mode;
+                    self.modal.relative_sensitivity = self.default_connection.relative_sensitivity;
+                    self.modal.baud_text = self.default_connection.baud_rate.to_string();
+                    self.modal.fps_text = self.default_connection.preview_fps.to_string();
+                    self.modal.sensitivity_text =
+                        self.default_connection.relative_sensitivity.to_string();
+                    self.modal.scale_mode = self.scale_mode;
                 }
                 if kind == ModalKind::Connection {
                     self.modal.baud_rate = self.connection.baud_rate;
                     self.modal.preview_fps = self.connection.preview_fps;
                     self.modal.auto_baud = self.connection.auto_baud;
                     self.modal.mouse_mode = self.connection.mouse_mode;
+                    self.modal.relative_sensitivity = self.connection.relative_sensitivity;
+                    self.modal.baud_text = self.connection.baud_rate.to_string();
+                    self.modal.fps_text = self.connection.preview_fps.to_string();
+                    self.modal.sensitivity_text = self.connection.relative_sensitivity.to_string();
                 }
-                if kind == ModalKind::LoadProfile {
-                    self.modal.load_names = self.store.list_profiles();
+                if kind == ModalKind::SaveProfile {
+                    self.modal.confirm_overwrite = false;
                 }
                 self.modal.open(kind);
                 Task::none()
@@ -642,6 +659,12 @@ where
                 self.load_profile(&name);
                 Task::none()
             }
+            Message::ProfilePath(path) => {
+                if let Some(path) = path {
+                    self.load_profile_file(&path);
+                }
+                Task::none()
+            }
             Message::Keyboard(event) => {
                 self.handle_keyboard_event(event);
                 Task::none()
@@ -664,16 +687,29 @@ where
         match action {
             MenuAction::OpenModal(kind) => {
                 if kind == ModalKind::Settings {
-                    self.modal.dark = self.dark;
+                    self.modal.baud_rate = self.default_connection.baud_rate;
+                    self.modal.preview_fps = self.default_connection.preview_fps;
+                    self.modal.auto_baud = self.default_connection.auto_baud;
+                    self.modal.mouse_mode = self.default_connection.mouse_mode;
+                    self.modal.relative_sensitivity = self.default_connection.relative_sensitivity;
+                    self.modal.baud_text = self.default_connection.baud_rate.to_string();
+                    self.modal.fps_text = self.default_connection.preview_fps.to_string();
+                    self.modal.sensitivity_text =
+                        self.default_connection.relative_sensitivity.to_string();
+                    self.modal.scale_mode = self.scale_mode;
                 }
                 if kind == ModalKind::Connection {
                     self.modal.baud_rate = self.connection.baud_rate;
                     self.modal.preview_fps = self.connection.preview_fps;
                     self.modal.auto_baud = self.connection.auto_baud;
                     self.modal.mouse_mode = self.connection.mouse_mode;
+                    self.modal.relative_sensitivity = self.connection.relative_sensitivity;
+                    self.modal.baud_text = self.connection.baud_rate.to_string();
+                    self.modal.fps_text = self.connection.preview_fps.to_string();
+                    self.modal.sensitivity_text = self.connection.relative_sensitivity.to_string();
                 }
-                if kind == ModalKind::LoadProfile {
-                    self.modal.load_names = self.store.list_profiles();
+                if kind == ModalKind::SaveProfile {
+                    self.modal.confirm_overwrite = false;
                 }
                 self.modal.open(kind);
                 Task::none()
@@ -722,6 +758,10 @@ where
                     )
                 }
             }
+            MenuAction::Simple("load_profile") => Task::perform(
+                crate::dialog::choose_profile_path(self.store.profiles_dir()),
+                Message::ProfilePath,
+            ),
             MenuAction::Simple("exit") => {
                 if let Some(id) = self.window_id {
                     iced::window::close(id)
@@ -745,59 +785,120 @@ where
         match action {
             ModalAction::Close => self.modal.close(),
             ModalAction::SaveNameChanged(name) => self.modal.save_name = name,
-            ModalAction::Save => self.save_profile(),
-            ModalAction::LoadPicked(name) => {
-                self.modal.close();
-                self.load_profile(&name);
+            ModalAction::Save => {
+                let name = self.modal.save_name.trim().to_string();
+                if name.is_empty() {
+                    return;
+                }
+                if self.store.profile_exists(&name) && !self.modal.confirm_overwrite {
+                    self.modal.confirm_overwrite = true;
+                } else {
+                    self.save_profile();
+                }
             }
-            ModalAction::SetLetterboxColor(color) => self.letterbox_color = color,
-            ModalAction::SetDarkMode(dark) => self.dark = dark,
-            ModalAction::SetBaudRate(baud) => {
-                self.connection.baud_rate = baud;
+            ModalAction::CancelOverwrite => self.modal.confirm_overwrite = false,
+            ModalAction::RestoreDefaults => {
+                self.connection = self.default_connection.clone();
                 self.active_profile = None;
+                self.modal.baud_text = self.connection.baud_rate.to_string();
+                self.modal.fps_text = self.connection.preview_fps.to_string();
+                self.modal.sensitivity_text = self.connection.relative_sensitivity.to_string();
+            }
+            ModalAction::SetBaudRate(baud) => {
+                self.apply_modal_connection_field(|c| c.baud_rate = baud);
+                self.modal.baud_text = baud.to_string();
             }
             ModalAction::SetPreviewFps(fps) => {
-                self.connection.preview_fps = fps;
-                self.active_profile = None;
+                self.apply_modal_connection_field(|c| c.preview_fps = fps);
+                self.modal.fps_text = fps.to_string();
             }
             ModalAction::SetAutoBaud(enabled) => {
-                self.connection.auto_baud = enabled;
-                self.active_profile = None;
+                self.apply_modal_connection_field(|c| c.auto_baud = enabled);
             }
             ModalAction::SetMouseMode(mode) => {
-                self.connection.mouse_mode = mode;
-                self.active_profile = None;
+                self.apply_modal_connection_field(|c| c.mouse_mode = mode);
             }
+            ModalAction::SetRelativeSensitivity(value) => {
+                self.apply_modal_connection_field(|c| c.relative_sensitivity = value);
+                self.modal.sensitivity_text = value.to_string();
+            }
+            ModalAction::BaudRateTextChanged(text) => {
+                self.modal.baud_text = text.clone();
+                if let Ok(baud) = text.trim().parse::<u32>() {
+                    self.apply_modal_connection_field(|c| {
+                        c.baud_rate = baud.clamp(1200, 115_200);
+                    });
+                }
+            }
+            ModalAction::PreviewFpsTextChanged(text) => {
+                self.modal.fps_text = text.clone();
+                if let Ok(fps) = text.trim().parse::<u64>() {
+                    self.apply_modal_connection_field(|c| {
+                        c.preview_fps = fps.clamp(1, 60);
+                    });
+                }
+            }
+            ModalAction::RelativeSensitivityTextChanged(text) => {
+                self.modal.sensitivity_text = text.clone();
+                if let Ok(value) = text.trim().parse::<f32>() {
+                    self.apply_modal_connection_field(|c| {
+                        c.relative_sensitivity = value.clamp(0.1, 5.0);
+                    });
+                }
+            }
+            ModalAction::SetScaleMode(mode) => self.scale_mode = mode,
             ModalAction::Noop => {}
+        }
+    }
+
+    /// 连接参数编辑路由：设置模态写默认值，连接设置模态写连接副本并标记手动连接。
+    fn apply_modal_connection_field(&mut self, f: impl FnOnce(&mut ConnectionSettings)) {
+        if self.modal.open == Some(ModalKind::Settings) {
+            f(&mut self.default_connection);
+        } else {
+            f(&mut self.connection);
+            self.active_profile = None;
         }
     }
 
     fn load_profile(&mut self, name: &str) {
         match self.store.load_profile(name) {
-            Ok(profile) => {
-                let missing = apply_profile_to_selection(&mut self.selection, &profile);
-                self.connection = profile.connection;
-                self.active_profile = Some(profile.name);
-                self.preview.reset();
-                self.reset_preview_handle();
-                let mut notes = Vec::new();
-                if missing.video {
-                    notes.push(t!("profile.device_missing").to_string());
-                }
-                if missing.control {
-                    notes.push(t!("profile.control_missing").to_string());
-                }
-                self.status_message = if notes.is_empty() {
-                    None
-                } else {
-                    Some(notes.join("；"))
-                };
-            }
+            Ok(profile) => self.apply_profile(profile),
             Err(error) => {
                 self.status_message =
                     Some(t!("profile.load_failed", error = error.to_string()).to_string());
             }
         }
+    }
+
+    fn load_profile_file(&mut self, path: &std::path::Path) {
+        match self.store.load_profile_file(path) {
+            Ok(profile) => self.apply_profile(profile),
+            Err(error) => {
+                self.status_message =
+                    Some(t!("profile.load_failed", error = error.to_string()).to_string());
+            }
+        }
+    }
+
+    fn apply_profile(&mut self, profile: ipkvm_desktop::config::Profile) {
+        let missing = apply_profile_to_selection(&mut self.selection, &profile);
+        self.connection = profile.connection;
+        self.active_profile = Some(profile.name);
+        self.preview.reset();
+        self.reset_preview_handle();
+        let mut notes = Vec::new();
+        if missing.video {
+            notes.push(t!("profile.device_missing").to_string());
+        }
+        if missing.control {
+            notes.push(t!("profile.control_missing").to_string());
+        }
+        self.status_message = if notes.is_empty() {
+            None
+        } else {
+            Some(notes.join("；"))
+        };
     }
 
     fn save_profile(&mut self) {
@@ -809,6 +910,7 @@ where
         match self.store.save_profile(&profile) {
             Ok(()) => {
                 self.status_message = Some(t!("profile.saved", name = name).to_string());
+                self.modal.confirm_overwrite = false;
                 self.modal.close();
             }
             Err(error) => {
@@ -1865,6 +1967,40 @@ mod tests {
     }
 
     #[test]
+    fn save_profile_overwrite_requires_confirm() {
+        let (mut app, _) = MockApp::new_mock();
+        // 先保存一个已有名字。
+        let _ = app.update(Message::OpenModal(ModalKind::SaveProfile));
+        let _ = app.update(Message::Modal(ModalAction::SaveNameChanged(
+            "办公室".into(),
+        )));
+        let _ = app.update(Message::Modal(ModalAction::Save));
+        assert!(app.store.profile_exists("办公室"));
+
+        // 再次用同名保存：第一次 Save 只进入覆盖确认，不写盘、不关闭。
+        let _ = app.update(Message::OpenModal(ModalKind::SaveProfile));
+        let _ = app.update(Message::Modal(ModalAction::SaveNameChanged(
+            "办公室".into(),
+        )));
+        let _ = app.update(Message::Modal(ModalAction::Save));
+        assert!(app.modal.confirm_overwrite, "同名保存必须先进入覆盖确认");
+        assert_eq!(
+            app.modal.open,
+            Some(ModalKind::SaveProfile),
+            "确认前不得关闭模态"
+        );
+
+        // 第二次 Save 才真正覆盖并关闭，同时复位确认标志。
+        let _ = app.update(Message::Modal(ModalAction::Save));
+        assert!(
+            app.store.profile_exists("办公室"),
+            "确认覆盖后必须写入 profile"
+        );
+        assert!(!app.modal.confirm_overwrite, "覆盖确认后标志必须复位");
+        assert!(app.modal.open.is_none(), "确认后模态必须关闭");
+    }
+
+    #[test]
     fn load_profile_applies_selection() {
         let (mut app, _) = MockApp::new_mock();
         let _ = app.update(Message::RefreshDevices);
@@ -1881,6 +2017,36 @@ mod tests {
         let _ = app.update(Message::LoadProfile("办公室".into()));
         assert_eq!(app.selection.selected_video_id.as_deref(), Some("cam0"));
         assert_eq!(app.selection.selected_control_id.as_deref(), Some("COM9"));
+    }
+
+    #[test]
+    fn load_profile_file_applies_profile() {
+        let (mut app, _) = MockApp::new_mock();
+        let _ = app.update(Message::RefreshDevices);
+        let _ = app.update(Message::SelectVideo("Camera 0".into()));
+        let _ = app.update(Message::SelectControl("CH9329 (COM9)".into()));
+        let _ = app.update(Message::OpenModal(ModalKind::SaveProfile));
+        let _ = app.update(Message::Modal(ModalAction::SaveNameChanged(
+            "办公室".into(),
+        )));
+        let _ = app.update(Message::Modal(ModalAction::Save));
+        let path = app.store.profiles_dir().join("办公室.toml");
+        assert!(path.exists(), "保存的 profile 文件必须存在");
+
+        // 清空选择再通过文件路径加载。
+        app.selection.selected_video_id = None;
+        app.selection.selected_control_id = None;
+        app.active_profile = None;
+        let _ = app.update(Message::ProfilePath(Some(path)));
+        assert_eq!(app.selection.selected_video_id.as_deref(), Some("cam0"));
+        assert_eq!(app.selection.selected_control_id.as_deref(), Some("COM9"));
+        assert_eq!(app.active_profile.as_deref(), Some("办公室"));
+
+        // None（取消对话框）必须无副作用。
+        let connection_before = app.connection.clone();
+        let _ = app.update(Message::ProfilePath(None));
+        assert_eq!(app.connection, connection_before);
+        assert_eq!(app.active_profile.as_deref(), Some("办公室"));
     }
 
     #[test]
@@ -1972,15 +2138,26 @@ mod tests {
     }
 
     #[test]
-    fn settings_modal_updates_letterbox_and_dark_mode() {
+    fn settings_modal_updates_default_connection() {
         let (mut app, _) = MockApp::new_mock();
         let _ = app.update(Message::OpenModal(ModalKind::Settings));
-        let _ = app.update(Message::Modal(ModalAction::SetLetterboxColor(
-            iced::Color::WHITE,
+        let connection_before = app.connection.clone();
+        let _ = app.update(Message::Modal(ModalAction::SetBaudRate(9600)));
+        let _ = app.update(Message::Modal(ModalAction::SetPreviewFps(15)));
+        let _ = app.update(Message::Modal(ModalAction::SetAutoBaud(false)));
+        let _ = app.update(Message::Modal(ModalAction::SetMouseMode(
+            MouseMode::Absolute,
         )));
-        assert_eq!(app.letterbox_color(), iced::Color::WHITE);
-        let _ = app.update(Message::Modal(ModalAction::SetDarkMode(false)));
-        assert!(!app.dark);
+        let _ = app.update(Message::Modal(ModalAction::SetRelativeSensitivity(2.5)));
+        assert_eq!(app.default_connection.baud_rate, 9600);
+        assert_eq!(app.default_connection.preview_fps, 15);
+        assert!(!app.default_connection.auto_baud);
+        assert_eq!(app.default_connection.mouse_mode, MouseMode::Absolute);
+        assert_eq!(app.default_connection.relative_sensitivity, 2.5);
+        assert_eq!(
+            app.connection, connection_before,
+            "设置模态只能改默认值，不得影响当前连接"
+        );
     }
 
     fn press_key(code: iced::keyboard::key::Code) -> Message {
@@ -2312,6 +2489,35 @@ mod tests {
             "连接设置模态必须含自动波特率开关"
         );
         assert!(ui.find("Mouse mode").is_ok(), "连接设置模态必须含鼠标模式");
+        assert!(
+            ui.find("Relative sensitivity").is_ok(),
+            "连接设置模态必须含相对灵敏度"
+        );
+        assert!(
+            ui.find("Restore defaults").is_ok(),
+            "连接设置模态必须含恢复默认值按钮"
+        );
+    }
+
+    #[test]
+    fn about_modal_shows_version_license_and_url() {
+        let _guard = crate::I18N_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        rust_i18n::set_locale("en");
+        let (mut app, _) = MockApp::new_mock();
+        let _ = app.update(Message::OpenModal(ModalKind::About));
+        let mut ui = iced_test::simulator::simulator(app.view());
+        assert!(ui.find("About my_ipkvm").is_ok(), "关于模态必须含标题");
+        assert!(
+            ui.find(format!("Version: {}", env!("GIT_COMMIT"))).is_ok(),
+            "关于模态必须含构建版本"
+        );
+        assert!(ui.find("License: MIT").is_ok(), "关于模态必须含许可证");
+        assert!(
+            ui.find(format!("Project: {}", PROJECT_URL)).is_ok(),
+            "关于模态必须含项目地址"
+        );
     }
 
     #[test]

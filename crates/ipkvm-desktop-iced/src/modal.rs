@@ -9,9 +9,7 @@ use iced::advanced::{Clipboard, Shell, mouse, overlay, renderer};
 use iced::border::Border;
 use iced::keyboard;
 use iced::widget::PickList;
-use iced::widget::{
-    button, button::Status, column, container, mouse_area, space, stack, text, text_input,
-};
+use iced::widget::{button, button::Status, column, container, mouse_area, space, stack, text};
 use iced::{Color, Element, Event, Length, Rectangle, Shadow, Size, Vector};
 use ipkvm_core::MouseMode;
 use rust_i18n::t;
@@ -22,7 +20,6 @@ pub enum ModalKind {
     Settings,
     Connection,
     SaveProfile,
-    LoadProfile,
     About,
 }
 
@@ -31,15 +28,20 @@ pub enum ModalKind {
 pub struct ModalState {
     pub open: Option<ModalKind>,
     pub save_name: String,
-    /// 加载 profile 模态的候选名（app 打开前填充）。
-    pub load_names: Vec<String>,
-    /// 设置模态显示用的暗色开关（app 打开前同步）。
-    pub dark: bool,
+    /// 覆盖保存确认（同名时第一次 Save 进入确认态）。
+    pub confirm_overwrite: bool,
     /// 连接设置模态显示用的连接参数（app 打开前同步）。
     pub baud_rate: u32,
     pub preview_fps: u64,
     pub auto_baud: bool,
     pub mouse_mode: MouseMode,
+    pub relative_sensitivity: f32,
+    /// 数字输入编辑缓冲（TextInput 受控文本，改动实时解析并 clamp）。
+    pub baud_text: String,
+    pub fps_text: String,
+    pub sensitivity_text: String,
+    /// 设置模态显示用的缩放模式（app 打开前同步）。
+    pub scale_mode: crate::scale::ScaleMode,
 }
 
 impl Default for ModalState {
@@ -47,12 +49,16 @@ impl Default for ModalState {
         Self {
             open: None,
             save_name: String::new(),
-            load_names: Vec::new(),
-            dark: true,
+            confirm_overwrite: false,
             baud_rate: ipkvm_core::DEFAULT_BAUD_RATE,
             preview_fps: 30,
             auto_baud: true,
             mouse_mode: MouseMode::Relative,
+            relative_sensitivity: 1.0,
+            baud_text: ipkvm_core::DEFAULT_BAUD_RATE.to_string(),
+            fps_text: "30".to_string(),
+            sensitivity_text: "1".to_string(),
+            scale_mode: crate::scale::ScaleMode::FitWindow,
         }
     }
 }
@@ -66,12 +72,10 @@ pub enum ModalAction {
     SaveNameChanged(String),
     /// 保存 profile。
     Save,
-    /// 点击某个候选 profile 名。
-    LoadPicked(String),
-    /// 设置黑边颜色。
-    SetLetterboxColor(Color),
-    /// 切换暗色模式。
-    SetDarkMode(bool),
+    /// 覆盖确认：取消覆盖。
+    CancelOverwrite,
+    /// 恢复默认连接参数（连接设置模态）。
+    RestoreDefaults,
     /// 连接设置：波特率。
     SetBaudRate(u32),
     /// 连接设置：预览帧率。
@@ -80,6 +84,16 @@ pub enum ModalAction {
     SetAutoBaud(bool),
     /// 连接设置：鼠标模式。
     SetMouseMode(MouseMode),
+    /// 连接设置：相对灵敏度。
+    SetRelativeSensitivity(f32),
+    /// 数字输入缓冲变化（波特率，解析成功后同时路由到目标连接参数）。
+    BaudRateTextChanged(String),
+    /// 数字输入缓冲变化（预览帧率）。
+    PreviewFpsTextChanged(String),
+    /// 数字输入缓冲变化（相对灵敏度）。
+    RelativeSensitivityTextChanged(String),
+    /// 设置模态：缩放模式。
+    SetScaleMode(crate::scale::ScaleMode),
     /// 点击卡片空白区域：吞掉事件但不关闭（避免落到下层遮罩）。
     Noop,
 }
@@ -101,7 +115,6 @@ impl ModalState {
             ModalKind::Settings => self.settings_content(),
             ModalKind::Connection => self.connection_content(),
             ModalKind::SaveProfile => self.save_profile_content(),
-            ModalKind::LoadProfile => self.load_profile_content(),
             ModalKind::About => self.about_content(),
         };
         Some(modal_card(title_for(kind), content))
@@ -119,65 +132,45 @@ impl ModalState {
     }
 
     fn settings_content(&self) -> Element<'_, ModalAction> {
-        use iced::widget::{Checkbox, button, button::Style as ButtonStyle, text};
-        let swatches = [
-            ("Black", Color::BLACK),
-            ("White", Color::WHITE),
-            ("Gray", Color::from_rgb(0.35, 0.35, 0.35)),
-            ("Blue", Color::from_rgb(0.2, 0.4, 0.8)),
+        use iced::widget::{PickList, column, text};
+
+        let scale_labels = vec![
+            t!("scale_mode.fit_window").to_string(),
+            t!("scale_mode.actual_size").to_string(),
+            t!("scale_mode.resize_to_video").to_string(),
         ];
-        let dark_toggle = Checkbox::new(self.dark)
-            .label(t!("settings.dark_mode"))
-            .on_toggle(ModalAction::SetDarkMode);
-        let mut content = iced::widget::Column::new().spacing(8);
-        content = content.push(text(t!("settings.letterbox_color")));
-        for (label, color) in swatches {
-            let style = move |_theme: &iced::Theme, _status: Status| ButtonStyle {
-                background: Some(color.into()),
-                text_color: Color::WHITE,
-                border: Border::default().rounded(6),
-                ..Default::default()
-            };
-            content = content.push(
-                button(text(label))
-                    .on_press(ModalAction::SetLetterboxColor(color))
-                    .style(style),
-            );
-        }
-        content.push(dark_toggle).push(close_button()).into()
+        let selected_scale = match self.scale_mode {
+            crate::scale::ScaleMode::FitWindow => t!("scale_mode.fit_window").to_string(),
+            crate::scale::ScaleMode::ActualSize => t!("scale_mode.actual_size").to_string(),
+            crate::scale::ScaleMode::ResizeWindowToVideo => {
+                t!("scale_mode.resize_to_video").to_string()
+            }
+        };
+        let scale = PickList::new(scale_labels, Some(selected_scale), |label: String| {
+            ModalAction::SetScaleMode(if label == t!("scale_mode.fit_window") {
+                crate::scale::ScaleMode::FitWindow
+            } else if label == t!("scale_mode.actual_size") {
+                crate::scale::ScaleMode::ActualSize
+            } else {
+                crate::scale::ScaleMode::ResizeWindowToVideo
+            })
+        });
+
+        column![
+            self.connection_fields(),
+            text(t!("settings.scale_mode")),
+            scale,
+            close_button(),
+        ]
+        .spacing(8)
+        .into()
     }
 
     fn connection_content(&self) -> Element<'_, ModalAction> {
-        let baud_pick = PickList::new(
-            vec![9600u32, 19200, 38400, 57600, 115200],
-            Some(self.baud_rate),
-            ModalAction::SetBaudRate,
-        );
-        let fps_pick = PickList::new(
-            vec![10u64, 15, 30, 60],
-            Some(self.preview_fps),
-            ModalAction::SetPreviewFps,
-        );
-        let auto_baud = iced::widget::Checkbox::new(self.auto_baud)
-            .label(t!("settings.auto_baud"))
-            .on_toggle(ModalAction::SetAutoBaud);
-        let relative = iced::widget::Checkbox::new(self.mouse_mode == MouseMode::Relative)
-            .label(t!("mouse_mode.relative"))
-            .on_toggle(|on| {
-                ModalAction::SetMouseMode(if on {
-                    MouseMode::Relative
-                } else {
-                    MouseMode::Absolute
-                })
-            });
+        use iced::widget::{button, column, text};
         column![
-            text(t!("settings.baud_rate")),
-            baud_pick,
-            text(t!("settings.preview_fps")),
-            fps_pick,
-            auto_baud,
-            text(t!("settings.mouse_mode")),
-            relative,
+            self.connection_fields(),
+            button(text(t!("profile.restore_defaults"))).on_press(ModalAction::RestoreDefaults),
             close_button(),
         ]
         .spacing(8)
@@ -185,34 +178,91 @@ impl ModalState {
     }
 
     fn save_profile_content(&self) -> Element<'_, ModalAction> {
+        use iced::widget::{button, text, text_input};
         let input = text_input("name", &self.save_name).on_input(ModalAction::SaveNameChanged);
+        let name_ok = !self.save_name.trim().is_empty();
+        let save_button = if name_ok {
+            button(text(t!("modal.save"))).on_press(ModalAction::Save)
+        } else {
+            button(text(t!("modal.save")))
+        };
+        let mut content = iced::widget::Column::new().spacing(8);
+        content = content.push(input);
+        if self.confirm_overwrite {
+            content = content.push(text(t!(
+                "profile.overwrite_body",
+                name = self.save_name.trim()
+            )));
+            content = content
+                .push(button(text(t!("profile.overwrite_confirm"))).on_press(ModalAction::Save));
+            content = content
+                .push(button(text(t!("common.cancel"))).on_press(ModalAction::CancelOverwrite));
+        } else {
+            content = content.push(save_button);
+            content = content.push(close_button());
+        }
+        content.into()
+    }
+
+    fn about_content(&self) -> Element<'_, ModalAction> {
+        use iced::widget::{column, text};
         column![
-            input,
-            button(text("Save")).on_press(ModalAction::Save),
+            text(t!("about.title")),
+            text(t!("about.version", commit = env!("GIT_COMMIT"))),
+            text(t!("about.license")),
+            text(t!("about.project_url", url = crate::app::PROJECT_URL)),
             close_button(),
         ]
         .spacing(8)
         .into()
     }
 
-    fn load_profile_content(&self) -> Element<'_, ModalAction> {
-        let mut content = iced::widget::Column::new().spacing(8);
-        if self.load_names.is_empty() {
-            content = content.push(button(text(t!("profile.no_recent").to_string())));
-        } else {
-            for name in &self.load_names {
-                content = content.push(
-                    button(text(name.clone())).on_press(ModalAction::LoadPicked(name.clone())),
-                );
-            }
-        }
-        content.push(close_button()).into()
-    }
+    /// 连接参数表单（设置默认值对话框与连接设置对话框共用，复刻 egui
+    /// `connection_fields_ui`）：波特率/预览 FPS/鼠标模式/相对灵敏度/自动波特率。
+    ///
+    /// iced_aw 的 number_input feature 在本仓库 vendored 版本上无法编译
+    /// （icon 字体 proc macro 读不到 font.ttf），退化为 TextInput + parse/clamp。
+    fn connection_fields(&self) -> iced::widget::Column<'_, ModalAction> {
+        use iced::widget::{Checkbox, column, text, text_input};
 
-    fn about_content(&self) -> Element<'_, ModalAction> {
-        column![text("my_ipkvm iced spike"), close_button()]
-            .spacing(8)
-            .into()
+        let baud =
+            text_input("1200..115200", &self.baud_text).on_input(ModalAction::BaudRateTextChanged);
+        let fps = text_input("1..60", &self.fps_text).on_input(ModalAction::PreviewFpsTextChanged);
+        let sensitivity = text_input("0.1..5.0", &self.sensitivity_text)
+            .on_input(ModalAction::RelativeSensitivityTextChanged);
+        let auto_baud = Checkbox::new(self.auto_baud)
+            .label(t!("settings.auto_baud"))
+            .on_toggle(ModalAction::SetAutoBaud);
+
+        let mouse_labels = vec![
+            t!("mouse_mode.absolute").to_string(),
+            t!("mouse_mode.relative").to_string(),
+        ];
+        let selected_mouse = if self.mouse_mode == MouseMode::Absolute {
+            t!("mouse_mode.absolute").to_string()
+        } else {
+            t!("mouse_mode.relative").to_string()
+        };
+        let mouse = PickList::new(mouse_labels, Some(selected_mouse), |label: String| {
+            ModalAction::SetMouseMode(if label == t!("mouse_mode.absolute") {
+                MouseMode::Absolute
+            } else {
+                MouseMode::Relative
+            })
+        });
+
+        column![
+            text(t!("settings.baud_rate")),
+            baud,
+            text(t!("settings.preview_fps")),
+            fps,
+            text(t!("settings.mouse_mode")),
+            mouse,
+            text(t!("settings.relative_sensitivity")),
+            sensitivity,
+            auto_baud,
+        ]
+        .spacing(8)
     }
 }
 
@@ -225,7 +275,6 @@ fn title_for(kind: ModalKind) -> String {
         ModalKind::Settings => t!("modal.settings_title").to_string(),
         ModalKind::Connection => t!("modal.connection_title").to_string(),
         ModalKind::SaveProfile => t!("modal.save_title").to_string(),
-        ModalKind::LoadProfile => t!("modal.load_title").to_string(),
         ModalKind::About => t!("modal.about_title").to_string(),
     }
 }
