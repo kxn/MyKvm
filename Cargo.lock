@@ -2659,8 +2659,16 @@ dependencies = [
 name = "ipkvm-desktop-iced"
 version = "0.1.0"
 dependencies = [
+ "async-stream",
+ "futures-util",
  "iced",
+ "iced_futures",
  "iced_test",
+ "ipkvm-core",
+ "ipkvm-desktop",
+ "ipkvm-session",
+ "ipkvm-video",
+ "tokio",
 ]
 
 [[package]]
