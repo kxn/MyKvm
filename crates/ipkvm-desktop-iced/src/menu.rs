@@ -44,15 +44,39 @@ pub enum LanguageChoice {
     English,
 }
 
+impl LanguageChoice {
+    pub fn label(self) -> String {
+        match self {
+            LanguageChoice::System => t!("language.system").to_string(),
+            LanguageChoice::Chinese => t!("language.chinese").to_string(),
+            LanguageChoice::English => t!("language.english").to_string(),
+        }
+    }
+}
+
+impl From<LanguageChoice> for crate::locale::AppLanguage {
+    fn from(choice: LanguageChoice) -> Self {
+        match choice {
+            LanguageChoice::System => crate::locale::AppLanguage::System,
+            LanguageChoice::Chinese => crate::locale::AppLanguage::Chinese,
+            LanguageChoice::English => crate::locale::AppLanguage::English,
+        }
+    }
+}
+
 /// 构建完整菜单栏 Element（顶层 4 菜单 + 嵌套子菜单）。
-pub fn menu_bar<'a, R>(recent_profiles: &[&str]) -> iced::Element<'a, MenuAction, iced::Theme, R>
+pub fn menu_bar<'a, R>(
+    recent_profiles: &[&str],
+    paste_busy: bool,
+    language: crate::locale::AppLanguage,
+) -> iced::Element<'a, MenuAction, iced::Theme, R>
 where
     R: iced::advanced::Renderer + iced::advanced::text::Renderer + 'a,
 {
     menu_bar_macro!(
         (root_label(t!("menu.file")), file_menu(recent_profiles)),
-        (root_label(t!("menu.edit")), edit_menu()),
-        (root_label(t!("menu.send")), send_menu()),
+        (root_label(t!("menu.edit")), edit_menu(language)),
+        (root_label(t!("menu.send")), send_menu(paste_busy)),
         (root_label(t!("menu.about")), about_menu()),
     )
     .close_on_item_click_global(true)
@@ -84,7 +108,7 @@ where
     R: iced::advanced::Renderer + iced::advanced::text::Renderer + 'a,
 {
     let items: Vec<Item<'_, MenuAction, iced::Theme, R>> = if recent_profiles.is_empty() {
-        vec![Item::new(text("(none)"))]
+        vec![Item::new(text(t!("profile.no_recent")))]
     } else {
         let mut items: Vec<Item<'_, MenuAction, iced::Theme, R>> = recent_profiles
             .iter()
@@ -120,7 +144,7 @@ where
     )
 }
 
-fn edit_menu<'a, R>() -> Menu<'a, MenuAction, iced::Theme, R>
+fn edit_menu<'a, R>(language: crate::locale::AppLanguage) -> Menu<'a, MenuAction, iced::Theme, R>
 where
     R: iced::advanced::Renderer + iced::advanced::text::Renderer + 'a,
 {
@@ -129,8 +153,9 @@ where
             t!("edit.copy_screenshot"),
             MenuAction::Simple("copy_screenshot")
         )),
+        save_screenshot_item(),
         (separator()),
-        language_item(),
+        language_item(language),
         (item_button(
             t!("edit.settings"),
             MenuAction::OpenModal(ModalKind::Settings)
@@ -139,41 +164,94 @@ where
     .width(240.0)
 }
 
-fn language_item<'a, R>() -> Item<'a, MenuAction, iced::Theme, R>
+fn save_screenshot_item<'a, R>() -> Item<'a, MenuAction, iced::Theme, R>
+where
+    R: iced::advanced::Renderer + iced::advanced::text::Renderer + 'a,
+{
+    #[cfg(windows)]
+    {
+        Item::new(item_button(
+            t!("edit.save_screenshot"),
+            MenuAction::Simple("save_screenshot"),
+        ))
+    }
+    #[cfg(not(windows))]
+    {
+        Item::new(
+            button(text(t!("edit.save_screenshot_unsupported")))
+                .width(Length::Fill)
+                .padding([4, 10])
+                .style(menu_item_style),
+        )
+    }
+}
+
+fn language_item<'a, R>(current: crate::locale::AppLanguage) -> Item<'a, MenuAction, iced::Theme, R>
 where
     R: iced::advanced::Renderer + iced::advanced::text::Renderer + 'a,
 {
     Item::with_menu(
         submenu_label(t!("edit.language")),
         Menu::new(menu_items_macro!(
-            (item_button(
-                t!("language.system"),
-                MenuAction::SetLanguage(LanguageChoice::System)
-            )),
-            (item_button(
-                t!("language.chinese"),
-                MenuAction::SetLanguage(LanguageChoice::Chinese)
-            )),
-            (item_button(
-                t!("language.english"),
-                MenuAction::SetLanguage(LanguageChoice::English)
-            )),
+            (language_option(LanguageChoice::System, current)),
+            (language_option(LanguageChoice::Chinese, current)),
+            (language_option(LanguageChoice::English, current)),
         ))
         .width(240.0),
     )
 }
 
-fn send_menu<'a, R>() -> Menu<'a, MenuAction, iced::Theme, R>
+fn language_option<'a, R>(
+    option: LanguageChoice,
+    current: crate::locale::AppLanguage,
+) -> iced::Element<'a, MenuAction, iced::Theme, R>
+where
+    R: iced::advanced::Renderer + iced::advanced::text::Renderer + 'a,
+{
+    let selected = crate::locale::AppLanguage::from(option) == current;
+    let label = if selected {
+        format!("✓ {}", option.label())
+    } else {
+        option.label()
+    };
+    item_button(label, MenuAction::SetLanguage(option))
+}
+
+fn send_menu<'a, R>(paste_busy: bool) -> Menu<'a, MenuAction, iced::Theme, R>
 where
     R: iced::advanced::Renderer + iced::advanced::text::Renderer + 'a,
 {
     Menu::new(menu_items_macro!(
-        (item_button(t!("send.paste_text"), MenuAction::Simple("paste"))),
+        paste_item(paste_busy),
         (item_button(t!("send.release_all"), MenuAction::Simple("release_all"))),
         (separator()),
         special_keys_item(),
     ))
     .width(240.0)
+}
+
+fn paste_item<'a, R>(paste_busy: bool) -> Item<'a, MenuAction, iced::Theme, R>
+where
+    R: iced::advanced::Renderer + iced::advanced::text::Renderer + 'a,
+{
+    if paste_busy {
+        // 无 on_press 的按钮 = 不可点（对齐 egui add_enabled(false)）。
+        Item::new(
+            button(
+                text(t!("send.paste_text"))
+                    .width(Length::Fill)
+                    .align_y(alignment::Vertical::Center),
+            )
+            .width(Length::Fill)
+            .padding([4, 10])
+            .style(menu_item_style),
+        )
+    } else {
+        Item::new(item_button(
+            t!("send.paste_text"),
+            MenuAction::Simple("paste"),
+        ))
+    }
 }
 
 fn special_keys_item<'a, R>() -> Item<'a, MenuAction, iced::Theme, R>

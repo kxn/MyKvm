@@ -66,7 +66,7 @@ fn edit_menu_language_submenu_translates() {
 
     // zh-CN 下 edit.language 的译文为 "Language"（保留英文），点击展开子菜单。
     hover_item(&mut ui, "Language");
-    assert!(ui.find("跟随系统").is_ok(), "语言子菜单必须显示中文选项");
+    assert!(ui.find("✓ 跟随系统").is_ok(), "默认 System 选中必须带标记");
     assert!(ui.find("中文").is_ok(), "语言子菜单必须显示「中文」");
 }
 
@@ -88,6 +88,8 @@ fn labels_are_single_line_no_newline() {
             "file.recent_more",
             "file.exit",
             "edit.copy_screenshot",
+            "edit.save_screenshot",
+            "edit.save_screenshot_unsupported",
             "edit.language",
             "edit.settings",
             "send.paste_text",
@@ -98,11 +100,17 @@ fn labels_are_single_line_no_newline() {
             "language.chinese",
             "language.english",
             "about.project_home",
+            "dialog.jpeg_filter",
             "modal.settings_title",
             "modal.close",
             "modal.about_title",
             "modal.save_title",
             "modal.connection_title",
+            "message.no_frame_screenshot",
+            "message.screenshot_copied",
+            "message.screenshot_copy_failed",
+            "message.screenshot_saved",
+            "message.screenshot_save_failed",
         ] {
             let label = ipkvm_desktop_iced::translate_key(key);
             assert!(

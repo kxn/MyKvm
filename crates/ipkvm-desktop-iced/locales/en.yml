@@ -15,6 +15,8 @@ file:
 
 edit:
   copy_screenshot: "Copy screenshot"
+  save_screenshot: "Save screenshot as JPEG…"
+  save_screenshot_unsupported: "Save screenshot (file dialog not supported on this platform)"
   language: "Language"
   settings: "Settings…"
 
@@ -136,8 +138,16 @@ message:
   unsupported_key: "Unsupported key"
   clipboard_empty: "Clipboard is empty"
   clipboard_read_failed: "Failed to read clipboard: %{error}"
+  no_frame_screenshot: "No frame available for screenshot"
+  screenshot_copied: "Screenshot copied to clipboard"
+  screenshot_copy_failed: "Screenshot copy failed: %{error}"
+  screenshot_saved: "Screenshot saved to %{path}"
+  screenshot_save_failed: "Screenshot save failed: %{error}"
   keyboard_send_failed: "Keyboard send failed: %{error}"
   pointer_send_failed: "Pointer send failed: %{error}"
+
+dialog:
+  jpeg_filter: "JPEG image"
 
 common:
   not_selected: "Not selected"

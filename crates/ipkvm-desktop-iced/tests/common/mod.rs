@@ -14,17 +14,39 @@ pub const RECENT: [&str; 5] = ["p1", "p2", "p3", "p4", "p5"];
 pub struct MenuHarness;
 
 impl MenuHarness {
-    pub fn view() -> Element<'static, MenuAction> {
-        let bar = menu::menu_bar(&RECENT);
-        let background: Element<'static, MenuAction, iced::Theme, iced::Renderer> =
+    pub fn view_with<'a>(
+        recent: &[&str],
+        paste_busy: bool,
+        language: ipkvm_desktop_iced::locale::AppLanguage,
+    ) -> Element<'a, MenuAction> {
+        let bar = menu::menu_bar(recent, paste_busy, language);
+        let background: Element<'a, MenuAction, iced::Theme, iced::Renderer> =
             button(text("Hit me"))
                 .on_press(MenuAction::Simple("bg"))
                 .into();
         stack![background, bar].into()
     }
 
+    pub fn view() -> Element<'static, MenuAction> {
+        Self::view_with(
+            &RECENT,
+            false,
+            ipkvm_desktop_iced::locale::AppLanguage::System,
+        )
+    }
+
     pub fn ui() -> Simulator<'static, MenuAction> {
         simulator::simulator(Self::view())
+    }
+
+    // 共享 harness 按测试二进制编译，部分二进制只走 ui()，不视为死代码。
+    #[allow(dead_code)]
+    pub fn ui_with(
+        recent: &[&str],
+        paste_busy: bool,
+        language: ipkvm_desktop_iced::locale::AppLanguage,
+    ) -> Simulator<'static, MenuAction> {
+        simulator::simulator(Self::view_with(recent, paste_busy, language))
     }
 
     /// 把光标移到指定位置并注入 CursorMoved。

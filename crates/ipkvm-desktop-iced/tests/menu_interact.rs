@@ -4,7 +4,7 @@
 //! 已知限制：#95 记录——iced_aw 0.14 不支持 Esc 关闭菜单，故原 Esc 用例移除。
 mod common;
 
-use common::MenuHarness;
+use common::{MenuHarness, RECENT};
 use iced_test::Simulator;
 use ipkvm_desktop_iced::menu::MenuAction;
 
@@ -41,6 +41,70 @@ fn edit_menu_can_open() {
     assert!(ui.click("Edit").is_ok(), "点击 Edit 顶层必须成功");
     assert!(ui.find("Language").is_ok(), "Edit 展开后 Language 必须可见");
     assert!(ui.find("Settings…").is_ok(), "Edit 菜单必须含 Settings");
+    #[cfg(windows)]
+    {
+        assert!(
+            ui.find("Save screenshot as JPEG…").is_ok(),
+            "Edit 菜单必须含保存截图"
+        );
+    }
+}
+
+#[test]
+fn paste_busy_disables_paste_item() {
+    let _lock = ipkvm_desktop_iced::I18N_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    rust_i18n::set_locale("en");
+
+    let mut ui = MenuHarness::ui_with(
+        &RECENT,
+        true,
+        ipkvm_desktop_iced::locale::AppLanguage::System,
+    );
+    assert!(ui.click("Send").is_ok(), "点击 Send 顶层必须成功");
+    ui.click("Paste text")
+        .expect("Paste text 必须可定位（禁用态仍渲染）");
+    let messages: Vec<_> = ui.into_messages().collect();
+    assert!(
+        !messages.contains(&MenuAction::Simple("paste")),
+        "paste_busy 时 Paste text 不得发布动作，实际: {messages:?}"
+    );
+}
+
+#[test]
+fn language_menu_shows_selected_marker() {
+    let _lock = ipkvm_desktop_iced::I18N_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    rust_i18n::set_locale("zh-CN");
+
+    let mut ui = MenuHarness::ui_with(
+        &RECENT,
+        false,
+        ipkvm_desktop_iced::locale::AppLanguage::Chinese,
+    );
+    assert!(ui.click("编辑").is_ok(), "点击「编辑」必须成功");
+    hover_item(&mut ui, "Language");
+    assert!(ui.find("✓ 中文").is_ok(), "选中项必须带选中标记");
+    assert!(
+        ui.find("中文").is_err(),
+        "选中项必须带标记（无标记文案不得出现）"
+    );
+}
+
+#[test]
+fn recent_empty_state_uses_i18n() {
+    let _lock = ipkvm_desktop_iced::I18N_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    rust_i18n::set_locale("en");
+
+    let mut ui = MenuHarness::ui_with(&[], false, ipkvm_desktop_iced::locale::AppLanguage::System);
+    assert!(ui.click("File").is_ok(), "点击 File 顶层必须成功");
+    hover_item(&mut ui, "Recent");
+    assert!(ui.find("None yet").is_ok(), "空态必须显示 i18n 文案");
+    assert!(ui.find("(none)").is_err(), "空态不得显示硬编码英文");
 }
 
 #[test]

@@ -14,6 +14,7 @@ pub mod app;
 pub mod clipboard;
 pub mod connect;
 pub mod diag;
+pub mod dialog;
 pub mod frames;
 pub mod input;
 pub mod keymap;
@@ -57,6 +58,8 @@ pub fn translate_key(key: &str) -> String {
         "file.recent_more" => t!("file.recent_more").to_string(),
         "file.exit" => t!("file.exit").to_string(),
         "edit.copy_screenshot" => t!("edit.copy_screenshot").to_string(),
+        "edit.save_screenshot" => t!("edit.save_screenshot").to_string(),
+        "edit.save_screenshot_unsupported" => t!("edit.save_screenshot_unsupported").to_string(),
         "edit.language" => t!("edit.language").to_string(),
         "edit.settings" => t!("edit.settings").to_string(),
         "send.paste_text" => t!("send.paste_text").to_string(),
@@ -70,6 +73,7 @@ pub fn translate_key(key: &str) -> String {
         "language.chinese" => t!("language.chinese").to_string(),
         "language.english" => t!("language.english").to_string(),
         "about.project_home" => t!("about.project_home").to_string(),
+        "dialog.jpeg_filter" => t!("dialog.jpeg_filter").to_string(),
         "modal.settings_title" => t!("modal.settings_title").to_string(),
         "modal.connection_title" => t!("modal.connection_title").to_string(),
         "modal.close" => t!("modal.close").to_string(),
@@ -156,6 +160,15 @@ pub fn translate_key(key: &str) -> String {
         "message.clipboard_read_failed" => {
             t!("message.clipboard_read_failed", error = "x").to_string()
         }
+        "message.no_frame_screenshot" => t!("message.no_frame_screenshot").to_string(),
+        "message.screenshot_copied" => t!("message.screenshot_copied").to_string(),
+        "message.screenshot_copy_failed" => {
+            t!("message.screenshot_copy_failed", error = "x").to_string()
+        }
+        "message.screenshot_saved" => t!("message.screenshot_saved", path = "x").to_string(),
+        "message.screenshot_save_failed" => {
+            t!("message.screenshot_save_failed", error = "x").to_string()
+        }
         "message.keyboard_send_failed" => {
             t!("message.keyboard_send_failed", error = "x").to_string()
         }
@@ -177,6 +190,8 @@ pub const I18N_KEYS: &[&str] = &[
     "file.recent_more",
     "file.exit",
     "edit.copy_screenshot",
+    "edit.save_screenshot",
+    "edit.save_screenshot_unsupported",
     "edit.language",
     "edit.settings",
     "send.paste_text",
@@ -189,6 +204,7 @@ pub const I18N_KEYS: &[&str] = &[
     "language.system",
     "language.chinese",
     "language.english",
+    "dialog.jpeg_filter",
     "modal.settings_title",
     "modal.connection_title",
     "modal.close",
@@ -265,6 +281,11 @@ pub const I18N_KEYS: &[&str] = &[
     "message.unsupported_key",
     "message.clipboard_empty",
     "message.clipboard_read_failed",
+    "message.no_frame_screenshot",
+    "message.screenshot_copied",
+    "message.screenshot_copy_failed",
+    "message.screenshot_saved",
+    "message.screenshot_save_failed",
     "message.keyboard_send_failed",
     "message.pointer_send_failed",
     "common.not_selected",
