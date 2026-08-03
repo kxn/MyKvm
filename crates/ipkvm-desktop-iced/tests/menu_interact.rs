@@ -44,7 +44,7 @@ fn edit_menu_can_open() {
     #[cfg(windows)]
     {
         assert!(
-            ui.find("Save screenshot as JPEG…").is_ok(),
+            ui.find("Save screenshot…").is_ok(),
             "Edit 菜单必须含保存截图"
         );
     }
@@ -319,7 +319,7 @@ fn screenshot_items_disabled_without_frame() {
         );
         assert!(ui.click("Edit").is_ok(), "打开 Edit");
         let save = ui
-            .find("Save screenshot as JPEG…")
+            .find("Save screenshot…")
             .expect("保存截图项必须可定位（禁用态仍渲染）");
         MenuHarness::click_at(&mut ui, MenuHarness::center(save.bounds()));
         let messages: Vec<_> = ui.into_messages().collect();

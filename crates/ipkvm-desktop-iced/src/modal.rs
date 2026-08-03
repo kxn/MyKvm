@@ -132,7 +132,7 @@ impl ModalState {
     }
 
     fn settings_content(&self) -> Element<'_, ModalAction> {
-        use iced::widget::{PickList, column, text};
+        use iced::widget::{PickList, column};
 
         let scale_labels = vec![
             t!("scale_mode.fit_window").to_string(),
@@ -158,7 +158,7 @@ impl ModalState {
 
         column![
             self.connection_fields(),
-            text(t!("settings.scale_mode")),
+            label(t!("settings.scale_mode")),
             scale,
             close_button(),
         ]
@@ -167,10 +167,10 @@ impl ModalState {
     }
 
     fn connection_content(&self) -> Element<'_, ModalAction> {
-        use iced::widget::{button, column, text};
+        use iced::widget::{button, column};
         column![
             self.connection_fields(),
-            button(text(t!("profile.restore_defaults"))).on_press(ModalAction::RestoreDefaults),
+            button(label(t!("profile.restore_defaults"))).on_press(ModalAction::RestoreDefaults),
             close_button(),
         ]
         .spacing(8)
@@ -178,25 +178,25 @@ impl ModalState {
     }
 
     fn save_profile_content(&self) -> Element<'_, ModalAction> {
-        use iced::widget::{button, text, text_input};
+        use iced::widget::{button, text_input};
         let input = text_input("name", &self.save_name).on_input(ModalAction::SaveNameChanged);
         let name_ok = !self.save_name.trim().is_empty();
         let save_button = if name_ok {
-            button(text(t!("modal.save"))).on_press(ModalAction::Save)
+            button(label(t!("modal.save"))).on_press(ModalAction::Save)
         } else {
-            button(text(t!("modal.save")))
+            button(label(t!("modal.save")))
         };
         let mut content = iced::widget::Column::new().spacing(8);
         content = content.push(input);
         if self.confirm_overwrite {
-            content = content.push(text(t!(
+            content = content.push(label(t!(
                 "profile.overwrite_body",
                 name = self.save_name.trim()
             )));
             content = content
-                .push(button(text(t!("profile.overwrite_confirm"))).on_press(ModalAction::Save));
+                .push(button(label(t!("profile.overwrite_confirm"))).on_press(ModalAction::Save));
             content = content
-                .push(button(text(t!("common.cancel"))).on_press(ModalAction::CancelOverwrite));
+                .push(button(label(t!("common.cancel"))).on_press(ModalAction::CancelOverwrite));
         } else {
             content = content.push(save_button);
             content = content.push(close_button());
@@ -205,12 +205,12 @@ impl ModalState {
     }
 
     fn about_content(&self) -> Element<'_, ModalAction> {
-        use iced::widget::{column, text};
+        use iced::widget::column;
         column![
-            text(t!("about.title")),
-            text(t!("about.version", commit = env!("GIT_COMMIT"))),
-            text(t!("about.license")),
-            text(t!("about.project_url", url = crate::app::PROJECT_URL)),
+            label(t!("about.title")),
+            label(t!("about.version", commit = env!("GIT_COMMIT"))),
+            label(t!("about.license")),
+            label(t!("about.project_url", url = crate::app::PROJECT_URL)),
             close_button(),
         ]
         .spacing(8)
@@ -223,7 +223,7 @@ impl ModalState {
     /// iced_aw 的 number_input feature 在本仓库 vendored 版本上无法编译
     /// （icon 字体 proc macro 读不到 font.ttf），退化为 TextInput + parse/clamp。
     fn connection_fields(&self) -> iced::widget::Column<'_, ModalAction> {
-        use iced::widget::{Checkbox, column, text, text_input};
+        use iced::widget::{Checkbox, column, text_input};
 
         let baud =
             text_input("1200..115200", &self.baud_text).on_input(ModalAction::BaudRateTextChanged);
@@ -252,14 +252,14 @@ impl ModalState {
         });
 
         column![
-            text(t!("settings.baud_rate")),
+            label(t!("settings.baud_rate")),
             baud,
             auto_baud,
-            text(t!("settings.preview_fps")),
+            label(t!("settings.preview_fps")),
             fps,
-            text(t!("settings.mouse_mode")),
+            label(t!("settings.mouse_mode")),
             mouse,
-            text(t!("settings.relative_sensitivity")),
+            label(t!("settings.relative_sensitivity")),
             sensitivity,
         ]
         .spacing(8)
@@ -267,7 +267,7 @@ impl ModalState {
 }
 
 fn close_button<'a>() -> iced::widget::Button<'a, ModalAction> {
-    button(text(t!("modal.close").to_string())).on_press(ModalAction::Close)
+    button(label(t!("modal.close").to_string())).on_press(ModalAction::Close)
 }
 
 fn title_for(kind: ModalKind) -> String {
@@ -311,7 +311,7 @@ fn transparent_button(theme: &iced::Theme, status: Status) -> button::Style {
 
 /// 模态卡片：标题 + 内容，居中白色背景。
 fn modal_card<'a>(title: String, content: Element<'a, ModalAction>) -> Element<'a, ModalAction> {
-    let card = column![text(title).size(20), content]
+    let card = column![label(title).size(20), content]
         .spacing(12)
         .padding(20);
     container(card)
@@ -329,6 +329,11 @@ fn modal_card<'a>(title: String, content: Element<'a, ModalAction>) -> Element<'
             ..Default::default()
         })
         .into()
+}
+
+/// 模态内文本：按当前语言选择字体（语言切换后重绘时生效）。
+fn label<'a>(s: impl Into<String>) -> iced::widget::Text<'a> {
+    text(s.into()).font(crate::fonts::ui_font())
 }
 
 /// 包装层：把 Esc 按键转成消息并捕获（模态打开时背景收不到键盘事件）。
