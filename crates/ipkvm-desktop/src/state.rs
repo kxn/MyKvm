@@ -63,31 +63,6 @@ impl Default for VideoScaleMode {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct AdvancedSettings {
-    pub baud_rate: u32,
-    pub mouse_mode: ipkvm_core::MouseMode,
-    pub preview_fps: u64,
-    pub scale_mode: VideoScaleMode,
-    pub relative_sensitivity: f32,
-    pub auto_baud: bool,
-}
-
-impl Default for AdvancedSettings {
-    fn default() -> Self {
-        Self {
-            baud_rate: ipkvm_core::DEFAULT_BAUD_RATE,
-            // BIOS/启动菜单把绝对 HID 固定映射到 1024×768，绝对模式无法覆盖
-            // 全屏；默认相对模式保证开箱可用，进系统后 Ctrl+Alt+M 切绝对。
-            mouse_mode: ipkvm_core::MouseMode::Relative,
-            preview_fps: 30,
-            scale_mode: VideoScaleMode::FitWindow,
-            relative_sensitivity: 1.0,
-            auto_baud: true,
-        }
-    }
-}
-
 #[derive(Clone, Debug, Default)]
 pub struct DeviceSelectionState {
     pub video_devices: Vec<DeviceOption>,
@@ -96,7 +71,6 @@ pub struct DeviceSelectionState {
     pub selected_control_id: Option<String>,
     pub video_status: VideoProbeStatus,
     pub control_status: ControlProbeStatus,
-    pub advanced: AdvancedSettings,
 }
 
 impl DeviceSelectionState {
@@ -136,7 +110,6 @@ impl DeviceSelectionState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ipkvm_core::MouseMode;
 
     fn option(id: &str, label: &str) -> DeviceOption {
         DeviceOption {
@@ -181,7 +154,6 @@ mod tests {
                 version: 0x31,
                 usb_enumerated: true,
             }),
-            ..DeviceSelectionState::default()
         };
 
         state.refresh_devices(Vec::new(), Vec::new());
@@ -204,13 +176,5 @@ mod tests {
         state.mark_control_offline();
 
         assert_eq!(state.control_status, ControlProbeStatus::Disconnected);
-    }
-
-    #[test]
-    fn advanced_defaults_use_relative_mouse_and_unity_sensitivity() {
-        let advanced = AdvancedSettings::default();
-        assert_eq!(advanced.mouse_mode, MouseMode::Relative);
-        assert_eq!(advanced.relative_sensitivity, 1.0);
-        assert!(advanced.auto_baud);
     }
 }

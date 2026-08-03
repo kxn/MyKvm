@@ -3,25 +3,53 @@ _version: 1
 common:
   not_selected: "Not selected"
   close: "Close"
+  cancel: "Cancel"
 
 menu:
-  control: "Control"
-  device: "Device"
-  reselect_device: "Reselect device"
+  file: "File"
+  edit: "Edit"
+  send: "Send"
+  about: "About"
+  reselect_device: "Reselect device…"
   stop_connection: "Stop connection"
-  advanced: "Advanced settings…"
-  paste_text: "Paste text"
-  release_keys: "Release all keys"
-  copy_screenshot: "Copy screenshot to clipboard"
+
+file:
+  load_profile: "Load connection profile…"
+  load_profile_unsupported: "Load profile (file dialog not supported on this platform)"
+  recent: "Recent"
+  recent_more: "More…"
+  exit: "Exit"
+
+edit:
+  copy_screenshot: "Copy screenshot"
   save_screenshot: "Save screenshot as JPEG…"
   save_screenshot_unsupported: "Save screenshot (file dialog not supported on this platform)"
-  send_special_keys: "Send special keys…"
+  language: "Language"
+  settings: "Settings…"
+
+send:
+  paste_text: "Paste text"
+  release_all: "Release all keys/mouse buttons"
+  special_keys: "Send special keys"
+
+special_keys:
+  ctrl_alt_del: "Ctrl+Alt+Del"
+  win: "Win"
+  print_screen: "PrintScreen"
+  alt_tab: "Alt+Tab"
+
+about:
+  about: "About…"
+  project_home: "Project home"
+  title: "About my_ipkvm"
+  version: "Version: %{commit}"
+  license: "License: MIT"
+  project_url: "Project: %{url}"
 
 device:
   title: "Select device"
   video: "Video device"
   control: "Control device (CH9329)"
-  advanced: "Advanced"
   refresh: "Refresh detection"
   connect: "Connect"
   preview: "Video preview"
@@ -31,23 +59,34 @@ preview:
   no_signal: "No signal"
   open_failed: "Open failed"
 
-special_keys:
-  title: "Send special keys"
-  hint: "Other keys can be sent directly from the keyboard."
-  ctrl_alt_del: "Ctrl+Alt+Del"
-  esc: "Esc"
+profile:
+  select: "Saved connections"
+  save: "Save current options…"
+  connection_settings: "Connection settings…"
+  save_title: "Save connection profile"
+  name_label: "Name"
+  save_button: "Save"
+  saved: "Profile \"%{name}\" saved"
+  save_failed: "Failed to save profile: %{error}"
+  load_failed: "Failed to load profile: %{error}"
+  overwrite_body: "\"%{name}\" already exists. Overwrite?"
+  overwrite_confirm: "Overwrite"
+  device_missing: "Video device not found"
+  control_missing: "Control device not found"
+  no_recent: "None yet"
+  restore_defaults: "Restore defaults"
 
-advanced:
-  title: "Advanced settings"
+connection_settings:
+  title: "Connection settings"
 
 settings:
+  title: "Settings"
   baud_rate: "Baud rate"
   auto_baud: "Auto-detect baud rate on connect"
   preview_fps: "Preview FPS"
   mouse_mode: "Mouse mode"
   relative_sensitivity: "Relative sensitivity"
   scale_mode: "Scaling"
-  language: "Language"
 
 language:
   system: "Follow system"

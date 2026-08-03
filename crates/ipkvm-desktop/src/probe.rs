@@ -39,6 +39,7 @@ pub trait ProbeBackend {
 pub fn refresh_detection(
     state: &mut DeviceSelectionState,
     backend: &mut impl ProbeBackend,
+    baud_rate: u32,
     timeout: Duration,
 ) -> Result<(), ProbeError> {
     let video = backend.list_video_devices()?;
@@ -46,7 +47,7 @@ pub fn refresh_detection(
     state.refresh_devices(video, control);
 
     if let Some(device_id) = state.selected_control_id.clone() {
-        state.control_status = backend.probe_control(&device_id, state.advanced.baud_rate, timeout);
+        state.control_status = backend.probe_control(&device_id, baud_rate, timeout);
     }
     Ok(())
 }
@@ -252,7 +253,7 @@ mod tests {
             ..DeviceSelectionState::default()
         };
 
-        refresh_detection(&mut state, &mut backend, Duration::from_millis(10)).unwrap();
+        refresh_detection(&mut state, &mut backend, 9_600, Duration::from_millis(10)).unwrap();
 
         assert_eq!(backend.control_calls, 1);
         assert!(matches!(state.video_status, VideoProbeStatus::Ready(_)));
@@ -271,7 +272,7 @@ mod tests {
             ..DeviceSelectionState::default()
         };
 
-        let result = refresh_detection(&mut state, &mut backend, Duration::from_millis(10));
+        let result = refresh_detection(&mut state, &mut backend, 9_600, Duration::from_millis(10));
 
         assert!(result.is_err());
         assert_eq!(state.video_devices.len(), 1);

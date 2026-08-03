@@ -17,6 +17,8 @@ pub const XK_DELETE: u32 = 0xffff;
 pub const XK_SHIFT_L: u32 = 0xffe1;
 pub const XK_CONTROL_L: u32 = 0xffe3;
 pub const XK_ALT_L: u32 = 0xffe9;
+pub const XK_SUPER_L: u32 = 0xffeb;
+pub const XK_PRINT: u32 = 0xff61;
 
 const XK_SPACE: u32 = 0x20;
 const XK_F1: u32 = 0xffbe;
@@ -33,14 +35,18 @@ pub enum KeyAction {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SpecialKey {
     CtrlAltDel,
-    Escape,
+    Win,
+    PrintScreen,
+    AltTab,
 }
 
 fn press(keysym: u32) -> Vec<KeyAction> {
     vec![KeyAction::Down(keysym), KeyAction::Up(keysym)]
 }
 
-/// 特殊键序列：Ctrl+Alt+Del 按下修饰键后按 Delete、再逆序释放；其余单键按下+释放。
+/// 特殊键序列：本地 OS 会拦截、无法从键盘直发的组合。
+/// Ctrl+Alt+Del 按下修饰键后按 Delete 再逆序释放；Win/PrintScreen 单键；
+/// Alt+Tab 按下 Alt 后按 Tab 再逆序释放。
 pub fn special_key_sequence(key: SpecialKey) -> Vec<KeyAction> {
     match key {
         SpecialKey::CtrlAltDel => vec![
@@ -51,7 +57,14 @@ pub fn special_key_sequence(key: SpecialKey) -> Vec<KeyAction> {
             KeyAction::Up(XK_ALT_L),
             KeyAction::Up(XK_CONTROL_L),
         ],
-        SpecialKey::Escape => press(XK_ESCAPE),
+        SpecialKey::Win => press(XK_SUPER_L),
+        SpecialKey::PrintScreen => press(XK_PRINT),
+        SpecialKey::AltTab => vec![
+            KeyAction::Down(XK_ALT_L),
+            KeyAction::Down(XK_TAB),
+            KeyAction::Up(XK_TAB),
+            KeyAction::Up(XK_ALT_L),
+        ],
     }
 }
 
@@ -251,6 +264,31 @@ mod tests {
                 KeyAction::Up(XK_DELETE),
                 KeyAction::Up(XK_ALT_L),
                 KeyAction::Up(XK_CONTROL_L),
+            ]
+        );
+    }
+
+    #[test]
+    fn win_and_print_screen_are_single_press_release() {
+        assert_eq!(
+            special_key_sequence(SpecialKey::Win),
+            vec![KeyAction::Down(XK_SUPER_L), KeyAction::Up(XK_SUPER_L)]
+        );
+        assert_eq!(
+            special_key_sequence(SpecialKey::PrintScreen),
+            vec![KeyAction::Down(XK_PRINT), KeyAction::Up(XK_PRINT)]
+        );
+    }
+
+    #[test]
+    fn alt_tab_holds_alt_while_tapping_tab() {
+        assert_eq!(
+            special_key_sequence(SpecialKey::AltTab),
+            vec![
+                KeyAction::Down(XK_ALT_L),
+                KeyAction::Down(XK_TAB),
+                KeyAction::Up(XK_TAB),
+                KeyAction::Up(XK_ALT_L),
             ]
         );
     }
