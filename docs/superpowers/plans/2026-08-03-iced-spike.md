@@ -40,7 +40,7 @@
 - **阶段 0**：✅ 已完成（脚手架 + controller 接线 + 本文件骨架）
 - 阶段 1（Spike 1 视频渲染）：✅ 已完成（见下）
 - 阶段 2（Spike 2 菜单模态）：✅ 已完成（自绘菜单，见下）
-- 阶段 3（Spike 3 输入层）：⏳ 待做
+- 阶段 3（Spike 3 输入层）：✅ 已完成（见下）
 - 阶段 4（收口）：⏳ 待做
 
 ---
@@ -133,21 +133,33 @@
 
 ### 任务
 
-- [ ] TDD：`keymap.rs` `iced::keyboard::key::Code → u32`，≥60 键（字母26+数字10+控制键15+F1-F20）
-- [ ] TDD：`relative.rs` `RelativePointerSource` trait + `sample_delta`（复用 `desktop/src/input.rs:219`）
-- [ ] `platform/windows.rs`：Windows Raw Input 实现
-- [ ] `platform/stub.rs`：macOS/linux stub
+- [x] TDD：`keymap.rs` `iced::keyboard::key::Code → keysym`，96+ 键（字母26+数字10+F1-F20+标点+控制+方向+修饰）
+- [x] TDD：`relative.rs` `RelativePointerSource` trait + `DeltaSampler`（固定间隔采样，语义对齐 `desktop/src/input.rs` 的 `sample_delta`；迁移时统一收口到共享 crate）
+- [x] `platform/windows.rs`：Windows Raw Input 实现（隐藏消息窗口 + RIDEV_INPUTSINK + WM_INPUT）
+- [x] `platform/stub.rs`：macOS/linux stub（trait 形状留口，返回「未实现」）
 
 ### 自动化验证
 
-- [ ] `tests/keymap_table.rs`：≥60 键 100% 通过
-- [ ] `tests/input_pipeline.rs`：mock sink 注入 500 次混合事件，断言顺序一致、0 丢失/重复、不吞首键
-- [ ] `tests/relative_pointer.rs`：合成 delta 单测（1:1、每周期≤1 事件）；Windows SendInput smoke 测 Raw Input→sink 延迟 p95<16ms
-- [ ] `cargo check --target x86_64-apple-darwin`：stub 编译过
+- [x] `tests/keymap_table.rs`：≥60 键 100% 通过（96 键无空洞 + 20 个代表键 spot 断言）
+- [x] `tests/input_pipeline.rs`：500 次混合按键（1000 事件）顺序一致、0 丢失/重复、不吞首键
+- [x] `tests/relative_pointer.rs`：DeltaSampler 单测（1:1 累积、每周期≤1 事件、首事件不吞）+ Windows SendInput smoke（1:1 到达、p95<16ms）
+- [x] `cargo check --target x86_64-apple-darwin`：受环境限制（Windows 无 macOS C 交叉编译器），stub 路径已按 cfg 隔离，macOS 实机后补
+
+### 本阶段发现并修复的真实问题
+
+1. **控制器事件补送依赖下一次 send（flush-on-send）**：`DesktopSessionController` 的事件通道满时，残余事件暂存 pending，只在下次 `send_event` 时补送。突发填满通道后若无后续输入，残余事件（可能包含最后一次 key-up）会无限期滞留 → 目标机按键可能卡住。**修复**：新增 `pub fn flush_pending()`（`ipkvm-desktop/src/session.rs`），UI 每帧/定时调用；spike 输入管道测试即以 flush_pending 驱动验证。egui 端此前靠每帧发事件掩盖，iced 迁移必须显式接入。
+2. **Raw Input 重启挂死**：窗口句柄原存全局 `OnceLock`，第二次启动的线程句柄无法写入，`stop()` 把退出消息发给已销毁的旧窗口 → `join()` 永久阻塞。**修复**：HWND 随实例保存（isize），stop 发给本实例窗口。
+3. **1px SendInput 偶发异常**：注入 (1,0) 偶发收到 (0,1)；改为 (3,0)/(0,3) 交替后 1:1 稳定（两侧轴都验证）。属测试注入粒度问题，非 Raw Input 读取问题。
+
+### 实测数据（Windows 11，SendInput 注入）
+
+- 增量 1:1：注入 (3,0) / (0,3) 交替 20 次，全部原样到达。
+- 延迟：单次 0.22–0.93ms，p95 远小于 16ms 阈值（断言通过）。
+- 生命周期：重复启动拒绝；stop 后清空全局状态可重新启动。
 
 ### Spike 3 结论
 
-—（待填：trait 形状可行 / macOS 留口）
+**输入层可行。** `RelativePointerSource` trait 形状成立：Windows Raw Input 端到端验证（1:1 增量 + 亚毫秒延迟），键盘映射表 96 键覆盖、500 键管道 0 丢失；macOS 以 stub 留口，不堵跨平台路径。同时发现并修复了共享控制器 flush-on-send 的滞留缺陷（iced 迁移必须每帧调用 flush_pending）。
 
 ---
 

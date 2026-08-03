@@ -23,6 +23,8 @@ use crate::frames::{FrameUpdate, frame_subscription};
 pub struct RecordingSink {
     pub key_batches: Arc<std::sync::Mutex<usize>>,
     pub pointer_batches: Arc<std::sync::Mutex<usize>>,
+    /// 按到达顺序记录的键事件（down, HID usage）。
+    pub key_events: Arc<std::sync::Mutex<Vec<(bool, u8)>>>,
 }
 
 impl InputSink for RecordingSink {
@@ -30,8 +32,15 @@ impl InputSink for RecordingSink {
         Ok(())
     }
 
-    fn handle_key_batch(&mut self, _events: &[KeyEvent]) -> Result<(), InputError> {
+    fn handle_key_batch(&mut self, events: &[KeyEvent]) -> Result<(), InputError> {
         *self.key_batches.lock().unwrap() += 1;
+        let mut recorded = self.key_events.lock().unwrap();
+        for event in events {
+            match event {
+                KeyEvent::Down { usage } => recorded.push((true, usage.get())),
+                KeyEvent::Up { usage } => recorded.push((false, usage.get())),
+            }
+        }
         Ok(())
     }
 

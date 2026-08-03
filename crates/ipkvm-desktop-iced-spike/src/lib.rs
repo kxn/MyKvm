@@ -9,6 +9,7 @@ pub mod frames;
 pub mod keymap;
 pub mod menu;
 pub mod modal;
+pub mod platform;
 pub mod relative;
 pub mod scale;
 

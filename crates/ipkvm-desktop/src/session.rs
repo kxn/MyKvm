@@ -291,6 +291,26 @@ where
         notices
     }
 
+    /// 补送暂存事件（事件通道满时残留的输入）。
+    ///
+    /// 根因：`send_event` 只在「下一次发送」时补送 pending，突发填满通道后，
+    /// 若无后续输入，残余事件（可能包含最后一次 key-up）会无限期滞留。
+    /// UI 层（egui/iced）应在每帧或固定间隔调用本方法，保证补送不依赖下一次输入。
+    pub fn flush_pending(&mut self) -> Result<(), DesktopSessionError> {
+        let mut pending = self
+            .pending_events
+            .lock()
+            .map_err(|_| DesktopSessionError::Input("pending event queue poisoned".into()))?;
+        if pending.is_empty() {
+            return Ok(());
+        }
+        let Some(tx) = &self.event_tx else {
+            pending.clear();
+            return Err(DesktopSessionError::NoEventSender);
+        };
+        flush_pending_events(&mut pending, |next| tx.try_send(next))
+    }
+
     fn send_event(&self, event: RfbServerEvent) -> Result<(), DesktopSessionError> {
         let mut pending = self
             .pending_events
