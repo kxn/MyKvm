@@ -1,21 +1,24 @@
 mod app;
 mod clipboard;
-mod config;
+pub mod config;
 mod fonts;
 mod frame;
 mod input;
 mod locale;
 mod menus;
-mod probe;
+pub mod probe;
 mod render;
 mod session;
-mod state;
+pub mod state;
 
 rust_i18n::i18n!("locales", fallback = "en");
 
 // 桌面会话控制器（及其依赖类型）对非 egui 前端复用：iced spike 等通过它驱动
 // 同一套 SessionManager/输入泵，仅替换前端重绘唤醒机制（见 subscribe_frames）。
-pub use session::{ConnectRequest, DesktopSessionController, DesktopSessionError, SessionParts};
+pub use session::{
+    ConnectRequest, DesktopSessionController, DesktopSessionError, ProductionDesktopSessionController,
+    ProductionSessionFactory, SessionParts,
+};
 
 use thiserror::Error;
 
