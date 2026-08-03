@@ -61,6 +61,8 @@ fn paste_busy_disables_paste_item() {
         &RECENT,
         true,
         ipkvm_desktop_iced::locale::AppLanguage::System,
+        true,
+        true,
     );
     assert!(ui.click("Send").is_ok(), "点击 Send 顶层必须成功");
     ui.click("Paste text")
@@ -83,6 +85,8 @@ fn language_menu_shows_selected_marker() {
         &RECENT,
         false,
         ipkvm_desktop_iced::locale::AppLanguage::Chinese,
+        true,
+        true,
     );
     assert!(ui.click("编辑").is_ok(), "点击「编辑」必须成功");
     hover_item(&mut ui, "Language");
@@ -100,7 +104,13 @@ fn recent_empty_state_uses_i18n() {
         .unwrap_or_else(|p| p.into_inner());
     rust_i18n::set_locale("en");
 
-    let mut ui = MenuHarness::ui_with(&[], false, ipkvm_desktop_iced::locale::AppLanguage::System);
+    let mut ui = MenuHarness::ui_with(
+        &[],
+        false,
+        ipkvm_desktop_iced::locale::AppLanguage::System,
+        true,
+        true,
+    );
     assert!(ui.click("File").is_ok(), "点击 File 顶层必须成功");
     hover_item(&mut ui, "Recent");
     assert!(ui.find("None yet").is_ok(), "空态必须显示 i18n 文案");
@@ -220,5 +230,128 @@ fn outside_click_closes_menu_without_reaching_background() {
     assert!(
         !messages.contains(&MenuAction::Simple("bg")),
         "菜单打开时背景不得收到点击，实际: {messages:?}"
+    );
+}
+
+#[test]
+fn disconnect_item_disabled_when_offline() {
+    let _lock = ipkvm_desktop_iced::I18N_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    rust_i18n::set_locale("en");
+
+    let mut ui = MenuHarness::ui_with(
+        &RECENT,
+        false,
+        ipkvm_desktop_iced::locale::AppLanguage::System,
+        false,
+        true,
+    );
+    assert!(ui.click("File").is_ok(), "打开 File");
+    let disconnect = ui
+        .find("Disconnect")
+        .expect("Disconnect 必须可定位（禁用态仍渲染）");
+    MenuHarness::click_at(&mut ui, MenuHarness::center(disconnect.bounds()));
+    let messages: Vec<_> = ui.into_messages().collect();
+    assert!(
+        !messages.contains(&MenuAction::Disconnect),
+        "离线时点击断开连接不得发布动作，实际: {messages:?}"
+    );
+}
+
+#[test]
+fn disconnect_item_enabled_when_online() {
+    let _lock = ipkvm_desktop_iced::I18N_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    rust_i18n::set_locale("en");
+
+    let mut ui = MenuHarness::ui_with(
+        &RECENT,
+        false,
+        ipkvm_desktop_iced::locale::AppLanguage::System,
+        true,
+        true,
+    );
+    assert!(ui.click("File").is_ok(), "打开 File");
+    let disconnect = ui.find("Disconnect").expect("Disconnect 必须可定位");
+    MenuHarness::click_at(&mut ui, MenuHarness::center(disconnect.bounds()));
+    let messages: Vec<_> = ui.into_messages().collect();
+    assert!(
+        messages.contains(&MenuAction::Disconnect),
+        "在线时点击断开连接必须发布动作，实际: {messages:?}"
+    );
+}
+
+#[test]
+fn screenshot_items_disabled_without_frame() {
+    let _lock = ipkvm_desktop_iced::I18N_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    rust_i18n::set_locale("en");
+
+    let mut ui = MenuHarness::ui_with(
+        &RECENT,
+        false,
+        ipkvm_desktop_iced::locale::AppLanguage::System,
+        true,
+        false,
+    );
+    assert!(ui.click("Edit").is_ok(), "打开 Edit");
+    let copy = ui
+        .find("Copy screenshot")
+        .expect("Copy screenshot 必须可定位（禁用态仍渲染）");
+    MenuHarness::click_at(&mut ui, MenuHarness::center(copy.bounds()));
+    let messages: Vec<_> = ui.into_messages().collect();
+    assert!(
+        !messages.contains(&MenuAction::Simple("copy_screenshot")),
+        "无帧时 Copy screenshot 不得发布动作，实际: {messages:?}"
+    );
+
+    #[cfg(windows)]
+    {
+        let mut ui = MenuHarness::ui_with(
+            &RECENT,
+            false,
+            ipkvm_desktop_iced::locale::AppLanguage::System,
+            true,
+            false,
+        );
+        assert!(ui.click("Edit").is_ok(), "打开 Edit");
+        let save = ui
+            .find("Save screenshot as JPEG…")
+            .expect("保存截图项必须可定位（禁用态仍渲染）");
+        MenuHarness::click_at(&mut ui, MenuHarness::center(save.bounds()));
+        let messages: Vec<_> = ui.into_messages().collect();
+        assert!(
+            !messages.contains(&MenuAction::Simple("save_screenshot")),
+            "无帧时保存截图不得发布动作，实际: {messages:?}"
+        );
+    }
+}
+
+#[test]
+fn screenshot_items_enabled_with_frame() {
+    let _lock = ipkvm_desktop_iced::I18N_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    rust_i18n::set_locale("en");
+
+    let mut ui = MenuHarness::ui_with(
+        &RECENT,
+        false,
+        ipkvm_desktop_iced::locale::AppLanguage::System,
+        true,
+        true,
+    );
+    assert!(ui.click("Edit").is_ok(), "打开 Edit");
+    let copy = ui
+        .find("Copy screenshot")
+        .expect("Copy screenshot 必须可定位");
+    MenuHarness::click_at(&mut ui, MenuHarness::center(copy.bounds()));
+    let messages: Vec<_> = ui.into_messages().collect();
+    assert!(
+        messages.contains(&MenuAction::Simple("copy_screenshot")),
+        "有帧时点击 Copy screenshot 必须发布动作，实际: {messages:?}"
     );
 }
