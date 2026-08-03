@@ -1,5 +1,6 @@
 mod app;
 mod clipboard;
+mod config;
 mod fonts;
 mod frame;
 mod input;

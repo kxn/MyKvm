@@ -3,25 +3,53 @@ _version: 1
 common:
   not_selected: 未选择
   close: 关闭
+  cancel: 取消
 
 menu:
-  control: 控制
-  device: 设备
-  reselect_device: 重新选择设备
+  file: 文件
+  edit: 编辑
+  send: 发送
+  about: 关于
+  reselect_device: 重新选择设备…
   stop_connection: 停止连接
-  advanced: 高级设置…
-  paste_text: 粘贴文本
-  release_keys: 释放所有按键
-  copy_screenshot: 截图复制到剪贴板
+
+file:
+  load_profile: 加载连接 profile…
+  load_profile_unsupported: 加载 profile（当前平台暂不支持文件对话框）
+  recent: 最近使用
+  recent_more: 更多…
+  exit: 退出
+
+edit:
+  copy_screenshot: 截图复制
   save_screenshot: 截图保存为 JPEG…
   save_screenshot_unsupported: 截图保存（当前平台暂不支持保存对话框）
-  send_special_keys: 发送特殊键…
+  language: Language
+  settings: 设置…
+
+send:
+  paste_text: 粘贴文本
+  release_all: 释放所有按键/鼠标
+  special_keys: 发送特殊键
+
+special_keys:
+  ctrl_alt_del: Ctrl+Alt+Del
+  win: Win
+  print_screen: PrintScreen
+  alt_tab: Alt+Tab
+
+about:
+  about: 关于…
+  project_home: 项目主页
+  title: 关于 my_ipkvm
+  version: 版本：%{commit}
+  license: 许可证：MIT
+  project_url: 项目地址：%{url}
 
 device:
   title: 选择设备
   video: 视频设备
   control: 控制设备（CH9329）
-  advanced: 高级
   refresh: 刷新检测
   connect: 连接
   preview: 视频预览
@@ -31,23 +59,34 @@ preview:
   no_signal: 无信号
   open_failed: 打开失败
 
-special_keys:
-  title: 发送特殊键
-  hint: 其余按键可直接用键盘发送。
-  ctrl_alt_del: Ctrl+Alt+Del
-  esc: Esc
+profile:
+  select: 已保存连接
+  save: 保存当前选项…
+  connection_settings: 连接设置…
+  save_title: 保存连接 profile
+  name_label: 名称
+  save_button: 保存
+  saved: 已保存 profile“%{name}”
+  save_failed: 保存 profile 失败：%{error}
+  load_failed: 加载 profile 失败：%{error}
+  overwrite_body: “%{name}”已存在，是否覆盖？
+  overwrite_confirm: 覆盖
+  device_missing: 视频设备未找到
+  control_missing: 控制设备未找到
+  no_recent: 暂无
+  restore_defaults: 恢复默认
 
-advanced:
-  title: 高级设置
+connection_settings:
+  title: 连接设置
 
 settings:
+  title: 设置
   baud_rate: 波特率
   auto_baud: 连接时自动检测波特率
   preview_fps: 预览帧率
   mouse_mode: 鼠标模式
   relative_sensitivity: 相对灵敏度
   scale_mode: 缩放
-  language: 语言
 
 language:
   system: 跟随系统

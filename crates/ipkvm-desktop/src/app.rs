@@ -8,6 +8,7 @@ use ipkvm_video::FrameSource;
 use rust_i18n::t;
 
 use crate::clipboard::{ClipboardService, save_jpeg};
+use crate::config::{ConnectionSettings, DeviceRef, ManualSnapshot, Profile, ProfileStore};
 use crate::frame::bgra_to_rgba;
 use crate::input::{
     KeyAction, SpecialKey, egui_key_to_keysym, modifier_diff, pointer_active, pointer_button_mask,
@@ -36,6 +37,8 @@ const LETTERBOX_COLOR: egui::Color32 = egui::Color32::from_rgb(24, 32, 48);
 const VIDEO_BORDER_COLOR: egui::Color32 = egui::Color32::from_gray(110);
 /// 窗口图标：由 scripts/generate_icon.py 生成的 32×32 原始 RGBA。
 const WINDOW_ICON: &[u8] = include_bytes!("../assets/icon-32.rgba");
+/// 项目主页（实际仓库为内网 Gitea）。
+const PROJECT_URL: &str = "http://10.10.10.5:3000/kxn/my_ipkvm";
 
 pub fn run() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
@@ -63,6 +66,15 @@ struct DesktopApp {
     selection: DeviceSelectionState,
     probe: ProductionProbeBackend,
     session: ProductionDesktopSessionController,
+    store: ProfileStore,
+    /// 菜单“设置…”里的连接参数默认值（新会话/恢复默认时使用）。
+    default_connection: ConnectionSettings,
+    /// 主页“连接设置”的连接级副本：启动时取默认/上次手动值，可被 profile 覆盖。
+    connection: ConnectionSettings,
+    /// 本地视图偏好（不进 profile）。
+    scale_mode: VideoScaleMode,
+    /// 当前加载的 profile 名（用于连接成功时记录最近使用；手动改动后清空）。
+    active_profile: Option<String>,
     texture: Option<egui::TextureHandle>,
     latest_frame: Option<crate::frame::RgbaFrame>,
     frame_size: Option<FrameSize>,
@@ -84,8 +96,12 @@ struct DesktopApp {
     status_message: Option<String>,
     language: AppLanguage,
     showing_device_dialog: bool,
-    show_special_keys: bool,
-    show_advanced: bool,
+    show_settings: bool,
+    show_connection_settings: bool,
+    show_save_profile: bool,
+    save_profile_name: String,
+    save_profile_confirm_overwrite: bool,
+    show_about: bool,
     preview_source: Option<Arc<dyn FrameSource>>,
     preview_texture: Option<egui::TextureHandle>,
     preview_frame_size: Option<FrameSize>,
@@ -101,13 +117,22 @@ struct DesktopApp {
 impl DesktopApp {
     fn new() -> Self {
         let mut app = Self::empty();
-        // 跟随系统语言（检测失败回退项目默认中文）；显式语言选择在设置里覆盖。
+        // 跟随系统语言（检测失败回退项目默认中文）；显式语言选择在编辑菜单里覆盖。
         AppLanguage::System.apply();
         let mut selection = app.selection.clone();
-        if let Err(error) = refresh_detection(&mut selection, &mut app.probe, PROBE_TIMEOUT) {
+        if let Err(error) = refresh_detection(
+            &mut selection,
+            &mut app.probe,
+            app.connection.baud_rate,
+            PROBE_TIMEOUT,
+        ) {
             eprintln!("warning: 初始设备枚举失败：{error}");
         }
         app.selection = selection;
+        // 打开连接界面时预填上次手动连接（profile 连接不覆盖它）。
+        if let Some(snapshot) = app.store.last_manual() {
+            app.apply_snapshot(snapshot);
+        }
         app
     }
 
@@ -117,6 +142,11 @@ impl DesktopApp {
             selection: DeviceSelectionState::default(),
             probe: ProductionProbeBackend,
             session: ProductionDesktopSessionController::production(),
+            store: ProfileStore::production(),
+            default_connection: ConnectionSettings::default(),
+            connection: ConnectionSettings::default(),
+            scale_mode: VideoScaleMode::default(),
+            active_profile: None,
             texture: None,
             latest_frame: None,
             frame_size: None,
@@ -138,8 +168,12 @@ impl DesktopApp {
             status_message: None,
             language: AppLanguage::System,
             showing_device_dialog: true,
-            show_special_keys: false,
-            show_advanced: false,
+            show_settings: false,
+            show_connection_settings: false,
+            show_save_profile: false,
+            save_profile_name: String::new(),
+            save_profile_confirm_overwrite: false,
+            show_about: false,
             preview_source: None,
             preview_texture: None,
             preview_frame_size: None,
@@ -166,34 +200,94 @@ impl DesktopApp {
         let status = egui::TopBottomPanel::bottom("status").show(ctx, |ui| self.status_bar(ui));
         self.status_chrome = status.response.rect.height();
 
-        if self.show_special_keys {
-            egui::Modal::new(egui::Id::new("special_keys_modal")).show(ctx, |ui| {
-                ui.set_min_width(240.0);
-                ui.heading(t!("special_keys.title"));
+        if self.show_settings {
+            egui::Modal::new(egui::Id::new("settings_modal")).show(ctx, |ui| {
+                ui.set_min_width(320.0);
+                ui.heading(t!("settings.title"));
                 ui.add_space(8.0);
-                ui.label(t!("special_keys.hint"));
-                ui.add_space(8.0);
-                if ui.button(t!("special_keys.ctrl_alt_del")).clicked() {
-                    self.send_special(SpecialKey::CtrlAltDel);
-                }
-                if ui.button(t!("special_keys.esc")).clicked() {
-                    self.send_special(SpecialKey::Escape);
-                }
+                self.settings_ui(ui);
                 ui.add_space(8.0);
                 if ui.button(t!("common.close")).clicked() {
-                    self.show_special_keys = false;
+                    self.show_settings = false;
                 }
             });
         }
-        if self.show_advanced {
-            egui::Modal::new(egui::Id::new("advanced_modal")).show(ctx, |ui| {
+        if self.show_connection_settings {
+            egui::Modal::new(egui::Id::new("connection_settings_modal")).show(ctx, |ui| {
                 ui.set_min_width(320.0);
-                ui.heading(t!("advanced.title"));
+                ui.heading(t!("connection_settings.title"));
                 ui.add_space(8.0);
-                self.advanced_ui(ui);
+                self.connection_settings_ui(ui);
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button(t!("profile.restore_defaults")).clicked() {
+                        self.connection = self.default_connection.clone();
+                        self.active_profile = None;
+                    }
+                    if ui.button(t!("common.close")).clicked() {
+                        self.show_connection_settings = false;
+                    }
+                });
+            });
+        }
+        if self.show_save_profile {
+            egui::Modal::new(egui::Id::new("save_profile_modal")).show(ctx, |ui| {
+                ui.set_min_width(320.0);
+                ui.heading(t!("profile.save_title"));
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    ui.label(t!("profile.name_label"));
+                    ui.text_edit_singleline(&mut self.save_profile_name);
+                });
+                ui.add_space(8.0);
+                if self.save_profile_confirm_overwrite {
+                    ui.colored_label(
+                        egui::Color32::LIGHT_RED,
+                        t!(
+                            "profile.overwrite_body",
+                            name = self.save_profile_name.trim()
+                        ),
+                    );
+                    ui.horizontal(|ui| {
+                        if ui.button(t!("profile.overwrite_confirm")).clicked() {
+                            self.do_save_profile();
+                        }
+                        if ui.button(t!("common.cancel")).clicked() {
+                            self.save_profile_confirm_overwrite = false;
+                        }
+                    });
+                } else {
+                    ui.horizontal(|ui| {
+                        let name_ok = !self.save_profile_name.trim().is_empty();
+                        if ui
+                            .add_enabled(name_ok, egui::Button::new(t!("profile.save_button")))
+                            .clicked()
+                        {
+                            let name = self.save_profile_name.trim().to_string();
+                            if self.store.profile_exists(&name) {
+                                self.save_profile_confirm_overwrite = true;
+                            } else {
+                                self.do_save_profile();
+                            }
+                        }
+                        if ui.button(t!("common.close")).clicked() {
+                            self.close_save_profile_dialog();
+                        }
+                    });
+                }
+            });
+        }
+        if self.show_about {
+            egui::Modal::new(egui::Id::new("about_modal")).show(ctx, |ui| {
+                ui.set_min_width(320.0);
+                ui.heading(t!("about.title"));
+                ui.add_space(8.0);
+                ui.label(t!("about.version", commit = env!("GIT_COMMIT")));
+                ui.label(t!("about.license"));
+                ui.label(t!("about.project_url", url = PROJECT_URL));
                 ui.add_space(8.0);
                 if ui.button(t!("common.close")).clicked() {
-                    self.show_advanced = false;
+                    self.show_about = false;
                 }
             });
         }
@@ -264,40 +358,81 @@ impl DesktopApp {
 
     fn menu_bar(&mut self, ui: &mut egui::Ui) {
         egui::MenuBar::new().ui(ui, |ui| {
-            ui.menu_button(t!("menu.control"), |ui| self.control_menu(ui));
-            ui.menu_button(t!("menu.device"), |ui| {
-                if ui.button(t!("menu.reselect_device")).clicked() {
-                    self.show_device_dialog();
-                    ui.close();
-                }
-                if ui.button(t!("menu.stop_connection")).clicked() {
-                    self.stop_session();
-                    ui.close();
-                }
-            });
-            if ui.button(t!("menu.advanced")).clicked() {
-                self.show_advanced = true;
-            }
+            ui.menu_button(t!("menu.file"), |ui| self.file_menu(ui));
+            ui.menu_button(t!("menu.edit"), |ui| self.edit_menu(ui));
+            ui.menu_button(t!("menu.send"), |ui| self.send_menu(ui));
+            ui.menu_button(t!("menu.about"), |ui| self.about_menu(ui));
         });
     }
 
-    fn control_menu(&mut self, ui: &mut egui::Ui) {
-        if self.paste_busy {
-            ui.add_enabled(false, egui::Button::new(t!("menu.paste_text")));
-        } else if ui.button(t!("menu.paste_text")).clicked() {
-            self.paste();
+    /// 文件：连接生命周期 + profile 加载/最近使用 + 退出。
+    fn file_menu(&mut self, ui: &mut egui::Ui) {
+        if ui.button(t!("menu.reselect_device")).clicked() {
+            self.show_device_dialog();
             ui.close();
         }
-        if ui.button(t!("menu.release_keys")).clicked() {
-            let _ = self.session.release_all();
+        let online = self.session.is_control_online();
+        if ui
+            .add_enabled(online, egui::Button::new(t!("menu.stop_connection")))
+            .clicked()
+        {
+            self.stop_session();
             ui.close();
         }
-        if ui.button(t!("menu.copy_screenshot")).clicked() {
+        ui.separator();
+        #[cfg(windows)]
+        if ui.button(t!("file.load_profile")).clicked() {
+            self.load_profile_from_dialog();
+            ui.close();
+        }
+        #[cfg(not(windows))]
+        {
+            ui.add_enabled(
+                false,
+                egui::Button::new(t!("file.load_profile_unsupported")),
+            );
+        }
+        ui.menu_button(t!("file.recent"), |ui| self.recent_menu(ui));
+        ui.separator();
+        if ui.button(t!("file.exit")).clicked() {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+            ui.close();
+        }
+    }
+
+    /// 最近使用：最近 3 条直显，超过 3 条收进“更多”二级菜单（共 10 条）。
+    fn recent_menu(&mut self, ui: &mut egui::Ui) {
+        let recent = self.store.recent_profiles();
+        if recent.is_empty() {
+            ui.add_enabled(false, egui::Button::new(t!("profile.no_recent")));
+            return;
+        }
+        for name in recent.iter().take(3) {
+            if ui.button(name).clicked() {
+                self.load_profile_by_name(name);
+                ui.close();
+            }
+        }
+        if recent.len() > 3 {
+            ui.menu_button(t!("file.recent_more"), |ui| {
+                for name in recent.iter().skip(3) {
+                    if ui.button(name).clicked() {
+                        self.load_profile_by_name(name);
+                        ui.close();
+                    }
+                }
+            });
+        }
+    }
+
+    /// 编辑：截图 + 语言 + 设置。
+    fn edit_menu(&mut self, ui: &mut egui::Ui) {
+        if ui.button(t!("edit.copy_screenshot")).clicked() {
             self.screenshot_copy();
             ui.close();
         }
         #[cfg(windows)]
-        if ui.button(t!("menu.save_screenshot")).clicked() {
+        if ui.button(t!("edit.save_screenshot")).clicked() {
             self.screenshot_save();
             ui.close();
         }
@@ -305,11 +440,75 @@ impl DesktopApp {
         {
             ui.add_enabled(
                 false,
-                egui::Button::new(t!("menu.save_screenshot_unsupported")),
+                egui::Button::new(t!("edit.save_screenshot_unsupported")),
             );
         }
-        if ui.button(t!("menu.send_special_keys")).clicked() {
-            self.show_special_keys = true;
+        ui.separator();
+        // 语言菜单项固定显示英文 Language，任何界面语言下都能找到。
+        ui.menu_button(t!("edit.language"), |ui| self.language_menu(ui));
+        if ui.button(t!("edit.settings")).clicked() {
+            self.show_settings = true;
+            ui.close();
+        }
+    }
+
+    fn language_menu(&mut self, ui: &mut egui::Ui) {
+        for option in AppLanguage::ALL {
+            let selected = self.language == option;
+            let label = format!("{} {}", if selected { "✓" } else { " " }, option.label());
+            if ui.selectable_label(selected, label).clicked() {
+                self.language = option;
+                option.apply();
+            }
+        }
+    }
+
+    /// 发送：粘贴文本 + 释放按键 + 特殊键（二级菜单）。
+    fn send_menu(&mut self, ui: &mut egui::Ui) {
+        if self.paste_busy {
+            ui.add_enabled(false, egui::Button::new(t!("send.paste_text")));
+        } else if ui.button(t!("send.paste_text")).clicked() {
+            self.paste();
+            ui.close();
+        }
+        if ui.button(t!("send.release_all")).clicked() {
+            let _ = self.session.release_all();
+            ui.close();
+        }
+        ui.separator();
+        ui.menu_button(t!("send.special_keys"), |ui| {
+            self.special_keys_menu(ui);
+        });
+    }
+
+    /// 特殊键：本地 OS 会拦截、无法键盘直发的键（Esc 等普通键直接按即可）。
+    fn special_keys_menu(&mut self, ui: &mut egui::Ui) {
+        if ui.button(t!("special_keys.ctrl_alt_del")).clicked() {
+            self.send_special(SpecialKey::CtrlAltDel);
+            ui.close();
+        }
+        if ui.button(t!("special_keys.win")).clicked() {
+            self.send_special(SpecialKey::Win);
+            ui.close();
+        }
+        if ui.button(t!("special_keys.print_screen")).clicked() {
+            self.send_special(SpecialKey::PrintScreen);
+            ui.close();
+        }
+        if ui.button(t!("special_keys.alt_tab")).clicked() {
+            self.send_special(SpecialKey::AltTab);
+            ui.close();
+        }
+    }
+
+    /// 关于：关于对话框 + 项目主页。
+    fn about_menu(&mut self, ui: &mut egui::Ui) {
+        if ui.button(t!("about.about")).clicked() {
+            self.show_about = true;
+            ui.close();
+        }
+        if ui.button(t!("about.project_home")).clicked() {
+            ui.ctx().open_url(egui::OpenUrl::new_tab(PROJECT_URL));
             ui.close();
         }
     }
@@ -319,6 +518,37 @@ impl DesktopApp {
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading(t!("device.title"));
             ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                ui.label(t!("profile.select"));
+                egui::ComboBox::from_id_salt("profile_selector")
+                    .width(240.0)
+                    .selected_text(
+                        self.active_profile
+                            .clone()
+                            .unwrap_or_else(|| t!("common.not_selected").to_string()),
+                    )
+                    .show_ui(ui, |ui| {
+                        let profiles = self.store.list_profiles();
+                        if profiles.is_empty() {
+                            ui.add_enabled(false, egui::Button::new(t!("profile.no_recent")));
+                        }
+                        for name in profiles {
+                            let selected = self.active_profile.as_deref() == Some(name.as_str());
+                            if ui.selectable_label(selected, &name).clicked() {
+                                self.load_profile_by_name(&name);
+                            }
+                        }
+                    });
+                if ui.button(t!("profile.save")).clicked() {
+                    self.show_save_profile = true;
+                    self.save_profile_name.clear();
+                    self.save_profile_confirm_overwrite = false;
+                }
+                if ui.button(t!("profile.connection_settings")).clicked() {
+                    self.show_connection_settings = true;
+                }
+            });
+            ui.add_space(8.0);
             ui.horizontal(|ui| {
                 ui.vertical(|ui| {
                     ui.set_width(380.0);
@@ -332,15 +562,15 @@ impl DesktopApp {
                     self.control_status_label(ui);
                     ui.add_space(10.0);
 
-                    egui::CollapsingHeader::new(t!("device.advanced"))
-                        .show(ui, |ui| self.advanced_ui(ui));
-                    ui.add_space(12.0);
-
                     ui.horizontal(|ui| {
                         if ui.button(t!("device.refresh")).clicked() {
                             let mut selection = self.selection.clone();
-                            match refresh_detection(&mut selection, &mut self.probe, PROBE_TIMEOUT)
-                            {
+                            match refresh_detection(
+                                &mut selection,
+                                &mut self.probe,
+                                self.connection.baud_rate,
+                                PROBE_TIMEOUT,
+                            ) {
                                 Ok(()) => {
                                     self.selection = selection;
                                     self.status_message = None;
@@ -444,10 +674,7 @@ impl DesktopApp {
             self.preview_last_frame_at = None;
             self.preview_device_id = video_id.clone();
             if let Some(id) = &video_id {
-                match ipkvm_video::camera::CameraSource::open(
-                    id,
-                    self.selection.advanced.preview_fps,
-                ) {
+                match ipkvm_video::camera::CameraSource::open(id, self.connection.preview_fps) {
                     Ok(source) => {
                         self.preview_source = Some(Arc::new(source));
                         self.preview_opened_at = Some(Instant::now());
@@ -571,6 +798,8 @@ impl DesktopApp {
                         self.selection.video_status = VideoProbeStatus::Checking;
                         // 强制重建预览源（同一设备重选也重建），由预览驱动状态。
                         self.reset_preview();
+                        // 手动改动后不再属于任何 profile。
+                        self.active_profile = None;
                     }
                 }
             });
@@ -598,10 +827,12 @@ impl DesktopApp {
                         if let Some(device_id) = self.selection.selected_control_id.clone() {
                             self.selection.control_status = self.probe.probe_control(
                                 &device_id,
-                                self.selection.advanced.baud_rate,
+                                self.connection.baud_rate,
                                 PROBE_TIMEOUT,
                             );
                         }
+                        // 手动改动后不再属于任何 profile。
+                        self.active_profile = None;
                     }
                 }
             });
@@ -610,11 +841,11 @@ impl DesktopApp {
     fn connect(&mut self, ctx: &egui::Context) -> Result<(), DesktopSessionError> {
         // 预览源占用相机/串口，连接前必须先释放。
         self.reset_preview();
-        if self.selection.advanced.auto_baud
+        if self.connection.auto_baud
             && let Some(control_id) = self.selection.selected_control_id.clone()
             && let Some(baud) = crate::probe::detect_baud_rate(&control_id, BAUD_PROBE_TIMEOUT)
         {
-            self.selection.advanced.baud_rate = baud;
+            self.connection.baud_rate = baud;
             self.status_message = Some(t!("message.baud_selected", baud = baud).to_string());
         }
         let Some(request) = self.connect_request() else {
@@ -635,6 +866,24 @@ impl DesktopApp {
                     task.abort();
                 }
                 self.frame_repaint_task = self.session.spawn_frame_repainter(ctx.clone());
+                // 连接成功后的归属记录：profile 连接进“最近使用”，手动连接
+                // 只更新“上次手动连接”作为下次打开连接界面的默认值。
+                if let Some(name) = self.active_profile.clone() {
+                    if let Err(error) = self.store.add_recent_profile(&name) {
+                        self.status_message =
+                            Some(t!("profile.save_failed", error = error.to_string()).to_string());
+                    }
+                } else {
+                    let snapshot = ManualSnapshot {
+                        video_device: self.selected_video_ref(),
+                        control_device: self.selected_control_ref(),
+                        connection: self.connection.clone(),
+                    };
+                    if let Err(error) = self.store.set_last_manual(&snapshot) {
+                        self.status_message =
+                            Some(t!("profile.save_failed", error = error.to_string()).to_string());
+                    }
+                }
                 Ok(())
             }
             Err(error) => Err(error),
@@ -645,14 +894,168 @@ impl DesktopApp {
         Some(ConnectRequest {
             video_device_id: self.selection.selected_video_id.clone()?,
             control_device_id: self.selection.selected_control_id.clone()?,
-            baud_rate: self.selection.advanced.baud_rate,
-            mouse_mode: self.selection.advanced.mouse_mode,
-            preview_fps: self.selection.advanced.preview_fps,
+            baud_rate: self.connection.baud_rate,
+            mouse_mode: self.connection.mouse_mode,
+            preview_fps: self.connection.preview_fps,
         })
     }
 
+    /// 按名字加载 profile 并应用到当前选择（不自动连接）。
+    fn load_profile_by_name(&mut self, name: &str) {
+        match self.store.load_profile(name) {
+            Ok(profile) => self.apply_profile(profile),
+            Err(error) => {
+                self.status_message =
+                    Some(t!("profile.load_failed", error = error.to_string()).to_string());
+            }
+        }
+    }
+
+    /// 应用 profile：匹配得到的设备选中，匹配不到的留空并提示；连接参数
+    /// 用 profile 覆盖；缩放/语言等本地偏好不受影响。
+    fn apply_profile(&mut self, profile: Profile) {
+        let mut missing = Vec::new();
+        if self.apply_device_ref(profile.video_device.clone(), true) {
+            missing.push(t!("profile.device_missing").to_string());
+        }
+        if self.apply_device_ref(profile.control_device.clone(), false) {
+            missing.push(t!("profile.control_missing").to_string());
+        }
+        self.connection = profile.connection;
+        self.active_profile = Some(profile.name);
+        self.status_message = if missing.is_empty() {
+            None
+        } else {
+            Some(missing.join("；"))
+        };
+    }
+
+    /// 应用“上次手动连接”快照（启动预填，不提示缺失、不进入 profile 语境）。
+    fn apply_snapshot(&mut self, snapshot: ManualSnapshot) {
+        self.apply_device_ref(snapshot.video_device, true);
+        self.apply_device_ref(snapshot.control_device, false);
+        self.connection = snapshot.connection;
+    }
+
+    /// 按 id 匹配当前枚举并选中设备；返回 true 表示“指定了设备但找不到”。
+    /// 视频选中后由预览源驱动状态；控制选中后立即同步探测（与手动选择一致）。
+    fn apply_device_ref(&mut self, device: Option<DeviceRef>, is_video: bool) -> bool {
+        let Some(device) = device else {
+            self.clear_device_selection(is_video);
+            return false;
+        };
+        let matched = if is_video {
+            self.selection
+                .video_devices
+                .iter()
+                .find(|candidate| candidate.id == device.id)
+                .map(|candidate| candidate.id.clone())
+        } else {
+            self.selection
+                .control_devices
+                .iter()
+                .find(|candidate| candidate.id == device.id)
+                .map(|candidate| candidate.id.clone())
+        };
+        match matched {
+            Some(id) => {
+                if is_video {
+                    self.selection.selected_video_id = Some(id.clone());
+                    self.selection.video_status = VideoProbeStatus::Checking;
+                    self.reset_preview();
+                } else {
+                    self.selection.selected_control_id = Some(id.clone());
+                    self.selection.control_status =
+                        self.probe
+                            .probe_control(&id, self.connection.baud_rate, PROBE_TIMEOUT);
+                }
+                false
+            }
+            None => {
+                self.clear_device_selection(is_video);
+                true
+            }
+        }
+    }
+
+    fn clear_device_selection(&mut self, is_video: bool) {
+        if is_video {
+            self.selection.selected_video_id = None;
+            self.selection.video_status = VideoProbeStatus::NotSelected;
+            self.reset_preview();
+        } else {
+            self.selection.selected_control_id = None;
+            self.selection.control_status = ControlProbeStatus::NotSelected;
+        }
+    }
+
+    /// 文件对话框加载 profile：默认打开 profile 目录。
+    #[cfg(windows)]
+    fn load_profile_from_dialog(&mut self) {
+        let profiles_dir = self.store.profiles_dir();
+        let _ = std::fs::create_dir_all(&profiles_dir);
+        let Some(path) = rfd::FileDialog::new()
+            .set_directory(&profiles_dir)
+            .add_filter("profile", &["toml"])
+            .pick_file()
+        else {
+            return;
+        };
+        match self.store.load_profile_file(&path) {
+            Ok(profile) => self.apply_profile(profile),
+            Err(error) => {
+                self.status_message =
+                    Some(t!("profile.load_failed", error = error.to_string()).to_string());
+            }
+        }
+    }
+
+    /// 保存当前选择与连接参数为 profile（设备可未选全，保存当前状态）。
+    fn do_save_profile(&mut self) {
+        let name = self.save_profile_name.trim().to_string();
+        if name.is_empty() {
+            return;
+        }
+        let profile = Profile {
+            name: name.clone(),
+            video_device: self.selected_video_ref(),
+            control_device: self.selected_control_ref(),
+            connection: self.connection.clone(),
+        };
+        match self.store.save_profile(&profile) {
+            Ok(()) => {
+                self.status_message = Some(t!("profile.saved", name = name).to_string());
+                self.close_save_profile_dialog();
+            }
+            Err(error) => {
+                self.status_message =
+                    Some(t!("profile.save_failed", error = error.to_string()).to_string());
+            }
+        }
+    }
+
+    fn close_save_profile_dialog(&mut self) {
+        self.show_save_profile = false;
+        self.save_profile_name.clear();
+        self.save_profile_confirm_overwrite = false;
+    }
+
+    fn selected_video_ref(&self) -> Option<DeviceRef> {
+        selected_device_ref(
+            &self.selection.video_devices,
+            self.selection.selected_video_id.as_deref(),
+        )
+    }
+
+    fn selected_control_ref(&self) -> Option<DeviceRef> {
+        selected_device_ref(
+            &self.selection.control_devices,
+            self.selection.selected_control_id.as_deref(),
+        )
+    }
+
     fn toggle_mouse_mode(&mut self) {
-        let next = match self.selection.advanced.mouse_mode {
+        let next = match self.connection.mouse_mode {
             MouseMode::Absolute => MouseMode::Relative,
             MouseMode::Relative => MouseMode::Absolute,
         };
@@ -660,7 +1063,9 @@ impl DesktopApp {
         // （此前靠重连切换，串口被旧会话占用时重连失败导致绝对/相对错位）。
         match self.session.set_mouse_mode(next) {
             Ok(()) => {
-                self.selection.advanced.mouse_mode = next;
+                self.connection.mouse_mode = next;
+                // 热键切换视为手动改动，脱离当前 profile。
+                self.active_profile = None;
                 self.relative_remainder = (0.0, 0.0);
                 self.relative_wheel = 0;
                 self.last_pointer_sent = None;
@@ -694,7 +1099,7 @@ impl DesktopApp {
                 width: 1920,
                 height: 1080,
             });
-            if self.selection.advanced.scale_mode == VideoScaleMode::ResizeWindowToVideo
+            if self.scale_mode == VideoScaleMode::ResizeWindowToVideo
                 && let Some(actual) = self.frame_size
                 && self.last_follow_resize != Some(actual)
             {
@@ -707,8 +1112,7 @@ impl DesktopApp {
                 ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(size));
                 self.last_follow_resize = Some(actual);
             }
-            let video_rect =
-                VideoViewport::frame_rect(response.rect, frame, self.selection.advanced.scale_mode);
+            let video_rect = VideoViewport::frame_rect(response.rect, frame, self.scale_mode);
             if let Some(texture) = &self.texture {
                 painter.image(
                     texture.id(),
@@ -859,7 +1263,7 @@ impl DesktopApp {
         }
 
         // 相对模式锁定并隐藏本地光标，绝对模式恢复光标。
-        let relative_mode = self.selection.advanced.mouse_mode == MouseMode::Relative;
+        let relative_mode = self.connection.mouse_mode == MouseMode::Relative;
         if self.video_focused && relative_mode {
             if !self.cursor_grabbed {
                 response
@@ -894,7 +1298,7 @@ impl DesktopApp {
                     }
                 })
             });
-            let sensitivity = self.selection.advanced.relative_sensitivity;
+            let sensitivity = self.connection.relative_sensitivity;
             let pixels_per_point = response.ctx.pixels_per_point();
             let dx_points = raw_dx / pixels_per_point * sensitivity;
             let dy_points = raw_dy / pixels_per_point * sensitivity;
@@ -1143,52 +1547,15 @@ impl DesktopApp {
         self.showing_device_dialog = true;
     }
 
-    fn advanced_ui(&mut self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            ui.label(t!("settings.baud_rate"));
-            ui.add(
-                egui::DragValue::new(&mut self.selection.advanced.baud_rate).range(1200..=115200),
-            );
-        });
-        ui.checkbox(
-            &mut self.selection.advanced.auto_baud,
-            t!("settings.auto_baud"),
-        );
-        ui.horizontal(|ui| {
-            ui.label(t!("settings.preview_fps"));
-            ui.add(egui::DragValue::new(&mut self.selection.advanced.preview_fps).range(1..=60));
-        });
-        ui.horizontal(|ui| {
-            ui.label(t!("settings.mouse_mode"));
-            let current = self.selection.advanced.mouse_mode;
-            egui::ComboBox::from_id_salt("mouse_mode")
-                .selected_text(mouse_mode_label(current))
-                .show_ui(ui, |ui| {
-                    if ui
-                        .selectable_label(current == MouseMode::Absolute, t!("mouse_mode.absolute"))
-                        .clicked()
-                    {
-                        self.selection.advanced.mouse_mode = MouseMode::Absolute;
-                    }
-                    if ui
-                        .selectable_label(current == MouseMode::Relative, t!("mouse_mode.relative"))
-                        .clicked()
-                    {
-                        self.selection.advanced.mouse_mode = MouseMode::Relative;
-                    }
-                });
-        });
-        ui.horizontal(|ui| {
-            ui.label(t!("settings.relative_sensitivity"));
-            ui.add(
-                egui::DragValue::new(&mut self.selection.advanced.relative_sensitivity)
-                    .range(0.1..=5.0)
-                    .speed(0.05),
-            );
-        });
+    /// 菜单“设置…”：连接参数默认值 + 本地视图偏好（语言在编辑菜单里）。
+    fn settings_ui(&mut self, ui: &mut egui::Ui) {
+        connection_fields_ui(ui, &mut self.default_connection, "default_mouse_mode");
+        ui.add_space(6.0);
+        ui.separator();
+        ui.add_space(6.0);
         ui.horizontal(|ui| {
             ui.label(t!("settings.scale_mode"));
-            let current = self.selection.advanced.scale_mode;
+            let current = self.scale_mode;
             egui::ComboBox::from_id_salt("scale_mode")
                 .selected_text(scale_mode_label(current))
                 .show_ui(ui, |ui| {
@@ -1201,28 +1568,19 @@ impl DesktopApp {
                         ),
                     ] {
                         if ui.selectable_label(current == mode, label).clicked() {
-                            self.selection.advanced.scale_mode = mode;
+                            self.scale_mode = mode;
                         }
                     }
                 });
         });
-        ui.horizontal(|ui| {
-            ui.label(t!("settings.language"));
-            let current = self.language;
-            egui::ComboBox::from_id_salt("language")
-                .selected_text(current.label())
-                .show_ui(ui, |ui| {
-                    for option in AppLanguage::ALL {
-                        if ui
-                            .selectable_label(current == option, option.label())
-                            .clicked()
-                        {
-                            self.language = option;
-                            option.apply();
-                        }
-                    }
-                });
-        });
+    }
+
+    /// 主页“连接设置”：连接级副本，加载 profile 时被覆盖；改动即视为手动连接。
+    fn connection_settings_ui(&mut self, ui: &mut egui::Ui) {
+        let changed = connection_fields_ui(ui, &mut self.connection, "active_mouse_mode");
+        if changed {
+            self.active_profile = None;
+        }
     }
 
     fn video_status_label(&self, ui: &mut egui::Ui) {
@@ -1310,14 +1668,13 @@ impl DesktopApp {
         } else {
             t!("status.keyboard_lost").to_string()
         };
-        let pointer =
-            if self.selection.advanced.mouse_mode == MouseMode::Relative && self.video_focused {
-                t!("status.relative_mode").to_string()
-            } else {
-                self.last_pointer
-                    .map(|(x, y)| format!("({x}, {y})"))
-                    .unwrap_or_else(|| t!("status.pointer_outside").to_string())
-            };
+        let pointer = if self.connection.mouse_mode == MouseMode::Relative && self.video_focused {
+            t!("status.relative_mode").to_string()
+        } else {
+            self.last_pointer
+                .map(|(x, y)| format!("({x}, {y})"))
+                .unwrap_or_else(|| t!("status.pointer_outside").to_string())
+        };
         StatusBarTexts {
             control,
             keyboard,
@@ -1406,6 +1763,78 @@ fn preview_refresh_action(status: &VideoProbeStatus, device_present: bool) -> Pr
 /// “出帧后停帧”两种无信号场景；无参考时刻视为未过期）。
 fn elapsed_since(since: Option<Instant>, timeout: Duration, now: Instant) -> bool {
     since.is_some_and(|at| now.duration_since(at) >= timeout)
+}
+
+/// 把当前选中设备固化为 DeviceRef（label 兜底用 id）。
+fn selected_device_ref(
+    devices: &[crate::state::DeviceOption],
+    selected_id: Option<&str>,
+) -> Option<DeviceRef> {
+    let id = selected_id?.to_string();
+    let label = devices
+        .iter()
+        .find(|device| device.id == id)
+        .map(|device| device.label.clone())
+        .unwrap_or_else(|| id.clone());
+    Some(DeviceRef { id, label })
+}
+
+/// 连接参数表单（“设置”默认值对话框与“连接设置”对话框共用）。
+/// 返回是否有任何字段被修改。
+fn connection_fields_ui(
+    ui: &mut egui::Ui,
+    settings: &mut ConnectionSettings,
+    mouse_mode_id: &str,
+) -> bool {
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        ui.label(t!("settings.baud_rate"));
+        changed |= ui
+            .add(egui::DragValue::new(&mut settings.baud_rate).range(1200..=115200))
+            .changed();
+    });
+    changed |= ui
+        .checkbox(&mut settings.auto_baud, t!("settings.auto_baud"))
+        .changed();
+    ui.horizontal(|ui| {
+        ui.label(t!("settings.preview_fps"));
+        changed |= ui
+            .add(egui::DragValue::new(&mut settings.preview_fps).range(1..=60))
+            .changed();
+    });
+    ui.horizontal(|ui| {
+        ui.label(t!("settings.mouse_mode"));
+        let current = settings.mouse_mode;
+        egui::ComboBox::from_id_salt(mouse_mode_id)
+            .selected_text(mouse_mode_label(current))
+            .show_ui(ui, |ui| {
+                if ui
+                    .selectable_label(current == MouseMode::Absolute, t!("mouse_mode.absolute"))
+                    .clicked()
+                {
+                    settings.mouse_mode = MouseMode::Absolute;
+                    changed = true;
+                }
+                if ui
+                    .selectable_label(current == MouseMode::Relative, t!("mouse_mode.relative"))
+                    .clicked()
+                {
+                    settings.mouse_mode = MouseMode::Relative;
+                    changed = true;
+                }
+            });
+    });
+    ui.horizontal(|ui| {
+        ui.label(t!("settings.relative_sensitivity"));
+        changed |= ui
+            .add(
+                egui::DragValue::new(&mut settings.relative_sensitivity)
+                    .range(0.1..=5.0)
+                    .speed(0.05),
+            )
+            .changed();
+    });
+    changed
 }
 
 fn control_status_text(status: &ControlProbeStatus, port: Option<&str>) -> String {
@@ -1572,7 +2001,7 @@ mod tests {
         let mut app = DesktopApp::empty();
         app.showing_device_dialog = false;
         app.video_focused = true;
-        app.selection.advanced.mouse_mode = MouseMode::Relative;
+        app.connection.mouse_mode = MouseMode::Relative;
 
         let texts = app.status_bar_texts();
 
@@ -1641,39 +2070,68 @@ mod tests {
     const ALL_UI_KEYS: &[&str] = &[
         "common.not_selected",
         "common.close",
-        "menu.control",
-        "menu.device",
+        "common.cancel",
+        "menu.file",
+        "menu.edit",
+        "menu.send",
+        "menu.about",
         "menu.reselect_device",
         "menu.stop_connection",
-        "menu.advanced",
-        "menu.paste_text",
-        "menu.release_keys",
-        "menu.copy_screenshot",
-        "menu.save_screenshot",
-        "menu.save_screenshot_unsupported",
-        "menu.send_special_keys",
+        "file.load_profile",
+        "file.load_profile_unsupported",
+        "file.recent",
+        "file.recent_more",
+        "file.exit",
+        "edit.copy_screenshot",
+        "edit.save_screenshot",
+        "edit.save_screenshot_unsupported",
+        "edit.language",
+        "edit.settings",
+        "send.paste_text",
+        "send.release_all",
+        "send.special_keys",
+        "special_keys.ctrl_alt_del",
+        "special_keys.win",
+        "special_keys.print_screen",
+        "special_keys.alt_tab",
+        "about.about",
+        "about.project_home",
+        "about.title",
+        "about.version",
+        "about.license",
+        "about.project_url",
         "device.title",
         "device.video",
         "device.control",
-        "device.advanced",
         "device.refresh",
         "device.connect",
         "device.preview",
         "device.no_preview",
         "preview.no_signal",
         "preview.open_failed",
-        "special_keys.title",
-        "special_keys.hint",
-        "special_keys.ctrl_alt_del",
-        "special_keys.esc",
-        "advanced.title",
+        "profile.select",
+        "profile.save",
+        "profile.connection_settings",
+        "profile.save_title",
+        "profile.name_label",
+        "profile.save_button",
+        "profile.saved",
+        "profile.save_failed",
+        "profile.load_failed",
+        "profile.overwrite_body",
+        "profile.overwrite_confirm",
+        "profile.device_missing",
+        "profile.control_missing",
+        "profile.no_recent",
+        "profile.restore_defaults",
+        "connection_settings.title",
+        "settings.title",
         "settings.baud_rate",
         "settings.auto_baud",
         "settings.preview_fps",
         "settings.mouse_mode",
         "settings.relative_sensitivity",
         "settings.scale_mode",
-        "settings.language",
         "language.system",
         "language.chinese",
         "language.english",
