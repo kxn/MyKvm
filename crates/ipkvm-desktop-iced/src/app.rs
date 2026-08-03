@@ -27,6 +27,7 @@ use crate::connect::{
     ProductionProbeBackend, VideoProbeStatus, detect_baud_rate, preview_refresh_action,
     refresh_detection,
 };
+use crate::diag;
 use crate::frames::{FrameUpdate, frame_subscription};
 use crate::input::{
     KeyAction, SpecialKey, is_mode_toggle_combo, is_remote_exit_combo, modifier_diff,
@@ -37,6 +38,7 @@ use crate::locale::AppLanguage;
 use crate::menu::{MenuAction, MenuState, menu_bar};
 use crate::modal::{ModalAction, ModalKind, ModalState};
 use crate::perf::FrameStats;
+use crate::preloaded::PreloadedImage;
 use crate::profile::{apply_profile_to_selection, build_profile};
 use crate::relative::{
     ChannelRelativeFactory, DeltaReceiver, DeltaSampler, RelativePointerSource,
@@ -49,6 +51,10 @@ use crate::{WINDOW_SIZE, WINDOW_TITLE};
 
 /// mock 实例序号：每个 new_mock 用独立临时目录，避免测试并行互踩。
 static MOCK_STORE_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// UiTick 节流间隔（#89）：flush_pending/drain_notices 足够及时，避免 60Hz
+/// 无条件重绘放大闪烁与 CPU 占用。
+const UI_TICK_INTERVAL: Duration = Duration::from_millis(33);
 
 /// 记录型 sink：测试与 mock 连接用。
 #[derive(Clone, Debug, Default)]
@@ -184,6 +190,10 @@ where
     preview: PreviewRuntime,
     preview_factory: Arc<dyn PreviewSourceFactory>,
     preview_handle: Option<Handle>,
+    /// 预览最近一次显示的帧 seq（同 seq 不重建 Handle，避免重复上传闪烁）。
+    last_preview_seq: Option<u64>,
+    /// 诊断用：上一次记录的在线状态（检测整页切换抖动）。
+    last_diag_online: Option<bool>,
     store: ipkvm_desktop::config::ProfileStore,
     active_profile: Option<String>,
     status_message: Option<String>,
@@ -240,6 +250,8 @@ impl App<RecordingSink, MockFactory> {
             preview: PreviewRuntime::default(),
             preview_factory: Arc::new(MockPreviewFactory),
             preview_handle: None,
+            last_preview_seq: None,
+            last_diag_online: None,
             store: ipkvm_desktop::config::ProfileStore::new(
                 std::env::temp_dir()
                     .join(format!("my-ipkvm-iced-mock-{}-{seq}", std::process::id())),
@@ -291,6 +303,8 @@ impl App<Ch9329InputSink<SerialCommandQueue>, ProductionSessionFactory> {
             preview: PreviewRuntime::default(),
             preview_factory: Arc::new(CameraPreviewFactory),
             preview_handle: None,
+            last_preview_seq: None,
+            last_diag_online: None,
             store,
             active_profile: None,
             status_message: None,
@@ -348,9 +362,16 @@ where
         }
     }
 
+    /// 清空预览 Handle 与帧 seq 记录（换源/断开时调用）。
+    fn reset_preview_handle(&mut self) {
+        self.preview_handle = None;
+        self.last_preview_seq = None;
+    }
+
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::FrameReady(frame) => {
+                diag::log(format!("FrameReady seq={}", frame.seq));
                 self.handle = Some(handle_from_frame(&frame));
                 if let Some(stats) = &self.stats {
                     stats.record_at(Instant::now());
@@ -423,7 +444,7 @@ where
                     self.selection.selected_video_id = Some(device.id.clone());
                     self.selection.video_status = VideoProbeStatus::Checking;
                     self.preview.reset();
-                    self.preview_handle = None;
+                    self.reset_preview_handle();
                     self.active_profile = None;
                 }
                 Task::none()
@@ -446,6 +467,7 @@ where
                 Task::none()
             }
             Message::RefreshDevices => {
+                diag::log("RefreshDevices");
                 let mut selection = self.selection.clone();
                 match refresh_detection(
                     &mut selection,
@@ -471,12 +493,12 @@ where
                             PreviewRefreshAction::Skip => {}
                             PreviewRefreshAction::Reopen => {
                                 self.preview.reset();
-                                self.preview_handle = None;
+                                self.reset_preview_handle();
                                 self.selection.video_status = VideoProbeStatus::Checking;
                             }
                             PreviewRefreshAction::KeepDisconnected => {
                                 self.preview.reset();
-                                self.preview_handle = None;
+                                self.reset_preview_handle();
                             }
                         }
                     }
@@ -490,7 +512,8 @@ where
             }
             Message::Connect => {
                 self.preview.reset();
-                self.preview_handle = None;
+                self.reset_preview_handle();
+                diag::log("connect begin");
                 if self.connection.auto_baud
                     && let Some(control_id) = self.selection.selected_control_id.clone()
                     && let Some(baud) = detect_baud_rate(&control_id, PROBE_TIMEOUT)
@@ -504,6 +527,7 @@ where
                 };
                 match self.controller.connect(request) {
                     Ok(()) => {
+                        diag::log("connect ok");
                         self.status_message = None;
                         self.sync_status();
                         if let Some(name) = self.active_profile.clone() {
@@ -534,6 +558,7 @@ where
                         }
                     }
                     Err(error) => {
+                        diag::log(format!("connect failed: {error}"));
                         self.status_message = Some(
                             t!("message.connect_failed", error = error.to_string()).to_string(),
                         );
@@ -542,17 +567,19 @@ where
                 Task::none()
             }
             Message::Disconnect => {
+                diag::log("disconnect");
                 let _ = self.controller.stop();
                 self.sync_status();
                 self.selection.control_status = ControlProbeStatus::Disconnected;
                 self.selection.video_status = VideoProbeStatus::NotSelected;
                 self.preview.reset();
-                self.preview_handle = None;
+                self.reset_preview_handle();
                 self.remote_input = false;
                 self.stop_relative_source();
                 Task::none()
             }
             Message::PreviewTick => {
+                diag::log("PreviewTick");
                 if self.controller.is_control_online() {
                     return Task::none();
                 }
@@ -564,7 +591,11 @@ where
                 ) && let Some(source) = self.preview.source()
                     && let Some(frame) = source.latest_frame()
                 {
-                    self.preview_handle = Some(handle_from_frame(&frame));
+                    // 同 seq 帧不重建 Handle：避免每 100ms 重复上传同一帧纹理。
+                    if self.last_preview_seq != Some(frame.seq) {
+                        self.preview_handle = Some(handle_from_frame(&frame));
+                        self.last_preview_seq = Some(frame.seq);
+                    }
                 }
                 Task::none()
             }
@@ -601,6 +632,7 @@ where
                 Task::none()
             }
             Message::UiTick => {
+                diag::ui_tick();
                 let _ = self.controller.flush_pending();
                 self.drain_notices();
                 self.poll_relative();
@@ -669,7 +701,7 @@ where
                 self.connection = profile.connection;
                 self.active_profile = Some(profile.name);
                 self.preview.reset();
-                self.preview_handle = None;
+                self.reset_preview_handle();
                 let mut notes = Vec::new();
                 if missing.video {
                     notes.push(t!("profile.device_missing").to_string());
@@ -913,7 +945,9 @@ where
             iced::time::every(Duration::from_millis(100)).map(|_| Message::PreviewTick);
         let keyboard = iced::keyboard::listen().map(Message::Keyboard);
         let events = iced::event::listen().map(Message::IcedEvent);
-        let ui_tick = iced::time::every(Duration::from_millis(16)).map(|_| Message::UiTick);
+        // #89：UiTick 只承担 flush_pending/drain_notices，16ms 无条件重绘会
+        // 放大视频闪烁与 CPU 占用；节流到 33ms（约 30Hz）语义不变。
+        let ui_tick = iced::time::every(UI_TICK_INTERVAL).map(|_| Message::UiTick);
         if !self.subscribed {
             return Subscription::batch([window_events, preview_timer, keyboard, events, ui_tick]);
         }
@@ -962,9 +996,9 @@ where
     }
 
     fn video_view(&self) -> Element<'_, Message> {
-        use iced::widget::{column, container, image, text};
+        use iced::widget::{column, container, text};
         let video: Element<'_, Message> = match self.handle.as_ref() {
-            Some(handle) => image::Image::<Handle>::new(handle.clone())
+            Some(handle) => PreloadedImage::new(handle.clone())
                 .content_fit(iced::ContentFit::Contain)
                 .into(),
             None => text("等待帧…").into(),
@@ -980,7 +1014,7 @@ where
     }
 
     fn connection_view(&self) -> Element<'_, Message> {
-        use iced::widget::{Checkbox, PickList, button, column, container, image, row, text};
+        use iced::widget::{Checkbox, PickList, button, column, container, row, text};
         let video_pick = PickList::new(
             self.video_labels(),
             self.selected_video_label(),
@@ -1024,7 +1058,7 @@ where
         let load_profile = button(text(t!("file.load_profile")))
             .on_press(Message::OpenModal(ModalKind::LoadProfile));
         let preview: Element<'_, Message> = match &self.preview_handle {
-            Some(handle) => image::Image::<Handle>::new(handle.clone())
+            Some(handle) => PreloadedImage::new(handle.clone())
                 .content_fit(iced::ContentFit::Contain)
                 .into(),
             None => text(self.preview_placeholder()).into(),
@@ -1177,10 +1211,13 @@ where
     }
 
     pub fn sync_status(&mut self) {
-        self.status = derive_status(
-            self.controller.is_control_online(),
-            self.controller.input_offline_reason(),
-        );
+        let online = self.controller.is_control_online();
+        // 诊断：整页切换抖动取证（main_view 按在线状态切视频页/连接页）。
+        if self.last_diag_online != Some(online) {
+            diag::log(format!("online_flip online={online}"));
+            self.last_diag_online = Some(online);
+        }
+        self.status = derive_status(online, self.controller.input_offline_reason());
     }
 
     pub fn subscribed(&self) -> bool {
@@ -1287,6 +1324,11 @@ fn connect_request() -> ConnectRequest {
 
 /// 启动生产 iced 应用（bin 入口调用；测试不启动真实窗口）。
 pub fn run() -> iced::Result {
+    diag::init();
+    diag::log(format!(
+        "startup args: {:?}",
+        std::env::args().collect::<Vec<_>>()
+    ));
     iced::application(App::production, App::update, App::view)
         .subscription(App::subscription)
         .theme(App::theme)
@@ -1433,6 +1475,25 @@ mod tests {
         assert_eq!(app.connection.baud_rate, 115200);
         assert_eq!(app.selection.video_status, VideoProbeStatus::Checking);
         assert_eq!(app.selection.control_status, ControlProbeStatus::Checking);
+    }
+
+    #[test]
+    fn preview_tick_same_seq_does_not_rebuild_handle() {
+        let (mut app, _) = MockApp::new_mock();
+        // new_mock 构造时已连接（M1 语义），先断开进入连接页流程，
+        // 再模拟启动自动枚举，否则设备列表为空无法选择。
+        let _ = app.update(Message::Disconnect);
+        let _ = app.update(Message::RefreshDevices);
+        let _ = app.update(Message::SelectVideo("Camera 0".into()));
+        let _ = app.update(Message::PreviewTick);
+        let first = app.preview_handle.clone().expect("预览必须出帧");
+        let _ = app.update(Message::PreviewTick);
+        let second = app.preview_handle.clone().expect("预览仍持有帧");
+        assert_eq!(
+            first.id(),
+            second.id(),
+            "同 seq 帧不得重建 Handle（否则每次 100ms 重复纹理上传 → 闪烁）"
+        );
     }
 
     #[test]
