@@ -56,6 +56,9 @@ static MOCK_STORE_SEQ: AtomicU64 = AtomicU64::new(0);
 /// 无条件重绘放大闪烁与 CPU 占用。
 const UI_TICK_INTERVAL: Duration = Duration::from_millis(33);
 
+/// 指针最小发送间隔（对齐 egui app.rs：#102 限频，避免高频移动刷爆串口）。
+const POINTER_MIN_INTERVAL: Duration = Duration::from_millis(33);
+
 /// 项目主页（实际仓库为内网 Gitea）。
 pub const PROJECT_URL: &str = "http://10.10.10.5:3000/kxn/my_ipkvm";
 
@@ -66,6 +69,12 @@ pub struct RecordingSink {
     pub pointer_batches: Arc<std::sync::Mutex<usize>>,
     /// 按到达顺序记录的键事件（down, HID usage）。
     pub key_events: Arc<std::sync::Mutex<Vec<(bool, u8)>>>,
+    /// 按到达顺序记录的绝对指针坐标（x, y）。
+    pub absolute_moves: Arc<std::sync::Mutex<Vec<(u16, u16)>>>,
+    /// 按到达顺序记录的相对指针增量（dx, dy）。
+    pub relative_deltas: Arc<std::sync::Mutex<Vec<(i16, i16)>>>,
+    /// release_all 调用次数。
+    pub releases: Arc<std::sync::Mutex<usize>>,
 }
 
 impl InputSink for RecordingSink {
@@ -87,10 +96,22 @@ impl InputSink for RecordingSink {
 
     fn handle_pointer_batch(&mut self, _events: &[PointerEvent]) -> Result<(), InputError> {
         *self.pointer_batches.lock().unwrap() += 1;
+        let mut absolute_moves = self.absolute_moves.lock().unwrap();
+        let mut relative_deltas = self.relative_deltas.lock().unwrap();
+        for event in _events {
+            match event {
+                PointerEvent::AbsoluteMove { x, y, .. } => {
+                    absolute_moves.push((*x as u16, *y as u16));
+                }
+                PointerEvent::RelativeMove { dx, dy } => relative_deltas.push((*dx, *dy)),
+                _ => {}
+            }
+        }
         Ok(())
     }
 
     fn release_all(&mut self) -> Result<(), InputError> {
+        *self.releases.lock().unwrap() += 1;
         Ok(())
     }
 }
@@ -212,6 +233,11 @@ where
     relative_sampler: DeltaSampler,
     relative_wheel: i8,
     pointer_mask: u8,
+    video_bounds: std::rc::Rc<std::cell::RefCell<Option<iced::Rectangle>>>,
+    last_cursor: Option<iced::Point>,
+    scale_factor: f32,
+    last_pointer_sent: Option<(u8, u16, u16)>,
+    last_pointer_sent_at: Option<std::time::Instant>,
     paste_busy: bool,
     recording: Option<RecordingSink>,
     clipboard: Arc<dyn ClipboardReader>,
@@ -275,6 +301,11 @@ impl App<RecordingSink, MockFactory> {
             relative_sampler: DeltaSampler::new(Duration::from_millis(33)),
             relative_wheel: 0,
             pointer_mask: 0,
+            video_bounds: std::rc::Rc::new(std::cell::RefCell::new(None)),
+            last_cursor: None,
+            scale_factor: 1.0,
+            last_pointer_sent: None,
+            last_pointer_sent_at: None,
             paste_busy: false,
             recording: Some(recording),
             clipboard: Arc::new(SystemClipboard),
@@ -327,6 +358,11 @@ impl App<Ch9329InputSink<SerialCommandQueue>, ProductionSessionFactory> {
             relative_sampler: DeltaSampler::new(Duration::from_millis(33)),
             relative_wheel: 0,
             pointer_mask: 0,
+            video_bounds: std::rc::Rc::new(std::cell::RefCell::new(None)),
+            last_cursor: None,
+            scale_factor: 1.0,
+            last_pointer_sent: None,
+            last_pointer_sent_at: None,
             paste_busy: false,
             recording: None,
             clipboard: Arc::new(SystemClipboard),
@@ -678,6 +714,12 @@ where
                 let _ = self.controller.flush_pending();
                 self.drain_notices();
                 self.poll_relative();
+                if self.remote_input
+                    && self.connection.mouse_mode == MouseMode::Absolute
+                    && let Some(cursor) = self.last_cursor
+                {
+                    self.send_absolute(cursor);
+                }
                 Task::none()
             }
         }
@@ -992,20 +1034,155 @@ where
             return;
         }
         match event {
+            iced::Event::Window(iced::window::Event::Rescaled(factor)) => {
+                self.scale_factor = factor.max(0.1);
+            }
+            iced::Event::Window(iced::window::Event::Unfocused) => {
+                self.exit_remote_input();
+            }
+            iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
+                self.last_cursor = Some(position);
+                if self.remote_input && self.connection.mouse_mode == MouseMode::Absolute {
+                    self.send_absolute(position);
+                }
+            }
             iced::Event::Mouse(iced::mouse::Event::ButtonPressed(button)) => {
                 self.pointer_mask |= mouse_button_bit(button);
-                if !self.remote_input {
-                    self.remote_input = true;
+                if self.pointer_inside_video() {
+                    if !self.remote_input {
+                        self.enter_remote_input();
+                    }
+                } else if self.remote_input {
+                    self.exit_remote_input();
+                }
+                if self.remote_input && self.connection.mouse_mode == MouseMode::Absolute {
+                    if let Some(cursor) = self.last_cursor {
+                        self.send_absolute(cursor);
+                    }
                 }
             }
             iced::Event::Mouse(iced::mouse::Event::ButtonReleased(button)) => {
                 self.pointer_mask &= !mouse_button_bit(button);
+                if self.remote_input && self.connection.mouse_mode == MouseMode::Absolute {
+                    if let Some(cursor) = self.last_cursor {
+                        self.send_absolute(cursor);
+                    }
+                }
             }
             iced::Event::Mouse(iced::mouse::Event::WheelScrolled { delta }) => {
-                self.relative_wheel = self.relative_wheel.saturating_add(wheel_steps(delta));
+                if self.remote_input {
+                    self.relative_wheel = self.relative_wheel.saturating_add(wheel_steps(delta));
+                    if self.connection.mouse_mode == MouseMode::Absolute
+                        && let Some(cursor) = self.last_cursor
+                    {
+                        self.send_absolute(cursor);
+                    }
+                }
             }
             _ => {}
         }
+    }
+
+    fn pointer_inside_video(&self) -> bool {
+        match (*self.video_bounds.borrow(), self.last_cursor) {
+            // bounds 尚未记录（首帧前）或无光标位置：兼容进入，避免既有测试/首帧行为变化。
+            (None, _) => true,
+            (Some(_), None) => true,
+            (Some(rect), Some(p)) => {
+                p.x >= rect.x
+                    && p.x <= rect.x + rect.width
+                    && p.y >= rect.y
+                    && p.y <= rect.y + rect.height
+            }
+        }
+    }
+
+    fn enter_remote_input(&mut self) {
+        self.remote_input = true;
+        // 光标隐藏/锁定由下一步 Task 7b 接线。
+    }
+
+    fn exit_remote_input(&mut self) {
+        if !self.remote_input {
+            return;
+        }
+        self.remote_input = false;
+        self.pointer_mask = 0;
+        // 对齐 egui 退出语义：复位去重/限频状态，避免重进同位置点击被节流吞掉。
+        self.last_pointer_sent = None;
+        self.last_pointer_sent_at = None;
+        let _ = self.controller.release_all();
+        // 光标恢复由 Task 7b 接线。
+    }
+
+    fn send_absolute(&mut self, cursor: iced::Point) {
+        let Some(rect) = *self.video_bounds.borrow() else {
+            return;
+        };
+        let Some(frame) = self.frame_size else {
+            return;
+        };
+        let video_rect = crate::scale::frame_rect(
+            crate::scale::Rect::from_min_size(rect.x, rect.y, rect.width, rect.height),
+            frame,
+            self.scale_mode,
+        );
+        let Some((x, y)) = crate::scale::map_pointer((cursor.x, cursor.y), video_rect, frame)
+        else {
+            return;
+        };
+        let now = Instant::now();
+        let mask_changed = self
+            .last_pointer_sent
+            .is_some_and(|(last_mask, _, _)| last_mask != self.pointer_mask);
+        if mask_changed
+            || crate::input::throttle_elapsed(now, self.last_pointer_sent_at, POINTER_MIN_INTERVAL)
+        {
+            if crate::input::pointer_changed((self.pointer_mask, x, y), self.last_pointer_sent) {
+                let session_frame = ipkvm_desktop::FrameSize {
+                    width: frame.width,
+                    height: frame.height,
+                };
+                if let Err(error) =
+                    self.controller
+                        .send_pointer(self.pointer_mask, x, y, session_frame)
+                {
+                    self.status_message = Some(
+                        t!("message.pointer_send_failed", error = error.to_string()).to_string(),
+                    );
+                }
+                self.last_pointer_sent = Some((self.pointer_mask, x, y));
+                self.last_pointer_sent_at = Some(now);
+            }
+        }
+        let wheel = self.relative_wheel;
+        if wheel != 0 {
+            if let Err(error) =
+                self.controller
+                    .send_pointer_relative(self.pointer_mask, 0, 0, wheel)
+            {
+                self.status_message =
+                    Some(t!("message.pointer_send_failed", error = error.to_string()).to_string());
+            }
+            self.relative_wheel = 0;
+        }
+    }
+
+    /// 视频比：目标帧像素 / 视频区逻辑点；bounds 或帧未知时回退 (1,1)。
+    fn video_ratio(&self) -> (f32, f32) {
+        let Some(rect) = *self.video_bounds.borrow() else {
+            return (1.0, 1.0);
+        };
+        let Some(frame) = self.frame_size else {
+            return (1.0, 1.0);
+        };
+        if rect.width <= 0.0 || rect.height <= 0.0 {
+            return (1.0, 1.0);
+        }
+        (
+            frame.width as f32 / rect.width,
+            frame.height as f32 / rect.height,
+        )
     }
 
     fn send_key_action(&mut self, action: KeyAction) {
@@ -1068,7 +1245,11 @@ where
             acc.1 += f32::from(dy);
         }
         let now = Instant::now();
-        if let Some((dx, dy)) = self.relative_sampler.feed(acc.0, acc.1, now) {
+        let sensitivity = self.connection.relative_sensitivity;
+        let ratio = self.video_ratio();
+        let (dx, dy) =
+            crate::input::scale_relative_delta(acc.0, acc.1, self.scale_factor, sensitivity, ratio);
+        if let Some((dx, dy)) = self.relative_sampler.feed(dx, dy, now) {
             let wheel = self.relative_wheel;
             if dx != 0 || dy != 0 || wheel != 0 || self.pointer_mask != 0 {
                 if let Err(error) =
@@ -1269,7 +1450,9 @@ where
                     .color(Color::from_rgba(1.0, 1.0, 1.0, 0.20)),
                 ..Default::default()
             });
-        column![video_area].into()
+        let recorded =
+            crate::video_area::BoundsRecorder::new(self.video_bounds.clone(), video_area.into());
+        column![recorded].into()
     }
 
     fn connection_view(&self) -> Element<'_, Message> {
@@ -2397,6 +2580,164 @@ mod tests {
                 break;
             }
             assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    /// 构造绝对模式 + 320x180 视频区/帧就绪的 app（点击进入语义由专门用例覆盖）。
+    fn absolute_video_app() -> MockApp {
+        let (mut app, _) = MockApp::new_mock();
+        app.connection.mouse_mode = MouseMode::Absolute;
+        *app.video_bounds.borrow_mut() = Some(iced::Rectangle::new(
+            iced::Point::ORIGIN,
+            iced::Size::new(320.0, 180.0),
+        ));
+        app.frame_size = Some(FrameSize {
+            width: 320,
+            height: 180,
+        });
+        app
+    }
+
+    fn move_cursor(app: &mut MockApp, x: f32, y: f32) {
+        let _ = app.update(Message::IcedEvent(iced::Event::Mouse(
+            iced::mouse::Event::CursorMoved {
+                position: iced::Point::new(x, y),
+            },
+        )));
+    }
+
+    fn press_button(app: &mut MockApp, button: iced::mouse::Button) {
+        let _ = app.update(Message::IcedEvent(iced::Event::Mouse(
+            iced::mouse::Event::ButtonPressed(button),
+        )));
+    }
+
+    fn wait_releases(app: &MockApp, count: usize) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if let Some(sink) = app.recording_sink() {
+                let releases = sink.releases.lock().unwrap();
+                if *releases >= count {
+                    return;
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "release_all 调用未达 {count} 次"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn absolute_cursor_move_sends_mapped_coordinates() {
+        let mut app = absolute_video_app();
+
+        // 绝对模式移动本身不进入远程输入（点击视频区才进入）。
+        move_cursor(&mut app, 160.0, 90.0);
+        assert!(!app.remote_input, "移动不得进入远程输入");
+        assert!(
+            app.recording_sink()
+                .unwrap()
+                .absolute_moves
+                .lock()
+                .unwrap()
+                .is_empty(),
+            "未进入远程输入时移动不得发送绝对指针"
+        );
+
+        // 远程输入激活后移动：窗口坐标映射到帧内坐标并发送。
+        app.remote_input = true;
+        move_cursor(&mut app, 80.0, 45.0);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if let Some(sink) = app.recording_sink() {
+                let moves = sink.absolute_moves.lock().unwrap();
+                if moves.iter().any(|&(x, y)| x == 80 && y == 45) {
+                    break;
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "绝对指针 (80,45) 未达 sink"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(app.remote_input, "移动不得退出远程输入");
+    }
+
+    #[test]
+    fn click_inside_video_enters_remote_input() {
+        let mut app = absolute_video_app();
+        move_cursor(&mut app, 160.0, 90.0);
+        assert!(!app.remote_input, "移动不得进入远程输入");
+        press_button(&mut app, iced::mouse::Button::Left);
+        assert!(app.remote_input, "点击视频区必须进入远程输入");
+    }
+
+    #[test]
+    fn click_outside_video_exits_remote_input() {
+        let mut app = absolute_video_app();
+        // 先进入。
+        move_cursor(&mut app, 160.0, 90.0);
+        press_button(&mut app, iced::mouse::Button::Left);
+        assert!(app.remote_input);
+        // 点击视频区外：退出并释放全部按键。
+        move_cursor(&mut app, 500.0, 500.0);
+        press_button(&mut app, iced::mouse::Button::Left);
+        assert!(!app.remote_input, "点击视频区外必须退出远程输入");
+        wait_releases(&app, 1);
+    }
+
+    #[test]
+    fn window_unfocused_exits_remote_input() {
+        let mut app = absolute_video_app();
+        move_cursor(&mut app, 160.0, 90.0);
+        press_button(&mut app, iced::mouse::Button::Left);
+        assert!(app.remote_input);
+        let _ = app.update(Message::IcedEvent(iced::Event::Window(
+            iced::window::Event::Unfocused,
+        )));
+        assert!(!app.remote_input, "窗口失焦必须退出远程输入");
+        wait_releases(&app, 1);
+    }
+
+    #[test]
+    fn window_rescaled_stores_scale_factor() {
+        let (mut app, _) = MockApp::new_mock();
+        assert_eq!(app.scale_factor, 1.0);
+        let _ = app.update(Message::IcedEvent(iced::Event::Window(
+            iced::window::Event::Rescaled(2.5),
+        )));
+        assert_eq!(app.scale_factor, 2.5);
+        let _ = app.update(Message::IcedEvent(iced::Event::Window(
+            iced::window::Event::Rescaled(0.0),
+        )));
+        assert_eq!(app.scale_factor, 0.1);
+    }
+
+    #[test]
+    fn relative_sensitivity_scales_delta() {
+        let (mut app, _) = MockApp::new_mock();
+        app.connection.relative_sensitivity = 2.0;
+        let factory = Arc::new(crate::relative::ChannelRelativeFactory::new());
+        app.relative_factory = factory.clone();
+        enter_remote(&mut app);
+        let _ = app.update(Message::SetMouseMode(MouseMode::Relative));
+        let _ = app.update(Message::UiTick); // 启动相对源
+        factory.push(1, 0);
+        let _ = app.update(Message::UiTick); // 采样并发送
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if let Some(sink) = app.recording_sink() {
+                let deltas = sink.relative_deltas.lock().unwrap();
+                if !deltas.is_empty() {
+                    assert_eq!(deltas[0], (2, 0), "灵敏度 2.0 必须把 (1,0) 放大为 (2,0)");
+                    break;
+                }
+            }
+            assert!(std::time::Instant::now() < deadline, "相对增量未达 sink");
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
     }

@@ -19,6 +19,8 @@ pub use session::{
     ConnectRequest, DesktopSessionController, DesktopSessionError,
     ProductionDesktopSessionController, ProductionSessionFactory, SessionParts,
 };
+// send_pointer 的参数类型对 iced 前端必须是可命名的公开类型（#102 绝对指针发送）。
+pub use render::FrameSize;
 
 use thiserror::Error;
 
