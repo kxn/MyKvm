@@ -6,6 +6,7 @@ members = [
     "crates/ipkvm-session",
     "crates/ipkvm-rfb",
     "crates/ipkvm-desktop",
+    "crates/ipkvm-desktop-iced",
     "crates/ipkvm-headless",
     "crates/ipkvm-desktop-iced-spike",
 ]
