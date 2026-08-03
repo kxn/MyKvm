@@ -11,6 +11,7 @@ use iced::Size;
 use rust_i18n::t;
 
 pub mod app;
+pub mod clipboard;
 pub mod connect;
 pub mod frames;
 pub mod input;

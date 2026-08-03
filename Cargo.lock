@@ -2659,6 +2659,7 @@ dependencies = [
 name = "ipkvm-desktop-iced"
 version = "0.1.0"
 dependencies = [
+ "arboard",
  "async-stream",
  "futures-util",
  "iced",
