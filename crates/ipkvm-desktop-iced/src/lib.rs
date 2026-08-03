@@ -30,6 +30,7 @@ pub mod scale;
 pub mod status;
 pub mod theme;
 pub mod video;
+pub mod video_area;
 
 /// 窗口标题（M5 将嵌入 GIT_COMMIT）。
 pub const WINDOW_TITLE: &str = "my_ipkvm iced (M0)";
