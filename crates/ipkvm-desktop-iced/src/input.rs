@@ -14,6 +14,21 @@ pub const XK_TAB: u32 = 0xff09;
 pub const XK_PRINT: u32 = 0xff61;
 pub const XK_DELETE: u32 = 0xffff;
 
+/// 相对灵敏度与 DPI/视频比换算：raw / scale_factor * sensitivity * ratio。
+pub fn scale_relative_delta(
+    dx: f32,
+    dy: f32,
+    scale_factor: f32,
+    sensitivity: f32,
+    ratio: (f32, f32),
+) -> (f32, f32) {
+    let scale = scale_factor.max(0.1);
+    (
+        dx / scale * sensitivity * ratio.0,
+        dy / scale * sensitivity * ratio.1,
+    )
+}
+
 /// 键盘动作：按下/抬起某个 keysym。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum KeyAction {
@@ -298,5 +313,41 @@ mod tests {
             Some(start),
             Duration::from_millis(33)
         ));
+    }
+
+    #[test]
+    fn scale_relative_delta_identity_at_unit_scale() {
+        assert_eq!(
+            scale_relative_delta(3.0, 4.0, 1.0, 1.0, (1.0, 1.0)),
+            (3.0, 4.0)
+        );
+    }
+
+    #[test]
+    fn scale_relative_delta_divides_by_scale_factor() {
+        let (dx, dy) = scale_relative_delta(2.5, 5.0, 2.5, 1.0, (1.0, 1.0));
+        assert!((dx - 1.0).abs() < 1e-6, "dx={dx}");
+        assert!((dy - 2.0).abs() < 1e-6, "dy={dy}");
+    }
+
+    #[test]
+    fn scale_relative_delta_applies_sensitivity() {
+        let (dx, dy) = scale_relative_delta(1.0, 1.0, 1.0, 2.0, (1.0, 1.0));
+        assert!((dx - 2.0).abs() < 1e-6, "dx={dx}");
+        assert!((dy - 2.0).abs() < 1e-6, "dy={dy}");
+    }
+
+    #[test]
+    fn scale_relative_delta_applies_ratio_per_axis() {
+        let (dx, dy) = scale_relative_delta(1.0, 1.0, 1.0, 1.0, (2.0, 1.0));
+        assert!((dx - 2.0).abs() < 1e-6, "dx={dx}");
+        assert!((dy - 1.0).abs() < 1e-6, "dy={dy}");
+    }
+
+    #[test]
+    fn scale_relative_delta_zero_scale_falls_back_to_minimum() {
+        let (dx, dy) = scale_relative_delta(1.0, 1.0, 0.0, 1.0, (1.0, 1.0));
+        assert!((dx - 10.0).abs() < 1e-6, "dx={dx}");
+        assert!((dy - 10.0).abs() < 1e-6, "dy={dy}");
     }
 }
