@@ -13,6 +13,7 @@ use rust_i18n::t;
 pub mod app;
 pub mod connect;
 pub mod frames;
+pub mod keymap;
 pub mod locale;
 pub mod menu;
 pub mod modal;
