@@ -1,4 +1,4 @@
-﻿//! Spike 2 走廊 hover 验证（自绘菜单）：父项 → 子菜单连续穿越 100 次，误关闭 = 0。
+//! Spike 2 走廊 hover 验证（自绘菜单）：父项 → 子菜单连续穿越 100 次，误关闭 = 0。
 //!
 //! 测试真实自绘 overlay：先打开 File → Recent 子菜单，再拿父项/子项的真实
 //! visible_bounds 计算走廊中点，逐点注入 CursorMoved 并断言没有任何
@@ -75,4 +75,3 @@ fn corridor_hover_100_crossings_zero_misclose() {
         "100 次走廊穿越后误关闭次数必须为 0（实际 {misclose}）"
     );
 }
-

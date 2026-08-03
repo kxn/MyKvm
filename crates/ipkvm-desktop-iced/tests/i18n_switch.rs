@@ -1,4 +1,4 @@
-﻿//! Spike 2 i18n 切换验证：zh↔en 菜单文案切换、显示译文而非 key 原文。
+//! Spike 2 i18n 切换验证：zh↔en 菜单文案切换、显示译文而非 key 原文。
 
 mod common;
 
@@ -122,4 +122,3 @@ fn labels_are_single_line_no_newline() {
         }
     }
 }
-

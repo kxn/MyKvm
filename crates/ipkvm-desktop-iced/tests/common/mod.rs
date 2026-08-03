@@ -1,4 +1,4 @@
-﻿//! 菜单/模态测试共享 harness：持有 MenuState，驱动消息 → 状态 → 重建 view。
+//! 菜单/模态测试共享 harness：持有 MenuState，驱动消息 → 状态 → 重建 view。
 
 use iced::Element;
 use iced::widget::{button, stack, text};
@@ -51,4 +51,3 @@ impl MenuHarness {
         simulator::simulator(self.view())
     }
 }
-

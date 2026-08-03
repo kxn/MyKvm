@@ -163,9 +163,11 @@ mod tests {
 
     #[test]
     fn apply_profile_selects_matching_devices() {
-        let mut state = DeviceSelectionState::default();
-        state.video_devices = vec![option("cam0", "Camera 0")];
-        state.control_devices = vec![option("COM9", "CH9329 (COM9)")];
+        let mut state = DeviceSelectionState {
+            video_devices: vec![option("cam0", "Camera 0")],
+            control_devices: vec![option("COM9", "CH9329 (COM9)")],
+            ..DeviceSelectionState::default()
+        };
         let missing = apply_profile_to_selection(&mut state, &profile());
         assert_eq!(missing, MissingDevices::default());
         assert_eq!(state.selected_video_id.as_deref(), Some("cam0"));

@@ -1,4 +1,4 @@
-﻿//! Spike 2 菜单交互验证（自绘菜单）：4 顶层菜单可打开；子菜单深度 ≥3；
+//! Spike 2 菜单交互验证（自绘菜单）：4 顶层菜单可打开；子菜单深度 ≥3；
 //! 业务动作可触发；Esc / 点击外部可关闭。
 
 mod common;
@@ -200,4 +200,3 @@ fn outside_click_closes_menu_without_reaching_background() {
     h.drive(ui);
     assert_eq!(h.bg_hits, 1, "菜单关闭后背景必须恢复响应");
 }
-
