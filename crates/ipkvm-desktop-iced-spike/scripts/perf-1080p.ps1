@@ -1,6 +1,6 @@
 # Spike 1 performance collection script (PowerShell, PS5-compatible).
 #
-# Launches the video_1080p example (release), samples process CPU/memory for the
+# Launches the video_1080p_spike example (release), samples process CPU/memory for the
 # given duration, reads frame stats from the example's stats JSON file, and
 # judges PASS/FAIL against #73 Spike 1 thresholds.
 #
@@ -22,10 +22,10 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $repoRoot = (Resolve-Path (Join-Path (Join-Path (Join-Path $PSScriptRoot "..") "..") "..")).Path
-$example = Join-Path $repoRoot "target\release\examples\video_1080p.exe"
+$example = Join-Path $repoRoot "target\release\examples\video_1080p_spike.exe"
 
 if (-not (Test-Path -LiteralPath $example)) {
-    Write-Error "Release example not found: $example. Run first: cargo build -p ipkvm-desktop-iced-spike --example video_1080p --release"
+    Write-Error "Release example not found: $example. Run first: cargo build -p ipkvm-desktop-iced-spike --example video_1080p_spike --release"
 }
 
 $expectedFrames = $DurationSec * $SourceFps
