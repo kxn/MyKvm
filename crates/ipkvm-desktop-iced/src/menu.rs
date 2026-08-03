@@ -11,7 +11,6 @@
 //! 状态机（open_root/open_path）在 app 侧持有，widget 是纯展示 + 事件转发；
 //! 这样 headless 测试可以逐条驱动：点击 → 收集消息 → 更新状态 → 重建 view。
 
-use iced::advanced::Renderer as _;
 use iced::advanced::layout;
 use iced::advanced::overlay::{self, Overlay};
 use iced::advanced::renderer::Quad;
@@ -26,7 +25,7 @@ use rust_i18n::t;
 
 use crate::modal::ModalKind;
 
-type MenuElement<'a> = Element<'a, MenuAction, iced::Theme, iced::Renderer>;
+type MenuElement<'a, R> = Element<'a, MenuAction, iced::Theme, R>;
 
 /// 菜单动作：既有业务动作，也有自绘菜单的内部状态消息（Open* / Close*）。
 #[derive(Clone, Debug, PartialEq)]
@@ -150,7 +149,10 @@ pub struct MenuRoot {
 }
 
 /// 构建完整菜单栏 Element（顶层为一行根按钮，弹出菜单走 overlay）。
-pub fn menu_bar<'a>(state: &MenuState, recent_profiles: &[&str]) -> MenuElement<'a> {
+pub fn menu_bar<'a, R>(state: &MenuState, recent_profiles: &[&str]) -> MenuElement<'a, R>
+where
+    R: iced::advanced::Renderer + iced::advanced::text::Renderer + 'a,
+{
     let roots = vec![
         file_menu(recent_profiles),
         edit_menu(),
@@ -320,20 +322,23 @@ fn about_menu() -> MenuRoot {
 const ITEM_SPACING: f32 = 4.0;
 const SUBMENU_GAP: f32 = 2.0;
 
-struct MenuBar<'a> {
+struct MenuBar<'a, R> {
     roots: Vec<MenuRoot>,
     open_root: Option<usize>,
     open_path: Vec<usize>,
-    labels: Vec<MenuElement<'a>>,
+    labels: Vec<MenuElement<'a, R>>,
 }
 
-impl<'a> From<MenuBar<'a>> for MenuElement<'a> {
-    fn from(bar: MenuBar<'a>) -> Self {
+impl<'a, R> From<MenuBar<'a, R>> for MenuElement<'a, R>
+where
+    R: iced::advanced::Renderer + iced::advanced::text::Renderer + 'a,
+{
+    fn from(bar: MenuBar<'a, R>) -> Self {
         Element::new(bar)
     }
 }
 
-impl MenuBar<'_> {
+impl<R> MenuBar<'_, R> {
     fn root_label_rect(&self, layout: Layout<'_>, index: usize) -> Rectangle {
         layout
             .children()
@@ -351,7 +356,10 @@ impl MenuBar<'_> {
     }
 }
 
-impl Widget<MenuAction, iced::Theme, iced::Renderer> for MenuBar<'_> {
+impl<R> Widget<MenuAction, iced::Theme, R> for MenuBar<'_, R>
+where
+    R: iced::advanced::Renderer + iced::advanced::text::Renderer,
+{
     fn tag(&self) -> tree::Tag {
         tree::Tag::of::<()>()
     }
@@ -372,12 +380,7 @@ impl Widget<MenuAction, iced::Theme, iced::Renderer> for MenuBar<'_> {
         Size::new(Length::Fill, Length::Shrink)
     }
 
-    fn layout(
-        &mut self,
-        tree: &mut Tree,
-        renderer: &iced::Renderer,
-        limits: &layout::Limits,
-    ) -> layout::Node {
+    fn layout(&mut self, tree: &mut Tree, renderer: &R, limits: &layout::Limits) -> layout::Node {
         let mut x: f32 = 0.0;
         let mut height: f32 = 0.0;
         let mut nodes = Vec::with_capacity(self.labels.len());
@@ -399,7 +402,7 @@ impl Widget<MenuAction, iced::Theme, iced::Renderer> for MenuBar<'_> {
         &mut self,
         tree: &mut Tree,
         layout: Layout<'_>,
-        renderer: &iced::Renderer,
+        renderer: &R,
         operation: &mut dyn Operation,
     ) {
         operation.container(None, layout.bounds());
@@ -418,7 +421,7 @@ impl Widget<MenuAction, iced::Theme, iced::Renderer> for MenuBar<'_> {
         event: &Event,
         layout: Layout<'_>,
         cursor: mouse::Cursor,
-        _renderer: &iced::Renderer,
+        _renderer: &R,
         _clipboard: &mut dyn Clipboard,
         shell: &mut Shell<'_, MenuAction>,
         _viewport: &Rectangle,
@@ -465,7 +468,7 @@ impl Widget<MenuAction, iced::Theme, iced::Renderer> for MenuBar<'_> {
         layout: Layout<'_>,
         cursor: mouse::Cursor,
         _viewport: &Rectangle,
-        _renderer: &iced::Renderer,
+        _renderer: &R,
     ) -> mouse::Interaction {
         // 只有悬停在某个根按钮文字上才声明 Pointer；整行声明会把下层
         // 同高度控件的光标置为 Unavailable，导致其收不到点击。
@@ -485,7 +488,7 @@ impl Widget<MenuAction, iced::Theme, iced::Renderer> for MenuBar<'_> {
     fn draw(
         &self,
         tree: &Tree,
-        renderer: &mut iced::Renderer,
+        renderer: &mut R,
         theme: &iced::Theme,
         style: &renderer::Style,
         layout: Layout<'_>,
@@ -520,17 +523,17 @@ impl Widget<MenuAction, iced::Theme, iced::Renderer> for MenuBar<'_> {
         &'b mut self,
         _tree: &'b mut Tree,
         layout: Layout<'b>,
-        _renderer: &iced::Renderer,
+        _renderer: &R,
         _viewport: &Rectangle,
         _translation: Vector,
-    ) -> Option<overlay::Element<'b, MenuAction, iced::Theme, iced::Renderer>> {
+    ) -> Option<overlay::Element<'b, MenuAction, iced::Theme, R>> {
         let index = self.open_root?;
         let root = self.roots.get(index)?;
         let anchor = self.root_label_rect(layout, index);
         let popup = MenuPopup {
             items: root.items.clone(),
             widgets: root.items.iter().map(label_element).collect(),
-            tree: popup_tree(&root.items),
+            tree: popup_tree::<R>(&root.items),
             prefix: Vec::new(),
             open_path: self.open_path.clone(),
             parent_rect: Some(anchor),
@@ -545,9 +548,9 @@ impl Widget<MenuAction, iced::Theme, iced::Renderer> for MenuBar<'_> {
 // 菜单弹出层 Overlay（可嵌套）
 // ---------------------------------------------------------------------------
 
-struct MenuPopup<'a> {
+struct MenuPopup<'a, R> {
     items: Vec<MenuItem>,
-    widgets: Vec<MenuElement<'a>>,
+    widgets: Vec<MenuElement<'a, R>>,
     /// 子控件树（overlay 没有框架传入的 tree，这里自持）。
     tree: Tree,
     /// 本弹出层在根菜单中的 item 路径前缀（发布 OpenSubmenu 时用绝对路径）。
@@ -562,8 +565,11 @@ struct MenuPopup<'a> {
     is_submenu: bool,
 }
 
-impl Overlay<MenuAction, iced::Theme, iced::Renderer> for MenuPopup<'_> {
-    fn layout(&mut self, renderer: &iced::Renderer, _bounds: Size) -> layout::Node {
+impl<R> Overlay<MenuAction, iced::Theme, R> for MenuPopup<'_, R>
+where
+    R: iced::advanced::Renderer + iced::advanced::text::Renderer,
+{
+    fn layout(&mut self, renderer: &R, _bounds: Size) -> layout::Node {
         let mut y: f32 = 0.0;
         let mut width: f32 = 0.0;
         let mut nodes = Vec::with_capacity(self.widgets.len());
@@ -582,12 +588,7 @@ impl Overlay<MenuAction, iced::Theme, iced::Renderer> for MenuPopup<'_> {
         layout::Node::with_children(Size::new(width, y - ITEM_SPACING), nodes).move_to(anchor)
     }
 
-    fn operate(
-        &mut self,
-        layout: Layout<'_>,
-        renderer: &iced::Renderer,
-        operation: &mut dyn Operation,
-    ) {
+    fn operate(&mut self, layout: Layout<'_>, renderer: &R, operation: &mut dyn Operation) {
         operation.container(None, layout.bounds());
         operation.traverse(&mut |operation| {
             for (i, (widget, child)) in self.widgets.iter_mut().zip(layout.children()).enumerate() {
@@ -606,7 +607,7 @@ impl Overlay<MenuAction, iced::Theme, iced::Renderer> for MenuPopup<'_> {
         event: &Event,
         layout: Layout<'_>,
         cursor: mouse::Cursor,
-        _renderer: &iced::Renderer,
+        _renderer: &R,
         _clipboard: &mut dyn Clipboard,
         shell: &mut Shell<'_, MenuAction>,
     ) {
@@ -655,7 +656,7 @@ impl Overlay<MenuAction, iced::Theme, iced::Renderer> for MenuPopup<'_> {
         &self,
         layout: Layout<'_>,
         cursor: mouse::Cursor,
-        _renderer: &iced::Renderer,
+        _renderer: &R,
     ) -> mouse::Interaction {
         if cursor.is_over(layout.bounds()) {
             mouse::Interaction::Pointer
@@ -666,7 +667,7 @@ impl Overlay<MenuAction, iced::Theme, iced::Renderer> for MenuPopup<'_> {
 
     fn draw(
         &self,
-        renderer: &mut iced::Renderer,
+        renderer: &mut R,
         theme: &iced::Theme,
         style: &renderer::Style,
         layout: Layout<'_>,
@@ -737,8 +738,8 @@ impl Overlay<MenuAction, iced::Theme, iced::Renderer> for MenuPopup<'_> {
     fn overlay<'b>(
         &'b mut self,
         layout: Layout<'b>,
-        _renderer: &iced::Renderer,
-    ) -> Option<overlay::Element<'b, MenuAction, iced::Theme, iced::Renderer>> {
+        _renderer: &R,
+    ) -> Option<overlay::Element<'b, MenuAction, iced::Theme, R>> {
         let i = *self.open_path.first()?;
         let item = self.items.get(i)?;
         if item.submenu.is_empty() {
@@ -750,7 +751,7 @@ impl Overlay<MenuAction, iced::Theme, iced::Renderer> for MenuPopup<'_> {
         let child = MenuPopup {
             items: item.submenu.clone(),
             widgets: item.submenu.iter().map(label_element).collect(),
-            tree: popup_tree(&item.submenu),
+            tree: popup_tree::<R>(&item.submenu),
             prefix,
             open_path: self.open_path[1..].to_vec(),
             parent_rect: Some(parent_rect),
@@ -761,7 +762,7 @@ impl Overlay<MenuAction, iced::Theme, iced::Renderer> for MenuPopup<'_> {
     }
 }
 
-impl MenuPopup<'_> {
+impl<R> MenuPopup<'_, R> {
     fn anchor(&self) -> Point {
         match (self.parent_rect, self.is_submenu) {
             (Some(rect), true) => Point::new(rect.x + rect.width + SUBMENU_GAP, rect.y),
@@ -831,7 +832,10 @@ pub fn item_has_arrow(item: &MenuItem) -> bool {
     !item.separator && !item.submenu.is_empty()
 }
 
-fn label_element<'a>(item: &MenuItem) -> MenuElement<'a> {
+fn label_element<'a, R>(item: &MenuItem) -> MenuElement<'a, R>
+where
+    R: iced::advanced::Renderer + iced::advanced::text::Renderer + 'a,
+{
     if item_has_arrow(item) {
         iced::widget::row![text(item_label(item)), text("›")]
             .spacing(8)
@@ -842,13 +846,16 @@ fn label_element<'a>(item: &MenuItem) -> MenuElement<'a> {
 }
 
 /// 为弹出层构造子控件树：每个 item 一个 text 子树。
-fn popup_tree(items: &[MenuItem]) -> Tree {
+fn popup_tree<R>(items: &[MenuItem]) -> Tree
+where
+    R: iced::advanced::Renderer + iced::advanced::text::Renderer,
+{
     Tree {
         tag: tree::Tag::stateless(),
         state: tree::State::None,
         children: items
             .iter()
-            .map(|item| Tree::new(label_element(item)))
+            .map(|item| Tree::new(label_element::<R>(item)))
             .collect(),
     }
 }
