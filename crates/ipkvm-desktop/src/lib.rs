@@ -5,6 +5,7 @@ mod fonts;
 mod frame;
 mod input;
 mod locale;
+mod menus;
 mod probe;
 mod render;
 mod session;
