@@ -35,5 +35,5 @@ ipkvm-video = { path = "../ipkvm-video", features = ["mock"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [[example]]
-name = "video_1080p"
+name = "video_1080p_spike"
 path = "examples/video_1080p.rs"

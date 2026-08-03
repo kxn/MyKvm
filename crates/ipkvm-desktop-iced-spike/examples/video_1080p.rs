@@ -5,7 +5,7 @@
 //!
 //! `--duration N`：运行 N 秒后自动退出并打印 JSON 总结（帧数/平均/p95 帧间隔）。
 //!
-//! 运行：`cargo run -p ipkvm-desktop-iced-spike --example video_1080p --release -- --duration 120`
+//! 运行：`cargo run -p ipkvm-desktop-iced-spike --example video_1080p_spike --release -- --duration 120`
 
 use std::io::Write;
 use std::sync::Arc;
