@@ -65,6 +65,9 @@ mod tests {
                 assert!(!s.label(zh).is_empty());
             }
         }
-        assert_ne!(ConnectionStatus::Connected.label(true), ConnectionStatus::Connected.label(false));
+        assert_ne!(
+            ConnectionStatus::Connected.label(true),
+            ConnectionStatus::Connected.label(false)
+        );
     }
 }

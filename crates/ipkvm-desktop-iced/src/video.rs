@@ -5,7 +5,10 @@ use ipkvm_video::VideoFrame;
 
 pub fn bgra_to_rgba(frame: &VideoFrame) -> Result<Vec<u8>, String> {
     if frame.pixel_format != ipkvm_video::PixelFormat::Bgra8888 {
-        return Err(format!("unsupported pixel format: {:?}", frame.pixel_format));
+        return Err(format!(
+            "unsupported pixel format: {:?}",
+            frame.pixel_format
+        ));
     }
     let width = frame.width as usize;
     let height = frame.height as usize;
@@ -17,7 +20,10 @@ pub fn bgra_to_rgba(frame: &VideoFrame) -> Result<Vec<u8>, String> {
         return Err("frame stride or size overflow".into());
     };
     if frame.data.len() < required {
-        return Err(format!("frame data too short: need {required}, got {}", frame.data.len()));
+        return Err(format!(
+            "frame data too short: need {required}, got {}",
+            frame.data.len()
+        ));
     }
     let mut pixels = vec![0u8; width * height * 4];
     for y in 0..height {
@@ -40,12 +46,19 @@ pub fn handle_from_frame(frame: &VideoFrame) -> Handle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Arc;
     use ipkvm_video::{MonotonicTimestamp, PixelFormat, VideoFrame};
+    use std::sync::Arc;
 
     fn frame(data: Vec<u8>, width: u32, height: u32, stride: u32) -> VideoFrame {
-        VideoFrame::new(1, MonotonicTimestamp::from_nanos(1), width, height, stride,
-            PixelFormat::Bgra8888, Arc::from(data.into_boxed_slice()))
+        VideoFrame::new(
+            1,
+            MonotonicTimestamp::from_nanos(1),
+            width,
+            height,
+            stride,
+            PixelFormat::Bgra8888,
+            Arc::from(data.into_boxed_slice()),
+        )
     }
 
     #[test]
@@ -57,8 +70,12 @@ mod tests {
     #[test]
     fn bgra_to_rgba_honors_stride_padding() {
         let out = bgra_to_rgba(&frame(
-            vec![0, 1, 2, 255, 9, 9, 9, 9, 3, 4, 5, 255, 8, 8, 8, 8], 1, 2, 8,
-        )).unwrap();
+            vec![0, 1, 2, 255, 9, 9, 9, 9, 3, 4, 5, 255, 8, 8, 8, 8],
+            1,
+            2,
+            8,
+        ))
+        .unwrap();
         assert_eq!(out, vec![2, 1, 0, 255, 5, 4, 3, 255]);
     }
 
