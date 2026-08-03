@@ -18,6 +18,7 @@ pub mod locale;
 pub mod menu;
 pub mod modal;
 pub mod perf;
+pub mod platform;
 pub mod profile;
 pub mod relative;
 pub mod scale;
