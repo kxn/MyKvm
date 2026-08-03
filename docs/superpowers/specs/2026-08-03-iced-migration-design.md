@@ -18,7 +18,7 @@
 
 1. 用 **iced** 重写桌面 UI 壳，布局与交互对齐现有 egui 桌面版（顶部菜单栏 / 主页面=连接页 / 视频区 / 底部状态栏 / 模态对话框）。
 2. 复用全部核心 crate 与 `DesktopSessionController`，只替换前端渲染与事件适配层。
-3. 迁移完成前 egui 桌面端保持可编译、可测试（双端共存过渡，最终以 iced 端为发布物）。
+3. 迁移完成前 egui 桌面端保持可编译、可测试（双端共存仅限迁移窗口期）；**迁移完成验收后直接删除 egui 桌面端**（用户已确认，不保留过渡期）。
 4. 单原生窗口，不做 WebView/双窗口/overlay 分层（已论证并排除）。
 
 ## 2. 本轮调研结论（2026-08-03，来源 #73）
@@ -161,11 +161,11 @@ frame_source.subscribe() → iced Subscription (Recipe)
 | `flush_pending` 依赖 | 低 | 已修复并测试；iced UI 每帧调用，回归测试覆盖 |
 | 依赖许可证 | 低 | iced/iced_test/windows 均为宽松许可（MIT/Apache-2.0 系），按现有 deny 策略审计后引入 |
 
-### 待用户决策
+### 已确认决策（2026-08-03）
 
-1. 迁移完成后是否删除 egui 桌面端（还是保留一段过渡期）。
-2. macOS 打包签名/notarization 的预期（Apple Developer 账号或仅内部使用）。
-3. 迁移单的拆分粒度与优先级（建议按 M0→M5）。
+1. **迁移完成后直接删除 egui 桌面端**（`ipkvm-desktop` 的 UI 层；共享的 session/probe/config 等非 UI 逻辑先收编到合适位置再删）。
+2. **macOS 打包/签名/notarization 后置**：有实际分发需求时再做；迁移期只保证代码层面留口（相对鼠标 stub、darwin 编译、AVFoundation 相机未实测）。
+3. **迁移单按 M0→M5 拆分**（本设计第 4 节的粒度），按序实施。
 
 ## 6. 引用文档
 
