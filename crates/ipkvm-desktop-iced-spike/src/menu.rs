@@ -747,7 +747,7 @@ fn popup_tree(items: &[MenuItem]) -> Tree {
         state: tree::State::None,
         children: items
             .iter()
-            .map(|item| Tree::new(&label_element(&item.label)))
+            .map(|item| Tree::new(label_element(&item.label)))
             .collect(),
     }
 }

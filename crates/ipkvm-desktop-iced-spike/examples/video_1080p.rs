@@ -23,10 +23,10 @@ fn stats_file_path() -> String {
     let args: Vec<String> = std::env::args().collect();
     let mut i = 0;
     while i < args.len() {
-        if args[i] == "--stats-file" {
-            if let Some(v) = args.get(i + 1) {
-                return v.clone();
-            }
+        if args[i] == "--stats-file"
+            && let Some(v) = args.get(i + 1)
+        {
+            return v.clone();
         }
         i += 1;
     }
@@ -114,12 +114,11 @@ fn parse_duration_arg() -> u64 {
     let args: Vec<String> = std::env::args().collect();
     let mut i = 0;
     while i < args.len() {
-        if args[i] == "--duration" {
-            if let Some(v) = args.get(i + 1) {
-                if let Ok(n) = v.parse::<u64>() {
-                    return n;
-                }
-            }
+        if args[i] == "--duration"
+            && let Some(v) = args.get(i + 1)
+            && let Ok(n) = v.parse::<u64>()
+        {
+            return n;
         }
         i += 1;
     }

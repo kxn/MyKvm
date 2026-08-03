@@ -62,7 +62,7 @@ where
     S: InputSink + Clone + Send + 'static,
     F: FnMut(&ConnectRequest) -> Result<SessionParts<S>, DesktopSessionError>,
 {
-    /// 用组件工厂构造控制器（测试注入 fake sink/帧源，生产用 [`production_parts`]）。
+    /// 用组件工厂构造控制器（测试注入 fake sink/帧源，生产用 `production_parts`）。
     pub fn with_factory(factory: F) -> Self {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -731,7 +731,7 @@ mod tests {
 
         controller.connect(request()).unwrap();
 
-        let mut receiver = controller
+        let receiver = controller
             .subscribe_frames()
             .expect("连接后 subscribe_frames 必须返回 Some");
 

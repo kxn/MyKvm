@@ -186,10 +186,10 @@ unsafe extern "system" fn wnd_proc(
 ) -> LRESULT {
     match msg {
         WM_INPUT => {
-            if let Some(tx) = TX.lock().unwrap_or_else(|p| p.into_inner()).as_ref() {
-                if let Some((dx, dy)) = unsafe { read_mouse_delta(lparam) } {
-                    let _ = tx.send((dx, dy));
-                }
+            if let Some(tx) = TX.lock().unwrap_or_else(|p| p.into_inner()).as_ref()
+                && let Some((dx, dy)) = unsafe { read_mouse_delta(lparam) }
+            {
+                let _ = tx.send((dx, dy));
             }
             LRESULT(0)
         }

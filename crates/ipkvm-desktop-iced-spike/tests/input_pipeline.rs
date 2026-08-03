@@ -23,13 +23,14 @@ fn request() -> ConnectRequest {
     }
 }
 
+type TestFactory =
+    Box<dyn FnMut(&ConnectRequest) -> Result<SessionParts<RecordingSink>, DesktopSessionError>>;
+
 #[test]
 fn five_hundred_mixed_keys_reach_sink_in_order() {
     let sink = RecordingSink::default();
     let sink_for_factory = sink.clone();
-    let factory: Box<
-        dyn FnMut(&ConnectRequest) -> Result<SessionParts<RecordingSink>, DesktopSessionError>,
-    > = Box::new(move |_request| {
+    let factory: TestFactory = Box::new(move |_request| {
         let frame_source: Arc<dyn FrameSource> = Arc::new(MockFrameSource::new());
         Ok((
             frame_source,
@@ -111,9 +112,7 @@ fn five_hundred_mixed_keys_reach_sink_in_order() {
 fn first_key_is_not_swallowed() {
     let sink = RecordingSink::default();
     let sink_for_factory = sink.clone();
-    let factory: Box<
-        dyn FnMut(&ConnectRequest) -> Result<SessionParts<RecordingSink>, DesktopSessionError>,
-    > = Box::new(move |_request| {
+    let factory: TestFactory = Box::new(move |_request| {
         let frame_source: Arc<dyn FrameSource> = Arc::new(MockFrameSource::new());
         Ok((
             frame_source,
