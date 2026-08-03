@@ -1,3 +1,5 @@
+#![cfg_attr(windows, windows_subsystem = "windows")]
+
 //! iced 桌面端迁移壳（M0）可执行入口。
 
 fn main() -> iced::Result {
