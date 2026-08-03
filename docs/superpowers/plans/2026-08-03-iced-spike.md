@@ -41,7 +41,7 @@
 - 阶段 1（Spike 1 视频渲染）：✅ 已完成（见下）
 - 阶段 2（Spike 2 菜单模态）：✅ 已完成（自绘菜单，见下）
 - 阶段 3（Spike 3 输入层）：✅ 已完成（见下）
-- 阶段 4（收口）：⏳ 待做
+- 阶段 4（收口）：✅ 已完成（见下）
 
 ---
 
@@ -165,10 +165,21 @@
 
 ## 阶段 4：收口
 
-- [ ] 回写 #73（tea，先设 UTF-8 编码、读回确认中文）：每 spike PASS/FAIL + 数据
-- [ ] 填完本文件 checkbox、实测数据、结论、后续收敛条件
-- [ ] 跑全量验证：`cargo fmt --all --check`、`cargo test --workspace --all-features`、`cargo clippy --workspace --all-targets --all-features -- -D warnings`、`RUSTDOCFLAGS=-D warnings cargo doc --workspace --all-features --no-deps`、`scripts/check-darwin.ps1`
-- [ ] 总结论：三 spike 全过 → #73 标注「可开迁移实施/设计单」、存档；不过 → 记录后重评
+- [x] 跑全量验证：fmt 过；workspace 全量测试过；clippy -D warnings 过；doc -D warnings 过；check-darwin.ps1 按预期报告环境限制（CC-MISSING，非 cfg 错误）并完成 cfg 门审计
+- [x] 填完本文件 checkbox、实测数据、结论、后续收敛条件
+- [x] 回写 #73（每 spike PASS + 数据 + 结论），标注「可开迁移实施/设计单」
+
+### 总结论
+
+**三个 spike 全部通过，iced 迁移可行性确认。**
+
+| spike | 结论 | 关键证据 |
+|---|---|---|
+| 1 视频渲染 | ✅ 通过 | 渲染零丢帧 2695/2695、CPU 31.7%、内存 +11.9MB；帧间隔受 mock 源产能限制（~22.5fps），非渲染瓶颈 |
+| 2 菜单/模态 | ✅ 通过（自绘） | iced_aw 0.14.1 树状态 bug（master 才修）→ 自绘菜单；4 顶层/深度≥3/i18n/模态三关闭路径/走廊 100 次 0 误关全过 |
+| 3 输入层 | ✅ 通过 | keymap 96 键、500 键管道 0 丢失/顺序一致、Raw Input 1:1 增量 + p95 <16ms（实测 0.2–0.9ms）；发现并修复 flush-on-send 滞留缺陷 |
+
+**后续收敛条件**：macOS 实机/CI 验证（相对鼠标 stub、darwin 编译）；iced 版本 pin（0.14.0 + 已知问题规避或 git rev）；迁移设计需纳入「UI 每帧调用 `flush_pending`」。
 
 ---
 
