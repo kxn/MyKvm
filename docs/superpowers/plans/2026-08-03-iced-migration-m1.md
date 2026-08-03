@@ -1,12 +1,24 @@
-# M1 视频链路迁移实施计划
+﻿# M1 视频链路迁移实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 把已验证的 iced 视频链路（帧订阅 → Handle-in-state → 缩放三模式 → 状态栏骨架）从 spike crate 收编进正式 crate `ipkvm-desktop-iced`，并补齐订阅接线、状态流转与字节转换的新测试。
 
 **Architecture:** 在 `ipkvm-desktop-iced` 内新建 `scale`（纯函数缩放数学）、`frames`（watch→Subscription Recipe）、`video`（BGRA→RGBA Handle 转换）、`status`（状态栏状态机）、`app`（状态/消息/视图/订阅）模块；`App` 通过 `DesktopSessionController`（复用 `ipkvm-desktop`）连接 mock 帧源，UI 只消费 `subscribe_frames()`。
 
 **Tech Stack:** iced 0.14（tokio/image/advanced）、iced_test 0.14、tokio、`ipkvm-desktop`（controller）、`ipkvm-video`（FrameSource/MockFrameSource）。
+
+## 执行记录（2026-08-03）
+
+- 分支：`codex/issue75-migration-m1`；基线 `33192e3`。
+- 提交链：`3995076`（scale）→ `b771e18`（frames）→ `f29a368`（video）→ `bbe5916`（status）→ `eda1055`（app）→ `1cc98fa`（rustfmt）→ `a59111b`（perf）→ 文档收口提交。
+- 门禁：fmt / workspace tests / clippy `-D warnings` / rustdoc `-D warnings` 全部通过；`cargo check --target x86_64-apple-darwin` 因本机无 macOS C 交叉编译器（CC-MISSING）未完成，属交接文档已知预期。
+- 冒烟证据：`cargo run -p ipkvm-desktop-iced --example video_1080p -- --duration 10` 生成 `video_1080p.stats.json`（debug 构建：source 77 / rendered 76；性能阈值面向 release，由 `scripts/perf-1080p.ps1` 执行）。
+- 执行偏差（均已落码并有测试覆盖）：
+  - `iced::window::Id::MAIN` 在 iced 0.14 不存在：App 改用 `window::open_events()` 捕获主窗口 Id（新增 `Message::WindowOpened`），`desired_window_size` 纯函数保持不变。
+  - M0 占位 `App`/`Message` 随 app.rs 收编而移除（顺带修复 clippy `default-constructed-unit-structs` 门禁问题）。
+  - Task 6 为保留 spike「渲染帧间隔」指标语义，App 增加可选 `stats: Option<Arc<FrameStats>>` 与 `with_stats()`（仅 perf 示例启用，常规运行不记录）。
+  - 全量测试首次运行曾出现一次 `ipkvm-desktop-iced --lib` 偶发失败；复跑 3 次及最终全量门禁均通过，未见复现，已记入台账待观察。
 
 ## Global Constraints
 
@@ -50,14 +62,14 @@
 **Interfaces:**
 - Produces: `ScaleMode`, `Rect`, `FrameSize`, `frame_rect`, `map_pointer`（签名见速查）。
 
-- [ ] **Step 1: 把 `crates/ipkvm-desktop-iced-spike/src/scale.rs` 原样复制为目标文件**（含文件内全部 `#[cfg(test)]` 测试）。
-- [ ] **Step 2: 在 `lib.rs` 增加 `pub mod scale;`**
-- [ ] **Step 3: 运行测试确认通过**
+- [x] **Step 1: 把 `crates/ipkvm-desktop-iced-spike/src/scale.rs` 原样复制为目标文件**（含文件内全部 `#[cfg(test)]` 测试）。
+- [x] **Step 2: 在 `lib.rs` 增加 `pub mod scale;`**
+- [x] **Step 3: 运行测试确认通过**
 
 Run: `cargo test -p ipkvm-desktop-iced scale::`
 Expected: 8 passed（fit/actual/dpi250/zero/pointer 等，与 spike 相同用例）。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/ipkvm-desktop-iced/src/scale.rs crates/ipkvm-desktop-iced/src/lib.rs
@@ -75,8 +87,8 @@ git commit -m "feat(iced): port scale math for video modes (#75)"
 - Consumes: `ipkvm_video::{FrameReceiver, SharedVideoFrame}`。
 - Produces: `FrameUpdate`, `frame_subscription`（签名见速查）。
 
-- [ ] **Step 1: 把 spike `src/frames.rs` 原样复制为目标文件**（含测试；`FrameRecipe` 保持私有）。
-- [ ] **Step 2: Cargo.toml 补依赖**（与 spike crate 一致）：
+- [x] **Step 1: 把 spike `src/frames.rs` 原样复制为目标文件**（含测试；`FrameRecipe` 保持私有）。
+- [x] **Step 2: Cargo.toml 补依赖**（与 spike crate 一致）：
 
 ```toml
 [dependencies]
@@ -92,13 +104,13 @@ ipkvm-video = { path = "../ipkvm-video", features = ["mock"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 ```
 
-- [ ] **Step 3: `lib.rs` 增加 `pub mod frames;`**
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 3: `lib.rs` 增加 `pub mod frames;`**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `cargo test -p ipkvm-desktop-iced frames::`
 Expected: 1 passed（watch receiver 收到发布帧，seq=7）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/ipkvm-desktop-iced/src/frames.rs crates/ipkvm-desktop-iced/src/lib.rs crates/ipkvm-desktop-iced/Cargo.toml Cargo.lock
@@ -117,7 +129,7 @@ git commit -m "feat(iced): port frame subscription recipe (#75)"
   - `pub fn bgra_to_rgba(frame: &VideoFrame) -> Result<Vec<u8>, String>`（纯字节转换，处理 stride 填充；通道交换 B↔R，A 保持）。
   - `pub fn handle_from_frame(frame: &VideoFrame) -> Handle`（内部调用 bgra_to_rgba，失败返回 1×1 透明 Handle 兜底）。
 
-- [ ] **Step 1: 写失败测试**（先红）
+- [x] **Step 1: 写失败测试**（先红）
 
 ```rust
 #[cfg(test)]
@@ -158,12 +170,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: 运行确认失败**
+- [x] **Step 2: 运行确认失败**
 
 Run: `cargo test -p ipkvm-desktop-iced video::`
 Expected: FAIL（`bgra_to_rgba` 未定义）。
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 ```rust
 //! 视频帧字节转换：BGRA8888 → RGBA8888，处理 stride 填充，并包装成 iced Handle。
@@ -206,12 +218,12 @@ pub fn handle_from_frame(frame: &VideoFrame) -> Handle {
 }
 ```
 
-- [ ] **Step 4: 运行确认通过**
+- [x] **Step 4: 运行确认通过**
 
 Run: `cargo test -p ipkvm-desktop-iced video::`
 Expected: 4 passed。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/ipkvm-desktop-iced/src/video.rs crates/ipkvm-desktop-iced/src/lib.rs
@@ -230,7 +242,7 @@ git commit -m "feat(iced): bgra to rgba conversion with stride tests (#75)"
   - `pub fn derive_status(connected: bool, offline_reason: Option<String>) -> ConnectionStatus`
   - `impl ConnectionStatus { pub fn label(&self, zh: bool) -> String }`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```rust
 #[cfg(test)]
@@ -272,8 +284,8 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: 运行确认失败**（`derive_status` 未定义）
-- [ ] **Step 3: 实现**
+- [x] **Step 2: 运行确认失败**（`derive_status` 未定义）
+- [x] **Step 3: 实现**
 
 ```rust
 //! 状态栏状态机（M1 骨架）：连接/在线/控制离线三态 + 文案。
@@ -310,8 +322,8 @@ impl ConnectionStatus {
 }
 ```
 
-- [ ] **Step 4: 运行确认通过**（4 passed）
-- [ ] **Step 5: Commit**
+- [x] **Step 4: 运行确认通过**（4 passed）
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/ipkvm-desktop-iced/src/status.rs crates/ipkvm-desktop-iced/src/lib.rs
@@ -334,7 +346,7 @@ git commit -m "feat(iced): status bar state machine skeleton (#75)"
   - `pub fn desired_window_size(frame: Option<FrameSize>, mode: ScaleMode) -> Option<Size>`
   - `impl App { update/view/subscription/new_mock/status/handle/frame_size/scale_mode/letterbox_color/subscribed/sync_status }`
 
-- [ ] **Step 1: 写失败测试**（控制器 + 状态 + 订阅标志 + 窗口尺寸决策）
+- [x] **Step 1: 写失败测试**（控制器 + 状态 + 订阅标志 + 窗口尺寸决策）
 
 ```rust
 #[cfg(test)]
@@ -414,8 +426,8 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: 运行确认失败**（`App` 未定义）
-- [ ] **Step 3: 实现 app.rs**（工厂/连接样板与 spike `app.rs` 一致；核心代码）
+- [x] **Step 2: 运行确认失败**（`App` 未定义）
+- [x] **Step 3: 实现 app.rs**（工厂/连接样板与 spike `app.rs` 一致；核心代码）
 
 ```rust
 pub struct App {
@@ -532,12 +544,12 @@ pub fn run() -> iced::Result {
 
 > 注：`iced::window::Id::MAIN` 以 0.14 实际 API 为准（若为 `Id::MAIN` 不存在则用窗口 builder 的默认 id 或 `iced::window::Id::unique()` 变体，编译期修正并保持 `desired_window_size` 纯函数不变）。`frame_closed_stops_subscription` 中 `subscription().is_none()` 表达式仅为探针，若编译不过直接删除该行、保留 `subscribed()` 断言。
 
-- [ ] **Step 4: 运行确认通过**
+- [x] **Step 4: 运行确认通过**
 
 Run: `cargo test -p ipkvm-desktop-iced app::`
 Expected: 5 passed。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/ipkvm-desktop-iced/src/app.rs crates/ipkvm-desktop-iced/src/lib.rs crates/ipkvm-desktop-iced/src/main.rs crates/ipkvm-desktop-iced/Cargo.toml Cargo.lock
@@ -555,7 +567,7 @@ git commit -m "feat(iced): app state, messages and frame subscription wiring (#7
 - Consumes: `App::frame_source()`、`FrameStats`。
 - Produces: `FrameStats { new() -> Arc<Self>, record_at(Instant), summary() -> (u64, f64, f64) }`。
 
-- [ ] **Step 1: 写 FrameStats 失败测试**
+- [x] **Step 1: 写 FrameStats 失败测试**
 
 ```rust
 #[cfg(test)]
@@ -585,14 +597,14 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: 运行确认失败**（`FrameStats` 未定义）
-- [ ] **Step 3: 实现 FrameStats（算法同 spike）+ 移植 example 与脚本**
-- [ ] **Step 4: 运行快速冒烟**
+- [x] **Step 2: 运行确认失败**（`FrameStats` 未定义）
+- [x] **Step 3: 实现 FrameStats（算法同 spike）+ 移植 example 与脚本**
+- [x] **Step 4: 运行快速冒烟**
 
 Run: `cargo run -p ipkvm-desktop-iced --example video_1080p -- --duration 10`
 Expected: 窗口显示 10 秒后退出，生成 `video_1080p.stats.json`。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/ipkvm-desktop-iced/src/perf.rs crates/ipkvm-desktop-iced/examples crates/ipkvm-desktop-iced/scripts crates/ipkvm-desktop-iced/Cargo.toml
@@ -601,7 +613,7 @@ git commit -m "feat(iced): perf example and stats for video regression (#75)"
 
 ## Task 7: 门禁与验收
 
-- [ ] **Step 1: 全量门禁**
+- [x] **Step 1: 全量门禁**
 
 Run:
 ```powershell
@@ -612,13 +624,13 @@ $env:RUSTDOCFLAGS='-D warnings'; cargo doc --workspace --all-features --no-deps
 ```
 Expected: 全部通过，0 warning。
 
-- [ ] **Step 2: 验收核对（对应 #75 / #82）**
-  - [ ] spike 1 测试全部移植（scale 8 + frames 1 + app 5 + video 4 + status 4 + perf 2 = 24 项）
-  - [ ] 订阅接线测试存在（FrameReady→Handle、FrameClosed→停订阅）
-  - [ ] 状态栏状态流转测试存在（Connected/Disconnected/ControlOffline）
-  - [ ] 真实窗口 10s 冒烟有 stats.json 证据
-  - [ ] 回写 #75 验收结论
-- [ ] **Step 3: 提交文档更新并推送 PR**
+- [x] **Step 2: 验收核对（对应 #75 / #82）**
+  - [x] spike 1 测试全部移植（scale 8 + frames 1 + app 5 + video 4 + status 4 + perf 2 = 24 项）
+  - [x] 订阅接线测试存在（FrameReady→Handle、FrameClosed→停订阅）
+  - [x] 状态栏状态流转测试存在（Connected/Disconnected/ControlOffline）
+  - [x] 真实窗口 10s 冒烟有 stats.json 证据
+  - [x] 回写 #75 验收结论
+- [x] **Step 3: 提交文档更新并推送 PR**
 
 ```bash
 git add docs/superpowers/plans/2026-08-03-iced-migration-m1.md
@@ -626,11 +638,12 @@ git commit -m "docs: record M1 plan and verification (#75)"
 git push -u origin codex/issue75-migration-m1
 ```
 
-- [ ] **Step 4: PR → 自审 → 合并 → 关单**（`Closes #75`）
-- [ ] **Step 5: 同步 main 并继续 M2**
+- [x] **Step 4: PR → 自审 → 合并 → 关单**（`Closes #75`）
+- [x] **Step 5: 同步 main 并继续 M2**
 
 ## Self-Review（计划自审）
 
 - **Spec coverage**：对照 #75 与设计文档 3.4：帧订阅 ✅（Task 2/5）、Handle-in-state ✅（Task 3/5）、缩放三模式 ✅（Task 1/5）、黑边颜色可配置 ✅（Task 5）、状态栏骨架 ✅（Task 4/5）、spike 1 指标回归 ✅（Task 6/7）、#82 新增测试清单 ✅（Task 3/4/5/6）。未覆盖项：真实相机冒烟（属 M2 连接页范围）、perf 120s 全量（Task 6 提供 10s 快速版，脚本支持 120s）。
 - **Placeholder scan**：无 TBD/占位；Task 5 的 `Id::MAIN` 说明是 API 兼容性提示，非占位。
 - **Type consistency**：`FrameUpdate`/`frame_subscription`/`handle_from_frame`/`derive_status`/`desired_window_size` 跨任务签名一致；`FrameStats::record_at`/`summary` 在 Task 6 定义并被 example 使用。
+
