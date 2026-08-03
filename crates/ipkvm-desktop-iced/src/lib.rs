@@ -10,6 +10,8 @@
 use iced::widget::{center, text};
 use iced::{Element, Size, Task};
 
+pub mod scale;
+
 /// 占位文案（M0 渲染断言用）。
 pub const PLACEHOLDER: &str = "my_ipkvm · iced 迁移 M0";
 /// 窗口标题（M5 将嵌入 GIT_COMMIT）。
