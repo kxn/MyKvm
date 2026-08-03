@@ -1,8 +1,8 @@
 mod app;
-mod clipboard;
+pub mod clipboard;
 pub mod config;
 mod fonts;
-mod frame;
+pub mod frame;
 mod input;
 mod locale;
 mod menus;

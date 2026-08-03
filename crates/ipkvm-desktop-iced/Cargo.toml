@@ -38,6 +38,7 @@ windows = { version = "0.61", default-features = false, features = [
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",
 ] }
+rfd = { version = "0.15.4", default-features = false, features = ["common-controls-v6"] }
 
 [[bin]]
 name = "ipkvm-desktop-iced"

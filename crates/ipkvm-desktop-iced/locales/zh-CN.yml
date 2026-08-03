@@ -15,6 +15,8 @@ file:
 
 edit:
   copy_screenshot: "复制截图"
+  save_screenshot: "截图保存为 JPEG…"
+  save_screenshot_unsupported: "截图保存（当前平台暂不支持保存对话框）"
   language: "Language"
   settings: "设置…"
 
@@ -136,8 +138,16 @@ message:
   unsupported_key: "不支持的按键"
   clipboard_empty: "剪贴板为空"
   clipboard_read_failed: "读取剪贴板失败：%{error}"
+  no_frame_screenshot: "当前无画面可截图"
+  screenshot_copied: "截图已复制到剪贴板"
+  screenshot_copy_failed: "截图复制失败：%{error}"
+  screenshot_saved: "截图已保存到 %{path}"
+  screenshot_save_failed: "截图保存失败：%{error}"
   keyboard_send_failed: "键盘发送失败：%{error}"
   pointer_send_failed: "指针发送失败：%{error}"
+
+dialog:
+  jpeg_filter: "JPEG 图片"
 
 common:
   not_selected: "未选择"

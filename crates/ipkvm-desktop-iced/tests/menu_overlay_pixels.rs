@@ -20,7 +20,7 @@ fn menu_popup_draws_text_pixels() {
 
     let mut renderer = iced_tiny_skia::Renderer::new(iced::Font::default(), 16.0.into());
     let root: iced::Element<'static, MenuAction, iced::Theme, iced_tiny_skia::Renderer> =
-        menu::menu_bar(&[]);
+        menu::menu_bar(&[], false, ipkvm_desktop_iced::locale::AppLanguage::System);
 
     let mut ui = UserInterface::build(
         root,

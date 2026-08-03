@@ -56,6 +56,9 @@ static MOCK_STORE_SEQ: AtomicU64 = AtomicU64::new(0);
 /// 无条件重绘放大闪烁与 CPU 占用。
 const UI_TICK_INTERVAL: Duration = Duration::from_millis(33);
 
+/// 项目主页（实际仓库为内网 Gitea）。
+const PROJECT_URL: &str = "http://10.10.10.5:3000/kxn/my_ipkvm";
+
 /// 记录型 sink：测试与 mock 连接用。
 #[derive(Clone, Debug, Default)]
 pub struct RecordingSink {
@@ -155,6 +158,7 @@ pub enum Message {
     Connect,
     Disconnect,
     PreviewTick,
+    ScreenshotPath(Option<std::path::PathBuf>),
     SetBaudRate(u32),
     SetAutoBaud(bool),
     SetPreviewFps(u64),
@@ -175,6 +179,8 @@ where
     frame_source: Option<Arc<MockFrameSource>>,
     handle: Option<Handle>,
     frame_size: Option<FrameSize>,
+    latest_frame: Option<ipkvm_video::VideoFrame>,
+    language: crate::locale::AppLanguage,
     scale_mode: ScaleMode,
     letterbox_color: Color,
     status: ConnectionStatus,
@@ -234,6 +240,8 @@ impl App<RecordingSink, MockFactory> {
             frame_source: Some(frame_source),
             handle: None,
             frame_size: None,
+            latest_frame: None,
+            language: crate::locale::AppLanguage::System,
             scale_mode: ScaleMode::FitWindow,
             letterbox_color: Color::from_rgb(0.0, 0.0, 0.0),
             status,
@@ -286,6 +294,8 @@ impl App<Ch9329InputSink<SerialCommandQueue>, ProductionSessionFactory> {
             frame_source: None,
             handle: None,
             frame_size: None,
+            latest_frame: None,
+            language: crate::locale::AppLanguage::System,
             scale_mode: ScaleMode::FitWindow,
             letterbox_color: Color::from_rgb(0.0, 0.0, 0.0),
             status: ConnectionStatus::Disconnected,
@@ -378,6 +388,7 @@ where
                     width: frame.width,
                     height: frame.height,
                 });
+                self.latest_frame = Some(frame);
                 self.sync_status();
                 if self.scale_mode == ScaleMode::ResizeWindowToVideo
                     && let Some(size) = desired_window_size(self.frame_size, self.scale_mode)
@@ -412,8 +423,11 @@ where
                 }
                 Task::none()
             }
-            Message::Menu(action) => {
-                self.handle_menu_action(action);
+            Message::Menu(action) => self.handle_menu_action(action),
+            Message::ScreenshotPath(path) => {
+                if let Some(path) = path {
+                    self.save_screenshot(path);
+                }
                 Task::none()
             }
             Message::Modal(action) => {
@@ -646,7 +660,7 @@ where
         }
     }
 
-    fn handle_menu_action(&mut self, action: MenuAction) {
+    fn handle_menu_action(&mut self, action: MenuAction) -> Task<Message> {
         match action {
             MenuAction::OpenModal(kind) => {
                 if kind == ModalKind::Settings {
@@ -662,6 +676,7 @@ where
                     self.modal.load_names = self.store.list_profiles();
                 }
                 self.modal.open(kind);
+                Task::none()
             }
             MenuAction::SetLanguage(choice) => {
                 let language = match choice {
@@ -671,19 +686,51 @@ where
                 };
                 language.apply();
                 self.zh = rust_i18n::locale().starts_with("zh");
+                self.language = choice.into();
+                Task::none()
             }
-            MenuAction::LoadRecent(name) => self.load_profile(&name),
+            MenuAction::LoadRecent(name) => {
+                self.load_profile(&name);
+                Task::none()
+            }
             MenuAction::SpecialKey(name) => {
                 if let Some(key) = special_key_from_menu(&name) {
                     self.send_special(key);
                 }
+                Task::none()
             }
-            MenuAction::Disconnect => self.disconnect(),
-            MenuAction::Simple("paste") => self.paste(),
+            MenuAction::Disconnect => {
+                self.disconnect();
+                Task::none()
+            }
+            MenuAction::Simple("paste") => {
+                self.paste();
+                Task::none()
+            }
+            MenuAction::Simple("copy_screenshot") => {
+                self.copy_screenshot();
+                Task::none()
+            }
+            MenuAction::Simple("save_screenshot") => Task::perform(
+                crate::dialog::choose_screenshot_path(),
+                Message::ScreenshotPath,
+            ),
+            MenuAction::Simple("exit") => {
+                if let Some(id) = self.window_id {
+                    iced::window::close(id)
+                } else {
+                    Task::none()
+                }
+            }
+            MenuAction::Simple("project_home") => {
+                crate::platform::open_url(PROJECT_URL);
+                Task::none()
+            }
             MenuAction::Simple("release_all") => {
                 let _ = self.controller.release_all();
+                Task::none()
             }
-            MenuAction::Simple(_) => {}
+            MenuAction::Simple(_) => Task::none(),
         }
     }
 
@@ -975,6 +1022,56 @@ where
         }
     }
 
+    fn copy_screenshot(&mut self) {
+        let Some(frame) = self.latest_frame.clone() else {
+            self.status_message = Some(t!("message.no_frame_screenshot").to_string());
+            return;
+        };
+        match ipkvm_desktop::frame::bgra_to_rgba(&frame) {
+            Ok(rgba) => match ipkvm_desktop::clipboard::ClipboardService::copy_image(&rgba) {
+                Ok(()) => self.status_message = Some(t!("message.screenshot_copied").to_string()),
+                Err(error) => {
+                    self.status_message = Some(
+                        t!("message.screenshot_copy_failed", error = error.to_string()).to_string(),
+                    )
+                }
+            },
+            Err(error) => {
+                self.status_message =
+                    Some(t!("message.screenshot_copy_failed", error = error).to_string())
+            }
+        }
+    }
+
+    fn save_screenshot(&mut self, path: std::path::PathBuf) {
+        let Some(frame) = self.latest_frame.clone() else {
+            self.status_message = Some(t!("message.no_frame_screenshot").to_string());
+            return;
+        };
+        match ipkvm_desktop::frame::bgra_to_rgba(&frame) {
+            Ok(rgba) => match ipkvm_desktop::clipboard::save_jpeg(&path, &rgba) {
+                Ok(()) => {
+                    self.status_message = Some(
+                        t!(
+                            "message.screenshot_saved",
+                            path = path.display().to_string()
+                        )
+                        .to_string(),
+                    )
+                }
+                Err(error) => {
+                    self.status_message = Some(
+                        t!("message.screenshot_save_failed", error = error.to_string()).to_string(),
+                    )
+                }
+            },
+            Err(error) => {
+                self.status_message =
+                    Some(t!("message.screenshot_save_failed", error = error).to_string())
+            }
+        }
+    }
+
     pub fn subscription(&self) -> Subscription<Message> {
         let window_events = iced::window::open_events().map(Message::WindowOpened);
         let preview_timer =
@@ -1020,7 +1117,7 @@ where
     fn menu_view(&self) -> Element<'_, Message> {
         let recent: Vec<String> = self.store.recent_profiles();
         let recent_refs: Vec<&str> = recent.iter().map(String::as_str).collect();
-        menu_bar(&recent_refs).map(Message::Menu)
+        menu_bar(&recent_refs, self.paste_busy, self.language).map(Message::Menu)
     }
 
     fn main_view(&self) -> Element<'_, Message> {
@@ -1753,6 +1850,56 @@ mod tests {
         assert_eq!(app.modal.open, Some(ModalKind::Settings));
         let _ = app.update(Message::Modal(ModalAction::Close));
         assert!(app.modal.open.is_none());
+    }
+
+    #[test]
+    fn copy_screenshot_without_frame_reports_no_frame() {
+        let (mut app, _) = MockApp::new_mock();
+        let _ = app.update(Message::Menu(MenuAction::Simple("copy_screenshot")));
+        assert_eq!(
+            app.status_message,
+            Some(t!("message.no_frame_screenshot").to_string())
+        );
+    }
+
+    #[test]
+    fn save_screenshot_writes_jpeg_from_latest_frame() {
+        let (mut app, _) = MockApp::new_mock();
+        let path = std::env::temp_dir().join(format!(
+            "my-ipkvm-iced-screenshot-{}-{}.jpg",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _ = app.update(Message::FrameReady(make_bgra_frame(1, 16, 9)));
+        let _ = app.update(Message::ScreenshotPath(Some(path.clone())));
+        assert!(path.exists(), "截图文件必须写出");
+        assert!(
+            std::fs::metadata(&path).expect("截图文件 metadata").len() > 0,
+            "截图文件不得为空"
+        );
+        let expected = t!(
+            "message.screenshot_saved",
+            path = path.display().to_string()
+        );
+        assert!(
+            app.status_message
+                .as_deref()
+                .is_some_and(|message| message.contains(expected.as_ref())),
+            "状态消息必须包含保存成功文案，实际: {:?}",
+            app.status_message
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn exit_returns_window_close_task() {
+        let (mut app, _) = MockApp::new_mock();
+        app.window_id = Some(iced::window::Id::unique());
+        let task = app.update(Message::Menu(MenuAction::Simple("exit")));
+        assert_eq!(task.units(), 1, "exit 必须返回有效 window close task");
     }
 
     #[test]

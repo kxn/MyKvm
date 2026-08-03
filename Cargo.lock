@@ -2706,6 +2706,7 @@ dependencies = [
  "ipkvm-desktop",
  "ipkvm-session",
  "ipkvm-video",
+ "rfd",
  "rust-i18n",
  "sys-locale",
  "tiny-skia",
