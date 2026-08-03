@@ -34,12 +34,19 @@ const DEFAULT_CHROME_FALLBACK: f32 = 48.0;
 const LETTERBOX_COLOR: egui::Color32 = egui::Color32::from_rgb(24, 32, 48);
 /// 视频画面描边色：进一步标出真实屏幕边界。
 const VIDEO_BORDER_COLOR: egui::Color32 = egui::Color32::from_gray(110);
+/// 窗口图标：由 scripts/generate_icon.py 生成的 32×32 原始 RGBA。
+const WINDOW_ICON: &[u8] = include_bytes!("../assets/icon-32.rgba");
 
 pub fn run() -> eframe::Result<()> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1280.0, 720.0])
-            .with_title(format!("my_ipkvm {}", env!("GIT_COMMIT"))),
+            .with_title(format!("my_ipkvm {}", env!("GIT_COMMIT")))
+            .with_icon(Arc::new(egui::IconData {
+                rgba: WINDOW_ICON.to_vec(),
+                width: 32,
+                height: 32,
+            })),
         ..Default::default()
     };
     eframe::run_native(
@@ -1764,5 +1771,10 @@ mod tests {
         );
         assert!((size.x - 768.0).abs() < 0.01);
         assert!((size.y - 480.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn window_icon_is_32x32_rgba() {
+        assert_eq!(WINDOW_ICON.len(), 32 * 32 * 4);
     }
 }

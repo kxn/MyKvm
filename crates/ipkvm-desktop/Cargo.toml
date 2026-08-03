@@ -30,6 +30,9 @@ rfd = { version = "0.15.4", default-features = false, features = ["common-contro
 [dev-dependencies]
 ipkvm-video = { path = "../ipkvm-video", features = ["mock"] }
 
+[build-dependencies]
+embed-resource = "3.0.11"
+
 [[bin]]
 name = "ipkvm-desktop"
 path = "src/main.rs"
