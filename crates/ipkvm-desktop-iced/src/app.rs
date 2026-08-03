@@ -1076,18 +1076,20 @@ where
                 } else if self.remote_input {
                     self.exit_remote_input();
                 }
-                if self.remote_input && self.connection.mouse_mode == MouseMode::Absolute {
-                    if let Some(cursor) = self.last_cursor {
-                        self.send_absolute(cursor);
-                    }
+                if self.remote_input
+                    && self.connection.mouse_mode == MouseMode::Absolute
+                    && let Some(cursor) = self.last_cursor
+                {
+                    self.send_absolute(cursor);
                 }
             }
             iced::Event::Mouse(iced::mouse::Event::ButtonReleased(button)) => {
                 self.pointer_mask &= !mouse_button_bit(button);
-                if self.remote_input && self.connection.mouse_mode == MouseMode::Absolute {
-                    if let Some(cursor) = self.last_cursor {
-                        self.send_absolute(cursor);
-                    }
+                if self.remote_input
+                    && self.connection.mouse_mode == MouseMode::Absolute
+                    && let Some(cursor) = self.last_cursor
+                {
+                    self.send_absolute(cursor);
                 }
             }
             iced::Event::Mouse(iced::mouse::Event::WheelScrolled { delta }) => {
@@ -1164,25 +1166,23 @@ where
         let mask_changed = self
             .last_pointer_sent
             .is_some_and(|(last_mask, _, _)| last_mask != self.pointer_mask);
-        if mask_changed
-            || crate::input::throttle_elapsed(now, self.last_pointer_sent_at, POINTER_MIN_INTERVAL)
+        if (mask_changed
+            || crate::input::throttle_elapsed(now, self.last_pointer_sent_at, POINTER_MIN_INTERVAL))
+            && crate::input::pointer_changed((self.pointer_mask, x, y), self.last_pointer_sent)
         {
-            if crate::input::pointer_changed((self.pointer_mask, x, y), self.last_pointer_sent) {
-                let session_frame = ipkvm_desktop::FrameSize {
-                    width: frame.width,
-                    height: frame.height,
-                };
-                if let Err(error) =
-                    self.controller
-                        .send_pointer(self.pointer_mask, x, y, session_frame)
-                {
-                    self.status_message = Some(
-                        t!("message.pointer_send_failed", error = error.to_string()).to_string(),
-                    );
-                }
-                self.last_pointer_sent = Some((self.pointer_mask, x, y));
-                self.last_pointer_sent_at = Some(now);
+            let session_frame = ipkvm_desktop::FrameSize {
+                width: frame.width,
+                height: frame.height,
+            };
+            if let Err(error) = self
+                .controller
+                .send_pointer(self.pointer_mask, x, y, session_frame)
+            {
+                self.status_message =
+                    Some(t!("message.pointer_send_failed", error = error.to_string()).to_string());
             }
+            self.last_pointer_sent = Some((self.pointer_mask, x, y));
+            self.last_pointer_sent_at = Some(now);
         }
         let wheel = self.relative_wheel;
         if wheel != 0 {

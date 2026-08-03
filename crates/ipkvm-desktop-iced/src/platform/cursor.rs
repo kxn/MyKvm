@@ -7,6 +7,7 @@
 //! - `ShowCursor(bshow: bool) -> i32`（非 BOOL 参数）；
 //! - `GetForegroundWindow() -> HWND`（直接返回，无 Result）；
 //! - `ClipCursor(lprect: Option<*const RECT>) -> Result<()>`。
+//!
 //! 光标控制尽力而为：Win32 调用失败静默，不 panic、不阻塞。
 
 /// 光标控制器（平台差异收口，供测试注入）。
