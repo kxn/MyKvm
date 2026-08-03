@@ -27,6 +27,10 @@ device:
   preview: "Video preview"
   no_preview: "No preview"
 
+preview:
+  no_signal: "No signal"
+  open_failed: "Open failed"
+
 special_keys:
   title: "Send special keys"
   hint: "Other keys can be sent directly from the keyboard."

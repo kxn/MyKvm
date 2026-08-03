@@ -27,6 +27,10 @@ device:
   preview: 视频预览
   no_preview: 无预览
 
+preview:
+  no_signal: 无信号
+  open_failed: 打开失败
+
 special_keys:
   title: 发送特殊键
   hint: 其余按键可直接用键盘发送。

@@ -2,12 +2,8 @@ use std::io::{Read, Write};
 use std::time::{Duration, Instant};
 
 use ipkvm_core::{Ch9329Command, Ch9329Decoder, Ch9329Response};
-use ipkvm_video::FrameSource;
 
-use crate::state::{
-    ControlInfo, ControlProbeStatus, DeviceOption, DeviceSelectionState, PreviewInfo,
-    VideoProbeStatus,
-};
+use crate::state::{ControlInfo, ControlProbeStatus, DeviceOption, DeviceSelectionState};
 
 /// 自动扫描候选波特率（成品线电平未知：115200 可用则最快，失败逐档降级）。
 pub const BAUD_CANDIDATES: [u32; 5] = [115200, 57600, 38400, 19200, 9600];
@@ -23,7 +19,6 @@ pub enum ProbeError {
 pub trait ProbeBackend {
     fn list_video_devices(&mut self) -> Result<Vec<DeviceOption>, ProbeError>;
     fn list_control_devices(&mut self) -> Result<Vec<DeviceOption>, ProbeError>;
-    fn preview_video(&mut self, device_id: &str, fps: u64, timeout: Duration) -> VideoProbeStatus;
     fn probe_control(
         &mut self,
         device_id: &str,
@@ -32,10 +27,15 @@ pub trait ProbeBackend {
     ) -> ControlProbeStatus;
 }
 
-/// 刷新检测：重新枚举两类设备，并对仍选中的设备重探视频预览与 CH9329。
+/// 刷新检测：重新枚举两类设备，并重探仍选中的串口控制设备。
 ///
 /// 任一设备列表枚举失败时返回错误且**不替换**旧列表、不重探，避免把
 /// 仍存在的选中设备误标为断开。
+///
+/// 视频不在这里重开：实时预览源常驻持有相机（Windows 媒体设备独占，重复
+/// 打开必然失败）。刷新后视频是否需要重新探测由 app 层根据当前状态决定
+/// （已打开且正常 → 跳过；未打开/出错 → 先关旧源再重开），见
+/// `app::preview_refresh_action`。
 pub fn refresh_detection(
     state: &mut DeviceSelectionState,
     backend: &mut impl ProbeBackend,
@@ -45,9 +45,6 @@ pub fn refresh_detection(
     let control = backend.list_control_devices()?;
     state.refresh_devices(video, control);
 
-    if let Some(device_id) = state.selected_video_id.clone() {
-        state.video_status = backend.preview_video(&device_id, state.advanced.preview_fps, timeout);
-    }
     if let Some(device_id) = state.selected_control_id.clone() {
         state.control_status = backend.probe_control(&device_id, state.advanced.baud_rate, timeout);
     }
@@ -99,10 +96,6 @@ impl ProbeBackend for ProductionProbeBackend {
                     .collect()
             })
             .map_err(|error| ProbeError::ControlList(error.to_string()))
-    }
-
-    fn preview_video(&mut self, device_id: &str, fps: u64, timeout: Duration) -> VideoProbeStatus {
-        capture_preview(device_id, fps, timeout)
     }
 
     fn probe_control(
@@ -179,27 +172,6 @@ pub fn detect_baud_rate(path: &str, timeout: Duration) -> Option<u32> {
     })
 }
 
-/// 视频预览：打开采集源等一帧；返回前 drop 源，避免预览句柄占住设备。
-pub fn capture_preview(device_id: &str, fps: u64, timeout: Duration) -> VideoProbeStatus {
-    let source = match ipkvm_video::camera::CameraSource::open(device_id, fps) {
-        Ok(source) => source,
-        Err(error) => return VideoProbeStatus::OpenFailed(error.to_string()),
-    };
-    let label = source.source_info().device_name;
-    let deadline = Instant::now() + timeout;
-    while Instant::now() < deadline {
-        if let Some(frame) = source.latest_frame() {
-            return VideoProbeStatus::Ready(PreviewInfo {
-                width: frame.width,
-                height: frame.height,
-                label,
-            });
-        }
-        std::thread::sleep(Duration::from_millis(20));
-    }
-    VideoProbeStatus::NoSignal
-}
-
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -211,7 +183,6 @@ mod tests {
 
     #[derive(Default)]
     struct FakeBackend {
-        video_calls: usize,
         control_calls: usize,
     }
 
@@ -224,15 +195,6 @@ mod tests {
 
         fn list_control_devices(&mut self) -> Result<Vec<DeviceOption>, ProbeError> {
             Ok(Vec::new())
-        }
-
-        fn preview_video(
-            &mut self,
-            _device_id: &str,
-            _fps: u64,
-            _timeout: Duration,
-        ) -> VideoProbeStatus {
-            VideoProbeStatus::NoSignal
         }
 
         fn probe_control(
@@ -260,21 +222,6 @@ mod tests {
             }])
         }
 
-        fn preview_video(
-            &mut self,
-            device_id: &str,
-            _fps: u64,
-            _timeout: Duration,
-        ) -> VideoProbeStatus {
-            self.video_calls += 1;
-            assert_eq!(device_id, "cam0");
-            VideoProbeStatus::Ready(PreviewInfo {
-                width: 1920,
-                height: 1080,
-                label: "Camera 0".into(),
-            })
-        }
-
         fn probe_control(
             &mut self,
             device_id: &str,
@@ -291,17 +238,22 @@ mod tests {
     }
 
     #[test]
-    fn refresh_detection_lists_devices_and_rechecks_selected_devices() {
+    fn refresh_detection_rechecks_control_but_leaves_video_status_to_preview() {
         let mut backend = FakeBackend::default();
         let mut state = DeviceSelectionState {
             selected_video_id: Some("cam0".into()),
             selected_control_id: Some("COM9".into()),
+            // 视频状态由常驻预览源驱动，刷新不得改动它，更不得再开一次相机。
+            video_status: VideoProbeStatus::Ready(PreviewInfo {
+                width: 1920,
+                height: 1080,
+                label: "Camera 0".into(),
+            }),
             ..DeviceSelectionState::default()
         };
 
         refresh_detection(&mut state, &mut backend, Duration::from_millis(10)).unwrap();
 
-        assert_eq!(backend.video_calls, 1);
         assert_eq!(backend.control_calls, 1);
         assert!(matches!(state.video_status, VideoProbeStatus::Ready(_)));
         assert!(matches!(state.control_status, ControlProbeStatus::Ready(_)));

@@ -17,7 +17,9 @@ use crate::locale::AppLanguage;
 use crate::probe::{ProbeBackend, ProductionProbeBackend, refresh_detection};
 use crate::render::{FrameSize, VideoViewport};
 use crate::session::{ConnectRequest, DesktopSessionError, ProductionDesktopSessionController};
-use crate::state::{ControlProbeStatus, DeviceSelectionState, VideoProbeStatus, VideoScaleMode};
+use crate::state::{
+    ControlProbeStatus, DeviceSelectionState, PreviewInfo, VideoProbeStatus, VideoScaleMode,
+};
 
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 const NO_SIGNAL_TIMEOUT: Duration = Duration::from_secs(2);
@@ -81,6 +83,10 @@ struct DesktopApp {
     preview_texture: Option<egui::TextureHandle>,
     preview_frame_size: Option<FrameSize>,
     preview_device_id: Option<String>,
+    /// 预览源打开时刻：用于“打开成功但迟迟没有帧 → 无信号”的超时判定。
+    preview_opened_at: Option<Instant>,
+    /// 最近一帧到达时刻：用于“正常出帧后停帧 → 断流/无信号”的判定。
+    preview_last_frame_at: Option<Instant>,
     last_frame_seq: Option<u64>,
     last_frame_at: Option<Instant>,
 }
@@ -131,6 +137,8 @@ impl DesktopApp {
             preview_texture: None,
             preview_frame_size: None,
             preview_device_id: None,
+            preview_opened_at: None,
+            preview_last_frame_at: None,
             last_frame_seq: None,
             last_frame_at: None,
         }
@@ -329,6 +337,7 @@ impl DesktopApp {
                                 Ok(()) => {
                                     self.selection = selection;
                                     self.status_message = None;
+                                    self.refresh_video_preview_after_reprobe();
                                 }
                                 Err(error) => {
                                     self.status_message = Some(
@@ -386,10 +395,15 @@ impl DesktopApp {
                             egui::Color32::WHITE,
                         );
                     } else {
+                        let placeholder = match &self.selection.video_status {
+                            VideoProbeStatus::NoSignal => t!("preview.no_signal"),
+                            VideoProbeStatus::OpenFailed(_) => t!("preview.open_failed"),
+                            _ => t!("device.no_preview"),
+                        };
                         preview_painter.text(
                             preview_response.rect.center(),
                             egui::Align2::CENTER_CENTER,
-                            t!("device.no_preview"),
+                            placeholder,
                             egui::FontId::proportional(16.0),
                             egui::Color32::GRAY,
                         );
@@ -400,26 +414,71 @@ impl DesktopApp {
     }
 
     /// 打开/刷新选中视频设备的实时预览（设备切换时重建源）。
+    ///
+    /// 预览源是视频设备的**唯一**打开者（Windows 媒体设备独占，探测/刷新
+    /// 不得再开第二个句柄）。video_status 由这里驱动：
+    /// - 打开失败 → OpenFailed；
+    /// - 首帧到达 → Ready(宽高)；
+    /// - 打开后超时无帧 → NoSignal（帧恢复后自动回到 Ready）；
+    /// - 正常出帧后停帧超过无信号超时 → NoSignal；
+    /// - 设备从枚举中消失 → Disconnected（由刷新标记，此处不重开）。
     fn update_preview(&mut self, ctx: &egui::Context) {
+        // 设备已从枚举消失：不尝试打开（也没有可开的设备），状态保持断开，
+        // 恢复由“刷新后设备回来”或“用户重新选择”驱动。
+        if self.selection.video_status == VideoProbeStatus::Disconnected {
+            return;
+        }
         let video_id = self.selection.selected_video_id.clone();
         if self.preview_device_id.as_deref() != video_id.as_deref() {
             self.preview_source = None;
             self.preview_texture = None;
             self.preview_frame_size = None;
+            self.preview_opened_at = None;
+            self.preview_last_frame_at = None;
             self.preview_device_id = video_id.clone();
-            if let Some(id) = &video_id
-                && let Ok(source) =
-                    ipkvm_video::camera::CameraSource::open(id, self.selection.advanced.preview_fps)
-            {
-                self.preview_source = Some(Arc::new(source));
+            if let Some(id) = &video_id {
+                match ipkvm_video::camera::CameraSource::open(
+                    id,
+                    self.selection.advanced.preview_fps,
+                ) {
+                    Ok(source) => {
+                        self.preview_source = Some(Arc::new(source));
+                        self.preview_opened_at = Some(Instant::now());
+                        self.selection.video_status = VideoProbeStatus::Checking;
+                    }
+                    Err(error) => {
+                        self.selection.video_status =
+                            VideoProbeStatus::OpenFailed(error.to_string());
+                    }
+                }
+            } else {
+                self.selection.video_status = VideoProbeStatus::NotSelected;
             }
         }
         let Some(source) = &self.preview_source else {
             return;
         };
         let Some(frame) = source.latest_frame() else {
+            // 打开成功但没帧，或正常出帧后停帧：按状态对应的参考时刻判定无信号，
+            // 迁移时清掉残留旧画面，避免显示过期的预览。
+            let now = Instant::now();
+            let stalled = match self.selection.video_status {
+                VideoProbeStatus::Checking => {
+                    elapsed_since(self.preview_opened_at, PROBE_TIMEOUT, now)
+                }
+                VideoProbeStatus::Ready(_) => {
+                    elapsed_since(self.preview_last_frame_at, NO_SIGNAL_TIMEOUT, now)
+                }
+                _ => false,
+            };
+            if stalled {
+                self.selection.video_status = VideoProbeStatus::NoSignal;
+                self.preview_texture = None;
+                self.preview_frame_size = None;
+            }
             return;
         };
+        self.preview_last_frame_at = Some(Instant::now());
         let Ok(rgba) = bgra_to_rgba(&frame) else {
             return;
         };
@@ -438,13 +497,52 @@ impl DesktopApp {
             width: rgba.width,
             height: rgba.height,
         });
+        if !matches!(self.selection.video_status, VideoProbeStatus::Ready(_)) {
+            self.selection.video_status = VideoProbeStatus::Ready(PreviewInfo {
+                width: rgba.width,
+                height: rgba.height,
+                label: source.source_info().device_name,
+            });
+        }
     }
 
-    fn drop_preview(&mut self) {
+    /// 关闭当前预览源并清空预览状态（重新打开前必须先关旧句柄，Windows
+    /// 相机/串口都独占）。设备仍处于选中状态时，下一帧 `update_preview`
+    /// 会按当前状态决定是否重建。
+    fn reset_preview(&mut self) {
         self.preview_source = None;
         self.preview_texture = None;
         self.preview_frame_size = None;
         self.preview_device_id = None;
+        self.preview_opened_at = None;
+        self.preview_last_frame_at = None;
+    }
+
+    /// 刷新检测完成后，根据当前视频状态决定是否重建预览：
+    /// 已打开且正常/正在打开 → 跳过；未打开或出错 → 先关旧源再重开；
+    /// 设备已消失 → 关闭旧源保持断开。
+    fn refresh_video_preview_after_reprobe(&mut self) {
+        let selected_present = self
+            .selection
+            .selected_video_id
+            .as_deref()
+            .is_some_and(|id| {
+                self.selection
+                    .video_devices
+                    .iter()
+                    .any(|device| device.id == id)
+            });
+        match preview_refresh_action(&self.selection.video_status, selected_present) {
+            PreviewRefreshAction::Skip => {}
+            PreviewRefreshAction::Reopen => {
+                // 重新探测前必须先关掉旧句柄（Windows 相机独占，不能二次打开）。
+                self.reset_preview();
+                self.selection.video_status = VideoProbeStatus::Checking;
+            }
+            PreviewRefreshAction::KeepDisconnected => {
+                self.reset_preview();
+            }
+        }
     }
 
     fn video_device_combo(&mut self, ui: &mut egui::Ui) {
@@ -464,7 +562,8 @@ impl DesktopApp {
                     if ui.selectable_label(selected, &device.label).clicked() {
                         self.selection.selected_video_id = Some(device.id);
                         self.selection.video_status = VideoProbeStatus::Checking;
-                        self.reprobe_selected();
+                        // 强制重建预览源（同一设备重选也重建），由预览驱动状态。
+                        self.reset_preview();
                     }
                 }
             });
@@ -489,32 +588,21 @@ impl DesktopApp {
                     if ui.selectable_label(selected, &device.label).clicked() {
                         self.selection.selected_control_id = Some(device.id);
                         self.selection.control_status = ControlProbeStatus::Checking;
-                        self.reprobe_selected();
+                        if let Some(device_id) = self.selection.selected_control_id.clone() {
+                            self.selection.control_status = self.probe.probe_control(
+                                &device_id,
+                                self.selection.advanced.baud_rate,
+                                PROBE_TIMEOUT,
+                            );
+                        }
                     }
                 }
             });
     }
 
-    fn reprobe_selected(&mut self) {
-        if let Some(device_id) = self.selection.selected_video_id.clone() {
-            self.selection.video_status = self.probe.preview_video(
-                &device_id,
-                self.selection.advanced.preview_fps,
-                PROBE_TIMEOUT,
-            );
-        }
-        if let Some(device_id) = self.selection.selected_control_id.clone() {
-            self.selection.control_status = self.probe.probe_control(
-                &device_id,
-                self.selection.advanced.baud_rate,
-                PROBE_TIMEOUT,
-            );
-        }
-    }
-
     fn connect(&mut self, ctx: &egui::Context) -> Result<(), DesktopSessionError> {
         // 预览源占用相机/串口，连接前必须先释放。
-        self.drop_preview();
+        self.reset_preview();
         if self.selection.advanced.auto_baud
             && let Some(control_id) = self.selection.selected_control_id.clone()
             && let Some(baud) = crate::probe::detect_baud_rate(&control_id, BAUD_PROBE_TIMEOUT)
@@ -1282,6 +1370,37 @@ impl eframe::App for DesktopApp {
     }
 }
 
+/// 刷新枚举后视频预览的处理决策：以当前状态为唯一依据。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PreviewRefreshAction {
+    /// 已打开且正常 / 正在打开 / 未选择：跳过，不打断。
+    Skip,
+    /// 未打开或出错：先关旧源再重建预览（重新探测）。
+    Reopen,
+    /// 设备已从枚举消失：关闭旧源，保持断开。
+    KeepDisconnected,
+}
+
+fn preview_refresh_action(status: &VideoProbeStatus, device_present: bool) -> PreviewRefreshAction {
+    match status {
+        VideoProbeStatus::Ready(_) | VideoProbeStatus::Checking | VideoProbeStatus::NotSelected => {
+            PreviewRefreshAction::Skip
+        }
+        VideoProbeStatus::OpenFailed(_) | VideoProbeStatus::NoSignal => {
+            PreviewRefreshAction::Reopen
+        }
+        VideoProbeStatus::Disconnected if device_present => PreviewRefreshAction::Reopen,
+        VideoProbeStatus::Disconnected => PreviewRefreshAction::KeepDisconnected,
+    }
+}
+
+/// 预览源打开后迟迟无帧的超时判定：从打开时刻起超过 `timeout` 仍无帧 → 无信号。
+/// 超时判定：从参考时刻起超过 `timeout` 视为过期（用于“打开后无帧”和
+/// “出帧后停帧”两种无信号场景；无参考时刻视为未过期）。
+fn elapsed_since(since: Option<Instant>, timeout: Duration, now: Instant) -> bool {
+    since.is_some_and(|at| now.duration_since(at) >= timeout)
+}
+
 fn control_status_text(status: &ControlProbeStatus, port: Option<&str>) -> String {
     match status {
         ControlProbeStatus::NotSelected => t!("control_status.not_selected").to_string(),
@@ -1453,6 +1572,63 @@ mod tests {
         assert_eq!(texts.pointer, "相对模式");
     }
 
+    #[test]
+    fn preview_refresh_skips_when_already_running_or_checking() {
+        for status in [
+            VideoProbeStatus::Ready(PreviewInfo {
+                width: 1920,
+                height: 1080,
+                label: "cam".into(),
+            }),
+            VideoProbeStatus::Checking,
+            VideoProbeStatus::NotSelected,
+        ] {
+            assert_eq!(
+                preview_refresh_action(&status, true),
+                PreviewRefreshAction::Skip,
+                "已打开/正在打开/未选择都不应重开相机"
+            );
+        }
+    }
+
+    #[test]
+    fn preview_refresh_reopens_on_failure_or_no_signal() {
+        for status in [
+            VideoProbeStatus::OpenFailed("boom".into()),
+            VideoProbeStatus::NoSignal,
+        ] {
+            assert_eq!(
+                preview_refresh_action(&status, true),
+                PreviewRefreshAction::Reopen
+            );
+            assert_eq!(
+                preview_refresh_action(&status, false),
+                PreviewRefreshAction::Reopen
+            );
+        }
+    }
+
+    #[test]
+    fn preview_refresh_keeps_disconnected_when_device_gone_and_reopens_when_back() {
+        assert_eq!(
+            preview_refresh_action(&VideoProbeStatus::Disconnected, false),
+            PreviewRefreshAction::KeepDisconnected
+        );
+        assert_eq!(
+            preview_refresh_action(&VideoProbeStatus::Disconnected, true),
+            PreviewRefreshAction::Reopen
+        );
+    }
+
+    #[test]
+    fn preview_timeout_only_moves_checking_to_no_signal() {
+        let now = Instant::now();
+        let opened = now - PROBE_TIMEOUT - Duration::from_millis(1);
+        assert!(elapsed_since(Some(opened), PROBE_TIMEOUT, now));
+        assert!(!elapsed_since(Some(now), PROBE_TIMEOUT, now));
+        assert!(!elapsed_since(None, PROBE_TIMEOUT, now));
+    }
+
     /// 全部用户可见文案键：两侧语言都必须存在且返回非键原文。
     /// 该表同时是“新增文案必须走 t!()”的回归检查清单。
     const ALL_UI_KEYS: &[&str] = &[
@@ -1477,6 +1653,8 @@ mod tests {
         "device.connect",
         "device.preview",
         "device.no_preview",
+        "preview.no_signal",
+        "preview.open_failed",
         "special_keys.title",
         "special_keys.hint",
         "special_keys.ctrl_alt_del",
