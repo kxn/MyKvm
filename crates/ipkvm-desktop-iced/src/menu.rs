@@ -30,6 +30,8 @@ pub enum MenuAction {
     LoadRecent(String),
     /// 特殊键发送。
     SpecialKey(String),
+    /// 断开当前连接并回到连接页。
+    Disconnect,
     /// 其它简单动作（退出/复制截图等）。
     Simple(&'static str),
 }
@@ -67,8 +69,7 @@ where
     R: iced::advanced::Renderer + iced::advanced::text::Renderer + 'a,
 {
     Menu::new(menu_items_macro!(
-        (item_button(t!("menu.reselect_device"), MenuAction::Simple("reselect"))),
-        (item_button(t!("menu.stop_connection"), MenuAction::Simple("stop"))),
+        (item_button(t!("menu.disconnect"), MenuAction::Disconnect)),
         (separator()),
         (item_button(t!("file.load_profile"), MenuAction::Simple("load_profile"))),
         recent_item(recent_profiles),

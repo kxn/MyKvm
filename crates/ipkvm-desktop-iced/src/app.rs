@@ -580,15 +580,7 @@ where
                 Task::none()
             }
             Message::Disconnect => {
-                diag::log("disconnect");
-                let _ = self.controller.stop();
-                self.sync_status();
-                self.selection.control_status = ControlProbeStatus::Disconnected;
-                self.selection.video_status = VideoProbeStatus::NotSelected;
-                self.preview.reset();
-                self.reset_preview_handle();
-                self.remote_input = false;
-                self.stop_relative_source();
+                self.disconnect();
                 Task::none()
             }
             Message::PreviewTick => {
@@ -686,6 +678,7 @@ where
                     self.send_special(key);
                 }
             }
+            MenuAction::Disconnect => self.disconnect(),
             MenuAction::Simple("paste") => self.paste(),
             MenuAction::Simple("release_all") => {
                 let _ = self.controller.release_all();
@@ -953,6 +946,18 @@ where
             source.stop();
         }
         self.relative_rx = None;
+    }
+
+    fn disconnect(&mut self) {
+        diag::log("disconnect");
+        let _ = self.controller.stop();
+        self.sync_status();
+        self.selection.control_status = ControlProbeStatus::Disconnected;
+        self.selection.video_status = VideoProbeStatus::NotSelected;
+        self.preview.reset();
+        self.reset_preview_handle();
+        self.remote_input = false;
+        self.stop_relative_source();
     }
 
     fn paste(&mut self) {
@@ -1693,6 +1698,21 @@ mod tests {
             app.selection.control_status,
             ControlProbeStatus::Disconnected
         );
+    }
+
+    #[test]
+    fn menu_disconnect_returns_to_connection_page() {
+        let (mut app, _) = MockApp::new_mock(); // 构造即在线 → 视频页
+        assert_eq!(app.status(), &ConnectionStatus::Connected);
+        let _ = app.update(Message::Menu(MenuAction::Disconnect));
+        assert_eq!(app.status(), &ConnectionStatus::Disconnected);
+        assert_eq!(
+            app.selection.control_status,
+            ControlProbeStatus::Disconnected
+        );
+        assert!(!app.remote_input, "断开后必须退出远程输入");
+        let mut ui = iced_test::simulator::simulator(app.view());
+        assert!(ui.find("Connect").is_ok(), "断开后必须回到连接页");
     }
 
     #[test]

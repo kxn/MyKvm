@@ -25,10 +25,8 @@ fn file_menu_can_open_and_show_items() {
     let mut ui = MenuHarness::ui();
     assert!(ui.click("File").is_ok(), "点击 File 顶层必须成功");
     assert!(ui.find("Recent").is_ok(), "File 展开后 Recent 必须可见");
-    assert!(
-        ui.find("Reselect device…").is_ok(),
-        "File 菜单项必须显示译文"
-    );
+    assert!(ui.find("Disconnect").is_ok(), "File 菜单项必须显示译文");
+    assert!(ui.find("Reselect device…").is_err(), "旧项必须移除");
     assert!(ui.find("Exit").is_ok(), "File 菜单必须含 Exit");
 }
 
@@ -119,7 +117,7 @@ fn item_action_publishes_and_closes_menus() {
 
     ui.click("p1").expect("点击最近使用项 p1");
     assert!(
-        ui.find("Reselect device…").is_err(),
+        ui.find("Disconnect").is_err(),
         "点击业务项后菜单必须全部关闭"
     );
 
@@ -139,7 +137,7 @@ fn outside_click_closes_menu_without_reaching_background() {
 
     let mut ui = MenuHarness::ui();
     assert!(ui.click("File").is_ok(), "打开 File");
-    assert!(ui.find("Reselect device…").is_ok(), "菜单必须已打开");
+    assert!(ui.find("Disconnect").is_ok(), "菜单必须已打开");
 
     // 菜单打开时点背景按钮：只关菜单，不触发背景（手动模拟点击，保留 ui）。
     let bg = ui.find("Hit me").expect("背景按钮必须可定位");
@@ -152,7 +150,7 @@ fn outside_click_closes_menu_without_reaching_background() {
         )),
     ]);
 
-    assert!(ui.find("Reselect device…").is_err(), "点外部必须关闭菜单");
+    assert!(ui.find("Disconnect").is_err(), "点外部必须关闭菜单");
 
     let messages: Vec<_> = ui.into_messages().collect();
     assert!(
