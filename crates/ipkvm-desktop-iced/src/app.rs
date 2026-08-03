@@ -242,6 +242,10 @@ where
     recording: Option<RecordingSink>,
     clipboard: Arc<dyn ClipboardReader>,
     relative_factory: Arc<dyn RelativeSourceFactory>,
+    cursor: Arc<dyn crate::platform::cursor::CursorController>,
+    /// 测试记录句柄：与 cursor 指向同一控制器（仅 test 构建存在）。
+    #[cfg(test)]
+    cursor_records: Arc<RecordingCursorController>,
     dark: bool,
 }
 
@@ -263,6 +267,8 @@ impl App<RecordingSink, MockFactory> {
             controller.input_offline_reason(),
         );
         let seq = MOCK_STORE_SEQ.fetch_add(1, Ordering::Relaxed);
+        #[cfg(test)]
+        let cursor_records = Arc::new(RecordingCursorController::default());
         let mut app = Self {
             controller,
             frame_source: Some(frame_source),
@@ -310,6 +316,12 @@ impl App<RecordingSink, MockFactory> {
             recording: Some(recording),
             clipboard: Arc::new(SystemClipboard),
             relative_factory: Arc::new(ChannelRelativeFactory::new()),
+            #[cfg(test)]
+            cursor: cursor_records.clone(),
+            #[cfg(not(test))]
+            cursor: Arc::new(crate::platform::cursor::ProductionCursorController::default()),
+            #[cfg(test)]
+            cursor_records,
             dark: false,
         };
         // 对齐 egui 启动行为：预填上次手动连接（mock 的临时 store 通常为空）。
@@ -367,6 +379,9 @@ impl App<Ch9329InputSink<SerialCommandQueue>, ProductionSessionFactory> {
             recording: None,
             clipboard: Arc::new(SystemClipboard),
             relative_factory: Arc::new(crate::platform::PlatformRelativeSourceFactory),
+            cursor: Arc::new(crate::platform::cursor::ProductionCursorController::default()),
+            #[cfg(test)]
+            cursor_records: Arc::new(RecordingCursorController::default()),
             dark: false,
         };
         // 预填上次手动连接（对齐 egui new()），随后由启动 Task 自动枚举。
@@ -989,6 +1004,7 @@ where
                 if is_remote_exit_combo(code, modifiers, repeat) {
                     self.remote_input = false;
                     self.last_modifiers = iced::keyboard::Modifiers::empty();
+                    self.sync_cursor();
                     return;
                 }
                 if is_mode_toggle_combo(code, modifiers, repeat) {
@@ -1101,7 +1117,7 @@ where
 
     fn enter_remote_input(&mut self) {
         self.remote_input = true;
-        // 光标隐藏/锁定由下一步 Task 7b 接线。
+        self.sync_cursor();
     }
 
     fn exit_remote_input(&mut self) {
@@ -1109,13 +1125,20 @@ where
             return;
         }
         self.remote_input = false;
+        self.sync_cursor();
         self.pointer_mask = 0;
         // 对齐 egui 退出语义：复位去重/限频状态，避免重进同位置点击被节流吞掉。
         self.last_pointer_sent = None;
         self.last_pointer_sent_at = None;
         self.relative_sampler.reset();
         let _ = self.controller.release_all();
-        // 光标恢复由 Task 7b 接线。
+    }
+
+    /// 按当前模式/远程输入状态同步光标（相对+远程=隐藏裁剪；否则恢复）。
+    fn sync_cursor(&mut self) {
+        let grab = self.remote_input && self.connection.mouse_mode == MouseMode::Relative;
+        self.cursor.set_visible(!grab);
+        self.cursor.set_clipped(grab);
     }
 
     fn send_absolute(&mut self, cursor: iced::Point) {
@@ -1283,6 +1306,7 @@ where
             if next != MouseMode::Relative {
                 self.stop_relative_source();
             }
+            self.sync_cursor();
         }
     }
 
@@ -1302,6 +1326,7 @@ where
         self.latest_frame = None;
         self.frame_size = None;
         self.remote_input = false;
+        self.sync_cursor();
         self.stop_relative_source();
     }
 
@@ -1836,6 +1861,27 @@ pub fn run() -> iced::Result {
         .title(WINDOW_TITLE)
         .window_size(WINDOW_SIZE)
         .run()
+}
+
+/// 记录型光标控制器：断言 set_visible/set_clipped 调用序列（Task 7b 测试用）。
+/// 定义在 app.rs 模块级（而非 tests 模块内），因为 App 结构体的测试字段
+/// `cursor_records` 需要引用该类型。
+#[cfg(test)]
+#[derive(Default)]
+struct RecordingCursorController {
+    visible: std::sync::Mutex<Vec<bool>>,
+    clipped: std::sync::Mutex<Vec<bool>>,
+}
+
+#[cfg(test)]
+impl crate::platform::cursor::CursorController for RecordingCursorController {
+    fn set_visible(&self, visible: bool) {
+        self.visible.lock().unwrap().push(visible);
+    }
+
+    fn set_clipped(&self, clipped: bool) {
+        self.clipped.lock().unwrap().push(clipped);
+    }
 }
 
 #[cfg(test)]
@@ -2379,6 +2425,30 @@ mod tests {
         )));
     }
 
+    fn last_visible(app: &MockApp) -> Option<bool> {
+        app.cursor_records.visible.lock().unwrap().last().copied()
+    }
+
+    fn last_clipped(app: &MockApp) -> Option<bool> {
+        app.cursor_records.clipped.lock().unwrap().last().copied()
+    }
+
+    /// 发送 Ctrl+Alt+M（切换鼠标模式）。
+    fn press_mode_toggle(app: &mut MockApp) {
+        let mut modifiers = iced::keyboard::Modifiers::empty();
+        modifiers.set(iced::keyboard::Modifiers::CTRL, true);
+        modifiers.set(iced::keyboard::Modifiers::ALT, true);
+        let _ = app.update(Message::Keyboard(iced::keyboard::Event::KeyPressed {
+            key: iced::keyboard::Key::Unidentified,
+            modified_key: iced::keyboard::Key::Unidentified,
+            physical_key: iced::keyboard::key::Physical::Code(iced::keyboard::key::Code::KeyM),
+            location: iced::keyboard::Location::Standard,
+            modifiers,
+            text: None,
+            repeat: false,
+        }));
+    }
+
     fn enter_remote(app: &mut MockApp) {
         let _ = app.update(Message::Disconnect);
         let _ = app.update(Message::RefreshDevices);
@@ -2523,22 +2593,104 @@ mod tests {
         let (mut app, _) = MockApp::new_mock();
         enter_remote(&mut app);
         let before = app.connection.mouse_mode;
-        let mut modifiers = iced::keyboard::Modifiers::empty();
-        modifiers.set(iced::keyboard::Modifiers::CTRL, true);
-        modifiers.set(iced::keyboard::Modifiers::ALT, true);
-        let _ = app.update(Message::Keyboard(iced::keyboard::Event::KeyPressed {
-            key: iced::keyboard::Key::Unidentified,
-            modified_key: iced::keyboard::Key::Unidentified,
-            physical_key: iced::keyboard::key::Physical::Code(iced::keyboard::key::Code::KeyM),
-            location: iced::keyboard::Location::Standard,
-            modifiers,
-            text: None,
-            repeat: false,
-        }));
+        press_mode_toggle(&mut app);
         assert_ne!(
             app.connection.mouse_mode, before,
             "Ctrl+Alt+M 必须切换鼠标模式"
         );
+    }
+
+    #[test]
+    fn relative_mode_enter_hides_and_clips_cursor() {
+        let (mut app, _) = MockApp::new_mock();
+        app.connection.mouse_mode = MouseMode::Relative;
+        click_video(&mut app);
+        assert!(app.remote_input, "相对模式点击视频区必须进入远程输入");
+        assert_eq!(last_visible(&app), Some(false), "相对模式必须隐藏光标");
+        assert_eq!(last_clipped(&app), Some(true), "相对模式必须裁剪光标");
+    }
+
+    #[test]
+    fn absolute_mode_enter_keeps_cursor_visible() {
+        let (mut app, _) = MockApp::new_mock();
+        app.connection.mouse_mode = MouseMode::Absolute;
+        click_video(&mut app);
+        assert!(app.remote_input, "绝对模式点击视频区必须进入远程输入");
+        assert_eq!(last_visible(&app), Some(true), "绝对模式不得隐藏光标");
+        let clipped = app.cursor_records.clipped.lock().unwrap();
+        assert!(
+            !clipped.iter().any(|clipped| *clipped),
+            "绝对模式不得裁剪光标"
+        );
+    }
+
+    #[test]
+    fn exit_restores_cursor() {
+        let (mut app, _) = MockApp::new_mock();
+        app.connection.mouse_mode = MouseMode::Relative;
+        *app.video_bounds.borrow_mut() = Some(iced::Rectangle::new(
+            iced::Point::ORIGIN,
+            iced::Size::new(320.0, 180.0),
+        ));
+        move_cursor(&mut app, 160.0, 90.0);
+        press_button(&mut app, iced::mouse::Button::Left);
+        assert!(app.remote_input, "点击视频区必须进入远程输入");
+        assert_eq!(last_visible(&app), Some(false));
+        assert_eq!(last_clipped(&app), Some(true));
+        // 点击视频区外：退出并恢复光标。
+        move_cursor(&mut app, 500.0, 500.0);
+        press_button(&mut app, iced::mouse::Button::Left);
+        assert!(!app.remote_input, "点击视频区外必须退出远程输入");
+        assert_eq!(last_visible(&app), Some(true), "退出必须恢复光标可见");
+        assert_eq!(last_clipped(&app), Some(false), "退出必须解除裁剪");
+    }
+
+    #[test]
+    fn toggle_to_absolute_restores_cursor() {
+        let (mut app, _) = MockApp::new_mock();
+        app.connection.mouse_mode = MouseMode::Relative;
+        click_video(&mut app);
+        assert!(app.remote_input);
+        assert_eq!(last_visible(&app), Some(false));
+        assert_eq!(last_clipped(&app), Some(true));
+        // 仍在远程输入时切到绝对：必须恢复光标。
+        press_mode_toggle(&mut app);
+        assert_eq!(app.connection.mouse_mode, MouseMode::Absolute);
+        assert!(app.remote_input, "切换模式不得退出远程输入");
+        assert_eq!(
+            last_visible(&app),
+            Some(true),
+            "切到绝对模式必须恢复光标可见"
+        );
+        assert_eq!(last_clipped(&app), Some(false), "切到绝对模式必须解除裁剪");
+        // 再切回相对（仍在远程输入）：重新隐藏裁剪。
+        press_mode_toggle(&mut app);
+        assert_eq!(app.connection.mouse_mode, MouseMode::Relative);
+        assert!(app.remote_input);
+        assert_eq!(
+            last_visible(&app),
+            Some(false),
+            "切回相对模式必须重新隐藏光标"
+        );
+        assert_eq!(
+            last_clipped(&app),
+            Some(true),
+            "切回相对模式必须重新裁剪光标"
+        );
+    }
+
+    #[test]
+    fn disconnect_restores_cursor() {
+        let (mut app, _) = MockApp::new_mock();
+        app.connection.mouse_mode = MouseMode::Relative;
+        click_video(&mut app);
+        assert!(app.remote_input);
+        assert_eq!(last_visible(&app), Some(false));
+        assert_eq!(last_clipped(&app), Some(true));
+        let _ = app.update(Message::Disconnect);
+        assert!(!app.remote_input, "断开必须退出远程输入");
+        assert_eq!(last_visible(&app), Some(true), "断开必须恢复光标可见");
+        assert_eq!(last_clipped(&app), Some(false), "断开必须解除裁剪");
     }
 
     #[test]

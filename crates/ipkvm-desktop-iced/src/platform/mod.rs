@@ -2,11 +2,13 @@
 //!
 //! Windows：Raw Input（`windows`）；macOS/Linux：stub（迁移时补实现，不堵口子）。
 
+pub mod cursor;
 #[cfg(not(windows))]
 pub mod stub;
 #[cfg(windows)]
 pub mod windows;
 
+pub use cursor::{CursorController, ProductionCursorController};
 #[cfg(not(windows))]
 pub use stub::StubRawInput;
 #[cfg(windows)]
