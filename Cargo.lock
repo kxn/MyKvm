@@ -2659,6 +2659,7 @@ dependencies = [
 name = "ipkvm-desktop-iced"
 version = "0.1.0"
 dependencies = [
+ "arboard",
  "async-stream",
  "futures-util",
  "iced",
@@ -2671,6 +2672,7 @@ dependencies = [
  "rust-i18n",
  "sys-locale",
  "tokio",
+ "windows 0.61.3",
 ]
 
 [[package]]
