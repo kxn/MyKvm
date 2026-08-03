@@ -16,9 +16,10 @@ pub trait CursorController: Send + Sync {
 }
 
 /// 只在状态变化时放行（ShowCursor 是计数 API，必须幂等同步）。
+/// 0=未知（首调用必须放行），1=可见，2=隐藏。
 #[derive(Default)]
 pub struct VisibilityGate {
-    last: std::sync::atomic::AtomicBool,
+    state: std::sync::atomic::AtomicU8,
 }
 
 impl VisibilityGate {
@@ -28,10 +29,10 @@ impl VisibilityGate {
 
     /// 返回 true 表示状态发生变化（应真正调用 ShowCursor）。
     pub fn update(&self, visible: bool) -> bool {
-        let previous = self
-            .last
-            .swap(visible, std::sync::atomic::Ordering::Relaxed);
-        previous != visible
+        use std::sync::atomic::Ordering;
+        let next = if visible { 1u8 } else { 2u8 };
+        let previous = self.state.swap(next, Ordering::Relaxed);
+        previous == 0 || previous != next
     }
 }
 
@@ -97,6 +98,16 @@ mod tests {
 
     #[test]
     fn visibility_gate_only_passes_on_change() {
+        let gate = VisibilityGate::new();
+        assert!(
+            gate.update(false),
+            "首次 update(false) 必须放行（未知状态不得吞掉首次隐藏）"
+        );
+        let gate = VisibilityGate::new();
+        assert!(
+            gate.update(true),
+            "首次 update(true) 必须放行（未知状态不得吞掉首次显示）"
+        );
         let gate = VisibilityGate::new();
         // 首 true 也算变化：true → false → false → true 共 3 次放行。
         assert!(gate.update(true), "首次 true 必须放行");
