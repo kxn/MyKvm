@@ -16,6 +16,8 @@ ipkvm-core = { path = "../ipkvm-core" }
 ipkvm-desktop = { path = "../ipkvm-desktop" }
 ipkvm-session = { path = "../ipkvm-session" }
 ipkvm-video = { path = "../ipkvm-video", features = ["mock"] }
+rust-i18n = "4.2.1"
+sys-locale = "0.3.2"
 
 [dev-dependencies]
 iced_test = "0.14"

@@ -1,0 +1,129 @@
+_version: 1
+
+menu:
+  file: "File"
+  edit: "Edit"
+  send: "Send"
+  about: "About"
+  reselect_device: "Reselect device…"
+  stop_connection: "Stop connection"
+
+file:
+  load_profile: "Load connection profile…"
+  recent: "Recent"
+  recent_more: "More…"
+  exit: "Exit"
+
+edit:
+  copy_screenshot: "Copy screenshot"
+  language: "Language"
+  settings: "Settings…"
+
+send:
+  paste_text: "Paste text"
+  release_all: "Release all keys/mouse"
+  special_keys: "Send special keys"
+
+special_keys:
+  ctrl_alt_del: "Ctrl+Alt+Del"
+  win: "Win"
+  print_screen: "PrintScreen"
+  alt_tab: "Alt+Tab"
+
+language:
+  system: "System"
+  chinese: "Chinese"
+  english: "English"
+
+modal:
+  settings_title: "Settings"
+  connection_title: "Connection settings"
+  close: "Close"
+  about_title: "About"
+  save_title: "Save profile"
+  load_title: "Load profile"
+  name_label: "Name:"
+  save: "Save"
+
+device:
+  title: "Select device"
+  video: "Video device"
+  control: "Control device (CH9329)"
+  refresh: "Refresh detection"
+  connect: "Connect"
+  preview: "Video preview"
+  no_preview: "No preview"
+
+preview:
+  no_signal: "No signal"
+  open_failed: "Open failed"
+
+profile:
+  save: "Save current options…"
+  saved: "Profile \"%{name}\" saved"
+  save_failed: "Failed to save profile: %{error}"
+  load_failed: "Failed to load profile: %{error}"
+  device_missing: "Video device not found"
+  control_missing: "Control device not found"
+  no_recent: "None yet"
+
+connection_settings:
+  title: "Connection settings"
+
+settings:
+  title: "Settings"
+  baud_rate: "Baud rate"
+  auto_baud: "Auto-detect baud rate on connect"
+  preview_fps: "Preview FPS"
+  mouse_mode: "Mouse mode"
+
+mouse_mode:
+  absolute: "Absolute"
+  relative: "Relative"
+
+status:
+  control_device: "Control device: %{value}"
+  keyboard: "Keyboard: %{value}"
+  pointer: "Mouse: %{value}"
+  video: "Video: %{value}"
+  message: "Status: %{message}"
+  offline: "Offline"
+  video_no_signal: "No signal"
+  video_stalled: "Stalled / no signal"
+
+control_status:
+  not_selected: "Not selected"
+  checking: "Rechecking"
+  ready: "CH9329(%{port})"
+  not_ch9329: "Not a CH9329 (%{reason})"
+  no_response: "No response"
+  open_failed: "Open failed (%{error})"
+  offline: "Offline"
+
+video_status:
+  not_selected: "Video: not selected"
+  checking: "Video: checking…"
+  ready: "Video: preview available %{width}×%{height} (%{label})"
+  no_signal: "Video: no signal"
+  open_failed: "Video: open failed %{error}"
+  disconnected: "Video: device disconnected"
+
+control_status_label:
+  not_selected: "Control: not selected"
+  checking: "Control: probing…"
+  ready: "Control: CH9329(%{port})"
+  not_ch9329: "Control: not a valid CH9329 (%{reason})"
+  no_response: "Control: no response"
+  open_failed: "Control: open failed %{error}"
+  disconnected: "Control: device disconnected"
+
+message:
+  offline_with_reason: "Control device offline: %{reason}"
+  offline_reconnect: "Control device offline; refresh detection and reconnect"
+  input_rejected: "Input rejected"
+  enumeration_failed: "Device enumeration failed: %{error}"
+  connect_failed: "Connection failed: %{error}"
+  baud_selected: "Auto-selected baud rate %{baud}"
+
+common:
+  not_selected: "Not selected"
