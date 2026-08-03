@@ -1,19 +1,15 @@
-//! #88 取证：菜单弹出层必须真的画出文字像素。
+//! #88 回归保护：菜单弹出层必须真的画出文字像素。
 //!
-//! iced 的 `UserInterface` 在 update 阶段用 overlay 实例 A 计算布局，在 draw 阶段
-//! 用新建的实例 B 重画（只复用 A 的 layout 节点）。如果弹出层把自己的子控件树做成
-//! “每次新建的临时 Tree”，B 里的 text 段落从未被 layout 填充，draw 时就只有空段落：
-//! 面板/悬停块正常，文字一个像素都画不出来。
-//!
-//! 本测试用 tiny_skia 离屏渲染真实 `menu_bar`，统计弹出区域里“接近主题文字色”的像素数。
-//! 修复前应为 0（复现 #88），修复后应大于 0（回归保护）。
+//! 自绘菜单时期 #88 是弹出层文字整体不渲染/右偏；改用 iced_aw 后文字走
+//! 普通 widget 绘制管线，这里保留一个像素级冒烟：真实点击打开 File 菜单，
+//! 离屏渲染后统计弹出区域内接近主题文字色的像素数必须大于 0。
 
 use iced::advanced::clipboard::Null;
 use iced::advanced::mouse;
 use iced::advanced::renderer;
 use iced::{Color, Point, Rectangle, Size};
 use iced_runtime::user_interface::{self, UserInterface};
-use ipkvm_desktop_iced::menu::{MenuState, menu_bar};
+use ipkvm_desktop_iced::menu::{self, MenuAction};
 
 const WIDTH: u32 = 800;
 const HEIGHT: u32 = 600;
@@ -23,11 +19,8 @@ fn menu_popup_draws_text_pixels() {
     rust_i18n::set_locale("en");
 
     let mut renderer = iced_tiny_skia::Renderer::new(iced::Font::default(), 16.0.into());
-    let state = MenuState {
-        open_root: Some(0),
-        open_path: Vec::new(),
-    };
-    let root = menu_bar::<iced_tiny_skia::Renderer>(&state, &[]);
+    let root: iced::Element<'static, MenuAction, iced::Theme, iced_tiny_skia::Renderer> =
+        menu::menu_bar(&[]);
 
     let mut ui = UserInterface::build(
         root,
@@ -38,15 +31,22 @@ fn menu_popup_draws_text_pixels() {
 
     let mut messages = Vec::new();
     let mut clipboard = Null;
+    // 点击顶部第一个根按钮（File）打开菜单。MenuBar padding 为 0，
+    // 根按钮从 (0,0) 开始，File 按钮中心约在 (18, 12)。
+    let click_at = Point::new(18.0, 12.0);
     let _ = ui.update(
-        &[],
-        mouse::Cursor::Available(Point::ORIGIN),
+        &[
+            iced::Event::Mouse(mouse::Event::CursorMoved { position: click_at }),
+            iced::Event::Mouse(mouse::Event::ButtonPressed(mouse::Button::Left)),
+            iced::Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left)),
+        ],
+        mouse::Cursor::Available(click_at),
         &mut renderer,
         &mut clipboard,
         &mut messages,
     );
 
-    let theme = iced::Theme::Dark;
+    let theme = iced::Theme::Light;
     let text_color = theme.palette().text;
     let style = renderer::Style {
         text_color,
@@ -60,7 +60,7 @@ fn menu_popup_draws_text_pixels() {
         &mut renderer,
         &theme,
         &style,
-        mouse::Cursor::Available(Point::ORIGIN),
+        mouse::Cursor::Available(click_at),
     );
     renderer.draw(
         &mut pixmap.as_mut(),
@@ -70,8 +70,8 @@ fn menu_popup_draws_text_pixels() {
         Color::from_rgb(0.1, 0.1, 0.1),
     );
 
-    // 弹出菜单在菜单栏下方；只统计 y >= 40 的区域，避免把顶部根按钮文字算进来。
-    let text_pixels = count_text_pixels(&pixmap, text_color, 40);
+    // 菜单栏高度约 24px；只统计 y >= 30 的区域，避免把顶部根按钮文字算进来。
+    let text_pixels = count_text_pixels(&pixmap, text_color, 30);
     let root_pixels = count_text_pixels(&pixmap, text_color, 0) - text_pixels;
     assert!(
         root_pixels > 0,

@@ -10,6 +10,12 @@ members = [
     "crates/ipkvm-headless",
     "crates/ipkvm-desktop-iced-spike",
 ]
+exclude = ["third_party/iced_aw"]
+
+[patch.crates-io]
+# iced_aw 0.14.1 vendored + 本地最小补丁（嵌套子菜单树状态 bug，见
+# third_party/iced_aw/PATCHES.md）。0.15 正式版发布后重新评估。
+iced_aw = { path = "third_party/iced_aw" }
 
 [workspace.package]
 edition = "2024"
@@ -24,6 +30,7 @@ cipher = "0.4"
 des = "0.8"
 eframe = { version = "0.33.2", default-features = false, features = ["wgpu", "x11", "wayland"] }
 futures-util = "0.3.33"
+iced_aw = { version = "0.14.1", default-features = false, features = ["menu"] }
 include_dir = { version = "0.7.4", default-features = false }
 jpeg-encoder = "0.6"
 proptest = "1"

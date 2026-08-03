@@ -12,6 +12,7 @@ arboard.workspace = true
 async-stream = "0.3"
 futures-util = { workspace = true }
 iced = { version = "0.14", features = ["tokio", "image", "advanced"] }
+iced_aw.workspace = true
 iced_futures = "0.14"
 ipkvm-core = { path = "../ipkvm-core", features = ["serial"] }
 ipkvm-desktop = { path = "../ipkvm-desktop" }

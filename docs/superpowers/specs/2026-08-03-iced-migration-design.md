@@ -36,7 +36,7 @@
 - API 未冻结：0.14.0 之后 master 已有修复未发版。**已知问题必须按「使用模式」规避，不依赖未发版修复**：
   - `image::Handle` 必须存 state、view 只 clone（#3160 经验）。
   - canvas 大图缓存回归（#3173 open）：视频用 `image` 控件，不走 canvas。
-  - **iced_aw 0.14.1 嵌套子菜单树状态 bug**（`Item::children()` 注释掉菜单子树 → `tree.children[1]` 越界 panic，修复仅在 0.15-dev）：**弃用 iced_aw，菜单自绘**（spike 已验证）。
+  - **iced_aw 0.14.1 嵌套子菜单树状态 bug**（`Item::children()` 注释掉菜单子树 → `tree.children[1]` 越界 panic，修复仅在 0.15-dev 且依赖 iced 0.15）：**vendored 0.14.1 + 本地最小补丁**（backport 上游 main 修复到 0.14 签名），见 #95 与 `third_party/iced_aw/PATCHES.md`；spike 先复现 panic、再验证补丁后全绿。
 
 ### 跨平台约束（用户确认的 6 条规则）
 
@@ -86,19 +86,20 @@
 
 | egui 现有区域 | iced 方案 |
 |---|---|
-| 顶部菜单栏（文件/编辑/发送/关于 + 二级菜单） | 自绘 `MenuBar` Widget + `MenuPopup` Overlay（spike 代码为基础，见 3.3） |
+| 顶部菜单栏（文件/编辑/发送/关于 + 二级菜单） | `iced_aw` `MenuBar`/`Menu`/`Item`（vendored 补丁版，见 3.3） |
 | 主页面/连接页（设备下拉、预览图、刷新、连接、保存 profile） | `Container` + `PickList`/自绘下拉 + 预览图（`image` 控件） |
 | 视频区（FitWindow/ActualSize/ResizeWindowToVideo、黑边颜色） | `image` 控件 + `ContentFit`/自绘缩放（`scale.rs` 已 TDD）+ 容器背景色 |
 | 底部状态栏（连接状态/键盘焦点/鼠标模式/诊断） | 固定高度 `Container` 行 |
 | 设置/连接设置/保存 profile/关于模态 | 自绘模态（`ModalState` + overlay，见 3.3） |
 
-### 3.3 菜单与模态（自绘，已验证）
+### 3.3 菜单与模态（iced_aw vendored + 自绘模态，已验证）
 
-- **状态机在 app 侧**：`MenuState { open_root, open_path }`；widget 是纯展示 + 事件转发（点击 → 消息 → app 更新状态 → 重建 view）。headless 测试按此驱动。
-- 菜单：顶层 `MenuBar`（Widget）+ 弹出 `MenuPopup`（`Overlay`，绝对定位、可嵌套）。子菜单走廊连通区域 = 父菜单 bounds ∪ 子菜单 bounds ∪ 二者间水平走廊，由子菜单持父项矩形计算，光标离开才关闭。
+- **菜单改用现成实现**（#95，用户确认）：`iced_aw 0.14.1`（MIT，`menu` feature）+ `[patch.crates-io]` 指向 `third_party/iced_aw`；本地补丁仅 backport 上游 main 的两个修复点（`open_new_menu` 先 diff 新菜单树、`Item::diff` 缺子树补空树），并把图标宏 gate 到真正使用图标的 feature。打开/关闭状态由 iced_aw 在 widget 树内管理，app 侧不再有 `MenuState`。
+- 菜单项：叶子项为透明底按钮（发布 `MenuAction` 业务消息），子菜单父项为标签 + "›" 箭头，分隔线用 `rule::horizontal`；i18n 文案在 view 构建时生成。
+- 已知限制：iced_aw 0.14 不支持 Esc 关闭菜单（升级 0.15 时评估）；默认浅色观感与主题化工作后置。
 - 模态：`ModalState` + 遮罩 `mouse_area`（点击关闭）+ 卡片用透明 Button 命中卡片区域（卡片内点击吞掉不关闭）+ `EscClose` 包装层（Esc 关闭）；三条关闭路径（按钮/遮罩/Esc）。
 - i18n：文案在 view 构建时用 `rust-i18n::t!` 生成，语言切换 = 重渲染（无宽度缓存问题）；主菜单项英文保底，语言二级菜单。
-- 观感：spike 版菜单是纯文本（无样式）；迁移期需主题化：选中高亮、图标/箭头、分隔线、圆角与阴影。
+- 观感：iced_aw 默认样式（圆角面板 + 阴影 + 悬停高亮），菜单项按钮透明底 + 主题主色半透明悬停；主题化（图标、分隔线样式、暗色适配）后续单独迭代。
 
 ### 3.4 视频链路
 
@@ -143,7 +144,7 @@ frame_source.subscribe() → iced Subscription (Recipe)
 |---|---|---|
 | M0 脚手架 | 新 crate `ipkvm-desktop-iced`（或改造 desktop crate 的 UI 层），依赖 pin、workspace 接入、双端共存入口 | 空窗口可跑；`cargo test --workspace` 全绿 |
 | M1 视频链路 | 帧订阅、Handle-in-state、缩放模式、黑边颜色、状态栏骨架 | spike 1 指标回归（零丢帧、CPU/内存阈值） |
-| M2 菜单/模态/连接页 | 自绘菜单移植、模态、连接页（设备/预览/刷新/连接）、profile 保存加载 | spike 2 全部 headless 测试移植通过 + 人工观感截图 |
+| M2 菜单/模态/连接页 | 菜单改用 iced_aw（vendored 补丁，#95）、模态、连接页（设备/预览/刷新/连接）、profile 保存加载 | spike 2 全部 headless 测试移植通过 + 人工观感截图 |
 | M3 输入接线 | keymap 接入、相对鼠标 trait 接 UI、`flush_pending` 定时器、特殊键、粘贴、Ctrl+Alt+K/M | spike 3 测试移植通过；真实硬件冒烟（BIOS 方向键/相对鼠标） |
 | M4 主题与观感 | 菜单/模态/状态栏样式、图标、暗色适配、黑边色设置 | 截图评审（人工项） |
 | M5 打包与收尾 | Windows exe/图标/资源、macOS 打包留口（stub + 文档）、全量门禁、替换发布入口 | 双击可跑；门禁全过；egui 端退役决策 |
@@ -165,14 +166,15 @@ frame_source.subscribe() → iced Subscription (Recipe)
 
 | 风险/问题 | 级别 | 对策 |
 |---|---|---|
-| iced API 未冻结 | 中 | pin 版本；升级单独走迁移单；`iced_aw` 不引入 |
+| iced API 未冻结 | 中 | pin 版本；升级单独走迁移单；`iced_aw` 用 vendored 补丁版，0.15 发版后重新评估 |
 | 0.14 图像已知问题 | 低 | Handle-in-state + 走 image 控件（已规避） |
 | macOS 实机缺失 | 中 | 相对鼠标 stub、AVFoundation 相机未实测、notarization 未配置；代码层面留口，实机/CI 后补 |
 | 键盘 macOS 特殊键 | 低 | 独立平台模块，迁移期实现 |
-| 菜单观感（spike 版无样式） | 中 | M4 主题化；走廊/命中逻辑不动 |
+| 菜单观感（iced_aw 默认样式） | 低 | 默认浅色与当前默认主题一致；主题化（图标/分隔线/暗色适配）后续迭代 |
+| iced_aw 未发版修复依赖 | 中 | vendored 补丁 + `PATCHES.md` 记录来源；0.15 发版后优先替换回 crates.io |
 | 迁移期双端共存 | 低 | egui 端保留入口直至 iced 端达标；共享 controller 改动需两端回归 |
 | `flush_pending` 依赖 | 低 | 已修复并测试；iced UI 每帧调用，回归测试覆盖 |
-| 依赖许可证 | 低 | iced/iced_test/windows 均为宽松许可（MIT/Apache-2.0 系），按现有 deny 策略审计后引入 |
+| 依赖许可证 | 低 | iced/iced_test/windows/iced_aw（MIT）均为宽松许可（MIT/Apache-2.0 系），按现有 deny 策略审计后引入 |
 
 ### 已确认决策（2026-08-03）
 

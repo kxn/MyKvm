@@ -35,7 +35,7 @@ use crate::input::{
 };
 use crate::keymap::physical_code_to_keysym;
 use crate::locale::AppLanguage;
-use crate::menu::{MenuAction, MenuState, menu_bar};
+use crate::menu::{MenuAction, menu_bar};
 use crate::modal::{ModalAction, ModalKind, ModalState};
 use crate::perf::FrameStats;
 use crate::preloaded::PreloadedImage;
@@ -182,7 +182,6 @@ where
     window_id: Option<iced::window::Id>,
     pending_resize: Option<Size>,
     stats: Option<Arc<FrameStats>>,
-    menu: MenuState,
     modal: ModalState,
     selection: DeviceSelectionState,
     connection: ConnectionSettings,
@@ -242,7 +241,6 @@ impl App<RecordingSink, MockFactory> {
             window_id: None,
             pending_resize: None,
             stats: None,
-            menu: MenuState::default(),
             modal: ModalState::default(),
             selection: DeviceSelectionState::default(),
             connection: ConnectionSettings::default(),
@@ -269,7 +267,7 @@ impl App<RecordingSink, MockFactory> {
             recording: Some(recording),
             clipboard: Arc::new(SystemClipboard),
             relative_factory: Arc::new(ChannelRelativeFactory::new()),
-            dark: true,
+            dark: false,
         };
         // 对齐 egui 启动行为：预填上次手动连接（mock 的临时 store 通常为空）。
         app.prefill_last_manual();
@@ -295,7 +293,6 @@ impl App<Ch9329InputSink<SerialCommandQueue>, ProductionSessionFactory> {
             window_id: None,
             pending_resize: None,
             stats: None,
-            menu: MenuState::default(),
             modal: ModalState::default(),
             selection: DeviceSelectionState::default(),
             connection: ConnectionSettings::default(),
@@ -319,7 +316,7 @@ impl App<Ch9329InputSink<SerialCommandQueue>, ProductionSessionFactory> {
             recording: None,
             clipboard: Arc::new(SystemClipboard),
             relative_factory: Arc::new(crate::platform::PlatformRelativeSourceFactory),
-            dark: true,
+            dark: false,
         };
         // 预填上次手动连接（对齐 egui new()），随后由启动 Task 自动枚举。
         app.prefill_last_manual();
@@ -415,9 +412,7 @@ where
                 Task::none()
             }
             Message::Menu(action) => {
-                if let Some(business) = self.menu.apply(action) {
-                    self.handle_menu_action(business);
-                }
+                self.handle_menu_action(action);
                 Task::none()
             }
             Message::Modal(action) => {
@@ -683,11 +678,7 @@ where
             MenuAction::Simple("release_all") => {
                 let _ = self.controller.release_all();
             }
-            MenuAction::OpenRoot(_)
-            | MenuAction::OpenSubmenu(_)
-            | MenuAction::CloseSubmenus
-            | MenuAction::CloseMenus
-            | MenuAction::Simple(_) => {}
+            MenuAction::Simple(_) => {}
         }
     }
 
@@ -1012,7 +1003,7 @@ where
     fn menu_view(&self) -> Element<'_, Message> {
         let recent: Vec<String> = self.store.recent_profiles();
         let recent_refs: Vec<&str> = recent.iter().map(String::as_str).collect();
-        menu_bar(&self.menu, &recent_refs).map(Message::Menu)
+        menu_bar(&recent_refs).map(Message::Menu)
     }
 
     fn main_view(&self) -> Element<'_, Message> {
