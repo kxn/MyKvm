@@ -14,8 +14,10 @@
 use iced::advanced::layout;
 use iced::advanced::overlay::{self, Overlay};
 use iced::advanced::renderer::Quad;
+use iced::advanced::text::{Alignment as TextAlignment, LineHeight, Shaping, Text, Wrapping};
 use iced::advanced::widget::{Operation, Tree, Widget, tree};
 use iced::advanced::{Clipboard, Layout, Shell, mouse, renderer};
+use iced::alignment::Vertical;
 use iced::border;
 use iced::border::Border;
 use iced::keyboard;
@@ -669,7 +671,7 @@ where
         &self,
         renderer: &mut R,
         theme: &iced::Theme,
-        style: &renderer::Style,
+        _style: &renderer::Style,
         layout: Layout<'_>,
         cursor: mouse::Cursor,
     ) {
@@ -705,9 +707,14 @@ where
             };
             renderer.fill_quad(quad, crate::theme::hover(palette));
         }
-        for (i, (widget, child)) in self.widgets.iter().zip(layout.children()).enumerate() {
-            if self.items.get(i).is_some_and(|item| item.separator) {
-                let rect = child.bounds();
+        let text_size = renderer.default_size();
+        let font = renderer.default_font();
+        for (i, child) in layout.children().enumerate() {
+            let Some(item) = self.items.get(i) else {
+                continue;
+            };
+            let rect = child.bounds();
+            if item.separator {
                 let line = Rectangle {
                     x: rect.x + 8.0,
                     y: rect.y + rect.height / 2.0,
@@ -723,15 +730,43 @@ where
                 );
                 continue;
             }
-            widget.as_widget().draw(
-                &self.tree.children[i],
-                renderer,
-                theme,
-                style,
-                child,
-                cursor,
-                &panel,
+            // 弹层文字直接由 fill_text 绘制（官方菜单同款）：overlay 在
+            // update/draw 两次实例化之间不会保留子树，text widget 的段落
+            // 在 draw 实例里从未 layout，走 widget.draw 会得到空段落（#88）。
+            renderer.fill_text(
+                Text {
+                    content: item_label(item),
+                    bounds: Size::new(rect.width, rect.height),
+                    size: text_size,
+                    line_height: LineHeight::default(),
+                    font,
+                    align_x: TextAlignment::Left,
+                    align_y: Vertical::Center,
+                    shaping: Shaping::default(),
+                    wrapping: Wrapping::default(),
+                },
+                Point::new(rect.x, rect.center_y()),
+                palette.text,
+                panel,
             );
+            if item_has_arrow(item) {
+                renderer.fill_text(
+                    Text {
+                        content: "›".to_string(),
+                        bounds: Size::new((rect.width - 12.0).max(0.0), rect.height),
+                        size: text_size,
+                        line_height: LineHeight::default(),
+                        font,
+                        align_x: TextAlignment::Right,
+                        align_y: Vertical::Center,
+                        shaping: Shaping::default(),
+                        wrapping: Wrapping::default(),
+                    },
+                    Point::new(rect.x, rect.center_y()),
+                    palette.text,
+                    panel,
+                );
+            }
         }
     }
 
