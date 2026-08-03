@@ -48,10 +48,7 @@ fn menu_popup_draws_text_pixels() {
 
     let theme = iced::Theme::Light;
     let text_color = theme.palette().text;
-    let style = renderer::Style {
-        text_color,
-        ..renderer::Style::default()
-    };
+    let style = renderer::Style { text_color };
     let mut pixmap = tiny_skia::Pixmap::new(WIDTH, HEIGHT).expect("pixmap");
     let mut mask = tiny_skia::Mask::new(WIDTH, HEIGHT).expect("mask");
     let viewport =

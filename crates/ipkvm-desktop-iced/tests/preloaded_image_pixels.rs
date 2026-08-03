@@ -16,7 +16,7 @@ const HEIGHT: u32 = 64;
 
 #[test]
 fn preloaded_image_draws_visible_pixels() {
-    let handle = iced::widget::image::Handle::from_rgba(4, 4, vec![255u8, 0, 0, 255].repeat(16));
+    let handle = iced::widget::image::Handle::from_rgba(4, 4, [255u8, 0, 0, 255].repeat(16));
     let view: iced::Element<'_, (), iced::Theme, iced_tiny_skia::Renderer> =
         iced::widget::container(PreloadedImage::new(handle))
             .width(iced::Length::Fill)
@@ -44,7 +44,6 @@ fn preloaded_image_draws_visible_pixels() {
     let theme = iced::Theme::Dark;
     let style = renderer::Style {
         text_color: theme.palette().text,
-        ..renderer::Style::default()
     };
     let mut pixmap = tiny_skia::Pixmap::new(WIDTH, HEIGHT).expect("pixmap");
     let mut mask = tiny_skia::Mask::new(WIDTH, HEIGHT).expect("mask");

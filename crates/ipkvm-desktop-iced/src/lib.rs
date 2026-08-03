@@ -298,4 +298,13 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn gui_entry_suppresses_console_subsystem_on_windows() {
+        let source = include_str!("main.rs");
+        assert!(
+            source.contains("#![cfg_attr(windows, windows_subsystem = \"windows\")]"),
+            "main.rs 缺少 windows_subsystem 属性，Windows release 启动会带黑窗"
+        );
+    }
 }
