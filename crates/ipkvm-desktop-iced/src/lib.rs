@@ -25,6 +25,7 @@ pub mod profile;
 pub mod relative;
 pub mod scale;
 pub mod status;
+pub mod theme;
 pub mod video;
 
 /// 窗口标题（M5 将嵌入 GIT_COMMIT）。

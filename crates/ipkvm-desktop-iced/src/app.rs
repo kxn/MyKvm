@@ -197,6 +197,7 @@ where
     recording: Option<RecordingSink>,
     clipboard: Arc<dyn ClipboardReader>,
     relative_factory: Arc<dyn RelativeSourceFactory>,
+    dark: bool,
 }
 
 impl App<RecordingSink, MockFactory> {
@@ -256,6 +257,7 @@ impl App<RecordingSink, MockFactory> {
                 recording: Some(recording),
                 clipboard: Arc::new(SystemClipboard),
                 relative_factory: Arc::new(ChannelRelativeFactory::new()),
+                dark: true,
             },
             Task::none(),
         )
@@ -303,6 +305,7 @@ impl App<Ch9329InputSink<SerialCommandQueue>, ProductionSessionFactory> {
                 recording: None,
                 clipboard: Arc::new(SystemClipboard),
                 relative_factory: Arc::new(crate::platform::PlatformRelativeSourceFactory),
+                dark: true,
             },
             Task::none(),
         )
@@ -1169,6 +1172,11 @@ where
     pub fn paste_busy(&self) -> bool {
         self.paste_busy
     }
+
+    /// 应用主题（iced builder 的 theme 回调）。
+    pub fn theme(&self) -> iced::Theme {
+        crate::theme::app_theme(self.dark)
+    }
 }
 
 /// mock 预览源：open 即返回已有一帧 64×48 的 MockFrameSource。
@@ -1231,6 +1239,7 @@ fn connect_request() -> ConnectRequest {
 pub fn run() -> iced::Result {
     iced::application(App::production, App::update, App::view)
         .subscription(App::subscription)
+        .theme(App::theme)
         .title(WINDOW_TITLE)
         .window_size(WINDOW_SIZE)
         .run()
