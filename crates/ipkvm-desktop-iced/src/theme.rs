@@ -3,7 +3,7 @@
 use iced::Color;
 use iced::theme::{Palette, Theme};
 
-/// 亮色主题（对齐 egui 端亮色观感）。
+/// 亮色主题（默认，对齐 egui 端跟随系统的浅色观感，#95 确认）。
 pub const LIGHT: Palette = Palette {
     background: Color::from_rgb(0.96, 0.96, 0.97),
     text: Color::from_rgb(0.12, 0.12, 0.14),
@@ -13,7 +13,7 @@ pub const LIGHT: Palette = Palette {
     danger: Color::from_rgb(0.76, 0.20, 0.20),
 };
 
-/// 暗色主题（默认：KVM 监控类工具深色观感，对齐 egui 端暗色）。
+/// 暗色主题（设置模态中切换：KVM 监控类工具深色观感）。
 pub const DARK: Palette = Palette {
     background: Color::from_rgb(0.13, 0.14, 0.17),
     text: Color::from_rgb(0.90, 0.90, 0.92),

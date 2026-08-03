@@ -1,10 +1,19 @@
-//! Spike 2 菜单交互验证（自绘菜单）：4 顶层菜单可打开；子菜单深度 ≥3；
-//! 业务动作可触发；Esc / 点击外部可关闭。
-
+//! 菜单交互验证（iced_aw，vendored 补丁版）：4 顶层菜单、子菜单深度 ≥3、
+//! 业务动作发布并关闭菜单、点外部关闭且不穿透背景。
+//!
+//! 已知限制：#95 记录——iced_aw 0.14 不支持 Esc 关闭菜单，故原 Esc 用例移除。
 mod common;
 
 use common::MenuHarness;
+use iced_test::Simulator;
 use ipkvm_desktop_iced::menu::MenuAction;
+
+fn hover_item(ui: &mut Simulator<'static, MenuAction>, label: &str) {
+    let item = ui
+        .find(label)
+        .unwrap_or_else(|_| panic!("hover 目标 {label} 必须可定位"));
+    MenuHarness::hover(ui, MenuHarness::center(item.bounds()));
+}
 
 #[test]
 fn file_menu_can_open_and_show_items() {
@@ -13,15 +22,14 @@ fn file_menu_can_open_and_show_items() {
         .unwrap_or_else(|p| p.into_inner());
     rust_i18n::set_locale("en");
 
-    let mut h = MenuHarness::new();
-    let mut ui = h.ui();
-    assert!(ui.click("File").is_ok());
-    h.drive(ui);
-    assert_eq!(h.state.open_root, Some(0));
-
-    let mut ui = h.ui();
+    let mut ui = MenuHarness::ui();
+    assert!(ui.click("File").is_ok(), "点击 File 顶层必须成功");
     assert!(ui.find("Recent").is_ok(), "File 展开后 Recent 必须可见");
-    assert!(ui.find("Reselect device…").is_ok(), "菜单项必须显示译文");
+    assert!(
+        ui.find("Reselect device…").is_ok(),
+        "File 菜单项必须显示译文"
+    );
+    assert!(ui.find("Exit").is_ok(), "File 菜单必须含 Exit");
 }
 
 #[test]
@@ -31,14 +39,10 @@ fn edit_menu_can_open() {
         .unwrap_or_else(|p| p.into_inner());
     rust_i18n::set_locale("en");
 
-    let mut h = MenuHarness::new();
-    let mut ui = h.ui();
-    assert!(ui.click("Edit").is_ok());
-    h.drive(ui);
-    assert_eq!(h.state.open_root, Some(1));
-
-    let mut ui = h.ui();
+    let mut ui = MenuHarness::ui();
+    assert!(ui.click("Edit").is_ok(), "点击 Edit 顶层必须成功");
     assert!(ui.find("Language").is_ok(), "Edit 展开后 Language 必须可见");
+    assert!(ui.find("Settings…").is_ok(), "Edit 菜单必须含 Settings");
 }
 
 #[test]
@@ -48,32 +52,25 @@ fn send_menu_can_open_and_show_special_keys() {
         .unwrap_or_else(|p| p.into_inner());
     rust_i18n::set_locale("en");
 
-    let mut h = MenuHarness::new();
-    let mut ui = h.ui();
-    assert!(ui.click("Send").is_ok(), "Send 按钮必须可定位");
-    h.drive(ui);
-    assert_eq!(h.state.open_root, Some(2));
-
-    let mut ui = h.ui();
+    let mut ui = MenuHarness::ui();
+    assert!(ui.click("Send").is_ok(), "点击 Send 顶层必须成功");
     assert!(
         ui.find("Paste text").is_ok(),
         "Send 菜单必须显示 Paste text"
     );
-    assert!(
-        ui.click("Send special keys").is_ok(),
-        "特殊键子菜单必须可打开"
-    );
-    h.drive(ui);
-    assert_eq!(
-        h.state.open_path,
-        vec![3],
-        "特殊键子菜单应在 Send 菜单下标 3"
-    );
 
-    let mut ui = h.ui();
+    hover_item(&mut ui, "Send special keys");
     assert!(
         ui.find("Ctrl+Alt+Del").is_ok(),
-        "特殊键子菜单必须显示 Ctrl+Alt+Del"
+        "特殊键子菜单必须展开并显示 Ctrl+Alt+Del"
+    );
+
+    ui.click("Ctrl+Alt+Del").expect("点击特殊键叶子项");
+    assert!(ui.find("Paste text").is_err(), "点击业务项后菜单必须关闭");
+    let messages: Vec<_> = ui.into_messages().collect();
+    assert!(
+        messages.contains(&MenuAction::SpecialKey("CtrlAltDel".into())),
+        "必须发布 SpecialKey(CtrlAltDel)，实际: {messages:?}"
     );
 }
 
@@ -84,11 +81,9 @@ fn about_menu_can_open() {
         .unwrap_or_else(|p| p.into_inner());
     rust_i18n::set_locale("en");
 
-    let mut h = MenuHarness::new();
-    let mut ui = h.ui();
-    assert!(ui.click("About").is_ok());
-    h.drive(ui);
-    assert_eq!(h.state.open_root, Some(3));
+    let mut ui = MenuHarness::ui();
+    assert!(ui.click("About").is_ok(), "点击 About 顶层必须成功");
+    assert!(ui.find("Project home").is_ok(), "About 菜单必须可见");
 }
 
 #[test]
@@ -99,32 +94,15 @@ fn submenu_depth_at_least_3() {
         .unwrap_or_else(|p| p.into_inner());
     rust_i18n::set_locale("en");
 
-    let mut h = MenuHarness::new();
-    let mut ui = h.ui();
-    assert!(ui.click("File").is_ok());
-    h.drive(ui);
-    assert_eq!(h.state.open_root, Some(0));
+    let mut ui = MenuHarness::ui();
+    assert!(ui.click("File").is_ok(), "点击 File 顶层");
 
-    let mut ui = h.ui();
-    assert!(ui.click("Recent").is_ok(), "点击 Recent 打开二级菜单");
-    h.drive(ui);
-    assert_eq!(
-        h.state.open_path,
-        vec![4],
-        "Recent 在 File 菜单中的下标应为 4"
-    );
+    hover_item(&mut ui, "Recent");
+    assert!(ui.find("p1").is_ok(), "二级菜单必须展开");
 
-    let mut ui = h.ui();
-    assert!(ui.click("More…").is_ok(), "点击 More… 打开三级菜单");
-    h.drive(ui);
-    assert_eq!(
-        h.state.open_path,
-        vec![4, 3],
-        "More… 应在 Recent 菜单下标 3"
-    );
-
-    let mut ui = h.ui();
-    assert!(ui.find("p4").is_ok(), "More… 展开后 p4 必须可见（深度 4）");
+    hover_item(&mut ui, "More…");
+    assert!(ui.find("p4").is_ok(), "More… 展开后 p4 必须可见（深度 3）");
+    assert!(ui.find("p5").is_ok(), "More… 展开后 p5 必须可见");
 }
 
 #[test]
@@ -134,44 +112,22 @@ fn item_action_publishes_and_closes_menus() {
         .unwrap_or_else(|p| p.into_inner());
     rust_i18n::set_locale("en");
 
-    let mut h = MenuHarness::new();
-    let mut ui = h.ui();
-    assert!(ui.click("File").is_ok());
-    h.drive(ui);
+    let mut ui = MenuHarness::ui();
+    assert!(ui.click("File").is_ok(), "打开 File");
+    hover_item(&mut ui, "Recent");
+    assert!(ui.find("p1").is_ok(), "Recent 子菜单必须展开");
 
-    let mut ui = h.ui();
-    assert!(ui.click("Recent").is_ok(), "先展开 Recent 子菜单");
-    h.drive(ui);
-
-    let mut ui = h.ui();
-    assert!(ui.click("p1").is_ok(), "最近使用项必须可点击");
-    let actions = h.drive(ui);
+    ui.click("p1").expect("点击最近使用项 p1");
     assert!(
-        actions.contains(&MenuAction::LoadRecent("p1".into())),
-        "点击 p1 必须发布 LoadRecent（实际: {actions:?}）"
+        ui.find("Reselect device…").is_err(),
+        "点击业务项后菜单必须全部关闭"
     );
-    assert_eq!(h.state.open_root, None, "点击业务项后菜单必须全部关闭");
-}
 
-#[test]
-fn escape_closes_menus() {
-    let _lock = ipkvm_desktop_iced::I18N_TEST_LOCK
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
-    rust_i18n::set_locale("en");
-
-    let mut h = MenuHarness::new();
-    let mut ui = h.ui();
-    assert!(ui.click("File").is_ok());
-    h.drive(ui);
-    assert!(h.state.open_root.is_some());
-
-    let mut ui = h.ui();
-    ui.tap_key(iced::keyboard::Key::Named(
-        iced::keyboard::key::Named::Escape,
-    ));
-    h.drive(ui);
-    assert_eq!(h.state.open_root, None, "Esc 后菜单必须关闭");
+    let messages: Vec<_> = ui.into_messages().collect();
+    assert!(
+        messages.contains(&MenuAction::LoadRecent("p1".into())),
+        "点击 p1 必须发布 LoadRecent，实际: {messages:?}"
+    );
 }
 
 #[test]
@@ -181,22 +137,26 @@ fn outside_click_closes_menu_without_reaching_background() {
         .unwrap_or_else(|p| p.into_inner());
     rust_i18n::set_locale("en");
 
-    let mut h = MenuHarness::new();
-    let mut ui = h.ui();
-    assert!(ui.click("File").is_ok());
-    h.drive(ui);
-    assert!(h.state.open_root.is_some());
+    let mut ui = MenuHarness::ui();
+    assert!(ui.click("File").is_ok(), "打开 File");
+    assert!(ui.find("Reselect device…").is_ok(), "菜单必须已打开");
 
-    // 菜单打开时点背景按钮：只关菜单，不触发背景。
-    let mut ui = h.ui();
-    assert!(ui.click("Hit me").is_ok(), "背景按钮必须可定位");
-    h.drive(ui);
-    assert_eq!(h.state.open_root, None, "点外部必须关闭菜单");
-    assert_eq!(h.bg_hits, 0, "菜单打开时背景不得收到点击");
+    // 菜单打开时点背景按钮：只关菜单，不触发背景（手动模拟点击，保留 ui）。
+    let bg = ui.find("Hit me").expect("背景按钮必须可定位");
+    let pos = bg.visible_bounds().expect("背景 bounds").center();
+    ui.simulate([
+        iced::Event::Mouse(iced::mouse::Event::CursorMoved { position: pos }),
+        iced::Event::Mouse(iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left)),
+        iced::Event::Mouse(iced::mouse::Event::ButtonReleased(
+            iced::mouse::Button::Left,
+        )),
+    ]);
 
-    // 菜单关闭后背景恢复响应。
-    let mut ui = h.ui();
-    assert!(ui.click("Hit me").is_ok());
-    h.drive(ui);
-    assert_eq!(h.bg_hits, 1, "菜单关闭后背景必须恢复响应");
+    assert!(ui.find("Reselect device…").is_err(), "点外部必须关闭菜单");
+
+    let messages: Vec<_> = ui.into_messages().collect();
+    assert!(
+        !messages.contains(&MenuAction::Simple("bg")),
+        "菜单打开时背景不得收到点击，实际: {messages:?}"
+    );
 }

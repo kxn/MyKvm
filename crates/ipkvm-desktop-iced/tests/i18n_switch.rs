@@ -1,8 +1,19 @@
-//! Spike 2 i18n 切换验证：zh↔en 菜单文案切换、显示译文而非 key 原文。
-
+//! i18n 切换验证（iced_aw）：zh↔en 菜单文案切换、显示译文而非 key 原文。
+//!
+//! iced_aw 菜单状态在 widget 树内，语言切换 = 重建 view；每个用例在设置
+//! locale 后重新构建 Simulator。
 mod common;
 
 use common::MenuHarness;
+use iced_test::Simulator;
+use ipkvm_desktop_iced::menu::MenuAction;
+
+fn hover_item(ui: &mut Simulator<'static, MenuAction>, label: &str) {
+    let item = ui
+        .find(label)
+        .unwrap_or_else(|_| panic!("hover 目标 {label} 必须可定位"));
+    MenuHarness::hover(ui, MenuHarness::center(item.bounds()));
+}
 
 #[test]
 fn english_menu_shows_translated_labels_not_keys() {
@@ -11,12 +22,8 @@ fn english_menu_shows_translated_labels_not_keys() {
         .unwrap_or_else(|p| p.into_inner());
     rust_i18n::set_locale("en");
 
-    let mut h = MenuHarness::new();
-    let mut ui = h.ui();
+    let mut ui = MenuHarness::ui();
     assert!(ui.click("File").is_ok(), "点击 File 必须成功");
-    h.drive(ui);
-
-    let mut ui = h.ui();
     assert!(
         ui.find("Reselect device…").is_ok(),
         "File 菜单项必须显示译文（而非 key 原文）"
@@ -35,12 +42,8 @@ fn chinese_menu_switches_all_labels() {
         .unwrap_or_else(|p| p.into_inner());
     rust_i18n::set_locale("zh-CN");
 
-    let mut h = MenuHarness::new();
-    let mut ui = h.ui();
+    let mut ui = MenuHarness::ui();
     assert!(ui.click("文件").is_ok(), "点击「文件」必须成功");
-    h.drive(ui);
-
-    let mut ui = h.ui();
     assert!(
         ui.find("重新选择设备…").is_ok(),
         "中文模式下必须显示中文菜单项"
@@ -56,24 +59,18 @@ fn edit_menu_language_submenu_translates() {
         .unwrap_or_else(|p| p.into_inner());
     rust_i18n::set_locale("zh-CN");
 
-    let mut h = MenuHarness::new();
-    let mut ui = h.ui();
+    let mut ui = MenuHarness::ui();
     assert!(ui.click("编辑").is_ok(), "点击「编辑」必须成功");
-    h.drive(ui);
-
-    let mut ui = h.ui();
     assert!(ui.find("复制截图").is_ok(), "编辑菜单项必须显示中文译文");
     assert!(
         ui.find("edit.copy_screenshot").is_err(),
         "编辑菜单项不得显示 i18n key 原文"
     );
-    assert!(ui.click("Language").is_ok(), "语言子菜单必须可打开");
-    h.drive(ui);
-    assert_eq!(h.state.open_path, vec![2], "Language 应在编辑菜单下标 2");
 
-    let mut ui = h.ui();
+    // zh-CN 下 edit.language 的译文为 "Language"（保留英文），点击展开子菜单。
+    hover_item(&mut ui, "Language");
     assert!(ui.find("跟随系统").is_ok(), "语言子菜单必须显示中文选项");
-    assert!(ui.find("中文").is_ok());
+    assert!(ui.find("中文").is_ok(), "语言子菜单必须显示「中文」");
 }
 
 #[test]
@@ -104,6 +101,7 @@ fn labels_are_single_line_no_newline() {
             "language.system",
             "language.chinese",
             "language.english",
+            "about.project_home",
             "modal.settings_title",
             "modal.close",
             "modal.about_title",

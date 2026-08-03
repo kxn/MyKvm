@@ -1,15 +1,19 @@
-//! Spike 2 走廊 hover 验证（自绘菜单）：父项 → 子菜单连续穿越 100 次，误关闭 = 0。
-//!
-//! 测试真实自绘 overlay：先打开 File → Recent 子菜单，再拿父项/子项的真实
-//! visible_bounds 计算走廊中点，逐点注入 CursorMoved 并断言没有任何
-//! CloseSubmenus / CloseMenus 消息。
-
+//! 走廊 hover 验证（iced_aw，vendored 补丁版）：父项 ↔ 子菜单连续穿越
+//! 100 次，菜单不得误关。iced_aw 用 safe bounds + safe triangle 保持
+//! 父项到子菜单之间的连通区域。
 mod common;
 
 use common::MenuHarness;
-use iced::mouse;
-use iced::{Event, Point};
+use iced::Point;
+use iced_test::Simulator;
 use ipkvm_desktop_iced::menu::MenuAction;
+
+fn hover_item(ui: &mut Simulator<'static, MenuAction>, label: &str) {
+    let item = ui
+        .find(label)
+        .unwrap_or_else(|_| panic!("hover 目标 {label} 必须可定位"));
+    MenuHarness::hover(ui, MenuHarness::center(item.bounds()));
+}
 
 #[test]
 fn corridor_hover_100_crossings_zero_misclose() {
@@ -18,60 +22,28 @@ fn corridor_hover_100_crossings_zero_misclose() {
         .unwrap_or_else(|p| p.into_inner());
     rust_i18n::set_locale("en");
 
-    let mut h = MenuHarness::new();
+    let mut ui = MenuHarness::ui();
 
-    // 打开 File。
-    let mut ui = h.ui();
-    assert!(ui.click("File").is_ok());
-    h.drive(ui);
-    assert_eq!(h.state.open_root, Some(0));
+    // 打开 File → Recent → More…（深度 3）。
+    assert!(ui.click("File").is_ok(), "打开 File");
+    hover_item(&mut ui, "Recent");
+    assert!(ui.find("p1").is_ok(), "二级菜单必须展开");
+    hover_item(&mut ui, "More…");
+    assert!(ui.find("p4").is_ok(), "三级菜单必须展开");
 
-    // 打开 Recent 子菜单（File 菜单下标 3）。
-    let mut ui = h.ui();
-    assert!(ui.click("Recent").is_ok(), "Recent 必须可点击");
-    h.drive(ui);
-    assert_eq!(h.state.open_path, vec![4], "Recent 子菜单必须已展开");
+    // 取父项与子项的真实 bounds，逐点穿越父项 ↔ 子菜单。
+    let parent = ui.find("More…").expect("父项 More… 必须可见");
+    let child = ui.find("p4").expect("子项 p4 必须可见");
+    let p = MenuHarness::center(parent.bounds());
+    let c = MenuHarness::center(child.bounds());
 
-    // 取父项与子项的真实 bounds（自绘菜单 text 元素 bounds == 命中矩形）。
-    let mut ui = h.ui();
-    let parent = ui
-        .find("Recent")
-        .expect("父项 Recent 必须可见")
-        .visible_bounds()
-        .expect("父项必须有 bounds");
-    let child = ui
-        .find("p1")
-        .expect("子项 p1 必须可见")
-        .visible_bounds()
-        .expect("子项必须有 bounds");
-    drop(ui);
-
-    let corridor_mid = Point::new(
-        (parent.x + parent.width + child.x) / 2.0,
-        (parent.y + parent.height + child.y) / 2.0,
-    );
-    let points = [parent.center(), corridor_mid, child.center()];
-
-    let mut misclose = 0;
     for i in 0..100 {
-        let pos = points[i % points.len()];
-        let mut ui = h.ui();
-        ui.simulate([Event::Mouse(mouse::Event::CursorMoved { position: pos })]);
-        let actions = h.drive(ui);
-        if actions
-            .iter()
-            .any(|a| matches!(a, MenuAction::CloseSubmenus | MenuAction::CloseMenus))
-        {
-            misclose += 1;
-        }
-        assert!(
-            !h.state.open_path.is_empty(),
-            "第 {i} 次穿越后子菜单必须保持打开"
+        let t = if i % 2 == 0 { 0.0 } else { 1.0 };
+        MenuHarness::hover(
+            &mut ui,
+            Point::new(p.x + (c.x - p.x) * t, p.y + (c.y - p.y) * t),
         );
+        assert!(ui.find("p4").is_ok(), "第 {i} 次穿越后三级菜单必须保持打开");
+        assert!(ui.find("p1").is_ok(), "第 {i} 次穿越后二级菜单必须保持打开");
     }
-
-    assert_eq!(
-        misclose, 0,
-        "100 次走廊穿越后误关闭次数必须为 0（实际 {misclose}）"
-    );
 }

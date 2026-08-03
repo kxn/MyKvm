@@ -70,6 +70,7 @@ pub fn translate_key(key: &str) -> String {
         "language.system" => t!("language.system").to_string(),
         "language.chinese" => t!("language.chinese").to_string(),
         "language.english" => t!("language.english").to_string(),
+        "about.project_home" => t!("about.project_home").to_string(),
         "modal.settings_title" => t!("modal.settings_title").to_string(),
         "modal.connection_title" => t!("modal.connection_title").to_string(),
         "modal.close" => t!("modal.close").to_string(),

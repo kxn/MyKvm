@@ -35,6 +35,9 @@ language:
   chinese: "中文"
   english: "English"
 
+about:
+  project_home: "项目主页"
+
 modal:
   settings_title: "设置"
   connection_title: "连接设置"
