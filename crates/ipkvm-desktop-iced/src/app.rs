@@ -219,49 +219,49 @@ impl App<RecordingSink, MockFactory> {
             controller.input_offline_reason(),
         );
         let seq = MOCK_STORE_SEQ.fetch_add(1, Ordering::Relaxed);
-        (
-            Self {
-                controller,
-                frame_source: Some(frame_source),
-                handle: None,
-                frame_size: None,
-                scale_mode: ScaleMode::FitWindow,
-                letterbox_color: Color::from_rgb(0.0, 0.0, 0.0),
-                status,
-                subscribed: true,
-                zh: true,
-                window_id: None,
-                pending_resize: None,
-                stats: None,
-                menu: MenuState::default(),
-                modal: ModalState::default(),
-                selection: DeviceSelectionState::default(),
-                connection: ConnectionSettings::default(),
-                probe: Box::new(FakeProbeBackend),
-                preview: PreviewRuntime::default(),
-                preview_factory: Arc::new(MockPreviewFactory),
-                preview_handle: None,
-                store: ipkvm_desktop::config::ProfileStore::new(
-                    std::env::temp_dir()
-                        .join(format!("my-ipkvm-iced-mock-{}-{seq}", std::process::id())),
-                ),
-                active_profile: None,
-                status_message: None,
-                remote_input: false,
-                last_modifiers: iced::keyboard::Modifiers::empty(),
-                relative_source: None,
-                relative_rx: None,
-                relative_sampler: DeltaSampler::new(Duration::from_millis(33)),
-                relative_wheel: 0,
-                pointer_mask: 0,
-                paste_busy: false,
-                recording: Some(recording),
-                clipboard: Arc::new(SystemClipboard),
-                relative_factory: Arc::new(ChannelRelativeFactory::new()),
-                dark: true,
-            },
-            Task::none(),
-        )
+        let mut app = Self {
+            controller,
+            frame_source: Some(frame_source),
+            handle: None,
+            frame_size: None,
+            scale_mode: ScaleMode::FitWindow,
+            letterbox_color: Color::from_rgb(0.0, 0.0, 0.0),
+            status,
+            subscribed: true,
+            zh: true,
+            window_id: None,
+            pending_resize: None,
+            stats: None,
+            menu: MenuState::default(),
+            modal: ModalState::default(),
+            selection: DeviceSelectionState::default(),
+            connection: ConnectionSettings::default(),
+            probe: Box::new(FakeProbeBackend),
+            preview: PreviewRuntime::default(),
+            preview_factory: Arc::new(MockPreviewFactory),
+            preview_handle: None,
+            store: ipkvm_desktop::config::ProfileStore::new(
+                std::env::temp_dir()
+                    .join(format!("my-ipkvm-iced-mock-{}-{seq}", std::process::id())),
+            ),
+            active_profile: None,
+            status_message: None,
+            remote_input: false,
+            last_modifiers: iced::keyboard::Modifiers::empty(),
+            relative_source: None,
+            relative_rx: None,
+            relative_sampler: DeltaSampler::new(Duration::from_millis(33)),
+            relative_wheel: 0,
+            pointer_mask: 0,
+            paste_busy: false,
+            recording: Some(recording),
+            clipboard: Arc::new(SystemClipboard),
+            relative_factory: Arc::new(ChannelRelativeFactory::new()),
+            dark: true,
+        };
+        // 对齐 egui 启动行为：预填上次手动连接（mock 的临时 store 通常为空）。
+        app.prefill_last_manual();
+        (app, Task::done(Self::startup_message()))
     }
 }
 
@@ -270,46 +270,46 @@ impl App<Ch9329InputSink<SerialCommandQueue>, ProductionSessionFactory> {
     pub fn production() -> (Self, Task<Message>) {
         let controller = ProductionDesktopSessionController::production();
         let store = ipkvm_desktop::config::ProfileStore::production();
-        (
-            Self {
-                controller,
-                frame_source: None,
-                handle: None,
-                frame_size: None,
-                scale_mode: ScaleMode::FitWindow,
-                letterbox_color: Color::from_rgb(0.0, 0.0, 0.0),
-                status: ConnectionStatus::Disconnected,
-                subscribed: true,
-                zh: true,
-                window_id: None,
-                pending_resize: None,
-                stats: None,
-                menu: MenuState::default(),
-                modal: ModalState::default(),
-                selection: DeviceSelectionState::default(),
-                connection: ConnectionSettings::default(),
-                probe: Box::new(ProductionProbeBackend),
-                preview: PreviewRuntime::default(),
-                preview_factory: Arc::new(CameraPreviewFactory),
-                preview_handle: None,
-                store,
-                active_profile: None,
-                status_message: None,
-                remote_input: false,
-                last_modifiers: iced::keyboard::Modifiers::empty(),
-                relative_source: None,
-                relative_rx: None,
-                relative_sampler: DeltaSampler::new(Duration::from_millis(33)),
-                relative_wheel: 0,
-                pointer_mask: 0,
-                paste_busy: false,
-                recording: None,
-                clipboard: Arc::new(SystemClipboard),
-                relative_factory: Arc::new(crate::platform::PlatformRelativeSourceFactory),
-                dark: true,
-            },
-            Task::none(),
-        )
+        let mut app = Self {
+            controller,
+            frame_source: None,
+            handle: None,
+            frame_size: None,
+            scale_mode: ScaleMode::FitWindow,
+            letterbox_color: Color::from_rgb(0.0, 0.0, 0.0),
+            status: ConnectionStatus::Disconnected,
+            subscribed: true,
+            zh: true,
+            window_id: None,
+            pending_resize: None,
+            stats: None,
+            menu: MenuState::default(),
+            modal: ModalState::default(),
+            selection: DeviceSelectionState::default(),
+            connection: ConnectionSettings::default(),
+            probe: Box::new(ProductionProbeBackend),
+            preview: PreviewRuntime::default(),
+            preview_factory: Arc::new(CameraPreviewFactory),
+            preview_handle: None,
+            store,
+            active_profile: None,
+            status_message: None,
+            remote_input: false,
+            last_modifiers: iced::keyboard::Modifiers::empty(),
+            relative_source: None,
+            relative_rx: None,
+            relative_sampler: DeltaSampler::new(Duration::from_millis(33)),
+            relative_wheel: 0,
+            pointer_mask: 0,
+            paste_busy: false,
+            recording: None,
+            clipboard: Arc::new(SystemClipboard),
+            relative_factory: Arc::new(crate::platform::PlatformRelativeSourceFactory),
+            dark: true,
+        };
+        // 预填上次手动连接（对齐 egui new()），随后由启动 Task 自动枚举。
+        app.prefill_last_manual();
+        (app, Task::done(Self::startup_message()))
     }
 }
 
@@ -321,6 +321,31 @@ where
     pub fn with_stats(mut self, stats: Arc<FrameStats>) -> Self {
         self.stats = Some(stats);
         self
+    }
+
+    /// 启动后立即执行的动作：自动枚举设备（对齐 egui `DesktopApp::new()` 的启动刷新）。
+    /// `Task::done` 的 units 为 1（`Task::none` 为 0），测试可据此断言接线。
+    pub(crate) fn startup_message() -> Message {
+        Message::RefreshDevices
+    }
+
+    /// 预填上次手动连接快照（对齐 egui `new()`：连接参数 + 设备选择）。
+    ///
+    /// 构造时设备列表尚未枚举，选中 id 直接预填；`RefreshDevices` 完成后由
+    /// `refresh_detection` 复核（设备缺失会置为 `Disconnected`，不阻塞启动）。
+    fn prefill_last_manual(&mut self) {
+        let Some(snapshot) = self.store.last_manual() else {
+            return;
+        };
+        self.connection = snapshot.connection;
+        if let Some(device) = snapshot.video_device {
+            self.selection.selected_video_id = Some(device.id);
+            self.selection.video_status = VideoProbeStatus::Checking;
+        }
+        if let Some(device) = snapshot.control_device {
+            self.selection.selected_control_id = Some(device.id);
+            self.selection.control_status = ControlProbeStatus::Checking;
+        }
     }
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
@@ -1313,6 +1338,101 @@ mod tests {
         assert!(app.subscribed());
         let _ = app.update(Message::FrameClosed);
         assert!(!app.subscribed(), "FrameClosed 后订阅必须停");
+    }
+
+    /// 枚举失败测试后端：列表接口直接报错（复刻真实设备不可枚举场景）。
+    #[derive(Default)]
+    struct FailingProbeBackend;
+
+    impl ipkvm_desktop::probe::ProbeBackend for FailingProbeBackend {
+        fn list_video_devices(
+            &mut self,
+        ) -> Result<Vec<crate::connect::DeviceOption>, ipkvm_desktop::probe::ProbeError> {
+            Err(ipkvm_desktop::probe::ProbeError::VideoList("boom".into()))
+        }
+
+        fn list_control_devices(
+            &mut self,
+        ) -> Result<Vec<crate::connect::DeviceOption>, ipkvm_desktop::probe::ProbeError> {
+            Err(ipkvm_desktop::probe::ProbeError::ControlList("boom".into()))
+        }
+
+        fn probe_control(
+            &mut self,
+            _device_id: &str,
+            _baud_rate: u32,
+            _timeout: Duration,
+        ) -> ControlProbeStatus {
+            ControlProbeStatus::NoResponse
+        }
+    }
+
+    #[test]
+    fn startup_task_auto_enumerates_devices() {
+        // 启动任务必须是 RefreshDevices；Task::none() 的 units 为 0，done 为 1。
+        assert!(matches!(
+            MockApp::startup_message(),
+            Message::RefreshDevices
+        ));
+        let (_, task) = MockApp::new_mock();
+        assert_eq!(
+            task.units(),
+            1,
+            "启动 Task 必须携带消息，不能是 Task::none()"
+        );
+
+        // 消费启动消息后列表必须非空（FakeProbeBackend 返回 cam0/COM9）。
+        let (mut app, _) = MockApp::new_mock();
+        let _ = app.update(Message::RefreshDevices);
+        assert_eq!(app.selection.video_devices.len(), 1);
+        assert_eq!(app.selection.control_devices.len(), 1);
+    }
+
+    #[test]
+    fn production_startup_task_triggers_enumeration() {
+        let (_, task) = ProductionApp::production();
+        assert_eq!(task.units(), 1, "生产 App 启动 Task 必须携带消息");
+    }
+
+    #[test]
+    fn startup_enumeration_failure_reports_and_does_not_block() {
+        let (mut app, _) = MockApp::new_mock();
+        app.probe = Box::new(FailingProbeBackend);
+        let _ = app.update(Message::RefreshDevices);
+        assert!(
+            app.selection.video_devices.is_empty(),
+            "失败时不得替换旧列表"
+        );
+        assert!(
+            app.status_message.is_some(),
+            "枚举失败必须把原因显示到状态消息区"
+        );
+    }
+
+    #[test]
+    fn startup_prefills_last_manual_snapshot() {
+        let (mut app, _) = MockApp::new_mock();
+        let snapshot = ipkvm_desktop::config::ManualSnapshot {
+            video_device: Some(ipkvm_desktop::config::DeviceRef {
+                id: "cam0".into(),
+                label: "Camera 0".into(),
+            }),
+            control_device: Some(ipkvm_desktop::config::DeviceRef {
+                id: "COM9".into(),
+                label: "CH9329 (COM9)".into(),
+            }),
+            connection: ipkvm_desktop::config::ConnectionSettings {
+                baud_rate: 115200,
+                ..Default::default()
+            },
+        };
+        app.store.set_last_manual(&snapshot).expect("写入快照");
+        app.prefill_last_manual();
+        assert_eq!(app.selection.selected_video_id.as_deref(), Some("cam0"));
+        assert_eq!(app.selection.selected_control_id.as_deref(), Some("COM9"));
+        assert_eq!(app.connection.baud_rate, 115200);
+        assert_eq!(app.selection.video_status, VideoProbeStatus::Checking);
+        assert_eq!(app.selection.control_status, ControlProbeStatus::Checking);
     }
 
     #[test]
