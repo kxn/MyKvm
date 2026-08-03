@@ -2,7 +2,7 @@
 
 > 本文件是**新会话（或接手 agent）的第一份必读文件**。请先读 `AGENTS.md`（仓库自动化协作者规范），再读本文，然后按第 7 节执行。
 >
-> 更新（2026-08-03）：**M1（#75）已完成并合入 main（PR #83）**；本文件已同步，下一步是 M2（#76）。
+> 更新（2026-08-03）：**M1（#75）已合入（PR #83）、M2（#76）已合入（PR #84）**；本文件已同步，下一步是 M3（#77）。
 
 ## 1. 仓库与环境
 
@@ -16,7 +16,7 @@
 
 ## 2. 现状一句话
 
-egui 桌面端仍是当前发布物；**iced 迁移已完成调研与验证（#73 关闭）、M0 壳已合入 main（PR #80/#81）、M1 视频链路已合入 main（PR #83）**。
+egui 桌面端仍是当前发布物；**iced 迁移已完成调研与验证（#73 关闭）、M0 壳已合入（PR #80/#81）、M1 视频链路已合入（PR #83）、M2 菜单/模态/连接页/profile UI 已合入（PR #84）**。
 
 ## 3. 用户已确认的决策
 
@@ -31,7 +31,7 @@ egui 桌面端仍是当前发布物；**iced 迁移已完成调研与验证（#7
 | #73 | iced 调研 + 三个 spike 验证（结论：可行） | closed |
 | #74 | 迁移 M0：脚手架（`ipkvm-desktop-iced` 壳） | closed（PR #80 合入） |
 | #75 | 迁移 M1：视频链路（帧订阅/缩放/状态栏骨架） | closed（PR #83 合入） |
-| #76 | 迁移 M2：自绘菜单/模态/连接页/profile UI | open |
+| #76 | 迁移 M2：自绘菜单/模态/连接页/profile UI | closed（PR #84 合入） |
 | #77 | 迁移 M3：输入接线（键盘/相对鼠标/flush_pending/特殊键/粘贴） | open |
 | #78 | 迁移 M4：主题与观感 | open |
 | #79 | 迁移 M5：打包收尾 + 删除 egui 桌面端 | open |
@@ -46,12 +46,14 @@ egui 桌面端仍是当前发布物；**iced 迁移已完成调研与验证（#7
 - `c20165b`（PR #81）：M0 测试补强（lib/bin 拆分 + headless 渲染测试）+ 设计文档「每阶段自动化测试要求」+ Raw Input 冒烟测试健壮性修复。
 - `50fcf1a`：M1 实施计划文档。
 - `b2bc11e`（PR #83）：M1 视频链路合入（scale/frames/video/status/app/perf + 24 项测试 + 执行记录），含 `Closes #75`。
+- `bc8f902`（PR #84）：M2 菜单/模态/连接页/profile UI 合入（46 项新增测试 + 执行记录 + 观感截图），含 `Closes #76`。
 
 ### 关键文件索引
 
 - 迁移设计文档（长期事实来源，含调研结论/跨平台约束/M0–M5/测试矩阵）：`docs/superpowers/specs/2026-08-03-iced-migration-design.md`
 - spike 计划与实测数据：`docs/superpowers/plans/2026-08-03-iced-spike.md`
-- **M1 实施计划（下一步执行依据）**：`docs/superpowers/plans/2026-08-03-iced-migration-m1.md`
+- M1/M2 实施计划（已执行，含执行记录）：`docs/superpowers/plans/2026-08-03-iced-migration-m1.md`、`docs/superpowers/plans/2026-08-03-iced-migration-m2.md`
+- M2 观感截图：`docs/superpowers/artifacts/m2-screenshots/m2-connection-page.png`
 - 正式迁移 crate：`crates/ipkvm-desktop-iced/`（M0 壳：lib.rs/main.rs）
 - spike crate（已验证算法的事实来源，M1–M3 逐模块收编）：`crates/ipkvm-desktop-iced-spike/`
 
@@ -67,17 +69,15 @@ egui 桌面端仍是当前发布物；**iced 迁移已完成调研与验证（#7
 
 ## 7. 下一步（新会话第一个任务）
 
-1. 推进 **M2（#76）**：自绘菜单/模态/连接页/profile UI。先按 superpowers 流程编写/更新 M2 实施计划（writing-plans），再执行：
+1. 推进 **M3（#77）**：输入接线（键盘 keymap、相对鼠标 trait 接 UI、`flush_pending` 定时器、特殊键、粘贴、Ctrl+Alt+K/M）。先按 superpowers 流程编写 M3 实施计划（writing-plans；spike 事实来源：`keymap.rs`/`relative.rs`/`tests/input_pipeline.rs`/`tests/relative_pointer.rs`），再执行：
    - **Subagent-Driven（推荐）**：每任务派全新 subagent，任务间两阶段评审 → `superpowers:subagent-driven-development`。
    - **Inline**：多代理不可用时用 `superpowers:executing-plans` 批量执行 + 检查点。
-2. **多代理可用性记录（2026-08-03 M1 会话）**：Task 1 由子代理实现后，`spawn_agent` 持续返回 `unsupported call: spawn_agent`（含最小探测），按约定退化为 Inline 执行；建议在 M2 前先解决 subagent 在 deepseek 上的使用问题，否则继续 Inline 并在交接记录注明。
-3. M2 合入后依次推进 **M3（#77）→ M4（#78）→ M5（#79）**，每阶段遵守 #82 测试矩阵，按 superpowers 流程（先 plan、TDD、自审、合并推送关单）。
-4. 每单合入后同步 main，删除已合并分支，继续下一个。
+2. **多代理可用性记录（2026-08-03 M1/M2 会话）**：`spawn_agent` 在 M1 Task 1 后持续返回 `unsupported call`（含最小探测），M2 全程 Inline 执行；建议在 M3 前先解决 subagent 在 deepseek 上的使用问题，否则继续 Inline 并在交接记录注明。
+3. 每单合入后同步 main，删除已合并分支，继续下一个。
 
 ## 8. 待用户决策/备忘
 
-- M1 执行方式选择（见第 7 节）。
-- ~~M1 执行方式选择~~（2026-08-03 已按 Subagent-Driven 启动，中途退化为 Inline 完成，见第 7 节）。
+- ~~M1/M2 执行方式选择~~（2026-08-03 均因多代理不可用退化为 Inline 完成，见第 7 节）。
 - stash 与 `%TEMP%` 调试文件去留（当前保留）。
 - 真实硬件冒烟（BIOS 方向键/相对鼠标）在 M3 阶段做（用户机器：成品线，CH340 + CH9329，对面可能是 ARM 或电脑，未接盒子的串口）。
 - 窗口标题嵌入 `GIT_COMMIT`（M5 验收点，历史版本验证手段）。
