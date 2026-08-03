@@ -4,7 +4,7 @@ pub use ipkvm_desktop::config::{
     ConnectionSettings, DeviceRef, ManualSnapshot, Profile, ProfileStore,
 };
 pub use ipkvm_desktop::probe::{
-    ProbeBackend, ProbeError, ProductionProbeBackend, detect_baud_rate, refresh_detection,
+    ProbeBackend, ProbeError, ProductionProbeBackend, refresh_detection, resolve_connect_baud,
 };
 pub use ipkvm_desktop::state::{
     ControlInfo, ControlProbeStatus, DeviceOption, DeviceSelectionState, PreviewInfo,
@@ -183,6 +183,7 @@ mod tests {
             control_status: ControlProbeStatus::Ready(ControlInfo {
                 version: 0x31,
                 usb_enumerated: true,
+                baud: 115200,
             }),
         }
     }
@@ -285,6 +286,7 @@ mod tests {
         state.control_status = ControlProbeStatus::Ready(ControlInfo {
             version: 0x31,
             usb_enumerated: true,
+            baud: 115200,
         });
         assert!(state.can_connect());
     }

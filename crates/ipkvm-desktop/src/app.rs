@@ -25,7 +25,6 @@ use crate::state::{
 const PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 const NO_SIGNAL_TIMEOUT: Duration = Duration::from_secs(2);
 /// 波特率扫描单档超时：GetInfo 应答很快，逐档白等会显著拖慢连接。
-const BAUD_PROBE_TIMEOUT: Duration = Duration::from_millis(300);
 /// 指针最小发送间隔（约 30Hz 限频），按键状态变化不受此限制。
 const POINTER_MIN_INTERVAL: Duration = Duration::from_millis(33);
 /// 菜单栏 + 状态栏高度估算兜底（首帧实测之前用）。
@@ -828,11 +827,13 @@ impl DesktopApp {
                         self.selection.selected_control_id = Some(device.id);
                         self.selection.control_status = ControlProbeStatus::Checking;
                         if let Some(device_id) = self.selection.selected_control_id.clone() {
-                            self.selection.control_status = self.probe.probe_control(
+                            let status = self.probe.probe_control(
                                 &device_id,
                                 self.connection.baud_rate,
                                 PROBE_TIMEOUT,
                             );
+                            self.selection
+                                .record_control_probe(self.connection.baud_rate, status);
                         }
                         // 手动改动后不再属于任何 profile。
                         self.active_profile = None;
@@ -844,12 +845,20 @@ impl DesktopApp {
     fn connect(&mut self, ctx: &egui::Context) -> Result<(), DesktopSessionError> {
         // 预览源占用相机/串口，连接前必须先释放。
         self.reset_preview();
-        if self.connection.auto_baud
-            && let Some(control_id) = self.selection.selected_control_id.clone()
-            && let Some(baud) = crate::probe::detect_baud_rate(&control_id, BAUD_PROBE_TIMEOUT)
-        {
-            self.connection.baud_rate = baud;
-            self.status_message = Some(t!("message.baud_selected", baud = baud).to_string());
+        // 波特率解析收敛到共享层（#97）：当前波特率已被选中/刷新探测验证时
+        // 直接使用、不重测；未验证且 auto_baud 开启时才用专用短超时兜底检测。
+        if let Some(control_id) = self.selection.selected_control_id.clone() {
+            let previous = self.connection.baud_rate;
+            self.connection.baud_rate = crate::probe::resolve_connect_baud(
+                self.connection.auto_baud,
+                previous,
+                &self.selection.control_status,
+                &control_id,
+            );
+            if self.connection.baud_rate != previous {
+                self.status_message =
+                    Some(t!("message.baud_selected", baud = self.connection.baud_rate).to_string());
+            }
         }
         let Some(request) = self.connect_request() else {
             return Ok(());
@@ -968,9 +977,11 @@ impl DesktopApp {
                     self.reset_preview();
                 } else {
                     self.selection.selected_control_id = Some(id.clone());
-                    self.selection.control_status =
+                    let status =
                         self.probe
                             .probe_control(&id, self.connection.baud_rate, PROBE_TIMEOUT);
+                    self.selection
+                        .record_control_probe(self.connection.baud_rate, status);
                 }
                 false
             }

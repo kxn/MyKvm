@@ -24,8 +24,8 @@ use crate::clipboard::{ClipboardReader, SystemClipboard};
 use crate::connect::{
     CameraPreviewFactory, ConnectionSettings, ControlProbeStatus, DeviceSelectionState,
     PROBE_TIMEOUT, PreviewRefreshAction, PreviewRuntime, PreviewSourceFactory,
-    ProductionProbeBackend, VideoProbeStatus, detect_baud_rate, preview_refresh_action,
-    refresh_detection,
+    ProductionProbeBackend, VideoProbeStatus, preview_refresh_action, refresh_detection,
+    resolve_connect_baud,
 };
 use crate::diag;
 use crate::frames::{FrameUpdate, frame_subscription};
@@ -132,6 +132,7 @@ impl ipkvm_desktop::probe::ProbeBackend for FakeProbeBackend {
         ControlProbeStatus::Ready(crate::connect::ControlInfo {
             version: 0x31,
             usb_enumerated: true,
+            baud: 115200,
         })
     }
 }
@@ -458,11 +459,13 @@ where
                     .find(|device| device.label == label)
                 {
                     self.selection.selected_control_id = Some(device.id.clone());
-                    self.selection.control_status = self.probe.probe_control(
+                    let status = self.probe.probe_control(
                         &device.id,
                         self.connection.baud_rate,
                         PROBE_TIMEOUT,
                     );
+                    self.selection
+                        .record_control_probe(self.connection.baud_rate, status);
                     self.active_profile = None;
                 }
                 Task::none()
@@ -515,13 +518,22 @@ where
                 self.preview.reset();
                 self.reset_preview_handle();
                 diag::log("connect begin");
-                if self.connection.auto_baud
-                    && let Some(control_id) = self.selection.selected_control_id.clone()
-                    && let Some(baud) = detect_baud_rate(&control_id, PROBE_TIMEOUT)
-                {
-                    self.connection.baud_rate = baud;
-                    self.status_message =
-                        Some(t!("message.baud_selected", baud = baud).to_string());
+                // 波特率解析收敛到共享层（#97）：当前波特率已被选中/刷新探测验证时
+                // 直接使用、不重测；未验证且 auto_baud 开启时才用专用短超时兜底检测。
+                if let Some(control_id) = self.selection.selected_control_id.clone() {
+                    let previous = self.connection.baud_rate;
+                    self.connection.baud_rate = resolve_connect_baud(
+                        self.connection.auto_baud,
+                        previous,
+                        &self.selection.control_status,
+                        &control_id,
+                    );
+                    if self.connection.baud_rate != previous {
+                        self.status_message = Some(
+                            t!("message.baud_selected", baud = self.connection.baud_rate)
+                                .to_string(),
+                        );
+                    }
                 }
                 let Some(request) = self.connect_request() else {
                     return Task::none();
@@ -1632,6 +1644,30 @@ mod tests {
         assert!(matches!(
             app.selection.control_status,
             ControlProbeStatus::Ready(_)
+        ));
+    }
+
+    #[test]
+    fn control_selection_records_verified_baud_and_baud_change_invalidates() {
+        // #97：选中探测成功后，Ready 必须携带“已验证的波特率”。
+        let (mut app, _) = MockApp::new_mock();
+        let _ = app.update(Message::RefreshDevices);
+        let _ = app.update(Message::SetBaudRate(9_600));
+        let _ = app.update(Message::SelectControl("CH9329 (COM9)".into()));
+        assert_eq!(
+            app.selection.control_status,
+            ControlProbeStatus::Ready(crate::connect::ControlInfo {
+                version: 0x31,
+                usb_enumerated: true,
+                baud: 9_600,
+            })
+        );
+
+        // 改波特率后旧验证失配：连接前 resolve 会走兜底检测（共享层单测覆盖）。
+        let _ = app.update(Message::SetBaudRate(115_200));
+        assert!(!matches!(
+            app.selection.control_status,
+            ControlProbeStatus::Ready(info) if info.baud == app.connection.baud_rate
         ));
     }
 

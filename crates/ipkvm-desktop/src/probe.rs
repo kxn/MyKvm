@@ -7,6 +7,9 @@ use crate::state::{ControlInfo, ControlProbeStatus, DeviceOption, DeviceSelectio
 
 /// 自动扫描候选波特率（成品线电平未知：115200 可用则最快，失败逐档降级）。
 pub const BAUD_CANDIDATES: [u32; 5] = [115200, 57600, 38400, 19200, 9600];
+/// 波特率探测专用超时（单档）：连接前兜底检测使用，避免每档白等过久（#97）。
+/// 普通设备探测（列表枚举后的单波特率复核）仍用调用方传入的超时。
+pub const BAUD_PROBE_TIMEOUT: Duration = Duration::from_millis(300);
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProbeError {
@@ -47,7 +50,8 @@ pub fn refresh_detection(
     state.refresh_devices(video, control);
 
     if let Some(device_id) = state.selected_control_id.clone() {
-        state.control_status = backend.probe_control(&device_id, baud_rate, timeout);
+        let status = backend.probe_control(&device_id, baud_rate, timeout);
+        state.record_control_probe(baud_rate, status);
     }
     Ok(())
 }
@@ -143,6 +147,7 @@ pub fn probe_ch9329(path: &str, baud_rate: u32, timeout: Duration) -> ControlPro
                             return ControlProbeStatus::Ready(ControlInfo {
                                 version: info.version,
                                 usb_enumerated: info.usb_enumerated,
+                                baud: baud_rate,
                             });
                         }
                         Ok(_) => {
@@ -170,6 +175,47 @@ pub fn detect_baud_rate(path: &str, timeout: Duration) -> Option<u32> {
             probe_ch9329(path, *baud, timeout),
             ControlProbeStatus::Ready(_)
         )
+    })
+}
+
+/// 解析连接使用的波特率（#97）。
+///
+/// - 当前波特率已被最近一次控制探测验证（`Ready` 且 `info.baud == current`）
+///   → 直接用，**不重测**（选中/刷新设备时已证明该波特率可用）；
+/// - 未验证且 `auto_baud` 开启 → 用 `BAUD_PROBE_TIMEOUT` 做全量检测兜底，
+///   找不到则保持当前值；
+/// - 其余情况 → 保持当前值。
+///
+/// 可注入检测器（测试用）；生产走 [`resolve_connect_baud`]。
+pub fn resolve_connect_baud_with(
+    auto_baud: bool,
+    current_baud: u32,
+    control_status: &ControlProbeStatus,
+    detect: impl FnOnce() -> Option<u32>,
+) -> u32 {
+    let verified = matches!(
+        control_status,
+        ControlProbeStatus::Ready(info) if info.baud == current_baud
+    );
+    if verified {
+        return current_baud;
+    }
+    if auto_baud {
+        detect().unwrap_or(current_baud)
+    } else {
+        current_baud
+    }
+}
+
+/// 连接前解析波特率的生产入口（见 [`resolve_connect_baud_with`]）。
+pub fn resolve_connect_baud(
+    auto_baud: bool,
+    current_baud: u32,
+    control_status: &ControlProbeStatus,
+    control_id: &str,
+) -> u32 {
+    resolve_connect_baud_with(auto_baud, current_baud, control_status, || {
+        detect_baud_rate(control_id, BAUD_PROBE_TIMEOUT)
     })
 }
 
@@ -234,6 +280,7 @@ mod tests {
             ControlProbeStatus::Ready(ControlInfo {
                 version: 0x31,
                 usb_enumerated: true,
+                baud: _baud_rate,
             })
         }
     }
@@ -258,6 +305,14 @@ mod tests {
         assert_eq!(backend.control_calls, 1);
         assert!(matches!(state.video_status, VideoProbeStatus::Ready(_)));
         assert!(matches!(state.control_status, ControlProbeStatus::Ready(_)));
+        assert_eq!(
+            state.control_status,
+            ControlProbeStatus::Ready(ControlInfo {
+                version: 0x31,
+                usb_enumerated: true,
+                baud: 9_600,
+            })
+        );
         assert!(state.can_connect());
     }
 
@@ -283,5 +338,61 @@ mod tests {
         assert_eq!(BAUD_CANDIDATES[0], 115200);
         assert_eq!(BAUD_CANDIDATES[4], 9600);
         assert_eq!(BAUD_CANDIDATES.len(), 5);
+    }
+
+    #[test]
+    fn resolve_baud_skips_detection_when_current_baud_verified() {
+        // 已验证：检测器不应被调用（调用即 panic）。
+        let status = ControlProbeStatus::Ready(ControlInfo {
+            version: 0x31,
+            usb_enumerated: true,
+            baud: 115_200,
+        });
+        assert_eq!(
+            resolve_connect_baud_with(true, 115_200, &status, || {
+                panic!("已验证时必须跳过检测");
+            }),
+            115_200
+        );
+    }
+
+    #[test]
+    fn resolve_baud_detects_when_unverified_and_auto_baud_on() {
+        let status = ControlProbeStatus::NoResponse;
+        assert_eq!(
+            resolve_connect_baud_with(true, 115_200, &status, || Some(9_600)),
+            9_600
+        );
+        // 检测失败时保持当前值。
+        assert_eq!(
+            resolve_connect_baud_with(true, 115_200, &status, || None),
+            115_200
+        );
+    }
+
+    #[test]
+    fn resolve_baud_keeps_current_when_auto_baud_off_or_baud_changed() {
+        let ready_at_old = ControlProbeStatus::Ready(ControlInfo {
+            version: 0x31,
+            usb_enumerated: true,
+            baud: 9_600,
+        });
+        // 改波特率后旧验证不再匹配当前值 → auto 开启时走检测。
+        assert_eq!(
+            resolve_connect_baud_with(true, 115_200, &ready_at_old, || Some(9_600)),
+            9_600
+        );
+        // auto 关闭时不做检测。
+        assert_eq!(
+            resolve_connect_baud_with(false, 115_200, &ready_at_old, || {
+                panic!("auto_baud 关闭时不得检测");
+            }),
+            115_200
+        );
+    }
+
+    #[test]
+    fn baud_probe_timeout_is_dedicated_and_short() {
+        assert_eq!(BAUD_PROBE_TIMEOUT, Duration::from_millis(300));
     }
 }
