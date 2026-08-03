@@ -15,7 +15,7 @@ iced_futures = "0.14"
 ipkvm-core = { path = "../ipkvm-core" }
 ipkvm-desktop = { path = "../ipkvm-desktop" }
 ipkvm-session = { path = "../ipkvm-session" }
-ipkvm-video = { path = "../ipkvm-video", features = ["mock"] }
+ipkvm-video = { path = "../ipkvm-video", features = ["mock", "mf"] }
 rust-i18n = "4.2.1"
 sys-locale = "0.3.2"
 
