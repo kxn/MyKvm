@@ -15,6 +15,7 @@ pub mod clipboard;
 pub mod connect;
 pub mod diag;
 pub mod dialog;
+pub mod fonts;
 pub mod frames;
 pub mod input;
 pub mod keymap;
@@ -334,6 +335,30 @@ mod tests {
                     "[{locale}] {key} 译文不得为空或等于 key"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn fixed_width_en_labels_stay_within_28_chars() {
+        let _guard = I18N_TEST_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+        rust_i18n::set_locale("en");
+        // 菜单 240 / 按钮 140 / 下拉 240 固定宽度下不换行越界的英文关键标签。
+        for key in [
+            "file.load_profile",
+            "send.release_all",
+            "device.control",
+            "device.refresh",
+            "edit.save_screenshot",
+            "settings.auto_baud",
+            "connection_settings.title",
+            "profile.save",
+            "modal.connection_title",
+        ] {
+            let label = translate_key(key);
+            assert!(
+                label.chars().count() <= 28,
+                "[en] {key} 英文文案 {label:?} 超过 28 字符，固定宽度控件会换行/越界"
+            );
         }
     }
 

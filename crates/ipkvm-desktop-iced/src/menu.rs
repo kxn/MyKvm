@@ -73,7 +73,7 @@ pub fn menu_bar<'a, R>(
     has_frame: bool,
 ) -> iced::Element<'a, MenuAction, iced::Theme, R>
 where
-    R: iced::advanced::Renderer + iced::advanced::text::Renderer + 'a,
+    R: iced::advanced::Renderer + iced::advanced::text::Renderer<Font = iced::Font> + 'a,
 {
     menu_bar_macro!(
         (
@@ -95,7 +95,7 @@ where
 
 fn file_menu<'a, R>(recent_profiles: &[&str], online: bool) -> Menu<'a, MenuAction, iced::Theme, R>
 where
-    R: iced::advanced::Renderer + iced::advanced::text::Renderer + 'a,
+    R: iced::advanced::Renderer + iced::advanced::text::Renderer<Font = iced::Font> + 'a,
 {
     Menu::new(menu_items_macro!(
         action_item(t!("menu.disconnect"), MenuAction::Disconnect, online),
@@ -110,10 +110,12 @@ where
 
 fn recent_item<'a, R>(recent_profiles: &[&str]) -> Item<'a, MenuAction, iced::Theme, R>
 where
-    R: iced::advanced::Renderer + iced::advanced::text::Renderer + 'a,
+    R: iced::advanced::Renderer + iced::advanced::text::Renderer<Font = iced::Font> + 'a,
 {
     let items: Vec<Item<'_, MenuAction, iced::Theme, R>> = if recent_profiles.is_empty() {
-        vec![Item::new(text(t!("profile.no_recent")))]
+        vec![Item::new(
+            text(t!("profile.no_recent")).font(crate::fonts::ui_font()),
+        )]
     } else {
         let mut items: Vec<Item<'_, MenuAction, iced::Theme, R>> = recent_profiles
             .iter()
@@ -154,7 +156,7 @@ fn edit_menu<'a, R>(
     has_frame: bool,
 ) -> Menu<'a, MenuAction, iced::Theme, R>
 where
-    R: iced::advanced::Renderer + iced::advanced::text::Renderer + 'a,
+    R: iced::advanced::Renderer + iced::advanced::text::Renderer<Font = iced::Font> + 'a,
 {
     Menu::new(menu_items_macro!(
         action_item(
@@ -175,7 +177,7 @@ where
 
 fn save_screenshot_item<'a, R>(has_frame: bool) -> Item<'a, MenuAction, iced::Theme, R>
 where
-    R: iced::advanced::Renderer + iced::advanced::text::Renderer + 'a,
+    R: iced::advanced::Renderer + iced::advanced::text::Renderer<Font = iced::Font> + 'a,
 {
     #[cfg(windows)]
     {
@@ -188,7 +190,7 @@ where
     #[cfg(not(windows))]
     {
         Item::new(
-            button(text(t!("edit.save_screenshot_unsupported")))
+            button(text(t!("edit.save_screenshot_unsupported")).font(crate::fonts::ui_font()))
                 .width(Length::Fill)
                 .padding([4, 10])
                 .style(menu_item_style),
@@ -198,7 +200,7 @@ where
 
 fn language_item<'a, R>(current: crate::locale::AppLanguage) -> Item<'a, MenuAction, iced::Theme, R>
 where
-    R: iced::advanced::Renderer + iced::advanced::text::Renderer + 'a,
+    R: iced::advanced::Renderer + iced::advanced::text::Renderer<Font = iced::Font> + 'a,
 {
     Item::with_menu(
         submenu_label(t!("edit.language")),
@@ -216,7 +218,7 @@ fn language_option<'a, R>(
     current: crate::locale::AppLanguage,
 ) -> iced::Element<'a, MenuAction, iced::Theme, R>
 where
-    R: iced::advanced::Renderer + iced::advanced::text::Renderer + 'a,
+    R: iced::advanced::Renderer + iced::advanced::text::Renderer<Font = iced::Font> + 'a,
 {
     let selected = crate::locale::AppLanguage::from(option) == current;
     let label = if selected {
@@ -229,7 +231,7 @@ where
 
 fn send_menu<'a, R>(paste_busy: bool) -> Menu<'a, MenuAction, iced::Theme, R>
 where
-    R: iced::advanced::Renderer + iced::advanced::text::Renderer + 'a,
+    R: iced::advanced::Renderer + iced::advanced::text::Renderer<Font = iced::Font> + 'a,
 {
     Menu::new(menu_items_macro!(
         action_item(
@@ -246,7 +248,7 @@ where
 
 fn special_keys_item<'a, R>() -> Item<'a, MenuAction, iced::Theme, R>
 where
-    R: iced::advanced::Renderer + iced::advanced::text::Renderer + 'a,
+    R: iced::advanced::Renderer + iced::advanced::text::Renderer<Font = iced::Font> + 'a,
 {
     Item::with_menu(
         submenu_label(t!("send.special_keys")),
@@ -271,7 +273,7 @@ where
 
 fn about_menu<'a, R>() -> Menu<'a, MenuAction, iced::Theme, R>
 where
-    R: iced::advanced::Renderer + iced::advanced::text::Renderer + 'a,
+    R: iced::advanced::Renderer + iced::advanced::text::Renderer<Font = iced::Font> + 'a,
 {
     Menu::new(menu_items_macro!(
         (item_button(
@@ -290,9 +292,9 @@ where
 /// 顶层根按钮：透明底，提供舒适的点击区域；打开状态高亮由 iced_aw 绘制。
 fn root_label<'a, R>(label: impl Into<String>) -> iced::Element<'a, MenuAction, iced::Theme, R>
 where
-    R: iced::advanced::Renderer + iced::advanced::text::Renderer + 'a,
+    R: iced::advanced::Renderer + iced::advanced::text::Renderer<Font = iced::Font> + 'a,
 {
-    button(text(label.into()))
+    button(text(label.into()).font(crate::fonts::ui_font()))
         .padding([4, 8])
         .style(menu_item_style)
         .into()
@@ -304,10 +306,11 @@ fn item_button<'a, R>(
     action: MenuAction,
 ) -> iced::Element<'a, MenuAction, iced::Theme, R>
 where
-    R: iced::advanced::Renderer + iced::advanced::text::Renderer + 'a,
+    R: iced::advanced::Renderer + iced::advanced::text::Renderer<Font = iced::Font> + 'a,
 {
     button(
         text(label.into())
+            .font(crate::fonts::ui_font())
             .width(Length::Fill)
             .align_y(alignment::Vertical::Center),
     )
@@ -325,7 +328,7 @@ fn action_item<'a, R>(
     enabled: bool,
 ) -> Item<'a, MenuAction, iced::Theme, R>
 where
-    R: iced::advanced::Renderer + iced::advanced::text::Renderer + 'a,
+    R: iced::advanced::Renderer + iced::advanced::text::Renderer<Font = iced::Font> + 'a,
 {
     let label = label.into();
     if enabled {
@@ -334,6 +337,7 @@ where
         Item::new(
             button(
                 text(label)
+                    .font(crate::fonts::ui_font())
                     .width(Length::Fill)
                     .align_y(alignment::Vertical::Center),
             )
@@ -347,13 +351,18 @@ where
 /// 子菜单父项：标签 + 右箭头（文本 "›"，不依赖 iced_aw 图标字体）。
 fn submenu_label<'a, R>(label: impl Into<String>) -> iced::Element<'a, MenuAction, iced::Theme, R>
 where
-    R: iced::advanced::Renderer + iced::advanced::text::Renderer + 'a,
+    R: iced::advanced::Renderer + iced::advanced::text::Renderer<Font = iced::Font> + 'a,
 {
-    row![text(label.into()).width(Length::Fill), text("›")]
-        .width(Length::Fill)
-        .padding([4, 10])
-        .align_y(alignment::Vertical::Center)
-        .into()
+    row![
+        text(label.into())
+            .font(crate::fonts::ui_font())
+            .width(Length::Fill),
+        text("›").font(crate::fonts::ui_font())
+    ]
+    .width(Length::Fill)
+    .padding([4, 10])
+    .align_y(alignment::Vertical::Center)
+    .into()
 }
 
 /// 分隔线：1px 水平线。

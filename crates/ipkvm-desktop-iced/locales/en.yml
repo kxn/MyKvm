@@ -8,21 +8,21 @@ menu:
   disconnect: "Disconnect"
 
 file:
-  load_profile: "Load connection profile…"
+  load_profile: "Load profile…"
   recent: "Recent"
   recent_more: "More…"
   exit: "Exit"
 
 edit:
   copy_screenshot: "Copy screenshot"
-  save_screenshot: "Save screenshot as JPEG…"
-  save_screenshot_unsupported: "Save screenshot (file dialog not supported on this platform)"
+  save_screenshot: "Save screenshot…"
+  save_screenshot_unsupported: "Save screenshot unsupported"
   language: "Language"
   settings: "Settings…"
 
 send:
   paste_text: "Paste text"
-  release_all: "Release all keys/mouse"
+  release_all: "Release keys/mouse"
   special_keys: "Send special keys"
 
 special_keys:
@@ -55,8 +55,8 @@ modal:
 device:
   title: "Select device"
   video: "Video device"
-  control: "Control device (CH9329)"
-  refresh: "Refresh detection"
+  control: "Control device"
+  refresh: "Refresh"
   connect: "Connect"
   preview: "Video preview"
   no_preview: "No preview"
@@ -83,7 +83,7 @@ connection_settings:
 settings:
   title: "Settings"
   baud_rate: "Baud rate"
-  auto_baud: "Auto-detect baud rate on connect"
+  auto_baud: "Auto-detect baud rate"
   preview_fps: "Preview FPS"
   mouse_mode: "Mouse mode"
   relative_sensitivity: "Relative sensitivity"

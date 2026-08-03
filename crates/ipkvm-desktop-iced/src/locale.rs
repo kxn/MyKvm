@@ -37,6 +37,12 @@ fn detect_system_locale() -> &'static str {
     map_system_locale(sys_locale::get_locale().as_deref())
 }
 
+/// 启动时应用系统语言并返回是否中文（供 App 初始化 self.zh）。
+pub fn apply_system_locale() -> bool {
+    AppLanguage::System.apply();
+    rust_i18n::locale().starts_with("zh")
+}
+
 fn map_system_locale(locale: Option<&str>) -> &'static str {
     match locale {
         Some(locale) if locale.starts_with("zh") => "zh-CN",
@@ -79,5 +85,14 @@ mod tests {
         AppLanguage::English.apply();
         assert_eq!(&*rust_i18n::locale(), "en");
         rust_i18n::set_locale("zh-CN");
+    }
+
+    #[test]
+    fn apply_system_locale_matches_current_locale() {
+        let _guard = crate::I18N_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let is_zh = apply_system_locale();
+        assert_eq!(is_zh, rust_i18n::locale().starts_with("zh"));
     }
 }

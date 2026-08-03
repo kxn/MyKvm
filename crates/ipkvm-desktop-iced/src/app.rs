@@ -189,6 +189,7 @@ pub enum Message {
     Keyboard(iced::keyboard::Event),
     IcedEvent(iced::Event),
     UiTick,
+    FontsLoaded(Result<(), iced::font::Error>),
 }
 
 /// 应用状态：controller + 连接页 + 菜单/模态 + 视频。
@@ -335,6 +336,7 @@ impl App<RecordingSink, MockFactory> {
 impl App<Ch9329InputSink<SerialCommandQueue>, ProductionSessionFactory> {
     /// 构造生产应用（真实 controller + 设备探测 + 相机预览 + 磁盘 profile）。
     pub fn production() -> (Self, Task<Message>) {
+        let zh = crate::locale::apply_system_locale();
         let controller = ProductionDesktopSessionController::production();
         let store = ipkvm_desktop::config::ProfileStore::production();
         let mut app = Self {
@@ -348,7 +350,7 @@ impl App<Ch9329InputSink<SerialCommandQueue>, ProductionSessionFactory> {
             letterbox_color: Color::from_rgb(0.0, 0.0, 0.0),
             status: ConnectionStatus::Disconnected,
             subscribed: true,
-            zh: true,
+            zh,
             window_id: None,
             pending_resize: None,
             stats: None,
@@ -390,7 +392,9 @@ impl App<Ch9329InputSink<SerialCommandQueue>, ProductionSessionFactory> {
         };
         // 预填上次手动连接（对齐 egui new()），随后由启动 Task 自动枚举。
         app.prefill_last_manual();
-        (app, Task::done(Self::startup_message()))
+        let mut startup_tasks = vec![Task::done(Self::startup_message())];
+        startup_tasks.extend(crate::fonts::load_tasks());
+        (app, Task::batch(startup_tasks))
     }
 }
 
@@ -472,7 +476,17 @@ where
                 Task::none()
             }
             Message::ToggleLocale => {
-                self.zh = !self.zh;
+                if self.zh {
+                    AppLanguage::English.apply();
+                } else {
+                    AppLanguage::Chinese.apply();
+                }
+                self.zh = rust_i18n::locale().starts_with("zh");
+                self.language = if self.zh {
+                    AppLanguage::Chinese
+                } else {
+                    AppLanguage::English
+                };
                 Task::none()
             }
             Message::WindowOpened(id) => {
@@ -740,6 +754,12 @@ where
                     && let Some(cursor) = self.last_cursor
                 {
                     self.send_absolute(cursor);
+                }
+                Task::none()
+            }
+            Message::FontsLoaded(result) => {
+                if let Err(error) = result {
+                    diag::log(format!("font load failed: {error:?}"));
                 }
                 Task::none()
             }
@@ -1613,12 +1633,13 @@ where
         };
         let mut fields = iced::widget::Row::new()
             .spacing(16)
-            .push(text(t!("status.control_device", value = control)))
-            .push(text(t!("status.keyboard", value = keyboard)))
-            .push(text(t!("status.pointer", value = pointer)))
-            .push(text(t!("status.video", value = video)));
+            .push(text(t!("status.control_device", value = control)).font(crate::fonts::ui_font()))
+            .push(text(t!("status.keyboard", value = keyboard)).font(crate::fonts::ui_font()))
+            .push(text(t!("status.pointer", value = pointer)).font(crate::fonts::ui_font()))
+            .push(text(t!("status.video", value = video)).font(crate::fonts::ui_font()));
         if let Some(message) = &self.status_message {
-            fields = fields.push(text(t!("status.message", message = message)));
+            fields = fields
+                .push(text(t!("status.message", message = message)).font(crate::fonts::ui_font()));
         }
         container(fields)
             .width(Length::Fill)
@@ -1683,7 +1704,7 @@ where
             }
             VideoProbeStatus::Disconnected => t!("video_status.disconnected"),
         };
-        text(label).into()
+        text(label).font(crate::fonts::ui_font()).into()
     }
 
     fn control_status_text(&self) -> Element<'_, Message> {
@@ -1704,7 +1725,7 @@ where
             }
             ControlProbeStatus::Disconnected => t!("control_status_label.disconnected"),
         };
-        text(label).into()
+        text(label).font(crate::fonts::ui_font()).into()
     }
 
     fn video_labels(&self) -> Vec<String> {
@@ -1861,6 +1882,7 @@ fn connect_request() -> ConnectRequest {
 
 /// 启动生产 iced 应用（bin 入口调用；测试不启动真实窗口）。
 pub fn run() -> iced::Result {
+    let _ = crate::locale::apply_system_locale();
     diag::init();
     diag::log(format!(
         "startup args: {:?}",
@@ -1871,6 +1893,7 @@ pub fn run() -> iced::Result {
         .theme(App::theme)
         .title(WINDOW_TITLE)
         .window_size(WINDOW_SIZE)
+        .default_font(crate::fonts::ui_font())
         .run()
 }
 
@@ -1989,9 +2012,26 @@ mod tests {
     }
 
     #[test]
-    fn production_startup_task_triggers_enumeration() {
+    fn production_startup_task_triggers_enumeration_and_loads_fonts() {
         let (_, task) = ProductionApp::production();
-        assert_eq!(task.units(), 1, "生产 App 启动 Task 必须携带消息");
+        assert!(
+            task.units() >= 5,
+            "生产 App 启动 Task 必须携带枚举消息 + 4 个 Poppins 字体加载（实际 units={}）",
+            task.units()
+        );
+    }
+
+    #[test]
+    fn production_zh_follows_system_locale() {
+        let _guard = crate::I18N_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let (app, _) = ProductionApp::production();
+        assert_eq!(
+            app.zh,
+            rust_i18n::locale().starts_with("zh"),
+            "production() 必须按 apply_system_locale 初始化 zh"
+        );
     }
 
     #[test]
@@ -3020,7 +3060,7 @@ mod tests {
         let _ = app.update(Message::RefreshDevices);
         let mut ui = iced_test::simulator::simulator(app.view());
         assert!(ui.find("Select device").is_ok(), "连接页标题必须渲染");
-        assert!(ui.find("Refresh detection").is_ok(), "刷新按钮必须渲染");
+        assert!(ui.find("Refresh").is_ok(), "刷新按钮必须渲染");
         // #90 布局：profile 行 + 左栏 380 + 右栏 320x180 预览 + 连接设置入口。
         assert!(
             ui.find("Save current options…").is_ok(),
@@ -3148,7 +3188,7 @@ mod tests {
         assert!(ui.find("Baud rate").is_ok(), "连接设置模态必须含波特率");
         assert!(ui.find("Preview FPS").is_ok(), "连接设置模态必须含预览帧率");
         assert!(
-            ui.find("Auto-detect baud rate on connect").is_ok(),
+            ui.find("Auto-detect baud rate").is_ok(),
             "连接设置模态必须含自动波特率开关"
         );
         assert!(ui.find("Mouse mode").is_ok(), "连接设置模态必须含鼠标模式");
