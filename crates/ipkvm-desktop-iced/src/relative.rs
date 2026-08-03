@@ -132,6 +132,13 @@ impl DeltaSampler {
         }
     }
 
+    /// 复位累计余数与采样周期：退出远程输入后丢弃历史增量，下次移动立即开新周期。
+    pub fn reset(&mut self) {
+        self.remainder_x = 0.0;
+        self.remainder_y = 0.0;
+        self.last_send = None;
+    }
+
     /// 喂入原始增量；到采样点时返回本周期应发送的增量（最多一次，非零才发）。
     pub fn feed(&mut self, dx: f32, dy: f32, now: Instant) -> Option<(i16, i16)> {
         self.remainder_x += dx;
@@ -229,5 +236,17 @@ mod tests {
         // 0.5 未到 1：不发出也不占采样点；累积 0.5 后到间隔发出 (1,0)。
         assert_eq!(s.feed(0.5, 0.0, t(0)), None);
         assert_eq!(s.feed(0.5, 0.0, t(40)), Some((1, 0)));
+    }
+
+    #[test]
+    fn reset_clears_remainder_and_restarts_interval() {
+        let mut s = DeltaSampler::new(Duration::from_millis(33));
+        assert_eq!(s.feed(5.0, 5.0, t(0)), Some((5, 5)));
+        assert_eq!(s.feed(1.0, 1.0, t(10)), None); // 间隔内累计，不发送。
+        s.reset();
+        // reset 后首个非零增量立即发送（last_send 复位，不继承旧周期）。
+        assert_eq!(s.feed(2.0, 0.0, t(11)), Some((2, 0)));
+        assert_eq!(s.feed(1.0, 0.0, t(12)), None); // 新周期内累计。
+        assert_eq!(s.feed(0.0, 0.0, t(50)), Some((1, 0)));
     }
 }

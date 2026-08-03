@@ -1030,13 +1030,15 @@ where
     }
 
     fn handle_iced_event(&mut self, event: iced::Event) {
+        // 窗口事件不受在线状态影响：DPI 缩放即使离线也要记录。
+        if let iced::Event::Window(iced::window::Event::Rescaled(factor)) = &event {
+            self.scale_factor = (*factor).max(0.1);
+            return;
+        }
         if !self.controller.is_control_online() {
             return;
         }
         match event {
-            iced::Event::Window(iced::window::Event::Rescaled(factor)) => {
-                self.scale_factor = factor.max(0.1);
-            }
             iced::Event::Window(iced::window::Event::Unfocused) => {
                 self.exit_remote_input();
             }
@@ -1111,6 +1113,7 @@ where
         // 对齐 egui 退出语义：复位去重/限频状态，避免重进同位置点击被节流吞掉。
         self.last_pointer_sent = None;
         self.last_pointer_sent_at = None;
+        self.relative_sampler.reset();
         let _ = self.controller.release_all();
         // 光标恢复由 Task 7b 接线。
     }
@@ -1176,12 +1179,17 @@ where
         let Some(frame) = self.frame_size else {
             return (1.0, 1.0);
         };
-        if rect.width <= 0.0 || rect.height <= 0.0 {
+        let rendered = crate::scale::frame_rect(
+            crate::scale::Rect::from_min_size(rect.x, rect.y, rect.width, rect.height),
+            frame,
+            self.scale_mode,
+        );
+        if rendered.w <= 0.0 || rendered.h <= 0.0 {
             return (1.0, 1.0);
         }
         (
-            frame.width as f32 / rect.width,
-            frame.height as f32 / rect.height,
+            frame.width as f32 / rendered.w,
+            frame.height as f32 / rendered.h,
         )
     }
 
@@ -2630,6 +2638,24 @@ mod tests {
         }
     }
 
+    fn wait_absolute_move(app: &MockApp, x: u16, y: u16, count: usize) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if let Some(sink) = app.recording_sink() {
+                let moves = sink.absolute_moves.lock().unwrap();
+                let seen = moves.iter().filter(|&&(mx, my)| mx == x && my == y).count();
+                if seen >= count {
+                    return;
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "绝对指针 ({x},{y}) 第 {count} 次未达 sink"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
     #[test]
     fn absolute_cursor_move_sends_mapped_coordinates() {
         let mut app = absolute_video_app();
@@ -2650,20 +2676,7 @@ mod tests {
         // 远程输入激活后移动：窗口坐标映射到帧内坐标并发送。
         app.remote_input = true;
         move_cursor(&mut app, 80.0, 45.0);
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        loop {
-            if let Some(sink) = app.recording_sink() {
-                let moves = sink.absolute_moves.lock().unwrap();
-                if moves.iter().any(|&(x, y)| x == 80 && y == 45) {
-                    break;
-                }
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "绝对指针 (80,45) 未达 sink"
-            );
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
+        wait_absolute_move(&app, 80, 45, 1);
         assert!(app.remote_input, "移动不得退出远程输入");
     }
 
@@ -2715,6 +2728,87 @@ mod tests {
             iced::window::Event::Rescaled(0.0),
         )));
         assert_eq!(app.scale_factor, 0.1);
+    }
+
+    #[test]
+    fn window_rescaled_stores_scale_factor_even_when_control_offline() {
+        let (mut app, _) = MockApp::new_mock();
+        let _ = app.update(Message::Disconnect);
+        assert!(!app.controller.is_control_online());
+        let _ = app.update(Message::IcedEvent(iced::Event::Window(
+            iced::window::Event::Rescaled(2.0),
+        )));
+        assert_eq!(app.scale_factor, 2.0, "DPI 缩放不应被在线门控吞掉");
+    }
+
+    #[test]
+    fn video_ratio_uses_rendered_rect_for_actual_size() {
+        let (mut app, _) = MockApp::new_mock();
+        app.scale_mode = ScaleMode::ActualSize;
+        *app.video_bounds.borrow_mut() = Some(iced::Rectangle::new(
+            iced::Point::ORIGIN,
+            iced::Size::new(1000.0, 600.0),
+        ));
+        app.frame_size = Some(FrameSize {
+            width: 320,
+            height: 180,
+        });
+        // ActualSize 无黑边缩放：渲染矩形 == 帧像素，比例恒为 1:1。
+        assert_eq!(app.video_ratio(), (1.0, 1.0));
+    }
+
+    #[test]
+    fn video_ratio_uses_rendered_rect_for_fit_window() {
+        let (mut app, _) = MockApp::new_mock();
+        app.scale_mode = ScaleMode::FitWindow;
+        *app.video_bounds.borrow_mut() = Some(iced::Rectangle::new(
+            iced::Point::ORIGIN,
+            iced::Size::new(1000.0, 600.0),
+        ));
+        let frame = FrameSize {
+            width: 1920,
+            height: 1080,
+        };
+        app.frame_size = Some(frame);
+        let rendered = crate::scale::frame_rect(
+            crate::scale::Rect::from_min_size(0.0, 0.0, 1000.0, 600.0),
+            frame,
+            app.scale_mode,
+        );
+        let ratio = app.video_ratio();
+        assert!(
+            (ratio.0 - frame.width as f32 / rendered.w).abs() < 1e-6,
+            "ratio.x 必须按渲染矩形宽计算，实际 {ratio:?}"
+        );
+        assert!(
+            (ratio.1 - frame.height as f32 / rendered.h).abs() < 1e-6,
+            "ratio.y 必须按渲染矩形高计算，实际 {ratio:?}"
+        );
+        // 证明不是直接用容器：letterbox 场景下 y 比必须与容器比不同。
+        assert!(
+            (ratio.1 - frame.height as f32 / 600.0).abs() > 1e-3,
+            "ratio.y 不得直接用容器高度，实际 {ratio:?}"
+        );
+    }
+
+    #[test]
+    fn reenter_after_exit_resends_same_absolute_coordinates() {
+        let mut app = absolute_video_app();
+        // 进入并发送一次 (160,90)。
+        move_cursor(&mut app, 160.0, 90.0);
+        press_button(&mut app, iced::mouse::Button::Left);
+        assert!(app.remote_input);
+        wait_absolute_move(&app, 160, 90, 1);
+        // 点击视频区外退出（release_all + 去重/限频复位）。
+        move_cursor(&mut app, 500.0, 500.0);
+        press_button(&mut app, iced::mouse::Button::Left);
+        assert!(!app.remote_input);
+        wait_releases(&app, 1);
+        // 重进同坐标：必须再次发送，验证去重/限频状态已复位。
+        move_cursor(&mut app, 160.0, 90.0);
+        press_button(&mut app, iced::mouse::Button::Left);
+        assert!(app.remote_input);
+        wait_absolute_move(&app, 160, 90, 2);
     }
 
     #[test]
