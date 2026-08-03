@@ -124,6 +124,11 @@ message:
   enumeration_failed: "设备枚举失败：%{error}"
   connect_failed: "连接失败：%{error}"
   baud_selected: "已自动选择波特率 %{baud}"
+  unsupported_key: "不支持的按键"
+  clipboard_empty: "剪贴板为空"
+  clipboard_read_failed: "读取剪贴板失败：%{error}"
+  keyboard_send_failed: "键盘发送失败：%{error}"
+  pointer_send_failed: "指针发送失败：%{error}"
 
 common:
   not_selected: "未选择"

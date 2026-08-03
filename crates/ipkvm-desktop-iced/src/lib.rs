@@ -141,6 +141,15 @@ pub fn translate_key(key: &str) -> String {
         }
         "message.offline_reconnect" => t!("message.offline_reconnect").to_string(),
         "message.input_rejected" => t!("message.input_rejected").to_string(),
+        "message.unsupported_key" => t!("message.unsupported_key").to_string(),
+        "message.clipboard_empty" => t!("message.clipboard_empty").to_string(),
+        "message.clipboard_read_failed" => {
+            t!("message.clipboard_read_failed", error = "x").to_string()
+        }
+        "message.keyboard_send_failed" => {
+            t!("message.keyboard_send_failed", error = "x").to_string()
+        }
+        "message.pointer_send_failed" => t!("message.pointer_send_failed", error = "x").to_string(),
         "common.not_selected" => t!("common.not_selected").to_string(),
         _ => key.to_string(),
     }
@@ -237,6 +246,11 @@ pub const I18N_KEYS: &[&str] = &[
     "message.offline_with_reason",
     "message.offline_reconnect",
     "message.input_rejected",
+    "message.unsupported_key",
+    "message.clipboard_empty",
+    "message.clipboard_read_failed",
+    "message.keyboard_send_failed",
+    "message.pointer_send_failed",
     "common.not_selected",
 ];
 

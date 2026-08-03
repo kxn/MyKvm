@@ -6,6 +6,7 @@
 //!   余数保留（语义与 egui desktop `input.rs` 的 `sample_delta` 一致；
 //!   迁移时统一收口到共享 crate）。
 
+use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
@@ -17,6 +18,99 @@ pub trait RelativePointerSource: Send {
     fn receiver(&mut self) -> Result<DeltaReceiver, String>;
     /// 停止捕获并回收线程/窗口。
     fn stop(&mut self);
+}
+
+/// 相对鼠标源工厂：生产用平台实现，测试注入 channel。
+pub trait RelativeSourceFactory: Send + Sync {
+    fn create(&self) -> Result<Box<dyn RelativePointerSource>, String>;
+}
+
+/// 测试用 channel 相对源：`push` 注入增量，receiver 原样读出。
+pub struct ChannelRelativeSource {
+    tx: std::sync::mpsc::Sender<(i16, i16)>,
+    rx: std::sync::Mutex<Option<DeltaReceiver>>,
+    started: std::sync::Mutex<bool>,
+}
+
+impl ChannelRelativeSource {
+    pub fn new() -> (Arc<Self>, std::sync::mpsc::Sender<(i16, i16)>) {
+        let (tx, rx) = std::sync::mpsc::channel();
+        (
+            Arc::new(Self {
+                tx: tx.clone(),
+                rx: std::sync::Mutex::new(Some(rx)),
+                started: std::sync::Mutex::new(false),
+            }),
+            tx,
+        )
+    }
+
+    pub fn push(&self, dx: i16, dy: i16) {
+        let _ = self.tx.send((dx, dy));
+    }
+
+    fn do_receiver(&self) -> Result<DeltaReceiver, String> {
+        let mut started = self.started.lock().unwrap();
+        if *started {
+            return Err("already started".into());
+        }
+        *started = true;
+        self.rx
+            .lock()
+            .unwrap()
+            .take()
+            .ok_or_else(|| "receiver already taken".into())
+    }
+
+    fn do_stop(&self) {
+        *self.started.lock().unwrap() = false;
+    }
+}
+
+impl RelativePointerSource for ChannelRelativeSource {
+    fn receiver(&mut self) -> Result<DeltaReceiver, String> {
+        self.do_receiver()
+    }
+
+    fn stop(&mut self) {
+        self.do_stop();
+    }
+}
+
+impl RelativePointerSource for Arc<ChannelRelativeSource> {
+    fn receiver(&mut self) -> Result<DeltaReceiver, String> {
+        self.do_receiver()
+    }
+
+    fn stop(&mut self) {
+        self.do_stop();
+    }
+}
+
+/// 测试用相对源工厂：create 返回 channel 源并保存句柄，`push` 注入增量。
+#[derive(Default)]
+pub struct ChannelRelativeFactory {
+    source: std::sync::Mutex<Option<Arc<ChannelRelativeSource>>>,
+}
+
+impl ChannelRelativeFactory {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn push(&self, dx: i16, dy: i16) {
+        if let Some(source) = &*self.source.lock().unwrap() {
+            source.push(dx, dy);
+        }
+    }
+}
+
+impl RelativeSourceFactory for ChannelRelativeFactory {
+    fn create(&self) -> Result<Box<dyn RelativePointerSource>, String> {
+        let (source, _tx) = ChannelRelativeSource::new();
+        *self.source.lock().unwrap() = Some(Arc::clone(&source));
+        Ok(Box::new(source))
+    }
 }
 
 /// 固定间隔采样：累计增量，每间隔最多发出 1 个事件（取整数部分，余数保留）。

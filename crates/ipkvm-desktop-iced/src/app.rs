@@ -14,10 +14,12 @@ use ipkvm_desktop::{
     ProductionDesktopSessionController, ProductionSessionFactory, SessionParts,
 };
 use ipkvm_session::rfb_connection::RfbConnectionGate;
+use ipkvm_session::rfb_input::RfbInputNotice;
 use ipkvm_video::mock::MockFrameSource;
 use ipkvm_video::{FrameSource, VideoFrame};
 use rust_i18n::t;
 
+use crate::clipboard::{ClipboardReader, SystemClipboard};
 use crate::connect::{
     CameraPreviewFactory, ConnectionSettings, ControlProbeStatus, DeviceSelectionState,
     PROBE_TIMEOUT, PreviewRefreshAction, PreviewRuntime, PreviewSourceFactory,
@@ -25,11 +27,20 @@ use crate::connect::{
     refresh_detection,
 };
 use crate::frames::{FrameUpdate, frame_subscription};
+use crate::input::{
+    KeyAction, SpecialKey, is_mode_toggle_combo, is_remote_exit_combo, modifier_diff,
+    special_key_from_menu, special_key_sequence, wheel_steps,
+};
+use crate::keymap::physical_code_to_keysym;
 use crate::locale::AppLanguage;
 use crate::menu::{MenuAction, MenuState, menu_bar};
 use crate::modal::{ModalAction, ModalKind, ModalState};
 use crate::perf::FrameStats;
 use crate::profile::{apply_profile_to_selection, build_profile};
+use crate::relative::{
+    ChannelRelativeFactory, DeltaReceiver, DeltaSampler, RelativePointerSource,
+    RelativeSourceFactory,
+};
 use crate::scale::{FrameSize, ScaleMode};
 use crate::status::{ConnectionStatus, derive_status};
 use crate::video::handle_from_frame;
@@ -42,6 +53,9 @@ static MOCK_STORE_SEQ: AtomicU64 = AtomicU64::new(0);
 #[derive(Clone, Debug, Default)]
 pub struct RecordingSink {
     pub key_batches: Arc<std::sync::Mutex<usize>>,
+    pub pointer_batches: Arc<std::sync::Mutex<usize>>,
+    /// 按到达顺序记录的键事件（down, HID usage）。
+    pub key_events: Arc<std::sync::Mutex<Vec<(bool, u8)>>>,
 }
 
 impl InputSink for RecordingSink {
@@ -51,10 +65,18 @@ impl InputSink for RecordingSink {
 
     fn handle_key_batch(&mut self, _events: &[KeyEvent]) -> Result<(), InputError> {
         *self.key_batches.lock().unwrap() += 1;
+        let mut recorded = self.key_events.lock().unwrap();
+        for event in _events {
+            match event {
+                KeyEvent::Down { usage } => recorded.push((true, usage.get())),
+                KeyEvent::Up { usage } => recorded.push((false, usage.get())),
+            }
+        }
         Ok(())
     }
 
     fn handle_pointer_batch(&mut self, _events: &[PointerEvent]) -> Result<(), InputError> {
+        *self.pointer_batches.lock().unwrap() += 1;
         Ok(())
     }
 
@@ -130,6 +152,9 @@ pub enum Message {
     SetPreviewFps(u64),
     SetMouseMode(MouseMode),
     LoadProfile(String),
+    Keyboard(iced::keyboard::Event),
+    IcedEvent(iced::Event),
+    UiTick,
 }
 
 /// 应用状态：controller + 连接页 + 菜单/模态 + 视频。
@@ -161,6 +186,17 @@ where
     store: ipkvm_desktop::config::ProfileStore,
     active_profile: Option<String>,
     status_message: Option<String>,
+    remote_input: bool,
+    last_modifiers: iced::keyboard::Modifiers,
+    relative_source: Option<Box<dyn RelativePointerSource>>,
+    relative_rx: Option<DeltaReceiver>,
+    relative_sampler: DeltaSampler,
+    relative_wheel: i8,
+    pointer_mask: u8,
+    paste_busy: bool,
+    recording: Option<RecordingSink>,
+    clipboard: Arc<dyn ClipboardReader>,
+    relative_factory: Arc<dyn RelativeSourceFactory>,
 }
 
 impl App<RecordingSink, MockFactory> {
@@ -168,9 +204,11 @@ impl App<RecordingSink, MockFactory> {
     pub fn new_mock() -> (Self, Task<Message>) {
         let frame_source = Arc::new(MockFrameSource::new());
         let fs = Arc::clone(&frame_source);
+        let recording = RecordingSink::default();
+        let recording_for_factory = recording.clone();
         let factory: MockFactory = Box::new(move |_req| {
             let src: Arc<dyn FrameSource> = fs.clone();
-            Ok((src, RecordingSink::default(), RfbConnectionGate::new()))
+            Ok((src, recording_for_factory.clone(), RfbConnectionGate::new()))
         });
         let mut controller = DesktopSessionController::with_factory(factory);
         controller.connect(connect_request()).expect("mock connect");
@@ -207,6 +245,17 @@ impl App<RecordingSink, MockFactory> {
                 ),
                 active_profile: None,
                 status_message: None,
+                remote_input: false,
+                last_modifiers: iced::keyboard::Modifiers::empty(),
+                relative_source: None,
+                relative_rx: None,
+                relative_sampler: DeltaSampler::new(Duration::from_millis(33)),
+                relative_wheel: 0,
+                pointer_mask: 0,
+                paste_busy: false,
+                recording: Some(recording),
+                clipboard: Arc::new(SystemClipboard),
+                relative_factory: Arc::new(ChannelRelativeFactory::new()),
             },
             Task::none(),
         )
@@ -243,6 +292,17 @@ impl App<Ch9329InputSink<SerialCommandQueue>, ProductionSessionFactory> {
                 store,
                 active_profile: None,
                 status_message: None,
+                remote_input: false,
+                last_modifiers: iced::keyboard::Modifiers::empty(),
+                relative_source: None,
+                relative_rx: None,
+                relative_sampler: DeltaSampler::new(Duration::from_millis(33)),
+                relative_wheel: 0,
+                pointer_mask: 0,
+                paste_busy: false,
+                recording: None,
+                clipboard: Arc::new(SystemClipboard),
+                relative_factory: Arc::new(crate::platform::PlatformRelativeSourceFactory),
             },
             Task::none(),
         )
@@ -456,6 +516,8 @@ where
                 self.selection.video_status = VideoProbeStatus::NotSelected;
                 self.preview.reset();
                 self.preview_handle = None;
+                self.remote_input = false;
+                self.stop_relative_source();
                 Task::none()
             }
             Message::PreviewTick => {
@@ -498,6 +560,20 @@ where
                 self.load_profile(&name);
                 Task::none()
             }
+            Message::Keyboard(event) => {
+                self.handle_keyboard_event(event);
+                Task::none()
+            }
+            Message::IcedEvent(event) => {
+                self.handle_iced_event(event);
+                Task::none()
+            }
+            Message::UiTick => {
+                let _ = self.controller.flush_pending();
+                self.drain_notices();
+                self.poll_relative();
+                Task::none()
+            }
         }
     }
 
@@ -519,11 +595,19 @@ where
                 self.zh = rust_i18n::locale().starts_with("zh");
             }
             MenuAction::LoadRecent(name) => self.load_profile(&name),
+            MenuAction::SpecialKey(name) => {
+                if let Some(key) = special_key_from_menu(&name) {
+                    self.send_special(key);
+                }
+            }
+            MenuAction::Simple("paste") => self.paste(),
+            MenuAction::Simple("release_all") => {
+                let _ = self.controller.release_all();
+            }
             MenuAction::OpenRoot(_)
             | MenuAction::OpenSubmenu(_)
             | MenuAction::CloseSubmenus
             | MenuAction::CloseMenus
-            | MenuAction::SpecialKey(_)
             | MenuAction::Simple(_) => {}
         }
     }
@@ -597,12 +681,204 @@ where
         })
     }
 
+    fn handle_keyboard_event(&mut self, event: iced::keyboard::Event) {
+        if !self.remote_input {
+            return;
+        }
+        match event {
+            iced::keyboard::Event::KeyPressed {
+                physical_key,
+                modifiers,
+                repeat,
+                ..
+            } => {
+                let iced::keyboard::key::Physical::Code(code) = physical_key else {
+                    return;
+                };
+                if is_remote_exit_combo(code, modifiers, repeat) {
+                    self.remote_input = false;
+                    self.last_modifiers = iced::keyboard::Modifiers::empty();
+                    return;
+                }
+                if is_mode_toggle_combo(code, modifiers, repeat) {
+                    self.toggle_mouse_mode();
+                    return;
+                }
+                if repeat {
+                    return;
+                }
+                let Some(keysym) = physical_code_to_keysym(code) else {
+                    self.status_message = Some(t!("message.unsupported_key").to_string());
+                    return;
+                };
+                if let Err(error) = self.controller.send_key(true, keysym) {
+                    self.status_message = Some(
+                        t!("message.keyboard_send_failed", error = error.to_string()).to_string(),
+                    );
+                }
+            }
+            iced::keyboard::Event::KeyReleased { physical_key, .. } => {
+                let iced::keyboard::key::Physical::Code(code) = physical_key else {
+                    return;
+                };
+                if let Some(keysym) = physical_code_to_keysym(code)
+                    && let Err(error) = self.controller.send_key(false, keysym)
+                {
+                    self.status_message = Some(
+                        t!("message.keyboard_send_failed", error = error.to_string()).to_string(),
+                    );
+                }
+            }
+            iced::keyboard::Event::ModifiersChanged(modifiers) => {
+                for action in modifier_diff(self.last_modifiers, modifiers) {
+                    self.send_key_action(action);
+                }
+                self.last_modifiers = modifiers;
+            }
+        }
+    }
+
+    fn handle_iced_event(&mut self, event: iced::Event) {
+        if !self.controller.is_control_online() {
+            return;
+        }
+        match event {
+            iced::Event::Mouse(iced::mouse::Event::ButtonPressed(button)) => {
+                self.pointer_mask |= mouse_button_bit(button);
+                if !self.remote_input {
+                    self.remote_input = true;
+                }
+            }
+            iced::Event::Mouse(iced::mouse::Event::ButtonReleased(button)) => {
+                self.pointer_mask &= !mouse_button_bit(button);
+            }
+            iced::Event::Mouse(iced::mouse::Event::WheelScrolled { delta }) => {
+                self.relative_wheel = self.relative_wheel.saturating_add(wheel_steps(delta));
+            }
+            _ => {}
+        }
+    }
+
+    fn send_key_action(&mut self, action: KeyAction) {
+        match action {
+            KeyAction::Down(keysym) => {
+                let _ = self.controller.send_key(true, keysym);
+            }
+            KeyAction::Up(keysym) => {
+                let _ = self.controller.send_key(false, keysym);
+            }
+        }
+    }
+
+    fn send_special(&mut self, key: SpecialKey) {
+        for action in special_key_sequence(key) {
+            self.send_key_action(action);
+        }
+    }
+
+    fn drain_notices(&mut self) {
+        for notice in self.controller.drain_notices() {
+            match notice {
+                RfbInputNotice::TextTyped { .. } | RfbInputNotice::TextInputFailed { .. } => {
+                    self.paste_busy = false;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn poll_relative(&mut self) {
+        if !self.remote_input
+            || !self.controller.is_control_online()
+            || self.connection.mouse_mode != MouseMode::Relative
+        {
+            return;
+        }
+        if self.relative_rx.is_none() {
+            match self.relative_factory.create() {
+                Ok(mut source) => match source.receiver() {
+                    Ok(rx) => {
+                        self.relative_source = Some(source);
+                        self.relative_rx = Some(rx);
+                    }
+                    Err(error) => {
+                        self.status_message = Some(format!("relative capture: {error}"));
+                    }
+                },
+                Err(error) => {
+                    self.status_message = Some(format!("relative capture: {error}"));
+                }
+            }
+        }
+        let Some(rx) = &self.relative_rx else {
+            return;
+        };
+        let mut acc = (0.0f32, 0.0f32);
+        while let Ok((dx, dy)) = rx.try_recv() {
+            acc.0 += f32::from(dx);
+            acc.1 += f32::from(dy);
+        }
+        let now = Instant::now();
+        if let Some((dx, dy)) = self.relative_sampler.feed(acc.0, acc.1, now) {
+            let wheel = self.relative_wheel;
+            if dx != 0 || dy != 0 || wheel != 0 || self.pointer_mask != 0 {
+                if let Err(error) =
+                    self.controller
+                        .send_pointer_relative(self.pointer_mask, dx, dy, wheel)
+                {
+                    self.status_message = Some(
+                        t!("message.pointer_send_failed", error = error.to_string()).to_string(),
+                    );
+                }
+                self.relative_wheel = 0;
+            }
+        }
+    }
+
+    fn toggle_mouse_mode(&mut self) {
+        let next = match self.connection.mouse_mode {
+            MouseMode::Absolute => MouseMode::Relative,
+            MouseMode::Relative => MouseMode::Absolute,
+        };
+        if let Ok(()) = self.controller.set_mouse_mode(next) {
+            self.connection.mouse_mode = next;
+            if next != MouseMode::Relative {
+                self.stop_relative_source();
+            }
+        }
+    }
+
+    fn stop_relative_source(&mut self) {
+        if let Some(mut source) = self.relative_source.take() {
+            source.stop();
+        }
+        self.relative_rx = None;
+    }
+
+    fn paste(&mut self) {
+        match crate::clipboard::read_clipboard_text(self.clipboard.as_ref()) {
+            Ok(text) if !text.is_empty() => {
+                if self.controller.paste_text(text).is_ok() {
+                    self.paste_busy = true;
+                }
+            }
+            Ok(_) => self.status_message = Some(t!("message.clipboard_empty").to_string()),
+            Err(error) => {
+                self.status_message =
+                    Some(t!("message.clipboard_read_failed", error = error).to_string());
+            }
+        }
+    }
+
     pub fn subscription(&self) -> Subscription<Message> {
         let window_events = iced::window::open_events().map(Message::WindowOpened);
         let preview_timer =
             iced::time::every(Duration::from_millis(100)).map(|_| Message::PreviewTick);
+        let keyboard = iced::keyboard::listen().map(Message::Keyboard);
+        let events = iced::event::listen().map(Message::IcedEvent);
+        let ui_tick = iced::time::every(Duration::from_millis(16)).map(|_| Message::UiTick);
         if !self.subscribed {
-            return Subscription::batch([window_events, preview_timer]);
+            return Subscription::batch([window_events, preview_timer, keyboard, events, ui_tick]);
         }
         let frames = self
             .controller
@@ -614,7 +890,14 @@ where
                 })
             })
             .unwrap_or_else(Subscription::none);
-        Subscription::batch([frames, window_events, preview_timer])
+        Subscription::batch([
+            frames,
+            window_events,
+            preview_timer,
+            keyboard,
+            events,
+            ui_tick,
+        ])
     }
 
     pub fn view(&self) -> Element<'_, Message> {
@@ -874,6 +1157,18 @@ where
     pub fn frame_source(&self) -> Option<&Arc<MockFrameSource>> {
         self.frame_source.as_ref()
     }
+
+    pub fn recording_sink(&self) -> Option<&RecordingSink> {
+        self.recording.as_ref()
+    }
+
+    pub fn remote_input(&self) -> bool {
+        self.remote_input
+    }
+
+    pub fn paste_busy(&self) -> bool {
+        self.paste_busy
+    }
 }
 
 /// mock 预览源：open 即返回已有一帧 64×48 的 MockFrameSource。
@@ -909,6 +1204,16 @@ pub fn desired_window_size(frame: Option<FrameSize>, mode: ScaleMode) -> Option<
             Some(Size::new(f.width as f32, f.height as f32))
         }
         _ => None,
+    }
+}
+
+/// 鼠标按钮 → RFB button mask（Primary=1、Secondary=2、Middle=4）。
+fn mouse_button_bit(button: iced::mouse::Button) -> u8 {
+    match button {
+        iced::mouse::Button::Left => 0b001,
+        iced::mouse::Button::Right => 0b010,
+        iced::mouse::Button::Middle => 0b100,
+        _ => 0,
     }
 }
 
@@ -1126,5 +1431,246 @@ mod tests {
         assert!(!app.connection.auto_baud);
         assert_eq!(app.connection.preview_fps, 15);
         assert_eq!(app.connection.mouse_mode, MouseMode::Relative);
+    }
+
+    fn press_key(code: iced::keyboard::key::Code) -> Message {
+        Message::Keyboard(iced::keyboard::Event::KeyPressed {
+            key: iced::keyboard::Key::Unidentified,
+            modified_key: iced::keyboard::Key::Unidentified,
+            physical_key: iced::keyboard::key::Physical::Code(code),
+            location: iced::keyboard::Location::Standard,
+            modifiers: iced::keyboard::Modifiers::empty(),
+            text: None,
+            repeat: false,
+        })
+    }
+
+    fn release_key(code: iced::keyboard::key::Code) -> Message {
+        Message::Keyboard(iced::keyboard::Event::KeyReleased {
+            key: iced::keyboard::Key::Unidentified,
+            modified_key: iced::keyboard::Key::Unidentified,
+            physical_key: iced::keyboard::key::Physical::Code(code),
+            location: iced::keyboard::Location::Standard,
+            modifiers: iced::keyboard::Modifiers::empty(),
+        })
+    }
+
+    fn click_video(app: &mut MockApp) {
+        let _ = app.update(Message::IcedEvent(iced::Event::Mouse(
+            iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left),
+        )));
+    }
+
+    fn enter_remote(app: &mut MockApp) {
+        let _ = app.update(Message::Disconnect);
+        let _ = app.update(Message::RefreshDevices);
+        let _ = app.update(Message::SelectVideo("Camera 0".into()));
+        let _ = app.update(Message::PreviewTick);
+        let _ = app.update(Message::SelectControl("CH9329 (COM9)".into()));
+        let _ = app.update(Message::Connect);
+        click_video(app);
+    }
+
+    fn wait_sink(app: &MockApp, count: usize) -> Vec<(bool, u8)> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if let Some(sink) = app.recording_sink() {
+                let recorded = sink.key_events.lock().unwrap();
+                if recorded.len() >= count {
+                    return recorded.clone();
+                }
+                let len = recorded.len();
+                drop(recorded);
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "sink 事件未达 {count}（实际 {len}）"
+                );
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                continue;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "sink 事件未达 {count}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    /// 持续触发 UiTick（模拟真实 16ms 定时器）直到 sink 事件足够。
+    fn drain_to(app: &mut MockApp, count: usize) -> Vec<(bool, u8)> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            let _ = app.update(Message::UiTick);
+            if let Some(sink) = app.recording_sink() {
+                let recorded = sink.key_events.lock().unwrap();
+                if recorded.len() >= count {
+                    return recorded.clone();
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "sink 事件未达 {count}"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn keyboard_press_release_reaches_sink_in_order() {
+        let (mut app, _) = MockApp::new_mock();
+        enter_remote(&mut app);
+        let _ = app.update(press_key(iced::keyboard::key::Code::KeyA));
+        let _ = app.update(release_key(iced::keyboard::key::Code::KeyA));
+        let recorded = wait_sink(&app, 2);
+        assert_eq!(recorded[0], (true, 0x04));
+        assert_eq!(recorded[1], (false, 0x04));
+    }
+
+    #[test]
+    fn five_hundred_mixed_keys_reach_sink_in_order() {
+        let (mut app, _) = MockApp::new_mock();
+        enter_remote(&mut app);
+        for i in 0..500 {
+            let code = match i % 3 {
+                0 => iced::keyboard::key::Code::KeyA,
+                1 => iced::keyboard::key::Code::ArrowUp,
+                _ => iced::keyboard::key::Code::F1,
+            };
+            let _ = app.update(press_key(code));
+            let _ = app.update(release_key(code));
+            let _ = app.update(Message::UiTick);
+        }
+        let recorded = drain_to(&mut app, 1000);
+        for (i, (down, _usage)) in recorded.iter().enumerate() {
+            assert_eq!(*down, i % 2 == 0, "第 {i} 个事件 down/up 顺序不符");
+        }
+    }
+
+    #[test]
+    fn first_key_is_not_swallowed() {
+        let (mut app, _) = MockApp::new_mock();
+        enter_remote(&mut app);
+        let _ = app.update(press_key(iced::keyboard::key::Code::KeyA));
+        let recorded = wait_sink(&app, 1);
+        assert_eq!(recorded[0], (true, 0x04));
+    }
+
+    #[test]
+    fn flush_tick_drains_burst_without_further_input() {
+        let (mut app, _) = MockApp::new_mock();
+        enter_remote(&mut app);
+        // 50 组按下/抬起（交替键，避免重复 down 被输入泵去重）。
+        for i in 0..50 {
+            let code = if i % 2 == 0 {
+                iced::keyboard::key::Code::KeyA
+            } else {
+                iced::keyboard::key::Code::KeyB
+            };
+            let _ = app.update(press_key(code));
+            let _ = app.update(release_key(code));
+        }
+        // 突发后无后续输入，仅靠持续 tick 补送（真实 16ms 定时器语义）。
+        let recorded = drain_to(&mut app, 100);
+        for (i, (down, _usage)) in recorded.iter().enumerate() {
+            assert_eq!(*down, i % 2 == 0, "第 {i} 个事件 down/up 顺序不符");
+        }
+    }
+
+    #[test]
+    fn ctrl_alt_k_exits_remote_input_without_forwarding() {
+        let (mut app, _) = MockApp::new_mock();
+        enter_remote(&mut app);
+        let mut modifiers = iced::keyboard::Modifiers::empty();
+        modifiers.set(iced::keyboard::Modifiers::CTRL, true);
+        modifiers.set(iced::keyboard::Modifiers::ALT, true);
+        let _ = app.update(Message::Keyboard(iced::keyboard::Event::KeyPressed {
+            key: iced::keyboard::Key::Unidentified,
+            modified_key: iced::keyboard::Key::Unidentified,
+            physical_key: iced::keyboard::key::Physical::Code(iced::keyboard::key::Code::KeyK),
+            location: iced::keyboard::Location::Standard,
+            modifiers,
+            text: None,
+            repeat: false,
+        }));
+        assert!(!app.remote_input(), "Ctrl+Alt+K 必须退出远程输入");
+        let _ = app.update(press_key(iced::keyboard::key::Code::KeyA));
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        if let Some(sink) = app.recording_sink() {
+            assert_eq!(sink.key_events.lock().unwrap().len(), 0, "退出后不得转发");
+        }
+    }
+
+    #[test]
+    fn ctrl_alt_m_toggles_mouse_mode() {
+        let (mut app, _) = MockApp::new_mock();
+        enter_remote(&mut app);
+        let before = app.connection.mouse_mode;
+        let mut modifiers = iced::keyboard::Modifiers::empty();
+        modifiers.set(iced::keyboard::Modifiers::CTRL, true);
+        modifiers.set(iced::keyboard::Modifiers::ALT, true);
+        let _ = app.update(Message::Keyboard(iced::keyboard::Event::KeyPressed {
+            key: iced::keyboard::Key::Unidentified,
+            modified_key: iced::keyboard::Key::Unidentified,
+            physical_key: iced::keyboard::key::Physical::Code(iced::keyboard::key::Code::KeyM),
+            location: iced::keyboard::Location::Standard,
+            modifiers,
+            text: None,
+            repeat: false,
+        }));
+        assert_ne!(
+            app.connection.mouse_mode, before,
+            "Ctrl+Alt+M 必须切换鼠标模式"
+        );
+    }
+
+    #[test]
+    fn special_key_menu_sends_sequence() {
+        let (mut app, _) = MockApp::new_mock();
+        enter_remote(&mut app);
+        let _ = app.update(Message::Menu(MenuAction::SpecialKey("CtrlAltDel".into())));
+        let recorded = wait_sink(&app, 6);
+        assert_eq!(recorded[0], (true, 0xe0));
+        assert_eq!(recorded[1], (true, 0xe2));
+        assert_eq!(recorded[2], (true, 0x4c));
+        assert_eq!(recorded[3], (false, 0x4c));
+        assert_eq!(recorded[4], (false, 0xe2));
+        assert_eq!(recorded[5], (false, 0xe0));
+    }
+
+    #[test]
+    fn paste_uses_clipboard_and_sets_busy() {
+        struct EmptyClipboard;
+        impl crate::clipboard::ClipboardReader for EmptyClipboard {
+            fn read_text(&self) -> Result<String, String> {
+                Ok("hello".into())
+            }
+        }
+        let (mut app, _) = MockApp::new_mock();
+        app.clipboard = Arc::new(EmptyClipboard);
+        enter_remote(&mut app);
+        let _ = app.update(Message::Menu(MenuAction::Simple("paste")));
+        assert!(app.paste_busy(), "paste_text 成功后必须置 paste_busy");
+    }
+
+    #[test]
+    fn relative_pointer_delta_reaches_sink() {
+        let (mut app, _) = MockApp::new_mock();
+        let factory = Arc::new(crate::relative::ChannelRelativeFactory::new());
+        app.relative_factory = factory.clone();
+        enter_remote(&mut app);
+        let _ = app.update(Message::SetMouseMode(MouseMode::Relative));
+        let _ = app.update(Message::UiTick); // 启动相对源
+        factory.push(5, -3);
+        let _ = app.update(Message::UiTick); // 采样并发送
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if let Some(sink) = app.recording_sink()
+                && *sink.pointer_batches.lock().unwrap() > 0
+            {
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
     }
 }

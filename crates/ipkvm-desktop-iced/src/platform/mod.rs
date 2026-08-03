@@ -24,3 +24,12 @@ pub fn create() -> Result<Box<dyn RelativePointerSource>, String> {
 pub fn create() -> Result<Box<dyn RelativePointerSource>, String> {
     Ok(Box::new(StubRawInput::new()))
 }
+
+/// 平台默认相对鼠标源工厂。
+pub struct PlatformRelativeSourceFactory;
+
+impl crate::relative::RelativeSourceFactory for PlatformRelativeSourceFactory {
+    fn create(&self) -> Result<Box<dyn crate::relative::RelativePointerSource>, String> {
+        create()
+    }
+}

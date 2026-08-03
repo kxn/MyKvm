@@ -124,6 +124,11 @@ message:
   enumeration_failed: "Device enumeration failed: %{error}"
   connect_failed: "Connection failed: %{error}"
   baud_selected: "Auto-selected baud rate %{baud}"
+  unsupported_key: "Unsupported key"
+  clipboard_empty: "Clipboard is empty"
+  clipboard_read_failed: "Failed to read clipboard: %{error}"
+  keyboard_send_failed: "Keyboard send failed: %{error}"
+  pointer_send_failed: "Pointer send failed: %{error}"
 
 common:
   not_selected: "Not selected"
