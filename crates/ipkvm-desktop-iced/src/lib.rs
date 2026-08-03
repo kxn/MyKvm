@@ -11,6 +11,7 @@ use iced::widget::{center, text};
 use iced::{Element, Size, Task};
 
 pub mod scale;
+pub mod frames;
 
 /// 占位文案（M0 渲染断言用）。
 pub const PLACEHOLDER: &str = "my_ipkvm · iced 迁移 M0";

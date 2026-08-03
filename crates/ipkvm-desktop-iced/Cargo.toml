@@ -8,10 +8,16 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+async-stream = "0.3"
+futures-util = { workspace = true }
 iced = { version = "0.14", features = ["tokio", "image", "advanced"] }
+iced_futures = "0.14"
+ipkvm-video = { path = "../ipkvm-video", features = ["mock"] }
 
 [dev-dependencies]
 iced_test = "0.14"
+ipkvm-video = { path = "../ipkvm-video", features = ["mock"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [[bin]]
 name = "ipkvm-desktop-iced"
