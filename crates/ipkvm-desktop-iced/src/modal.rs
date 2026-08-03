@@ -19,6 +19,7 @@ pub enum ModalKind {
     Settings,
     Connection,
     SaveProfile,
+    LoadProfile,
     About,
 }
 
@@ -27,6 +28,8 @@ pub enum ModalKind {
 pub struct ModalState {
     pub open: Option<ModalKind>,
     pub save_name: String,
+    /// 加载 profile 模态的候选名（app 打开前填充）。
+    pub load_names: Vec<String>,
 }
 
 /// 模态产生的动作。
@@ -38,6 +41,8 @@ pub enum ModalAction {
     SaveNameChanged(String),
     /// 保存 profile。
     Save,
+    /// 点击某个候选 profile 名。
+    LoadPicked(String),
     /// 点击卡片空白区域：吞掉事件但不关闭（避免落到下层遮罩）。
     Noop,
 }
@@ -59,6 +64,7 @@ impl ModalState {
             ModalKind::Settings => self.settings_content(),
             ModalKind::Connection => self.connection_content(),
             ModalKind::SaveProfile => self.save_profile_content(),
+            ModalKind::LoadProfile => self.load_profile_content(),
             ModalKind::About => self.about_content(),
         };
         Some(modal_card(title_for(kind), content))
@@ -94,6 +100,20 @@ impl ModalState {
         .into()
     }
 
+    fn load_profile_content(&self) -> Element<'_, ModalAction> {
+        let mut content = iced::widget::Column::new().spacing(8);
+        if self.load_names.is_empty() {
+            content = content.push(button(text(t!("profile.no_recent").to_string())));
+        } else {
+            for name in &self.load_names {
+                content = content.push(
+                    button(text(name.clone())).on_press(ModalAction::LoadPicked(name.clone())),
+                );
+            }
+        }
+        content.push(close_button()).into()
+    }
+
     fn about_content(&self) -> Element<'_, ModalAction> {
         column![text("my_ipkvm iced spike"), close_button()]
             .spacing(8)
@@ -110,6 +130,7 @@ fn title_for(kind: ModalKind) -> String {
         ModalKind::Settings => t!("modal.settings_title").to_string(),
         ModalKind::Connection => t!("modal.connection_title").to_string(),
         ModalKind::SaveProfile => t!("modal.save_title").to_string(),
+        ModalKind::LoadProfile => t!("modal.load_title").to_string(),
         ModalKind::About => t!("modal.about_title").to_string(),
     }
 }

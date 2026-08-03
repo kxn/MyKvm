@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use ipkvm_desktop_iced::{App, FrameStats};
+use ipkvm_desktop_iced::{FrameStats, MockApp};
 use ipkvm_video::{MonotonicTimestamp, PixelFormat, VideoFrame};
 
 /// 帧统计 JSON 写入的文件名（perf 脚本读这个文件，而非 stdout，避免
@@ -65,9 +65,9 @@ fn main() -> iced::Result {
 
     iced::application(
         move || {
-            let (app, initial_task) = App::new_mock();
+            let (app, initial_task) = MockApp::new_mock();
             // 后台线程以 30fps 推 1920×1080 BGRA 帧（模拟视频流）。
-            let fps_publisher = Arc::clone(app.frame_source());
+            let fps_publisher = Arc::clone(app.frame_source().expect("mock app"));
             let source_count = Arc::clone(&source_count);
             std::thread::spawn(move || {
                 let interval = Duration::from_secs_f32(1.0 / 30.0);
@@ -102,11 +102,11 @@ fn main() -> iced::Result {
             });
             (app.with_stats(stats_for_boot.clone()), initial_task)
         },
-        App::update,
-        App::view,
+        MockApp::update,
+        MockApp::view,
     )
-    .subscription(App::subscription)
-    .title(move |_: &App| {
+    .subscription(MockApp::subscription)
+    .title(move |_: &MockApp| {
         format!(
             "my_ipkvm iced perf | {} frames",
             stats_for_title.summary().0

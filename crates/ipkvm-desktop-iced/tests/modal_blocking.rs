@@ -1,4 +1,4 @@
-﻿//! Spike 2 模态验证：背景事件拦截 + 三条关闭路径（关闭按钮/点遮罩/Esc）。
+//! Spike 2 模态验证：背景事件拦截 + 三条关闭路径（关闭按钮/点遮罩/Esc）。
 
 use iced::mouse;
 use iced::widget::{button, column, container, stack, text};
@@ -28,7 +28,7 @@ impl TestApp {
             Msg::Modal(action) => match action {
                 ModalAction::Close => self.modal.close(),
                 ModalAction::SaveNameChanged(name) => self.modal.save_name = name,
-                ModalAction::Save | ModalAction::Noop => {}
+                ModalAction::Save | ModalAction::LoadPicked(_) | ModalAction::Noop => {}
             },
             Msg::BackgroundPressed => self.bg_hits += 1,
         }
@@ -167,3 +167,22 @@ fn background_click_works_after_modal_closes() {
     );
 }
 
+#[test]
+fn load_profile_modal_lists_names_and_picks() {
+    let _lock = ipkvm_desktop_iced::I18N_TEST_LOCK
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    rust_i18n::set_locale("en");
+
+    let mut app = TestApp::default();
+    app.modal.load_names = vec!["a".into(), "b".into()];
+    app.open(ModalKind::LoadProfile);
+
+    let mut ui = simulator::simulator(app.view());
+    assert!(ui.click("a").is_ok(), "profile 名必须可点击");
+    let msgs = messages_of(ui);
+    assert!(
+        msgs.contains(&Msg::Modal(ModalAction::LoadPicked("a".into()))),
+        "点击 profile 名必须产生 LoadPicked（实际消息: {msgs:?}）"
+    );
+}

@@ -27,8 +27,8 @@ pub const WINDOW_TITLE: &str = "my_ipkvm iced (M0)";
 /// 默认窗口尺寸。
 pub const WINDOW_SIZE: Size = Size::new(1280.0, 800.0);
 
-pub use app::App;
 pub use app::run;
+pub use app::{App, MockApp};
 pub use perf::FrameStats;
 
 rust_i18n::i18n!("locales", fallback = "en");
