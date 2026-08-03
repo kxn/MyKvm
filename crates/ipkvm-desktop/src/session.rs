@@ -62,7 +62,7 @@ where
     S: InputSink + Clone + Send + 'static,
     F: FnMut(&ConnectRequest) -> Result<SessionParts<S>, DesktopSessionError>,
 {
-    /// 用组件工厂构造控制器（测试注入 fake sink/帧源，生产用 [`production_parts`]）。
+    /// 用组件工厂构造控制器（测试注入 fake sink/帧源，生产用 `production_parts`）。
     pub fn with_factory(factory: F) -> Self {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
@@ -160,6 +160,15 @@ where
         self.frame_source
             .as_ref()
             .and_then(|source| source.latest_frame())
+    }
+
+    /// 订阅当前会话帧源：新帧到达时通过返回的 watch receiver 通知。
+    ///
+    /// 平台中立的重绘入口，供非 egui 前端（如 iced）把帧通知转成自己的重绘
+    /// 信号（iced 的 `Subscription`）。egui 前端继续用 `spawn_frame_repainter`。
+    /// 连接前帧源为空，返回 `None`。
+    pub fn subscribe_frames(&self) -> Option<ipkvm_video::FrameReceiver> {
+        self.frame_source.as_ref().map(|source| source.subscribe())
     }
 
     /// 订阅当前帧源：新帧到达时请求 egui 重绘。
@@ -280,6 +289,26 @@ where
             notices.push(notice);
         }
         notices
+    }
+
+    /// 补送暂存事件（事件通道满时残留的输入）。
+    ///
+    /// 根因：`send_event` 只在「下一次发送」时补送 pending，突发填满通道后，
+    /// 若无后续输入，残余事件（可能包含最后一次 key-up）会无限期滞留。
+    /// UI 层（egui/iced）应在每帧或固定间隔调用本方法，保证补送不依赖下一次输入。
+    pub fn flush_pending(&mut self) -> Result<(), DesktopSessionError> {
+        let mut pending = self
+            .pending_events
+            .lock()
+            .map_err(|_| DesktopSessionError::Input("pending event queue poisoned".into()))?;
+        if pending.is_empty() {
+            return Ok(());
+        }
+        let Some(tx) = &self.event_tx else {
+            pending.clear();
+            return Err(DesktopSessionError::NoEventSender);
+        };
+        flush_pending_events(&mut pending, |next| tx.try_send(next))
     }
 
     fn send_event(&self, event: RfbServerEvent) -> Result<(), DesktopSessionError> {
@@ -434,6 +463,19 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "{what}");
             std::thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    /// 构造一个 2×2 BGRA 帧（每像素 4 字节，stride=8）用于帧通知测试。
+    fn make_frame(seq: u64) -> ipkvm_video::VideoFrame {
+        ipkvm_video::VideoFrame::new(
+            seq,
+            ipkvm_video::MonotonicTimestamp::from_nanos(seq),
+            2,
+            2,
+            8,
+            ipkvm_video::PixelFormat::Bgra8888,
+            Arc::from(vec![0u8; 16].into_boxed_slice()),
+        )
     }
 
     #[test]
@@ -657,6 +699,54 @@ mod tests {
             .spawn_frame_repainter(eframe::egui::Context::default())
             .expect("connected session must expose frame watcher");
         task.abort();
+        controller.stop().unwrap();
+    }
+
+    #[test]
+    fn subscribe_frames_is_none_before_connect() {
+        let (controller, _sink) = controller_with_sink();
+        assert!(
+            controller.subscribe_frames().is_none(),
+            "连接前帧源为空，subscribe_frames 必须返回 None"
+        );
+    }
+
+    #[test]
+    fn subscribe_frames_notifies_on_new_frame_after_connect() {
+        // 用一个可从外部推送帧的 mock 帧源，factory 把它包成 trait 对象，
+        // 外层保留句柄以便 publish_frame 触发 watch 通知。
+        let mock = Arc::new(MockFrameSource::new());
+        let sink = RecordingSink::default();
+        let sink_for_factory = sink.clone();
+        let mock_for_factory = Arc::clone(&mock);
+        let factory: TestSessionFactory = Box::new(move |_request| {
+            let frame_source: Arc<dyn FrameSource> = mock_for_factory.clone();
+            Ok((
+                frame_source,
+                sink_for_factory.clone(),
+                RfbConnectionGate::new(),
+            ))
+        });
+        let mut controller = DesktopSessionController::with_factory(factory);
+
+        controller.connect(request()).unwrap();
+
+        let receiver = controller
+            .subscribe_frames()
+            .expect("连接后 subscribe_frames 必须返回 Some");
+
+        // 初始：watch 当前值为 None（MockFrameSource::new 的初始），尚未变化。
+        assert!(receiver.borrow().is_none());
+
+        // 推一帧：watch 标记已变化，可读到刚发布的帧 seq。
+        mock.publish_frame(Arc::new(make_frame(1)));
+        assert!(
+            receiver.has_changed().unwrap(),
+            "新帧后 watch 必须 has_changed"
+        );
+        let frame = receiver.borrow().as_ref().unwrap().clone();
+        assert_eq!(frame.seq, 1, "watch 必须读到刚发布的帧");
+
         controller.stop().unwrap();
     }
 
