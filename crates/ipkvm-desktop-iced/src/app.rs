@@ -1026,12 +1026,19 @@ where
         }
     }
 
+    fn fit_image(
+        handle: iced::widget::image::Handle,
+    ) -> PreloadedImage<iced::widget::image::Handle> {
+        PreloadedImage::new(handle)
+            .content_fit(iced::ContentFit::Contain)
+            .width(Length::Fill)
+            .height(Length::Fill)
+    }
+
     fn video_view(&self) -> Element<'_, Message> {
         use iced::widget::{column, container, text};
         let video: Element<'_, Message> = match self.handle.as_ref() {
-            Some(handle) => PreloadedImage::new(handle.clone())
-                .content_fit(iced::ContentFit::Contain)
-                .into(),
+            Some(handle) => Self::fit_image(handle.clone()).into(),
             None => text(t!("preview.no_signal")).size(28).into(),
         };
         let video_area = container(video)
@@ -1082,9 +1089,7 @@ where
         let connection_settings = button(text(t!("modal.connection_title")))
             .on_press(Message::OpenModal(ModalKind::Connection));
         let preview: Element<'_, Message> = match &self.preview_handle {
-            Some(handle) => PreloadedImage::new(handle.clone())
-                .content_fit(iced::ContentFit::Contain)
-                .into(),
+            Some(handle) => Self::fit_image(handle.clone()).into(),
             None => text(self.preview_placeholder()).into(),
         };
         let preview_area = container(preview)
@@ -2100,5 +2105,106 @@ mod tests {
             "连接设置模态必须含自动波特率开关"
         );
         assert!(ui.find("Mouse mode").is_ok(), "连接设置模态必须含鼠标模式");
+    }
+
+    #[test]
+    fn video_image_is_centered_in_free_axis() {
+        use iced::advanced::clipboard::Null;
+        use iced::advanced::mouse;
+        use iced::advanced::renderer;
+        use iced::{Color, Point, Rectangle, Size};
+        use iced_runtime::user_interface::{self, UserInterface};
+
+        // 画布 2:1（256x64），图像 16:9：富余方向为水平轴。
+        // 不能用 128x64：tiny_skia 离屏光栅把 (bounds.x / scale) 截断成源像素
+        // 索引，7.11px 的居中偏移会被截成 0（正确修复后像素仍贴左）；加宽到
+        // 256x64 后水平边距 71.11px 恰为 10 个源像素，可被像素探测区分。
+        const WIDTH: u32 = 256;
+        const HEIGHT: u32 = 64;
+
+        let handle =
+            iced::widget::image::Handle::from_rgba(16, 9, [255u8, 0, 0, 255].repeat(16 * 9));
+        let view: iced::Element<'_, (), iced::Theme, iced_tiny_skia::Renderer> =
+            iced::widget::container(MockApp::fit_image(handle))
+                .width(iced::Length::Fill)
+                .height(iced::Length::Fill)
+                .into();
+
+        let mut renderer = iced_tiny_skia::Renderer::new(iced::Font::default(), 16.0.into());
+        let mut ui = UserInterface::build(
+            view,
+            Size::new(WIDTH as f32, HEIGHT as f32),
+            user_interface::Cache::new(),
+            &mut renderer,
+        );
+
+        let mut messages = Vec::new();
+        let mut clipboard = Null;
+        let _ = ui.update(
+            &[],
+            mouse::Cursor::Available(Point::ORIGIN),
+            &mut renderer,
+            &mut clipboard,
+            &mut messages,
+        );
+
+        let theme = iced::Theme::Dark;
+        let style = renderer::Style {
+            text_color: theme.palette().text,
+        };
+        let mut pixmap = tiny_skia::Pixmap::new(WIDTH, HEIGHT).expect("pixmap");
+        let mut mask = tiny_skia::Mask::new(WIDTH, HEIGHT).expect("mask");
+        let viewport =
+            iced::advanced::graphics::Viewport::with_physical_size(Size::new(WIDTH, HEIGHT), 1.0);
+        ui.draw(
+            &mut renderer,
+            &theme,
+            &style,
+            mouse::Cursor::Available(Point::ORIGIN),
+        );
+        renderer.draw(
+            &mut pixmap.as_mut(),
+            &mut mask,
+            &viewport,
+            &[Rectangle::with_size(Size::new(WIDTH as f32, HEIGHT as f32))],
+            Color::from_rgb(0.1, 0.1, 0.1),
+        );
+
+        let background = [26u8, 26, 26];
+        let mut min_x = WIDTH as i32;
+        let mut min_y = HEIGHT as i32;
+        let mut max_x = 0i32;
+        let mut max_y = 0i32;
+        let mut count = 0usize;
+        for y in 0..HEIGHT {
+            for x in 0..WIDTH {
+                let px = pixmap.pixel(x, y).expect("pixel");
+                let close = |a: u8, b: u8| (a as i16 - b as i16).unsigned_abs() <= 8;
+                if !(close(px.red(), background[0])
+                    && close(px.green(), background[1])
+                    && close(px.blue(), background[2]))
+                {
+                    count += 1;
+                    min_x = min_x.min(x as i32);
+                    min_y = min_y.min(y as i32);
+                    max_x = max_x.max(x as i32);
+                    max_y = max_y.max(y as i32);
+                }
+            }
+        }
+        assert!(count > 0, "图像必须渲染出像素（实际 {count} 个）");
+        let center_x = (min_x + max_x) as f32 / 2.0;
+        let center_y = (min_y + max_y) as f32 / 2.0;
+        // 16:9 图像在 2:1 画布上垂直轴完全填满，富余方向只有水平轴；
+        // 因此断言水平居中与水平不贴边（min.y 恒为 0，无需断言）。
+        assert!(
+            (center_x - 128.0).abs() <= 2.0,
+            "图像水平中心应≈128，实际 {center_x}"
+        );
+        assert!(
+            (center_y - 32.0).abs() <= 2.0,
+            "图像垂直中心应≈32，实际 {center_y}"
+        );
+        assert!(min_x > 4, "图像不应贴左（bbox.min.x={min_x}）");
     }
 }
