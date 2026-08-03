@@ -28,13 +28,21 @@ impl TestApp {
             Msg::Modal(action) => match action {
                 ModalAction::Close => self.modal.close(),
                 ModalAction::SaveNameChanged(name) => self.modal.save_name = name,
-                ModalAction::Save | ModalAction::LoadPicked(_) => {}
-                ModalAction::SetLetterboxColor(_) => {}
-                ModalAction::SetDarkMode(dark) => self.modal.dark = dark,
+                ModalAction::Save | ModalAction::CancelOverwrite => {}
+                ModalAction::RestoreDefaults => {}
+                ModalAction::SetRelativeSensitivity(value) => {
+                    self.modal.relative_sensitivity = value;
+                }
+                ModalAction::SetScaleMode(mode) => self.modal.scale_mode = mode,
                 ModalAction::SetBaudRate(baud) => self.modal.baud_rate = baud,
                 ModalAction::SetPreviewFps(fps) => self.modal.preview_fps = fps,
                 ModalAction::SetAutoBaud(enabled) => self.modal.auto_baud = enabled,
                 ModalAction::SetMouseMode(mode) => self.modal.mouse_mode = mode,
+                ModalAction::BaudRateTextChanged(text) => self.modal.baud_text = text,
+                ModalAction::PreviewFpsTextChanged(text) => self.modal.fps_text = text,
+                ModalAction::RelativeSensitivityTextChanged(text) => {
+                    self.modal.sensitivity_text = text;
+                }
                 ModalAction::Noop => {}
             },
             Msg::BackgroundPressed => self.bg_hits += 1,
@@ -175,27 +183,7 @@ fn background_click_works_after_modal_closes() {
 }
 
 #[test]
-fn load_profile_modal_lists_names_and_picks() {
-    let _lock = ipkvm_desktop_iced::I18N_TEST_LOCK
-        .lock()
-        .unwrap_or_else(|p| p.into_inner());
-    rust_i18n::set_locale("en");
-
-    let mut app = TestApp::default();
-    app.modal.load_names = vec!["a".into(), "b".into()];
-    app.open(ModalKind::LoadProfile);
-
-    let mut ui = simulator::simulator(app.view());
-    assert!(ui.click("a").is_ok(), "profile 名必须可点击");
-    let msgs = messages_of(ui);
-    assert!(
-        msgs.contains(&Msg::Modal(ModalAction::LoadPicked("a".into()))),
-        "点击 profile 名必须产生 LoadPicked（实际消息: {msgs:?}）"
-    );
-}
-
-#[test]
-fn settings_modal_emits_letterbox_and_dark_messages() {
+fn settings_modal_shows_scale_and_sensitivity() {
     let _lock = ipkvm_desktop_iced::I18N_TEST_LOCK
         .lock()
         .unwrap_or_else(|p| p.into_inner());
@@ -204,13 +192,9 @@ fn settings_modal_emits_letterbox_and_dark_messages() {
     let mut app = TestApp::default();
     app.open(ModalKind::Settings);
     let mut ui = simulator::simulator(app.view());
-    assert!(ui.click("Black").is_ok(), "黑边色预设必须可点击");
-    let msgs = messages_of(ui);
     assert!(
-        msgs.iter().any(|m| matches!(
-            m,
-            Msg::Modal(ModalAction::SetLetterboxColor(c)) if c == &iced::Color::BLACK
-        )),
-        "点击 Black 必须产生 SetLetterboxColor(black)（实际 {msgs:?}）"
+        ui.find("Relative sensitivity").is_ok(),
+        "设置模态必须含相对灵敏度"
     );
+    assert!(ui.find("Scaling").is_ok(), "设置模态必须含缩放模式");
 }

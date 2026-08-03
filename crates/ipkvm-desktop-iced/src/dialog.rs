@@ -18,3 +18,19 @@ pub async fn choose_screenshot_path() -> Option<std::path::PathBuf> {
 pub async fn choose_screenshot_path() -> Option<std::path::PathBuf> {
     None
 }
+
+/// 弹出“加载 profile”对话框，默认打开 profiles 目录。
+#[cfg(windows)]
+pub async fn choose_profile_path(profiles_dir: std::path::PathBuf) -> Option<std::path::PathBuf> {
+    let _ = std::fs::create_dir_all(&profiles_dir);
+    rfd::FileDialog::new()
+        .set_directory(&profiles_dir)
+        .add_filter("profile", &["toml"])
+        .pick_file()
+}
+
+/// 非 Windows 平台不支持原生打开对话框。
+#[cfg(not(windows))]
+pub async fn choose_profile_path(_profiles_dir: std::path::PathBuf) -> Option<std::path::PathBuf> {
+    None
+}
