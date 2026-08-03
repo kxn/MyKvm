@@ -476,7 +476,17 @@ where
                 Task::none()
             }
             Message::ToggleLocale => {
-                self.zh = !self.zh;
+                if self.zh {
+                    AppLanguage::English.apply();
+                } else {
+                    AppLanguage::Chinese.apply();
+                }
+                self.zh = rust_i18n::locale().starts_with("zh");
+                self.language = if self.zh {
+                    AppLanguage::Chinese
+                } else {
+                    AppLanguage::English
+                };
                 Task::none()
             }
             Message::WindowOpened(id) => {

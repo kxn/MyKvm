@@ -113,7 +113,9 @@ where
     R: iced::advanced::Renderer + iced::advanced::text::Renderer<Font = iced::Font> + 'a,
 {
     let items: Vec<Item<'_, MenuAction, iced::Theme, R>> = if recent_profiles.is_empty() {
-        vec![Item::new(text(t!("profile.no_recent")))]
+        vec![Item::new(
+            text(t!("profile.no_recent")).font(crate::fonts::ui_font()),
+        )]
     } else {
         let mut items: Vec<Item<'_, MenuAction, iced::Theme, R>> = recent_profiles
             .iter()
