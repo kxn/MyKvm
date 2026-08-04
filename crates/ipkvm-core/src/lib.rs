@@ -29,7 +29,9 @@ pub use serial::{
 };
 
 #[cfg(feature = "serial")]
-pub use serial_port::{SerialCommandQueue, SerialCommandQueueError};
+pub use serial_port::{
+    SerialCommandQueue, SerialCommandQueueError, SerialHealth, SerialHealthState,
+};
 
 #[cfg(test)]
 mod tests {

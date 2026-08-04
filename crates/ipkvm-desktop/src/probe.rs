@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 
 use ipkvm_core::{Ch9329Command, Ch9329Decoder, Ch9329Response};
 use ipkvm_device::{DeviceInventoryProvider, ProductionDeviceInventoryProvider};
+use serialport::{ClearBuffer, SerialPort};
 
 use ipkvm_desktop_core::probe::{ProbeBackend, ProbeError};
 pub use ipkvm_desktop_core::probe::{refresh_detection, resolve_connect_baud_with};
@@ -72,7 +73,7 @@ impl ProbeBackend for ProductionProbeBackend {
     }
 }
 
-/// 串口 CH9329 探测：发 GetInfo 命令，在超时内等合法 Info 应答。
+/// 串口 CH9329 探测：发 GetInfo；无响应或非法响应时最多执行一次软件复位后重试。
 pub fn probe_ch9329(path: &str, baud_rate: u32, timeout: Duration) -> ControlProbeStatus {
     let mut port = match serialport::new(path, baud_rate)
         .timeout(Duration::from_millis(50))
@@ -82,11 +83,69 @@ pub fn probe_ch9329(path: &str, baud_rate: u32, timeout: Duration) -> ControlPro
         Err(error) => return ControlProbeStatus::OpenFailed(error.to_string()),
     };
 
+    let mut plan = ProbeRecoveryPlan::default();
+    let first = probe_once(&mut port, baud_rate, timeout);
+    if !matches!(plan.next_action(&first), ProbeAction::Reset) {
+        return first;
+    }
+
+    let reset = match Ch9329Command::Reset.to_frame(0) {
+        Ok(frame) => frame,
+        Err(error) => return ControlProbeStatus::NotCh9329(error.to_string()),
+    };
+    eprintln!("[ch9329:{path}] preview probe failed; sending software reset once");
+    if port.clear(ClearBuffer::All).is_err()
+        || port.write_all(reset.as_bytes()).is_err()
+        || port.flush().is_err()
+    {
+        return ControlProbeStatus::OpenFailed("failed to write CH9329 reset".into());
+    }
+    std::thread::sleep(Duration::from_secs(2));
+    probe_once(&mut port, baud_rate, timeout)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProbeAction {
+    Reset,
+    FinalFailure,
+}
+
+#[derive(Default)]
+struct ProbeRecoveryPlan {
+    reset_attempted: bool,
+}
+
+impl ProbeRecoveryPlan {
+    fn next_action(&mut self, outcome: &ControlProbeStatus) -> ProbeAction {
+        if !self.reset_attempted && should_attempt_recovery(outcome) {
+            self.reset_attempted = true;
+            ProbeAction::Reset
+        } else {
+            ProbeAction::FinalFailure
+        }
+    }
+}
+
+fn should_attempt_recovery(status: &ControlProbeStatus) -> bool {
+    matches!(
+        status,
+        ControlProbeStatus::NoResponse | ControlProbeStatus::NotCh9329(_)
+    )
+}
+
+fn probe_once(
+    port: &mut Box<dyn SerialPort>,
+    baud_rate: u32,
+    timeout: Duration,
+) -> ControlProbeStatus {
+    if port.clear(ClearBuffer::Input).is_err() {
+        return ControlProbeStatus::OpenFailed("failed to clear CH9329 input buffer".into());
+    }
     let frame = match Ch9329Command::GetInfo.to_frame(0) {
         Ok(frame) => frame,
         Err(error) => return ControlProbeStatus::NotCh9329(error.to_string()),
     };
-    if let Err(error) = port.write_all(frame.as_bytes()) {
+    if let Err(error) = port.write_all(frame.as_bytes()).and_then(|_| port.flush()) {
         return ControlProbeStatus::OpenFailed(error.to_string());
     }
 
@@ -111,14 +170,17 @@ pub fn probe_ch9329(path: &str, baud_rate: u32, timeout: Duration) -> ControlPro
                                 },
                             );
                         }
+                        Ok(Ch9329Response::Error { command, status }) if command == 0x01 => {
+                            return ControlProbeStatus::NotCh9329(format!(
+                                "GetInfo rejected: {status:?}"
+                            ));
+                        }
                         Ok(_) => {
                             return ControlProbeStatus::NotCh9329(
-                                "unexpected acknowledgement".into(),
+                                "unexpected CH9329 acknowledgement".into(),
                             );
                         }
-                        Err(error) => {
-                            return ControlProbeStatus::NotCh9329(error.to_string());
-                        }
+                        Err(error) => return ControlProbeStatus::NotCh9329(error.to_string()),
                     }
                 }
             }
@@ -132,10 +194,48 @@ pub fn probe_ch9329(path: &str, baud_rate: u32, timeout: Duration) -> ControlPro
 pub fn detect_baud_rate(path: &str, timeout: Duration) -> Option<u32> {
     BAUD_CANDIDATES.into_iter().find(|baud| {
         matches!(
-            probe_ch9329(path, *baud, timeout),
+            probe_ch9329_once(path, *baud, timeout),
             ControlProbeStatus::Ready(_)
         )
     })
+}
+
+fn probe_ch9329_once(path: &str, baud_rate: u32, timeout: Duration) -> ControlProbeStatus {
+    let mut port = match serialport::new(path, baud_rate)
+        .timeout(Duration::from_millis(50))
+        .open()
+    {
+        Ok(port) => port,
+        Err(error) => return ControlProbeStatus::OpenFailed(error.to_string()),
+    };
+    probe_once(&mut port, baud_rate, timeout)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn preview_recovery_is_attempted_once_after_no_response() {
+        let mut plan = ProbeRecoveryPlan::default();
+        assert_eq!(
+            plan.next_action(&ControlProbeStatus::NoResponse),
+            ProbeAction::Reset
+        );
+        assert_eq!(
+            plan.next_action(&ControlProbeStatus::NoResponse),
+            ProbeAction::FinalFailure
+        );
+    }
+
+    #[test]
+    fn preview_does_not_reset_after_serial_open_failure() {
+        let mut plan = ProbeRecoveryPlan::default();
+        assert_eq!(
+            plan.next_action(&ControlProbeStatus::OpenFailed("missing".into())),
+            ProbeAction::FinalFailure
+        );
+    }
 }
 
 pub fn resolve_connect_baud(

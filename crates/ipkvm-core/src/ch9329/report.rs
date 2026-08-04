@@ -107,6 +107,7 @@ impl RelativeMouseReport {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Ch9329Command {
     GetInfo,
+    Reset,
     Keyboard(KeyboardReport),
     MouseAbsolute(AbsoluteMouseReport),
     MouseRelative(RelativeMouseReport),
@@ -116,6 +117,7 @@ impl Ch9329Command {
     pub fn to_frame(&self, address: u8) -> Result<Ch9329Frame, Ch9329FrameError> {
         match self {
             Self::GetInfo => Ch9329Frame::new(address, 0x01, &[]),
+            Self::Reset => Ch9329Frame::new(address, 0x0f, &[]),
             Self::Keyboard(report) => Ch9329Frame::new(address, 0x02, &report.data()),
             Self::MouseAbsolute(report) => Ch9329Frame::new(address, 0x04, &report.data()),
             Self::MouseRelative(report) => Ch9329Frame::new(address, 0x05, &report.data()),
@@ -200,6 +202,14 @@ mod tests {
                 field: "dx",
                 value: -128,
             })
+        );
+    }
+
+    #[test]
+    fn reset_command_matches_vendor_frame() {
+        assert_eq!(
+            Ch9329Command::Reset.to_frame(0).unwrap().as_bytes(),
+            &[0x57, 0xab, 0, 0x0f, 0, 0x11]
         );
     }
 }

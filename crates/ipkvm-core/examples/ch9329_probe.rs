@@ -6,7 +6,7 @@
 //! 子命令：
 //!   key <usage_hex>              按下并释放一个 HID usage（如 0x04 = a）
 //!   text <字符串>                依次「按下并释放」每个 ASCII 字符（模拟打字）
-//!   info                         发送 GetInfo 命令（CH9329 默认无应答模式，仅发出）
+//!   info                         发送 GetInfo 并等待响应；无响应时自动尝试恢复
 //!   mouse-abs <x> <y>            绝对鼠标移动到 (x,y)，坐标按 0-4095 原始范围
 //!   mouse-rel <dx> <dy>          相对鼠标移动 (dx,dy)
 //!   click <left|middle|right>    在当前位置（绝对 2048,2048）按下并释放一次按键
@@ -57,7 +57,7 @@ fn main() {
     eprintln!("[probe] 已打开 {serial_path}@{baud}（8N1 无流控）");
 
     // 键盘测试用 Absolute 鼠标模式（CH9329 同时支持键鼠；鼠标模式仅影响鼠标命令）。
-    // raw_queue 与 sink 共享同一串口句柄（Arc<Mutex>），供需要绕过 InputSink
+    // raw_queue 与 sink 共享同一个线程安全发送队列，供需要绕过 InputSink
     // 直接构造帧的子命令（mouse-abs-btn）使用。
     let raw_queue = queue.clone();
     let mut sink = Ch9329InputSink::new(queue, 0x00, MouseMode::Absolute);
@@ -66,12 +66,33 @@ fn main() {
         "key" => cmd_key(&mut sink, &rest),
         "text" => cmd_text(&mut sink, &rest),
         "info" => {
-            eprintln!("[probe] 发送 GetInfo（CH9329 默认无应答模式，不会读返回）");
-            // GetInfo 通过 InputSink 无法直接发（InputSink 只暴露键鼠）；这里用 queue
-            // 直接 enqueue。但 SerialCommandQueue.enqueue_batch 需要 CommandBatch。
-            // 简化：info 命令要求一个独立的 Ch9329Command::GetInfo 通道，暂用 key 路径提示。
-            eprintln!("[probe] info 子命令需通过底层 queue 发送，此示例暂未实现");
-            Ok(())
+            eprintln!("[probe] 等待 GetInfo/恢复结果（最多 5 秒）");
+            match raw_queue.wait_until_ready(Duration::from_secs(5)) {
+                Some(health) => {
+                    eprintln!(
+                        "[probe] Ready: pending={} timeouts={} protocol_errors={} device_errors={} resets={} reopens={}",
+                        health.pending_frames,
+                        health.timeouts,
+                        health.protocol_errors,
+                        health.device_errors,
+                        health.resets,
+                        health.reopens,
+                    );
+                    Ok(())
+                }
+                None => {
+                    let health = raw_queue.health();
+                    Err(format!(
+                        "CH9329 未恢复到 Ready: state={:?}, timeouts={}, protocol_errors={}, device_errors={}, resets={}, reopens={}",
+                        health.state,
+                        health.timeouts,
+                        health.protocol_errors,
+                        health.device_errors,
+                        health.resets,
+                        health.reopens,
+                    ))
+                }
+            }
         }
         "mouse-abs" => cmd_mouse_abs(&mut sink, &rest),
         "mouse-rel" => {
@@ -88,19 +109,45 @@ fn main() {
 
     match result {
         Ok(()) => {
-            // 给串口一点时间把字节发完（9600bps 下 ~16ms/帧）。
-            std::thread::sleep(Duration::from_millis(50));
+            if let Err(error) = wait_for_idle(&raw_queue) {
+                eprintln!("[probe] 失败：{error}");
+                std::process::exit(1);
+            }
             // 释放所有键鼠状态（避免按键卡住）。
             let _ = sink.release_all();
-            std::thread::sleep(Duration::from_millis(50));
+            if let Err(error) = wait_for_idle(&raw_queue) {
+                eprintln!("[probe] 释放状态未完成：{error}");
+                std::process::exit(1);
+            }
             eprintln!("[probe] 完成");
         }
         Err(e) => {
             eprintln!("[probe] 失败：{e}");
             let _ = sink.release_all();
+            let _ = wait_for_idle(&raw_queue);
             std::process::exit(1);
         }
     }
+}
+
+fn wait_for_idle(queue: &SerialCommandQueue) -> Result<(), String> {
+    queue
+        .wait_until_idle(Duration::from_secs(5))
+        .map(|_| ())
+        .ok_or_else(|| {
+            let health = queue.health();
+            format!(
+                "CH9329 未在限定时间内完成发送: state={:?}, pending={}, queued_batches={}, timeouts={}, protocol_errors={}, device_errors={}, resets={}, reopens={}",
+                health.state,
+                health.pending_frames,
+                health.queued_batches,
+                health.timeouts,
+                health.protocol_errors,
+                health.device_errors,
+                health.resets,
+                health.reopens,
+            )
+        })
 }
 
 /// 解析：<串口路径> [波特率] <子命令> [参数...]。波特率可选，缺省 9600。
