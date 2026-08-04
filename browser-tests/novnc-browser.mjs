@@ -706,6 +706,14 @@ async function run() {
     // ---- 缺失 /api/settings 的降级路径 ----
     const degraded = await openConsole(browser, url, { mockApi: false });
     contexts.push(degraded.context);
+    // 后端已提供真实 /api/settings，此处显式路由成 404 以覆盖缺失降级。
+    await degraded.page.route("**/api/settings*", (route) =>
+      route.fulfill({
+        status: 404,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "not found" }),
+      }),
+    );
     await degraded.page.locator("#open-settings").click();
     await degraded.page
       .locator("#settings-message", { hasText: "设置获取失败" })
