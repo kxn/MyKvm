@@ -129,8 +129,8 @@ impl InputSink for RecordingSink {
                     has_relative = true;
                     let bit = match button {
                         PointerButton::Left => 0b001,
-                        PointerButton::Right => 0b010,
-                        PointerButton::Middle => 0b100,
+                        PointerButton::Right => 0b100,
+                        PointerButton::Middle => 0b010,
                     };
                     if *down {
                         *mask |= bit;
@@ -1906,12 +1906,12 @@ pub fn desired_window_size(frame: Option<FrameSize>, mode: ScaleMode) -> Option<
     }
 }
 
-/// 鼠标按钮 → RFB button mask（Primary=1、Secondary=2、Middle=4）。
+/// 鼠标按钮 → RFB button mask（Primary=1、Middle=2、Secondary=4）。
 fn mouse_button_bit(button: iced::mouse::Button) -> u8 {
     match button {
         iced::mouse::Button::Left => 0b001,
-        iced::mouse::Button::Right => 0b010,
-        iced::mouse::Button::Middle => 0b100,
+        iced::mouse::Button::Right => 0b100,
+        iced::mouse::Button::Middle => 0b010,
         _ => 0,
     }
 }
@@ -2207,6 +2207,47 @@ mod tests {
             );
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
+    }
+
+    #[test]
+    fn mouse_button_bit_uses_rfb_order() {
+        assert_eq!(mouse_button_bit(iced::mouse::Button::Left), 0b001);
+        assert_eq!(mouse_button_bit(iced::mouse::Button::Middle), 0b010);
+        assert_eq!(mouse_button_bit(iced::mouse::Button::Right), 0b100);
+    }
+
+    #[test]
+    fn relative_mode_right_and_middle_buttons_use_rfb_mask() {
+        let (mut app, _) = MockApp::new_mock();
+        app.connection.mouse_mode = MouseMode::Relative;
+        *app.video_bounds.borrow_mut() = Some(iced::Rectangle::new(
+            iced::Point::ORIGIN,
+            iced::Size::new(320.0, 180.0),
+        ));
+        app.frame_size = Some(FrameSize {
+            width: 320,
+            height: 180,
+        });
+        move_cursor(&mut app, 160.0, 90.0);
+
+        press_button(&mut app, iced::mouse::Button::Right);
+        assert!(app.remote_input, "点击视频区必须进入远程输入");
+        let _ = app.update(Message::UiTick);
+        wait_relative_event(&app, (0b100, 0, 0, 0));
+        let _ = app.update(Message::IcedEvent(iced::Event::Mouse(
+            iced::mouse::Event::ButtonReleased(iced::mouse::Button::Right),
+        )));
+        let _ = app.update(Message::UiTick);
+        wait_relative_event(&app, (0b000, 0, 0, 0));
+
+        press_button(&mut app, iced::mouse::Button::Middle);
+        let _ = app.update(Message::UiTick);
+        wait_relative_event(&app, (0b010, 0, 0, 0));
+        let _ = app.update(Message::IcedEvent(iced::Event::Mouse(
+            iced::mouse::Event::ButtonReleased(iced::mouse::Button::Middle),
+        )));
+        let _ = app.update(Message::UiTick);
+        wait_relative_event(&app, (0b000, 0, 0, 0));
     }
 
     #[test]
@@ -2937,6 +2978,23 @@ mod tests {
         let _ = app.update(Message::IcedEvent(iced::Event::Mouse(
             iced::mouse::Event::ButtonPressed(button),
         )));
+    }
+
+    fn wait_relative_event(app: &MockApp, expected: RelativeEvent) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if let Some(sink) = app.recording_sink() {
+                let events = sink.relative_events.lock().unwrap();
+                if events.contains(&expected) {
+                    return;
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "相对事件 {expected:?} 未达 sink"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
     }
 
     fn wait_releases(app: &MockApp, count: usize) {
