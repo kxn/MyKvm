@@ -502,6 +502,14 @@ impl<S: InputSink> RfbInputPump<S> {
         framebuffer_size: FramebufferSize,
     ) -> Result<RfbInputNotice, RfbInputError> {
         self.require_active(client_id, RfbInputEventKind::Pointer)?;
+        if self.mouse_mode == Some(MouseMode::Relative) {
+            return Ok(RfbInputNotice::Pointer {
+                client_id,
+                outcome: RfbPointerOutcome::IgnoredForMouseMode {
+                    mode: MouseMode::Relative,
+                },
+            });
+        }
         self.ensure_mouse_mode(client_id, MouseMode::Absolute)?;
         match self
             .pointer
@@ -1587,21 +1595,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ch9329_pointer_events_switch_sink_mode_before_dispatch() {
+    async fn ch9329_relative_mode_ignores_absolute_pointer_transition() {
         let client_id = client(19);
         let queue = FakeCommandQueue::new();
         let sink = Ch9329InputSink::new(queue.clone(), 0, MouseMode::Relative);
         let mut pump = RfbInputPump::new(sink);
         pump.handle_event(connected(client_id, peer(5919))).unwrap();
 
-        pump.handle_event(RfbServerEvent::Pointer {
-            client_id,
-            button_mask: 0,
-            x: 10,
-            y: 20,
-            framebuffer_size: RfbSize::new(100, 100).unwrap(),
-        })
-        .expect("an absolute browser pointer event must not stop a relative sink");
+        assert!(matches!(
+            pump.handle_event(RfbServerEvent::Pointer {
+                client_id,
+                button_mask: 0,
+                x: 10,
+                y: 20,
+                framebuffer_size: RfbSize::new(100, 100).unwrap(),
+            }),
+            Ok(RfbInputNotice::Pointer {
+                outcome: RfbPointerOutcome::IgnoredForMouseMode {
+                    mode: MouseMode::Relative,
+                },
+                ..
+            })
+        ));
+        assert!(
+            queue.accepted_batches().is_empty(),
+            "relative mode must ignore the pre-lock absolute pointer event"
+        );
         pump.handle_event(RfbServerEvent::PointerRelative {
             client_id,
             button_mask: 0,
@@ -1612,8 +1631,16 @@ mod tests {
         .expect("a later pointer-lock event must switch the sink back to relative");
 
         assert!(
-            queue.accepted_batches().len() >= 2,
-            "both absolute and relative pointer events must reach CH9329"
+            queue.accepted_batches().len() >= 1,
+            "a later relative pointer event must reach CH9329"
+        );
+        assert!(
+            queue
+                .accepted_batches()
+                .iter()
+                .flat_map(|batch| batch.frames())
+                .all(|frame| frame.command() != 0x04),
+            "relative mode must not emit an absolute CH9329 frame"
         );
     }
 

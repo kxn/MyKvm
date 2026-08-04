@@ -38,6 +38,7 @@ pub enum RfbKeyboardError {
 pub enum RfbPointerOutcome {
     Applied,
     AppliedIgnoringButtons { button_mask: u8 },
+    IgnoredForMouseMode { mode: ipkvm_core::MouseMode },
 }
 
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
