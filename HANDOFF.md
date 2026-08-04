@@ -2,20 +2,20 @@
 
 > 本文件是**新会话（或接手 agent）的第一份必读文件**。请先读 `AGENTS.md`（仓库自动化协作者规范），再读本文，然后按第 7 节执行。
 >
-> 更新（2026-08-04）：**M1–M4 已全部合入（PR #83/#84/#85/#86），#79 的 M5 实现已完成并准备创建 PR**；正式 iced 桌面端接管发布入口，旧 UI 和迁移 spike 已退役。
+> 更新（2026-08-04）：**M1–M5 已全部合入（PR #83/#84/#85/#86/#161），#82 正在依据各阶段证据收口**；正式 iced 桌面端接管发布入口，旧 UI 和迁移 spike 已退役。
 
 ## 1. 仓库与环境
 
 - 仓库：`D:\Work\my_ipkvm`（Windows 11 + PowerShell，Rust 1.89+）。
 - Gitea：`http://10.10.10.5:3000`，用户 `kxn`，仓库 `kxn/my_ipkvm`；命令行统一用 `tea`（已登录，登录名 `srpg`）。
 - 写中文到 Gitea 前必须设置 UTF-8（见 AGENTS.md）：`$OutputEncoding`、`[Console]::Input/OutputEncoding`。
-- 当前实现 worktree：`D:\Work\my_ipkvm\.worktrees\issue79-m5`，分支 `codex/issue79-m5`；主工作区 `D:\Work\my_ipkvm` 的未提交改动未触碰。
+- 当前正式基线为 `main`；每个非平凡改动按关联 issue 创建独立分支并通过 PR 收口。
 - 暂存区（stash）：`stash@{0}` = 「stale egui issue69 debug work」——旧 egui 子菜单调试的未提交改动（app.rs/menus.rs），**保留可恢复，勿删**（用户未决定去留）。
 - `%TEMP%\ipkvm-stale-debug-files\`：`tmck.txt`、`tsg*.txt`（旧调试输出，共 6 个），保留可恢复。
 
 ## 2. 现状一句话
 
-**iced 是当前正式桌面发布入口**；`ipkvm-desktop` 只保留桌面端共享集成逻辑，旧 egui UI、二进制、专属资源和 `ipkvm-desktop-iced-spike` 已删除。迁移调研（#73）与 M0–M4 已合入（PR #80/#81/#83/#84/#85/#86），#79 负责 M5 收尾。
+**iced 是当前正式桌面发布入口**；`ipkvm-desktop` 只保留桌面端共享集成逻辑，旧 egui UI、二进制、专属资源和 `ipkvm-desktop-iced-spike` 已删除。迁移调研（#73）与 M0–M5 已合入（PR #80/#81/#83/#84/#85/#86/#161），#79 已完成。
 
 ## 3. 用户已确认的决策
 
@@ -33,8 +33,8 @@
 | #76 | 迁移 M2：自绘菜单/模态/连接页/profile UI | closed（PR #84 合入） |
 | #77 | 迁移 M3：输入接线（键盘/相对鼠标/flush_pending/特殊键/粘贴） | closed（PR #85 合入） |
 | #78 | 迁移 M4：主题与观感 | closed（PR #86 合入） |
-| #79 | 迁移 M5：打包收尾 + 删除 egui 桌面端 | open（PR 准备中） |
-| #82 | 迁移各阶段自动化测试要求（横切，M1–M5 强制） | open |
+| #79 | 迁移 M5：打包收尾 + 删除 egui 桌面端 | closed（PR #161 合入） |
+| #82 | 迁移各阶段自动化测试要求（横切，M1–M5 强制） | 收口中（本 PR 合入后关闭） |
 | PR #80 | M0 脚手架（含调研与 spike 验证产物） | merged |
 | PR #81 | M0 测试补强 + 每阶段测试要求固化 | merged |
 
@@ -51,6 +51,7 @@
 - `b7cc330`：删除旧 egui UI、二进制、专属资源，并将 `ipkvm-desktop` 收敛为共享库。
 - `3dc76f8`：新增 Windows release 进程存活/顶层窗口句柄启动冒烟。
 - `e95bce6`：新增跨平台 workspace 退役门禁。
+- `05f8576`（PR #161）：M5 打包收尾合入，正式 iced 发布入口接管桌面端；M5 测试矩阵包含退役门禁和 release 启动冒烟。
 
 ### 关键文件索引
 
@@ -76,8 +77,8 @@
 
 ## 7. 下一步（新会话第一个任务）
 
-1. 创建并审查关联 #79 的 PR；PR 描述必须列出 M5 退役门禁、workspace 测试/Clippy/doc、Windows release 窗口句柄冒烟，以及硬件和 macOS 人工例外。
-2. #79 合入且 M5 验收记录完整后，再关闭 #82；不要提前关闭。
+1. 对照 #82 逐阶段核对新增测试和 M5 退役门禁，完成 issue 收口。
+2. 保留真实相机、CH9329、BIOS 操作和 macOS 实机打包/签名/notarization 的人工例外记录。
 3. 版本号统一逻辑另开单：正式版本（例如 `1.0.0`）与 short hash 组合；本次保留 `GIT_COMMIT` 注入和 About 展示。
 
 ## 8. 待用户决策/备忘
@@ -100,7 +101,7 @@
 - 后续待办：
   - 真机验证整批（黑窗、居中、断开、菜单动作、鼠标模式与光标、状态栏、对话框、中英文与 Poppins 渲染）。
   - ActualSize 绘制与 scale::frame_rect 1:1 语义预存偏差（另开单）。
-  - #79（M5 打包收尾，PR 准备中）、#82（横切测试要求，待 #79 合入并收口）。
+  - #82（横切测试要求，本 PR 收口中）。
 - 子代理（subagent）本批次已验证可用；派发时勿用 deepseek-v4-pro（上游不支持）。
 
 ## 10. headless Web 控制台（2026-08-04）
@@ -114,7 +115,7 @@
   桌面与 headless 默认鼠标模式均为绝对（BIOS 用 Ctrl+Alt+M 切相对）。
 - 待人工验收：真实相机+CH9329、pointer lock 手感、Chrome/Edge 兼容矩阵；
   运行 `my_ipkvm-headless.exe` 后浏览器开 http://127.0.0.1:6080。
-- 遗留：#82（横切测试要求，待 #79 合入后收口）；#140 复评 2 项 Minor 建议记录在台账。
+- 遗留：#140 复评 2 项 Minor 建议记录在台账。
 
 ## 11. 常用命令
 
