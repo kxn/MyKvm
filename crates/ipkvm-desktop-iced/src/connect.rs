@@ -1,12 +1,11 @@
 //! 连接页状态机与预览驱动（M2）。
 
-pub use ipkvm_desktop::config::{
+pub use ipkvm_desktop::probe::{ProductionProbeBackend, resolve_connect_baud};
+pub use ipkvm_desktop_core::config::{
     ConnectionSettings, DeviceRef, ManualSnapshot, Profile, ProfileStore,
 };
-pub use ipkvm_desktop::probe::{
-    ProbeBackend, ProbeError, ProductionProbeBackend, refresh_detection, resolve_connect_baud,
-};
-pub use ipkvm_desktop::state::{
+pub use ipkvm_desktop_core::probe::{ProbeBackend, ProbeError, refresh_detection};
+pub use ipkvm_desktop_core::state::{
     ControlInfo, ControlProbeStatus, DeviceOption, DeviceSelectionState, PreviewInfo,
     VideoProbeStatus,
 };

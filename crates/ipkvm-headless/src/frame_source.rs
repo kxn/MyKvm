@@ -2,8 +2,9 @@
 
 use std::sync::{Arc, RwLock};
 
+use ipkvm_video::VideoSourceKind;
 use ipkvm_video::{FrameReceiver, FrameSource, SharedVideoFrame, VideoSourceInfo};
-use ipkvm_video::{VideoSourceKind, mock::MockFrameSource};
+use tokio::sync::watch;
 
 /// 可切换当前帧源。
 ///
@@ -47,12 +48,13 @@ impl FrameSource for SwitchableFrameSource {
 /// 空帧源：会话重建期间用于释放旧独占设备。
 #[derive(Debug, Default)]
 pub struct EmptyFrameSource {
-    inner: MockFrameSource,
+    sender: watch::Sender<Option<SharedVideoFrame>>,
 }
 
 impl EmptyFrameSource {
     pub fn new() -> Self {
-        Self::default()
+        let (sender, _receiver) = watch::channel(None);
+        Self { sender }
     }
 }
 
@@ -62,7 +64,7 @@ impl FrameSource for EmptyFrameSource {
     }
 
     fn subscribe(&self) -> FrameReceiver {
-        self.inner.subscribe()
+        self.sender.subscribe()
     }
 
     fn source_info(&self) -> VideoSourceInfo {
@@ -118,5 +120,12 @@ mod tests {
         assert_eq!(info.kind, VideoSourceKind::None);
         assert_eq!(info.device_name, "none");
         assert!(source.latest_frame().is_none());
+    }
+
+    #[test]
+    fn empty_source_can_create_a_none_subscriber_without_mock_frames() {
+        let source = EmptyFrameSource::new();
+
+        assert!(source.subscribe().borrow().is_none());
     }
 }

@@ -5,13 +5,15 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
+autobins = false
 
 [dependencies]
 axum = { workspace = true, features = ["json"] }
 include_dir.workspace = true
 ipkvm-core = { path = "../ipkvm-core" }
+ipkvm-device = { path = "../ipkvm-device" }
 ipkvm-rfb = { path = "../ipkvm-rfb" }
-ipkvm-session = { path = "../ipkvm-session", features = ["serial"] }
+ipkvm-session = { path = "../ipkvm-session" }
 ipkvm-video = { path = "../ipkvm-video" }
 jpeg-encoder.workspace = true
 serde = { workspace = true, features = ["derive"] }
@@ -23,8 +25,8 @@ tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "rt-mu
 [dev-dependencies]
 des.workspace = true
 futures-util.workspace = true
-ipkvm-core = { path = "../ipkvm-core", features = ["mock"] }
-ipkvm-video = { path = "../ipkvm-video", features = ["mock"] }
+ipkvm-core = { path = "../ipkvm-core", features = ["test-support"] }
+ipkvm-video = { path = "../ipkvm-video", features = ["assets", "test-support"] }
 serde_json.workspace = true
 tokio = { workspace = true, features = ["process", "test-util"] }
 tokio-tungstenite.workspace = true
@@ -32,24 +34,3 @@ zune-jpeg.workspace = true
 
 [features]
 default = []
-browser-fixture = ["ipkvm-video/mock"]
-# demo 联动 ipkvm-video/mf：相机后端对非 Windows 提供 UnsupportedPlatform stub，
-# windows crate 本身可在任意平台编译（内部绑定按 cfg(windows) 生成），因此
-# 在 Linux 上启用 mf 不影响构建，仅相机路径在运行时返回"不支持"错误。
-# demo 联动 ipkvm-video/mf + ipkvm-core/serial：相机后端 + CH9329 真实串口后端。
-demo = ["ipkvm-core/mock", "ipkvm-core/serial", "ipkvm-video/mock", "ipkvm-video/mf"]
-
-[[bin]]
-name = "ipkvm-headless"
-path = "src/main.rs"
-required-features = ["demo"]
-
-[[bin]]
-name = "ipkvm-browser-fixture"
-path = "src/bin/ipkvm-browser-fixture.rs"
-required-features = ["browser-fixture"]
-
-[[bin]]
-name = "ipkvm-demo"
-path = "src/bin/ipkvm-demo.rs"
-required-features = ["demo"]

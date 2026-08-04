@@ -8,7 +8,7 @@
 //! 读到的 `Buffer` 用 `RgbAFormat::decode_image_to_buffer` 转成 RGBA，再重排成 BGRA8888
 //! 对外发布（与 Windows 后端输出格式一致）。
 
-#![cfg(all(unix, feature = "mf"))]
+#![cfg(all(unix, feature = "camera"))]
 
 use std::sync::{Arc, RwLock};
 

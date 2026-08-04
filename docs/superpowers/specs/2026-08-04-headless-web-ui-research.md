@@ -138,3 +138,11 @@
 - pointer lock 在非聚焦/iframe/全屏下的行为差异；
 - `settings.toml` 并发写与损坏恢复；
 - “未指定设备即不连”是行为变更，需确认 CLI 默认（无 --serial/--camera）语义。
+
+## 9. #159 边界更新
+
+本调研中的 Web API、设备选择字段和会话行为保持不变。实现层已将设备列表改为注入
+`DeviceInventoryProvider`，把 `ipkvm-headless` 收敛为无硬件 Web/RFB library，并将正式
+后台、演示程序和 browser fixture 拆到独立 package。fixture 使用静态 provider，不枚举
+真实相机或串口；正式后台在组装层注入真实 provider。后续前端或浏览器契约测试应继续以
+`/api/devices` 的既有 JSON 结构为准，不直接依赖平台枚举实现。

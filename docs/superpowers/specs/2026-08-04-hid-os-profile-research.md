@@ -254,3 +254,10 @@ libinput list-devices
 - Web Pointer Lock：`crates/ipkvm-headless/web/modules/pointer.js`
 - noVNC 相对指针接入：`third_party/novnc/1.7.0/core/rfb.js`
 - RFB 相对指针社区扩展：`docs/references/rfbproto-community-spec.rst`
+
+## 2026-08-04 #159 边界更新
+
+profile、连接参数、设备选择引用和输入会话语义保持不变；与 UI 无关的配置、探测抽象、
+会话控制器和帧转换已迁入 `ipkvm-desktop-core`。`ipkvm-desktop` 只保留真实相机、CH9329
+串口和剪贴板 adapter，`ipkvm-desktop-iced` 通过 core 使用这些能力。该拆分不改变本文
+记录的 HID、Raw Input、绝对/相对指针和键盘映射结论。

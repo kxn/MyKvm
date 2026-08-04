@@ -19,6 +19,7 @@ use axum::{
     routing::{get, post},
 };
 use ipkvm_core::InputSink;
+use ipkvm_device::{DeviceInventoryProvider, SerialDevice, VideoDevice};
 use ipkvm_session::console_session::InputOfflineInfo;
 use ipkvm_session::session_manager::{SessionManager, SessionState};
 use ipkvm_video::{FrameSource, PixelFormat, VideoFrame, VideoSourceKind};
@@ -55,6 +56,8 @@ pub(super) struct ApiState<I: InputSink + Clone + Send + 'static> {
     pub(super) selection: tokio::sync::Mutex<Option<SessionSelection>>,
     /// 会话工厂：按请求中的设备选择构造帧源与 sink。
     pub(super) factory: Arc<dyn SessionFactory<I> + Send + Sync>,
+    /// 设备枚举 provider：只描述设备，不持有相机或串口句柄。
+    pub(super) device_provider: Arc<dyn DeviceInventoryProvider>,
     /// 运行时设置存储：`/api/settings` 读写 + 会话组装分层取默认值。
     pub(super) settings: Arc<SettingsStore>,
     /// 手动停止标记：`stop` 置位，`create`/`restart` 清除，恢复循环尊重。
@@ -100,6 +103,7 @@ impl<I: InputSink + Clone + Send + 'static> HeadlessWebService<I> {
         frame_source: Arc<SwitchableFrameSource>,
         manager: Arc<tokio::sync::Mutex<SessionManager<I>>>,
         factory: Arc<dyn SessionFactory<I> + Send + Sync>,
+        device_provider: Arc<dyn DeviceInventoryProvider>,
         event_publisher: watch::Receiver<Option<mpsc::Sender<RfbServerEvent>>>,
         config: RfbWebSocketConfig,
         shutdown: watch::Receiver<bool>,
@@ -115,6 +119,7 @@ impl<I: InputSink + Clone + Send + 'static> HeadlessWebService<I> {
             manager,
             selection: tokio::sync::Mutex::new(initial_selection),
             factory,
+            device_provider,
             settings,
             manual_stop,
         });
@@ -531,16 +536,12 @@ struct DeviceDto {
 }
 
 async fn api_devices<I: InputSink + Clone + Send + 'static>(
-    State(_state): State<Arc<ApiState<I>>>,
+    State(state): State<Arc<ApiState<I>>>,
 ) -> Response {
-    let video = match ipkvm_session::devices::list_video_devices() {
+    let video = match state.device_provider.list_video_devices() {
         Ok(devices) => devices
             .into_iter()
-            .map(|d| DeviceDto {
-                id: d.id,
-                display_name: d.display_name,
-                kind: "video",
-            })
+            .map(video_device_dto)
             .collect::<Vec<_>>(),
         Err(error) => {
             return json_error(
@@ -550,14 +551,10 @@ async fn api_devices<I: InputSink + Clone + Send + 'static>(
             );
         }
     };
-    let serial = match ipkvm_session::devices::list_serial_devices() {
+    let serial = match state.device_provider.list_serial_devices() {
         Ok(devices) => devices
             .into_iter()
-            .map(|d| DeviceDto {
-                id: d.path,
-                display_name: d.display_name,
-                kind: "serial",
-            })
+            .map(serial_device_dto)
             .collect::<Vec<_>>(),
         Err(error) => {
             return json_error(
@@ -574,6 +571,22 @@ async fn api_devices<I: InputSink + Clone + Send + 'static>(
         .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
         .body(Body::from(body))
         .expect("device list response headers are valid")
+}
+
+fn video_device_dto(device: VideoDevice) -> DeviceDto {
+    DeviceDto {
+        id: device.id,
+        display_name: device.display_name,
+        kind: "video",
+    }
+}
+
+fn serial_device_dto(device: SerialDevice) -> DeviceDto {
+    DeviceDto {
+        id: device.path,
+        display_name: device.display_name,
+        kind: "serial",
+    }
 }
 
 // ---- /api/session ----

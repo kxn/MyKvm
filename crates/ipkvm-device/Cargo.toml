@@ -1,0 +1,16 @@
+[package]
+name = "ipkvm-device"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[features]
+default = []
+platform = ["dep:ipkvm-video", "ipkvm-video/camera", "dep:serialport"]
+
+[dependencies]
+ipkvm-video = { path = "../ipkvm-video", optional = true }
+serialport = { workspace = true, optional = true }
+thiserror.workspace = true

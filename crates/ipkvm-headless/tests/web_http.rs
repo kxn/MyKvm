@@ -11,6 +11,7 @@ use std::{
 
 use futures_util::StreamExt;
 use ipkvm_core::{InputResult, InputSink, KeyEvent, MouseMode, PointerEvent};
+use ipkvm_device::StaticDeviceInventoryProvider;
 use ipkvm_headless::{
     frame_source::SwitchableFrameSource,
     rfb_connection::RfbConnectionGate,
@@ -260,6 +261,7 @@ impl ReleaseOrderWebServer {
             switchable,
             Arc::clone(&manager),
             factory,
+            Arc::new(StaticDeviceInventoryProvider::new(Vec::new(), Vec::new())),
             event_publisher,
             RfbWebSocketConfig::default(),
             shutdown_rx,
@@ -349,6 +351,7 @@ impl TestWebServer {
             switchable,
             Arc::clone(&manager),
             factory,
+            Arc::new(StaticDeviceInventoryProvider::new(Vec::new(), Vec::new())),
             manager.lock().await.event_publisher(),
             RfbWebSocketConfig::default(),
             shutdown_rx,
@@ -373,6 +376,28 @@ impl TestWebServer {
     }
 
     async fn start_with_frame(frame: Option<SharedVideoFrame>, auth: Option<String>) -> Self {
+        Self::start_with_frame_and_provider(
+            frame,
+            auth,
+            Arc::new(StaticDeviceInventoryProvider::new(
+                vec![ipkvm_device::VideoDevice {
+                    id: "cam0".into(),
+                    display_name: "Camera 0".into(),
+                }],
+                vec![ipkvm_device::SerialDevice {
+                    path: "COM9".into(),
+                    display_name: "CH9329".into(),
+                }],
+            )),
+        )
+        .await
+    }
+
+    async fn start_with_frame_and_provider(
+        frame: Option<SharedVideoFrame>,
+        auth: Option<String>,
+        device_provider: Arc<dyn ipkvm_device::DeviceInventoryProvider>,
+    ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let source = Arc::new(NamedFrameSource::new("initial", frame));
@@ -401,6 +426,7 @@ impl TestWebServer {
             switchable,
             Arc::clone(&manager),
             factory,
+            device_provider,
             event_publisher,
             RfbWebSocketConfig::default(),
             shutdown_rx,
@@ -762,14 +788,62 @@ async fn api_devices_returns_lists_with_video_and_serial_kinds() {
             .is_some_and(|value| value.starts_with("application/json"))
     );
     let body: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
-    // mock/无硬件环境下枚举可能返回空列表或失败；成功时结构必须正确。
     assert!(body["video"].is_array(), "video 字段必须是数组");
     assert!(body["serial"].is_array(), "serial 字段必须是数组");
-    // 若枚举到视频设备，每项必须有 id/display_name/kind 字段。
-    if let Some(device) = body["video"].as_array().unwrap().first() {
-        assert!(device["kind"] == "video");
-        assert!(device["display_name"].is_string());
-    }
+    assert_eq!(body["video"][0]["id"], "cam0");
+    assert_eq!(body["video"][0]["display_name"], "Camera 0");
+    assert_eq!(body["video"][0]["kind"], "video");
+    assert_eq!(body["serial"][0]["id"], "COM9");
+    assert_eq!(body["serial"][0]["display_name"], "CH9329");
+    assert_eq!(body["serial"][0]["kind"], "serial");
+
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn api_devices_maps_video_provider_error_to_503_json() {
+    let server = TestWebServer::start_with_frame_and_provider(
+        Some(test_frame()),
+        None,
+        Arc::new(StaticDeviceInventoryProvider::with_errors(
+            Some("camera unavailable"),
+            None,
+        )),
+    )
+    .await;
+
+    let response = server.request("GET", "/api/devices").await;
+    assert_eq!(response.status, 503);
+    let body: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
+    assert_eq!(body["error"], "video enumeration failed");
+    assert_eq!(
+        body["detail"],
+        "video device enumeration failed: camera unavailable"
+    );
+
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn api_devices_maps_serial_provider_error_to_503_json() {
+    let server = TestWebServer::start_with_frame_and_provider(
+        Some(test_frame()),
+        None,
+        Arc::new(StaticDeviceInventoryProvider::with_errors(
+            None,
+            Some("serial unavailable"),
+        )),
+    )
+    .await;
+
+    let response = server.request("GET", "/api/devices").await;
+    assert_eq!(response.status, 503);
+    let body: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
+    assert_eq!(body["error"], "serial enumeration failed");
+    assert_eq!(
+        body["detail"],
+        "serial device enumeration failed: serial unavailable"
+    );
 
     server.stop().await;
 }

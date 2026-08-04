@@ -150,6 +150,7 @@ mod tests {
     };
 
     use ipkvm_core::{InputResult, InputSink, KeyEvent, MouseMode, PointerEvent};
+    use ipkvm_device::StaticDeviceInventoryProvider;
     use ipkvm_session::{
         rfb_connection::RfbConnectionGate,
         session_manager::{SessionManager, SessionState},
@@ -227,6 +228,7 @@ mod tests {
             manager,
             selection: tokio::sync::Mutex::new(Some(SessionSelection::default())),
             factory: Arc::new(CountingFactory { builds }),
+            device_provider: Arc::new(StaticDeviceInventoryProvider::new(Vec::new(), Vec::new())),
             settings: Arc::new(settings),
             manual_stop: Arc::new(AtomicBool::new(false)),
         })

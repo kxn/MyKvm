@@ -2,7 +2,7 @@ pub mod clipboard;
 pub mod config;
 pub mod frame;
 pub mod probe;
-mod render;
+pub mod render;
 mod session;
 pub mod state;
 

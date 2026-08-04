@@ -9,16 +9,11 @@ rust-version.workspace = true
 [dependencies]
 arboard.workspace = true
 ipkvm-core = { path = "../ipkvm-core", features = ["serial"] }
+ipkvm-device = { path = "../ipkvm-device", features = ["platform"] }
+ipkvm-desktop-core = { path = "../ipkvm-desktop-core" }
 ipkvm-rfb = { path = "../ipkvm-rfb" }
-ipkvm-session = { path = "../ipkvm-session", features = ["serial"] }
-ipkvm-video = { path = "../ipkvm-video", features = ["mf"] }
+ipkvm-session = { path = "../ipkvm-session" }
+ipkvm-video = { path = "../ipkvm-video", features = ["camera"] }
 jpeg-encoder.workspace = true
-serde.workspace = true
 serialport.workspace = true
-sys-locale = "0.3.2"
 thiserror.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"] }
-toml.workspace = true
-
-[dev-dependencies]
-ipkvm-video = { path = "../ipkvm-video", features = ["mock"] }

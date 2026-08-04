@@ -3,6 +3,10 @@
 > 本文件是**新会话（或接手 agent）的第一份必读文件**。请先读 `AGENTS.md`（仓库自动化协作者规范），再读本文，然后按第 7 节执行。
 >
 > 更新（2026-08-04）：**M1–M5 已全部合入（PR #83/#84/#85/#86/#161），#82 正在依据各阶段证据收口**；正式 iced 桌面端接管发布入口，旧 UI 和迁移 spike 已退役。
+>
+> #159 边界更新：headless app/demo/browser fixture 已拆为独立 package，`ipkvm-device`
+> 提供设备 provider，`ipkvm-desktop-core` 提供无硬件桌面逻辑；实现、验证、PR 和 issue
+> 收口完成前，不要把旧的 `cargo run -p ipkvm-headless --features demo` 命令当作现行入口。
 
 ## 1. 仓库与环境
 
@@ -117,7 +121,16 @@
   运行 `my_ipkvm-headless.exe` 后浏览器开 http://127.0.0.1:6080。
 - 遗留：#140 复评 2 项 Minor 建议记录在台账。
 
-## 11. 常用命令
+## 11. #159 crate 边界与现行入口
+
+- 正式后台：`cargo run -p ipkvm-headless-app --bin ipkvm-headless`。
+- Y4M 演示：`cargo run -p ipkvm-headless-demo --bin ipkvm-demo`。
+- 浏览器夹具：`cargo build -p ipkvm-browser-fixture --bin ipkvm-browser-fixture`。
+- 无硬件边界检查：`powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-crate-boundaries.ps1`。
+- 生产体积测量按 app、demo、fixture 和 iced 四个实际 binary 分别记录，不能把 library 或旧
+  `demo` feature 的构建结果当作正式后台体积。
+
+## 12. 常用命令
 
 ```powershell
 # tea 写中文前（AGENTS.md 强制）

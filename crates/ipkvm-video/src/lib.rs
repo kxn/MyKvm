@@ -1,19 +1,19 @@
 //! 视频采集抽象。
 
-#[cfg(feature = "mf")]
+#[cfg(feature = "camera")]
 pub mod camera;
 // Linux/macOS nokhwa 后端（Windows 不编译，Windows 用 DirectShow sink filter）。
-#[cfg(all(unix, feature = "mf"))]
+#[cfg(all(unix, feature = "camera"))]
 pub mod camera_nokhwa;
-#[cfg(feature = "mf")]
+#[cfg(feature = "camera")]
 pub mod dshow_sink;
-#[cfg(feature = "mock")]
+#[cfg(feature = "assets")]
 pub mod file_source;
-#[cfg(feature = "mock")]
+#[cfg(feature = "assets")]
 pub mod looping;
-#[cfg(feature = "mock")]
+#[cfg(feature = "test-support")]
 pub mod mock;
-#[cfg(feature = "mock")]
+#[cfg(feature = "assets")]
 pub mod y4m;
 
 use std::sync::Arc;
@@ -158,7 +158,7 @@ mod tests {
         assert!(Arc::ptr_eq(&frame.data, &bytes));
     }
 
-    #[cfg(feature = "mock")]
+    #[cfg(feature = "test-support")]
     #[test]
     fn frame_sources_are_send_and_sync() {
         fn assert_send_sync<T: FrameSource + Send + Sync>() {}
@@ -166,7 +166,7 @@ mod tests {
         assert_send_sync::<crate::mock::MockFrameSource>();
     }
 
-    #[cfg(feature = "mock")]
+    #[cfg(feature = "test-support")]
     #[test]
     fn mock_frame_source_shares_latest_frame_with_subscribers() {
         use crate::mock::MockFrameSource;
@@ -189,7 +189,7 @@ mod tests {
         assert!(Arc::ptr_eq(receiver.borrow().as_ref().unwrap(), &frame));
     }
 
-    #[cfg(feature = "mock")]
+    #[cfg(feature = "test-support")]
     #[test]
     fn mock_frame_source_reports_generated_kind() {
         use crate::mock::MockFrameSource;
@@ -199,7 +199,7 @@ mod tests {
         assert_eq!(info.kind, crate::VideoSourceKind::Generated);
     }
 
-    #[cfg(feature = "mock")]
+    #[cfg(feature = "test-support")]
     #[test]
     fn mock_frame_source_retains_frame_published_before_subscription() {
         use crate::mock::MockFrameSource;

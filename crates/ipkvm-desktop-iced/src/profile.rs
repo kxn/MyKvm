@@ -1,6 +1,6 @@
 //! profile 应用与固化（M2）：把 profile 应用到连接选择、把当前选择固化为 profile。
 
-use ipkvm_desktop::config::{ConnectionSettings, DeviceRef, Profile};
+use ipkvm_desktop_core::config::{ConnectionSettings, DeviceRef, Profile};
 
 use crate::connect::{ControlProbeStatus, DeviceOption, DeviceSelectionState, VideoProbeStatus};
 
@@ -119,7 +119,7 @@ mod tests {
         ControlInfo, ControlProbeStatus, DeviceOption, DeviceSelectionState, PreviewInfo,
         VideoProbeStatus,
     };
-    use ipkvm_desktop::config::{ConnectionSettings, DeviceRef, Profile};
+    use ipkvm_desktop_core::config::{ConnectionSettings, DeviceRef, Profile};
 
     fn option(id: &str, label: &str) -> DeviceOption {
         DeviceOption {

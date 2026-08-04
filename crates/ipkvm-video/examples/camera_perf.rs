@@ -1,7 +1,7 @@
 //! 相机性能探测：测采集 CPU 占用与帧率。
 //! --idle : 仅 open（启动采集线程）后纯睡眠，不读帧，验证采集线程空闲 CPU。
 //! 默认   : 订阅统计帧率（订阅侧轮询开销另算）。
-//! 用法：cargo run -p ipkvm-video --example camera_perf --features mf [--idle]
+//! 用法：cargo run -p ipkvm-video --example camera_perf --features camera [--idle]
 
 use ipkvm_video::FrameSource;
 use std::time::Duration;

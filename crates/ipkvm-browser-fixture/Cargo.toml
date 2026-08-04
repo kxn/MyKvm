@@ -1,0 +1,22 @@
+[package]
+name = "ipkvm-browser-fixture"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ipkvm-core = { path = "../ipkvm-core", features = ["test-support"] }
+ipkvm-device = { path = "../ipkvm-device" }
+ipkvm-headless = { path = "../ipkvm-headless" }
+ipkvm-video = { path = "../ipkvm-video", features = ["test-support"] }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync"] }
+
+[[bin]]
+name = "ipkvm-browser-fixture"
+path = "src/main.rs"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["process", "time"] }

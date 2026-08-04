@@ -3,10 +3,13 @@ mod geometry;
 mod input;
 mod serial;
 
+/// CH9329 默认波特率。该协议常量不依赖具体串口实现，因此在无硬件 core 中可用。
+pub const DEFAULT_BAUD_RATE: u32 = 9_600;
+
 #[cfg(feature = "serial")]
 mod serial_port;
 
-#[cfg(any(test, feature = "mock"))]
+#[cfg(any(feature = "test-support", test))]
 pub mod fake_serial;
 
 pub use ch9329::{
@@ -26,7 +29,7 @@ pub use serial::{
 };
 
 #[cfg(feature = "serial")]
-pub use serial_port::{DEFAULT_BAUD_RATE, SerialCommandQueue, SerialCommandQueueError};
+pub use serial_port::{SerialCommandQueue, SerialCommandQueueError};
 
 #[cfg(test)]
 mod tests {

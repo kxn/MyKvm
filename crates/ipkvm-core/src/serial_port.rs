@@ -17,9 +17,6 @@ use serialport::SerialPort;
 
 use crate::{CommandBatch, CommandQueue, CommandQueueError, QueueStats};
 
-/// CH9329 出厂默认波特率。
-pub const DEFAULT_BAUD_RATE: u32 = 9600;
-
 /// 帧间保守延时（多帧 batch 内，每帧写完后等一会再写下一帧）。
 const DEFAULT_INTER_FRAME_DELAY: Duration = Duration::from_millis(2);
 
@@ -73,7 +70,7 @@ impl SerialCommandQueue {
 
     /// 用默认波特率（9600）打开。
     pub fn open_default(path: &str) -> Result<Self, SerialCommandQueueError> {
-        Self::open(path, DEFAULT_BAUD_RATE)
+        Self::open(path, crate::DEFAULT_BAUD_RATE)
     }
 }
 
@@ -127,7 +124,7 @@ mod tests {
     #[test]
     fn default_baud_rate_is_9600() {
         // 回归：CH9329 出厂默认 9600，常被误记为 115200。
-        assert_eq!(DEFAULT_BAUD_RATE, 9600);
+        assert_eq!(crate::DEFAULT_BAUD_RATE, 9600);
     }
 
     #[test]

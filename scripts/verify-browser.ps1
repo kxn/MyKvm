@@ -26,8 +26,7 @@ function Get-FixtureExecutable {
         $ErrorActionPreference = "Continue"
         $lines = @(
             & cargo build `
-                -p ipkvm-headless `
-                --features browser-fixture `
+                -p ipkvm-browser-fixture `
                 --bin ipkvm-browser-fixture `
                 --message-format=json-render-diagnostics
         )
@@ -84,28 +83,23 @@ function Assert-FixtureFeatureBoundary {
         throw "Cargo metadata failed with exit code $exitCode"
     }
     $metadata = $json | ConvertFrom-Json
-    $headless = @(
+    $fixturePackage = @(
         $metadata.packages |
-            Where-Object { $_.name -eq "ipkvm-headless" }
+            Where-Object { $_.name -eq "ipkvm-browser-fixture" }
     )
-    if ($headless.Count -ne 1) {
-        throw "Expected one ipkvm-headless package in Cargo metadata"
+    if ($fixturePackage.Count -ne 1) {
+        throw "Expected one ipkvm-browser-fixture package in Cargo metadata"
     }
     $fixture = @(
-        $headless[0].targets |
+        $fixturePackage[0].targets |
             Where-Object { $_.name -eq "ipkvm-browser-fixture" }
     )
     if ($fixture.Count -ne 1) {
         throw "Expected one ipkvm-browser-fixture target"
     }
     $requiredFeatures = @($fixture[0]."required-features")
-    if (
-        $requiredFeatures.Count -ne 1 -or
-        $requiredFeatures[0] -ne "browser-fixture"
-    ) {
-        throw (
-            "Browser fixture must require exactly the browser-fixture feature"
-        )
+    if ($requiredFeatures.Count -ne 0) {
+        throw "Browser fixture must not require a package feature"
     }
 }
 

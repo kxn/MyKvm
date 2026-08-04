@@ -41,8 +41,7 @@ get_fixture_executable() {
 
     # 注意：即便诊断信息输出到 stderr，cargo 仍以 0 退出码表示成功。
     mapfile -t lines < <(cargo build \
-        -p ipkvm-headless \
-        --features browser-fixture \
+        -p ipkvm-browser-fixture \
         --bin ipkvm-browser-fixture \
         --message-format=json-render-diagnostics)
 
@@ -86,7 +85,7 @@ PY
 
 # ---------------------------------------------------------------------------
 # assert_fixture_feature_boundary 对应 Assert-FixtureFeatureBoundary：
-# 用 cargo metadata 断言 ipkvm-browser-fixture 仅要求 browser-fixture 特性。
+# 用 cargo metadata 断言 ipkvm-browser-fixture 是独立 package 且不要求 feature。
 # ---------------------------------------------------------------------------
 assert_fixture_feature_boundary() {
     local py json
@@ -99,21 +98,19 @@ import json
 import sys
 
 data = json.loads(sys.argv[1])
-headless = [p for p in data.get("packages", []) if p.get("name") == "ipkvm-headless"]
-if len(headless) != 1:
-    raise SystemExit("Expected one ipkvm-headless package in Cargo metadata")
+fixture_package = [p for p in data.get("packages", []) if p.get("name") == "ipkvm-browser-fixture"]
+if len(fixture_package) != 1:
+    raise SystemExit("Expected one ipkvm-browser-fixture package in Cargo metadata")
 
 targets = [
-    t for t in headless[0].get("targets", []) if t.get("name") == "ipkvm-browser-fixture"
+    t for t in fixture_package[0].get("targets", []) if t.get("name") == "ipkvm-browser-fixture"
 ]
 if len(targets) != 1:
     raise SystemExit("Expected one ipkvm-browser-fixture target")
 
 required = targets[0].get("required-features", [])
-if len(required) != 1 or required[0] != "browser-fixture":
-    raise SystemExit(
-        "Browser fixture must require exactly the browser-fixture feature"
-    )
+if required:
+    raise SystemExit("Browser fixture must not require a package feature")
 PY
 }
 

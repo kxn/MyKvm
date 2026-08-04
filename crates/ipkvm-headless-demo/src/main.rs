@@ -3,7 +3,7 @@
 //! 用法：
 //!
 //! ```text
-//! cargo run -p ipkvm-headless --features demo --bin ipkvm-demo \
+//! cargo run -p ipkvm-headless-demo --bin ipkvm-demo \
 //!     --assets .cache/demo-assets --tcp 5900 --fps 10
 //! ```
 //!

@@ -17,6 +17,7 @@ use std::{
 
 use futures_util::StreamExt;
 use ipkvm_core::{Ch9329InputSink, MouseMode, fake_serial::FakeCommandQueue};
+use ipkvm_device::StaticDeviceInventoryProvider;
 use ipkvm_headless::{
     frame_source::SwitchableFrameSource,
     rfb_connection::RfbConnectionGate,
@@ -92,6 +93,7 @@ impl HeadlessAssembly {
             switchable_source,
             manager,
             factory,
+            Arc::new(StaticDeviceInventoryProvider::new(Vec::new(), Vec::new())),
             event_publisher,
             RfbWebSocketConfig::default(),
             shutdown_rx.clone(),

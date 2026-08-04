@@ -7,20 +7,19 @@ repository.workspace = true
 rust-version.workspace = true
 
 [features]
-serial = ["dep:serialport"]
+# 历史兼容别名：设备枚举已迁出，本 feature 不再拉入任何硬件依赖。
+serial = []
 
 [dependencies]
 ipkvm-core = { path = "../ipkvm-core" }
 ipkvm-rfb = { path = "../ipkvm-rfb" }
-ipkvm-video = { path = "../ipkvm-video", features = ["mf"] }
-serialport = { workspace = true, optional = true }
+ipkvm-video = { path = "../ipkvm-video" }
 thiserror.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt", "sync"] }
 
 [dev-dependencies]
 cipher.workspace = true
 des.workspace = true
-ipkvm-core = { path = "../ipkvm-core", features = ["mock"] }
-ipkvm-video = { path = "../ipkvm-video", features = ["mock"] }
+ipkvm-core = { path = "../ipkvm-core", features = ["test-support"] }
+ipkvm-video = { path = "../ipkvm-video", features = ["test-support"] }
 tokio = { workspace = true, features = ["rt-multi-thread", "test-util"] }
-

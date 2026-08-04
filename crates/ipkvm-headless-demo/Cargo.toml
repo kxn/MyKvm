@@ -1,0 +1,17 @@
+[package]
+name = "ipkvm-headless-demo"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ipkvm-core = { path = "../ipkvm-core", features = ["test-support"] }
+ipkvm-headless = { path = "../ipkvm-headless" }
+ipkvm-video = { path = "../ipkvm-video", features = ["assets"] }
+tokio = { workspace = true, features = ["macros", "net", "rt-multi-thread", "signal", "sync"] }
+
+[[bin]]
+name = "ipkvm-demo"
+path = "src/main.rs"

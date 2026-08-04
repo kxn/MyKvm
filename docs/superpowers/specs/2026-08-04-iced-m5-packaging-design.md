@@ -90,3 +90,10 @@ Windows 入口继续使用 `windows_subsystem = "windows"`，确保双击 releas
 - `scripts/`：新增退役门禁和 Windows release 启动冒烟；
 - `docs/superpowers/specs/2026-08-03-iced-migration-design.md`、`HANDOFF.md`、`README.md`：同步 M5 验收标准和发布入口；
 - Gitea #79/#82：PR 描述提供测试证据，#82 在 M5 验收完成后关闭。
+
+## #159 后续边界收敛
+
+M5 已完成 egui/spike 退役；#159 在不改变 iced 行为的前提下继续拆出
+`ipkvm-desktop-core`。本设计中原先“`ipkvm-desktop` 不新建 core”的决策被 #159
+设计文档 supersede：production adapter 仍叫 `ipkvm-desktop`，纯逻辑和依赖门禁改以
+`ipkvm-desktop-core` 为边界。M5 的无 egui 门禁和 Windows release 启动冒烟继续有效。

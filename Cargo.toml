@@ -2,12 +2,17 @@
 resolver = "3"
 members = [
     "crates/ipkvm-core",
+    "crates/ipkvm-device",
     "crates/ipkvm-video",
     "crates/ipkvm-session",
     "crates/ipkvm-rfb",
-    "crates/ipkvm-desktop",
-    "crates/ipkvm-desktop-iced",
     "crates/ipkvm-headless",
+    "crates/ipkvm-headless-app",
+    "crates/ipkvm-headless-demo",
+    "crates/ipkvm-browser-fixture",
+    "crates/ipkvm-desktop",
+    "crates/ipkvm-desktop-core",
+    "crates/ipkvm-desktop-iced",
 ]
 exclude = ["third_party/iced_aw"]
 
