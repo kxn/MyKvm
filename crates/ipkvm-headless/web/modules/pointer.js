@@ -28,14 +28,32 @@ export class PointerController {
   }
 
   setRfb(rfb) {
+    const previousCanvas = this.rfb?.canvas;
+    if (typeof previousCanvas?.removeEventListener === "function") {
+      previousCanvas.removeEventListener(
+        "mousedown",
+        this.onCanvasMouseDown,
+        true,
+      );
+    }
     this.rfb = rfb;
     if (rfb) {
+      if (typeof rfb.canvas?.addEventListener === "function") {
+        rfb.canvas.addEventListener("mousedown", this.onCanvasMouseDown, true);
+      }
       rfb.setRelativeSensitivity(this.sensitivity);
     } else {
       this.exit();
     }
     this.update();
   }
+
+  onCanvasMouseDown = (event) => {
+    if (!this.selectedRelative || this.locked || !this.supported || !this.rfb) {
+      return;
+    }
+    void this.toggle(event);
+  };
 
   applySettings(settings) {
     this.settings = settings;
