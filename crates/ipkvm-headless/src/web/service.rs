@@ -688,6 +688,12 @@ async fn api_session<I: InputSink + Clone + Send + 'static>(
         "stop" => match manager.stop() {
             Ok(()) => {
                 manager.wait_stopped().await;
+                // 断开必须真正释放采集：销毁会话并把帧源切回空源，
+                // 否则相机/素材源仍被持有，持续采集浪费 CPU。
+                let _ = manager.stop_and_destroy().await;
+                state
+                    .frame_source
+                    .set_current(Arc::new(EmptyFrameSource::new()));
                 state.manual_stop.store(true, Ordering::Relaxed);
                 json_session_state(&manager)
             }
