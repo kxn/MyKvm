@@ -40,6 +40,9 @@ export class StatusController {
     this.status = null;
     this.failures = 0;
     this.currentView = null;
+    // 手动切回连接页（会话仍 running）时置 override：状态轮询不再自动切回
+    // 视频页，直到用户重新连接（clearViewOverride）。
+    this.viewOverride = null;
     this.timer = null;
     this.running = false;
   }
@@ -58,6 +61,14 @@ export class StatusController {
       clearTimeout(this.timer);
       this.timer = null;
     }
+  }
+
+  setViewOverride(view) {
+    this.viewOverride = view;
+  }
+
+  clearViewOverride() {
+    this.viewOverride = null;
   }
 
   schedule(delayMs) {
@@ -80,11 +91,15 @@ export class StatusController {
       this.status = status;
       this.onStatus?.(status);
       const { view, reason } = resolveView(status);
-      if (view !== this.currentView) {
-        this.currentView = view;
-        this.onViewChange?.(view, reason);
+      const targetView = this.viewOverride ?? view;
+      if (targetView !== this.currentView) {
+        this.currentView = targetView;
+        this.onViewChange?.(
+          targetView,
+          this.viewOverride !== null ? REASON.SWITCH : reason,
+        );
       }
-      return view === VIEW.VIDEO ? 2000 : 1000;
+      return targetView === VIEW.VIDEO ? 2000 : 1000;
     } catch (error) {
       this.failures += 1;
       this.onError?.(error);

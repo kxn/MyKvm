@@ -4,11 +4,12 @@ import { errorText, getJson, postJson } from "./api.js";
 import { t } from "./i18n.js";
 
 export class ConnectionController {
-  constructor({ elements, getStatus, onMessage, onSettingsSummary }) {
+  constructor({ elements, getStatus, onMessage, onSettingsSummary, onConnected }) {
     this.el = elements;
     this.getStatus = getStatus;
     this.onMessage = onMessage;
     this.onSettingsSummary = onSettingsSummary;
+    this.onConnected = onConnected;
     this.devices = { video: [], serial: [] };
 
     this.el.refreshVideo.addEventListener("click", () => this.refresh("video"));
@@ -70,6 +71,7 @@ export class ConnectionController {
     );
     try {
       await postJson("/api/session", { action, video, serial });
+      this.onConnected?.();
     } catch (error) {
       this.onMessage(`${t("connection.connectFailed")}：${errorText(error)}`, "error");
       this.updateConnectState();

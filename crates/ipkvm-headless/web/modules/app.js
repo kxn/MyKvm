@@ -114,6 +114,15 @@ export function initApp(root) {
     if (status?.session?.state !== "running") {
       return;
     }
+    if (el.videoView.hidden) {
+      // 手动切回连接页（会话仍 running）：不自动重连；保持 idle 等待用户操作。
+      if (rfb || rfbState === "connecting") {
+        disconnectRfb();
+      } else {
+        rfbState = "idle";
+      }
+      return;
+    }
     if (rfb || rfbState === "connecting") {
       return;
     }
@@ -204,6 +213,8 @@ export function initApp(root) {
       rfbNextRetryAt = Date.now() + rfbBackoffMs;
       rfbBackoffMs = Math.min(rfbBackoffMs * 2, 30000);
       rfb = null;
+      cleanupRfbDom();
+      pointer.setRfb(null);
       message(`${t("video.rfbFailed")}：${errorText(error)}`, "error");
     }
   };
@@ -220,6 +231,7 @@ export function initApp(root) {
     cleanupRfbDom();
     rfbState = "idle";
     rfbNextRetryAt = 0;
+    rfbBackoffMs = 2000;
   };
 
   const showConnectionReason = (reason) => {
@@ -307,6 +319,7 @@ export function initApp(root) {
   const connection = new ConnectionController({
     elements: el,
     getStatus: () => lastStatus,
+    onConnected: () => statusController.clearViewOverride(),
     onMessage: (text, level) => {
       el.connectionMessage.textContent = text;
       if (level) {
@@ -375,6 +388,7 @@ export function initApp(root) {
 
   el.toolbarConnect.addEventListener("click", () => {
     if (!el.videoView.hidden) {
+      statusController.setViewOverride(VIEW.CONNECTION);
       setView(VIEW.CONNECTION, REASON.SWITCH);
     }
   });

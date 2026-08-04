@@ -598,6 +598,50 @@ async function run() {
     );
     await connectSession(page);
 
+    // ---- 手动切回连接页（会话仍 running）：不自动重连、控制器保持空闲 ----
+    const switchMarker = fixture.lines.mark();
+    await page.locator("#toolbar-connect").click();
+    await page
+      .locator("#connection-view:not([hidden])")
+      .waitFor({ state: "attached" });
+    await fixture.lines.waitForLine(
+      (line) => line === "CONTROLLER_RELEASED",
+      "controller release after manual switch to connection page",
+      switchMarker,
+    );
+    assert.equal(
+      await page.locator("#screen canvas").count(),
+      0,
+      "old RFB DOM should be removed after switching to the connection page",
+    );
+    await page.waitForTimeout(2500);
+    assert.deepEqual(
+      browserErrors,
+      [],
+      "no RFB retry or 409/1006 while the session is running on the connection page",
+    );
+    // 控制器保持空闲：另一标签可接管。
+    const taker = await openConsole(browser, url);
+    contexts.push(taker.context);
+    await taker.page
+      .locator("#video-view:not([hidden])")
+      .waitFor({ state: "attached" });
+    await taker.page
+      .locator('#console[data-connection-state="connected"]')
+      .waitFor({ state: "attached", timeout: DEADLINE_MS });
+    await taker.page.waitForFunction(() => {
+      const canvas = document.querySelector("#screen canvas");
+      return (
+        canvas instanceof HTMLCanvasElement &&
+        canvas.width === 320 &&
+        canvas.height === 180
+      );
+    });
+    await taker.context.close();
+    // 回到视频页：连接按钮（restart）恢复本页控制。
+    await page.locator("#connect-button").click();
+    await waitForVideoView(page);
+
     // ---- 单控制器竞态：显式断言 409/1006 且失败后不再盲试 ----
     let mockStatusBusy = true;
     const race = await openConsole(browser, url, {
