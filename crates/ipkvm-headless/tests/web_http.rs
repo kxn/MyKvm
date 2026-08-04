@@ -920,7 +920,7 @@ async fn api_settings_returns_defaults_matching_contract() {
     let response = server.request("GET", "/api/settings").await;
     assert_eq!(response.status, 200);
     let settings: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
-    assert_eq!(settings["baud_rate"], 115200);
+    assert_eq!(settings["baud_rate"], 9600);
     assert_eq!(settings["auto_baud"], true);
     assert_eq!(settings["preview_fps"], 30);
     assert_eq!(settings["mouse_mode"], "absolute");

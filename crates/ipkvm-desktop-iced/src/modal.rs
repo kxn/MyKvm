@@ -53,7 +53,7 @@ impl Default for ModalState {
             baud_rate: ipkvm_core::DEFAULT_BAUD_RATE,
             preview_fps: 30,
             auto_baud: true,
-            mouse_mode: MouseMode::Relative,
+            mouse_mode: MouseMode::Absolute,
             relative_sensitivity: 1.0,
             baud_text: ipkvm_core::DEFAULT_BAUD_RATE.to_string(),
             fps_text: "30".to_string(),

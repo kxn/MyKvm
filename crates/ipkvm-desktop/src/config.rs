@@ -42,9 +42,9 @@ impl Default for ConnectionSettings {
     fn default() -> Self {
         Self {
             baud_rate: ipkvm_core::DEFAULT_BAUD_RATE,
-            // BIOS/启动菜单把绝对 HID 固定映射到 1024×768，绝对模式无法覆盖
-            // 全屏；默认相对模式保证开箱可用，进系统后 Ctrl+Alt+M 切绝对。
-            mouse_mode: MouseMode::Relative,
+            // 默认绝对模式（进系统体验更好）；BIOS/启动菜单若绝对 HID 映射不对，
+            // 用 Ctrl+Alt+M 切相对模式。
+            mouse_mode: MouseMode::Absolute,
             preview_fps: 30,
             relative_sensitivity: 1.0,
             auto_baud: true,
@@ -361,6 +361,14 @@ mod tests {
         let text = toml::to_string(&settings).unwrap();
         let parsed: ConnectionSettings = toml::from_str(&text).unwrap();
         assert_eq!(parsed, settings);
+    }
+
+    #[test]
+    fn default_mouse_mode_is_absolute() {
+        assert_eq!(
+            ConnectionSettings::default().mouse_mode,
+            MouseMode::Absolute
+        );
     }
 
     #[test]
