@@ -1,0 +1,251 @@
+# headless Web 控制台设计（浏览器版全对齐）
+
+> 关联：Gitea `kxn/my_ipkvm`；本文是 headless 浏览器版 UI 的长期事实来源。
+> 前置调研：`crates/ipkvm-headless/src/web/service.rs`、`recovery.rs`、`config.rs`、
+> `browser-tests/`、`third_party/novnc/1.7.0/core/rfb.js`。
+
+## 1. 背景与目标
+
+headless 版目前只有极简页面：一条状态栏（连接状态/重连/断开/许可证）+ noVNC 画布，
+打开即连 `/rfb`，没有设备选择、设置、菜单、状态细节。后端已有
+`GET /api/status`、`GET /api/devices`、`POST /api/session`（restart/create/stop）、
+`GET /api/screenshot`，以及会话自动恢复循环。
+
+目标：把浏览器版做成与桌面 iced 端功能**全对齐**的控制台，但按浏览器惯例组织 UI：
+
+- 连接页：设备选择/探测/连接（无配置或要切换设备时）；
+- 设置：单层弹层（连接参数默认值 + 缩放），不做 profile；
+- 会话：配置指定设备 → 服务端自动连；未指定 → 显示连接页；
+- 输入：全量特殊键菜单（浏览器会拦截的组合）、绝对/相对鼠标（相对用 pointer lock）、粘贴；
+- 截图：下载为主、复制到剪贴板为辅；
+- 状态：轮询 `/api/status`，多标签状态一致；
+- 语言：跟随浏览器 + 工具栏手动切换。
+
+## 2. 明确不做（YAGNI）
+
+- 不做桌面式菜单栏：用 Web 惯例顶部工具栏 + 下拉/弹层（用户已确认）。
+- 不做 profile 保存/加载/最近使用：机器级配置由服务端 config + 运行时设置承担。
+- 不引入前端构建链/CDN/运行时 npm 依赖：继续纯原生 ES 模块 + `include_dir` 嵌入。
+- 不重写 noVNC：保留上游，相对鼠标扩展走本地 patch（见 §7.3）。
+
+## 3. 总体架构
+
+```
+浏览器（原生 ES 模块，无构建）
+  ├─ index.html / app.css / app.js（入口与装配）
+  ├─ modules/：toolbar / connection / video / settings / special-keys /
+  │            status / session / screenshot / i18n / input
+  ├─ /vendor/novnc/…（noVNC 画布与键盘/指针，本地最小 patch）
+  └─ fetch 调用后端 JSON API；画布走 /rfb WebSocket
+服务端（axum，已有）
+  ├─ 静态资源 include_dir
+  ├─ /api/status /api/devices /api/screenshot（已有）
+  ├─ /api/session（已有，需补语义：手动停止标记，见 §6.3）
+  └─ /api/settings（新增：GET/POST 运行时设置）
+```
+
+数据流：
+
+- 页面轮询 `GET /api/status`（连接页 1s、视频页 2s；失败退避 5s）驱动视图与状态栏；
+- 连接/切换设备 = `POST /api/session`（restart/create），断开 = `stop`；
+- 设置读写 = `GET/POST /api/settings`；
+- 画面与按键（可转发部分）走 noVNC `/rfb`；被浏览器拦截的组合走特殊键菜单。
+
+## 4. 页面与组件
+
+### 4.1 顶部工具栏（常驻）
+
+- 左侧：标题 + 会话状态指示（运行中/停止/恢复中/错误 + 当前设备摘要）；
+- 按钮组：连接/断开、设置、特殊键▾、截图▾、语言▾、许可证链接。
+
+### 4.2 连接页（会话不存在或用户点“连接/切换设备”时显示）
+
+- 视频设备下拉 + 刷新 + 探测状态；
+- 串口（CH9329）下拉 + 刷新 + 探测状态；
+- “连接”按钮（两者就绪才亮）；
+- 连接参数只读摘要（来自设置，避免与设置弹层重复编辑）。
+
+### 4.3 视频页（会话运行中）
+
+- noVNC 画布（缩放适配、点击聚焦）；
+- 底部状态栏：视频分辨率、控制设备、会话状态/错误、串口统计、输入统计、消息。
+
+### 4.4 设置弹层（单层）
+
+字段（对齐桌面表单，服务端保存）：
+
+- 波特率 1200..=115200（数字输入）；
+- 自动波特率（布尔）；
+- 预览 FPS 1..=60；
+- 默认鼠标模式（绝对/相对，**浏览器默认绝对**）；
+- 相对灵敏度 0.1..=5.0；
+- 缩放模式（适配窗口/原始大小/窗口跟随视频）；
+- 恢复默认值按钮。
+
+### 4.5 特殊键弹层（全量）
+
+分组（详见 §7.1 按键表）：桌面四键、标签页类、刷新/导航类、开发者/查看类、其它。
+
+### 4.6 截图
+
+- “保存截图”：请求 `/api/screenshot` → `image/jpeg` → `<a download>` 下载；
+- “复制截图”：`ClipboardItem`（需 secure context + 用户手势，失败提示）；
+- 无帧（`/api/status.video.frame == null`）时两项置灰。
+
+### 4.7 语言
+
+- 默认 `navigator.language`（zh 系 → zh-CN，否则 en）；
+- 工具栏切换（中文/English/跟随浏览器），选择存 localStorage；
+- 文案走 `modules/i18n.js`（zh/en 两份对象，不引第三方 i18n）。
+
+## 5. 会话与自动连接（混合策略）
+
+### 5.1 服务端启动
+
+- 配置（CLI 或 config 文件）指定了视频/串口 → 启动即建会话（沿用现有 `create` 路径）；
+- 未指定 → 不建会话（`absent`），Web 显示连接页；
+- 自动恢复循环维持现有语义，并新增“手动停止”保护（§6.3）。
+
+### 5.2 Web 连接/切换
+
+- 连接页点“连接” = `POST /api/session {"action":"create"}`（absent 时）或
+  `{"action":"restart","video":…,"serial":…}`（切换设备）；
+- 工具栏“断开” = `POST /api/session {"action":"stop"}`，并标记手动停止；
+- 切换设备失败：服务端现有“回滚上一会话选择”逻辑保留，前端展示错误原因并回到连接页。
+
+### 5.3 视图状态机
+
+```
+absent/stopped（非手动） ──连接──▶ running ──断开/设备切换──▶ …
+      │                                   │
+      └──── 连接页 ◀──被切换/停止/失败────┘
+running 且多标签：状态轮询驱动；任一标签断开/切换，其它标签同步回连接页并提示原因。
+```
+
+## 6. API 契约
+
+### 6.1 现有接口（沿用）
+
+- `GET /api/status` → `{service, video:{source,frame,stalled}, controller, session:{state,stats,serial,input_offline}}`；
+- `GET /api/devices` → `{video:[{id,display_name}], serial:[{id,display_name}]}`；
+- `GET /api/screenshot` → JPEG（无帧 503）；
+- `POST /api/session`：`create`（仅 absent）、`restart`（带 video/serial 覆盖，失败回滚）、`stop`。
+
+### 6.2 新增 `GET/POST /api/settings`
+
+DTO（与设置弹层字段一致）：
+
+```json
+{
+  "baud_rate": 115200,
+  "auto_baud": true,
+  "preview_fps": 30,
+  "mouse_mode": "absolute",
+  "relative_sensitivity": 1.0,
+  "scale_mode": "fit_window"
+}
+```
+
+持久化：写运行时设置文件（见 §8），不覆盖用户 `--config` 文件。
+
+### 6.3 `/api/session` 语义补充（设计问题，见 §11）
+
+- `stop` 需携带/设置“手动停止”标记，使恢复循环不复活手动停止的会话；
+- “手动停止”只在下次 `create/restart` 或服务重启时清除；
+- 恢复循环仅在非手动停止且满足既有条件（输入离线 / 视频从未出帧）时重建。
+
+## 7. 输入设计
+
+### 7.1 键盘与特殊键
+
+浏览器保留快捷键不可靠拦截，分两类：
+
+- **页面可拦截**（keydown capture + `preventDefault` 后走 noVNC 转发）：普通键、
+  常见组合（Ctrl+C/V/X、方向键、F 键等）；
+- **浏览器/OS 保留、必须靠菜单**：
+  - 标签页/窗口：Ctrl+W、Ctrl+T、Ctrl+N、Ctrl+Shift+T、Ctrl+Tab/Ctrl+Shift+Tab、
+    Ctrl+Shift+N；
+  - 刷新/导航：F5、Ctrl+R、Ctrl+Shift+R、Alt+←/→；
+  - 开发者/查看：Ctrl+Shift+I/J/C、Ctrl+U、F11、F1；
+  - 其它：Ctrl+P/S/F/H/D/O、Ctrl+Shift+Delete；
+  - OS 级：Ctrl+Alt+Del、Win、Alt+Tab、PrintScreen。
+
+特殊键菜单 = 桌面四键 + 上述浏览器保留组合；菜单项复用现有
+`special_key_sequence` 式的“按键序列发送”通道（Web 端实现为 noVNC `sendKey` 序列）。
+
+### 7.2 鼠标
+
+- 默认绝对模式（设置可改默认值）：noVNC 原生绝对指针，点击画布直接发送；
+- 相对模式：进入视频区 `requestPointerLock()`（用户手势内），锁定后把
+  `movementX/Y` 增量经相对指针扩展发送；`pointerlockchange`/失焦/Esc 退出并释放；
+- 触屏/无指针锁定环境：相对模式置灰并提示；
+- 位序：遵循 §11 的右/中键位序统一修复（#133）后再定前端掩码映射。
+
+### 7.3 相对指针协议扩展（设计问题，见 §11）
+
+现状：RFB 标准客户端消息只有绝对指针（0x06）；`rfb_input::pump` 已支持
+`RfbServerEvent::PointerRelative`，但那是桌面端内部事件，WebSocket 客户端没有相对路径。
+因此浏览器相对模式需要：
+
+- RFB 协议新增客户端→服务端消息（建议 type 0x08：button_mask + dx + dy + wheel），
+  在 `ipkvm-rfb/protocol/client.rs` 解析并路由到 pump 的相对事件；
+- noVNC 本地 patch：pointer lock 激活时改用相对消息发送 movementX/Y；
+- 该扩展只影响 headless Web 相对模式，桌面端不变。
+
+### 7.4 粘贴
+
+- 工具栏“粘贴”：`navigator.clipboard.readText()`（secure context/localhost）→
+  走 noVNC `clipboardPasteFrom()`（服务端已有 cut text 通道）；
+- 权限失败/非 secure context：置灰并提示。
+
+## 8. 设置持久化与分层
+
+优先级：CLI > `--config` 文件 > 运行时设置（`/api/settings`） > 默认值。
+
+- 运行时设置文件：`<配置目录>/headless-settings.toml`（Windows `%APPDATA%\my_ipkvm`，
+  Linux `$XDG_CONFIG_HOME/my_ipkvm`，macOS `~/Library/Application Support/my_ipkvm`），
+  原子写（临时文件 + rename），损坏时回退默认并记录；
+- 只持久化 Web 设置字段；视频/串口设备仍由 CLI/`--config` 指定（连接页切换是运行时会话，
+  不写盘，除非将来用户要求“记住设备”）。
+
+## 9. 错误处理与恢复展示
+
+- 轮询失败：状态栏显示“状态获取失败”，按退避重试，不弹窗；
+- 会话错误：展示 `input_offline.reason` / `session.state` / 切换失败 detail；
+- 恢复中：显示“正在恢复（第 n 次重试）”，视频页保持但置半透明遮罩提示；
+- 截图无帧：按钮置灰；
+- 所有 API 非 2xx：解析 `{error, detail}` 展示，不吞错。
+
+## 10. 测试策略
+
+- 后端单测：`/api/settings` 读写/原子写/损坏回退、`/api/session` 手动停止标记、
+  相对指针消息解析与路由（rfb protocol + pump）、恢复循环不复活手动停止；
+- 真实浏览器测试（沿用 `browser-tests/` + playwright-core 门禁）：
+  - 连接页：枚举/选择/连接/断开/切换设备/失败回滚展示；
+  - 设置：读写/恢复默认/跨标签一致；
+  - 特殊键：菜单发送组合键到达 RFB 协议层（断言服务端收到对应 key 序列）；
+  - 多标签：A 标签断开 → B 标签状态同步；
+  - 截图：下载文件名/内容、无帧置灰；
+  - 语言：跟随浏览器 + 手动切换；
+  - 相对指针：pointer lock 后 movement 经 0x08 消息到达 pump（Phase 3）。
+- 人工验收清单：真机/真实相机 + CH9329、浏览器兼容矩阵（Chrome/Edge 为主）。
+
+## 11. 待讨论问题（设计阶段发现）
+
+1. **手动停止 vs 自动恢复**：当前 `stop` 后恢复循环在“输入离线/视频从未出帧”时仍会
+   重建会话，用户手动断开会被“复活”。需新增手动停止标记（§6.3）。是否接受“手动断开
+   后保持停止，直到再次连接或重启服务”？
+2. **浏览器相对鼠标依赖协议扩展**：RFB 标准无相对指针消息，需要新增 0x08 消息 +
+   noVNC patch（§7.3）。这是 Phase 3 的独立工作量；是否接受把相对模式作为后续阶段
+   （浏览器首版只提供绝对模式 + 相对置灰提示）？
+3. **设置写盘位置**：运行时设置独立文件（§8）不与 `--config` 混写。接受？
+4. **触屏设备**：无指针锁定，相对模式不可用，绝对模式可用。首版是否只保证
+   Chrome/Edge 桌面浏览器？
+5. **右/中键位序**：依赖 #133 的统一修复，前端掩码映射以其为准。
+
+## 12. 建议里程碑（供后续 writing-plans 拆分）
+
+- Phase 1：工具栏/连接页/视频页/状态轮询/断开/语言/截图下载/设置弹层 + `/api/settings`；
+- Phase 2：特殊键全量菜单 + 键盘拦截转发；
+- Phase 3：相对指针协议扩展 + pointer lock + 复制截图；
+- Phase 4：多标签细化、错误/恢复展示打磨、浏览器兼容矩阵验收。
