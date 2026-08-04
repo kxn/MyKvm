@@ -114,6 +114,10 @@ export function initApp(root) {
     if (status?.session?.state !== "running") {
       return;
     }
+    if (pointer.locked) {
+      // 相对模式（pointer lock 激活）期间不得触发任何重建/重连。
+      return;
+    }
     if (el.videoView.hidden) {
       // 手动切回连接页（会话仍 running）：不自动重连；保持 idle 等待用户操作。
       if (rfb || rfbState === "connecting") {

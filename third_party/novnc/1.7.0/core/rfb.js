@@ -3139,11 +3139,9 @@ export default class RFB extends EventTargetMixin {
             this._rfbConnectionState !== "connected") {
             return;
         }
-        const image = this._shouldShowDotCursor() ? RFB.cursors.dot : this._cursorImage;
-        this._cursor.change(image.rgbaPixels,
-                            image.hotx, image.hoty,
-                            image.w, image.h
-        );
+        // my_ipkvm local patch: 不在网页端渲染服务端 CursorShape；绝对模式
+        // 使用浏览器系统光标，相对模式由 Pointer Lock 隐藏本地光标。
+        this._canvas.style.cursor = '';
     }
 
     static genDES(password, challenge) {
