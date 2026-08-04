@@ -238,6 +238,18 @@ impl ConnectionState {
                     y,
                     framebuffer_size,
                 },
+                RfbEvent::PointerRelative {
+                    button_mask,
+                    dx,
+                    dy,
+                    wheel,
+                } => RfbServerEvent::PointerRelative {
+                    client_id: self.client_id,
+                    button_mask,
+                    dx,
+                    dy,
+                    wheel,
+                },
                 RfbEvent::CutText(bytes) => RfbServerEvent::CutText {
                     client_id: self.client_id,
                     bytes,
@@ -855,6 +867,37 @@ mod tests {
         ));
 
         drop(client_stream);
+        assert!(matches!(task.await.unwrap(), ConnectionEnd::ClientClosed));
+    }
+
+    #[tokio::test]
+    async fn relative_pointer_message_emits_relative_pointer_event() {
+        let frame_source = MockFrameSource::new();
+        frame_source.publish_frame(shared_bgra_frame(1, 2, 1, &[0; 8]));
+        let (task, mut client, mut events, _shutdown) = completed_connection(
+            RfbClientId(30),
+            &frame_source,
+            RfbConnectionSettings::default(),
+        )
+        .await;
+
+        client
+            .write_all(&[8, 3, 0x00, 0x0c, 0xff, 0xfc, 0x02])
+            .await
+            .unwrap();
+
+        assert_eq!(
+            events.recv().await,
+            Some(RfbServerEvent::PointerRelative {
+                client_id: RfbClientId(30),
+                button_mask: 3,
+                dx: 12,
+                dy: -4,
+                wheel: 2,
+            })
+        );
+
+        drop(client);
         assert!(matches!(task.await.unwrap(), ConnectionEnd::ClientClosed));
     }
 

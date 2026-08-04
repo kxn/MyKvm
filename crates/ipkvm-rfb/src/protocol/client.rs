@@ -1,5 +1,5 @@
 use super::pixel_format::{RfbPixelFormat, RfbPixelFormatError};
-use super::wire::{read_i32, read_u16, read_u32};
+use super::wire::{read_i16, read_i32, read_u16, read_u32};
 use crate::{RfbProtocolLimits, RfbRectangle};
 use thiserror::Error;
 
@@ -46,6 +46,12 @@ pub(crate) enum ClientMessage {
         button_mask: u8,
         x: u16,
         y: u16,
+    },
+    PointerRelative {
+        button_mask: u8,
+        dx: i16,
+        dy: i16,
+        wheel: i8,
     },
     CutText(Vec<u8>),
     EnableContinuousUpdates {
@@ -138,6 +144,7 @@ fn decode_one(bytes: &[u8], limits: RfbProtocolLimits) -> DecodeOne {
         3 => decode_update_request(bytes),
         4 => decode_key(bytes),
         5 => decode_pointer(bytes),
+        8 => decode_relative_pointer(bytes),
         6 => decode_cut_text(bytes, limits),
         150 => decode_continuous_updates(bytes),
         other => DecodeOne::Error(RfbProtocolError::UnsupportedClientMessageType(other)),
@@ -269,6 +276,24 @@ fn decode_pointer(bytes: &[u8]) -> DecodeOne {
     }
 }
 
+fn decode_relative_pointer(bytes: &[u8]) -> DecodeOne {
+    if bytes.len() < 7 {
+        return DecodeOne::Incomplete;
+    }
+    let (Some(dx), Some(dy)) = (read_i16(bytes, 2), read_i16(bytes, 4)) else {
+        return DecodeOne::Error(RfbProtocolError::LengthOverflow);
+    };
+    DecodeOne::Message {
+        value: ClientMessage::PointerRelative {
+            button_mask: bytes[1],
+            dx,
+            dy,
+            wheel: bytes[6] as i8,
+        },
+        length: 7,
+    }
+}
+
 fn decode_continuous_updates(bytes: &[u8]) -> DecodeOne {
     if bytes.len() < 10 {
         return DecodeOne::Incomplete;
@@ -314,6 +339,7 @@ mod tests {
             vec![3, 1, 0, 1, 0, 2, 0, 3, 0, 4],
             vec![4, 1, 0, 0, 0, 0, 0xff, 0x0d],
             vec![5, 3, 0, 10, 0, 20],
+            vec![8, 3, 0x00, 0x0c, 0xff, 0xfc, 0x02],
             vec![6, 0, 0, 0, 0, 0, 0, 2, 0x41, 0xff],
             vec![150, 1, 0, 5, 0, 6, 0, 7, 0, 8],
         ]
@@ -434,6 +460,38 @@ mod tests {
             decoder.push(&[0, 0]),
             vec![Ok(ClientMessage::SetEncodings(vec![0]))]
         );
+    }
+
+    #[test]
+    fn decodes_relative_pointer_message() {
+        let mut decoder = ClientMessageDecoder::new(RfbProtocolLimits::default());
+        assert_eq!(
+            decoder.push(&[8, 3, 0x00, 0x0c, 0xff, 0xfc, 0x02]),
+            vec![Ok(ClientMessage::PointerRelative {
+                button_mask: 3,
+                dx: 12,
+                dy: -4,
+                wheel: 2,
+            })]
+        );
+        assert_eq!(decoder.buffered_len(), 0);
+    }
+
+    #[test]
+    fn waits_for_the_fixed_seven_bytes_of_relative_pointer() {
+        let mut decoder = ClientMessageDecoder::new(RfbProtocolLimits::default());
+        assert!(decoder.push(&[8, 3, 0x00, 0x0c, 0xff, 0xfc]).is_empty());
+        assert_eq!(decoder.buffered_len(), 6);
+        assert_eq!(
+            decoder.push(&[0x02]),
+            vec![Ok(ClientMessage::PointerRelative {
+                button_mask: 3,
+                dx: 12,
+                dy: -4,
+                wheel: 2,
+            })]
+        );
+        assert_eq!(decoder.buffered_len(), 0);
     }
 
     #[test]
