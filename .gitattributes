@@ -16,6 +16,7 @@
 *.js text eol=lf
 *.mjs text eol=lf
 *.sha256 text eol=lf
+*.sh text eol=lf
 *.pdf binary
 *.zip binary
 third_party/novnc/1.7.0/** -text whitespace=-trailing-space
