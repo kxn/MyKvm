@@ -31,9 +31,22 @@ pub fn create() -> Result<Box<dyn RelativePointerSource>, String> {
 pub fn open_url(url: &str) {
     #[cfg(target_os = "windows")]
     {
-        let _ = std::process::Command::new("cmd")
-            .args(["/C", "start", "", url])
-            .spawn();
+        use ::windows::Win32::UI::Shell::ShellExecuteW;
+        use ::windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+        use ::windows::core::PCWSTR;
+
+        let operation = ::windows::core::w!("open");
+        let encoded_url = windows_url_argument(url);
+        unsafe {
+            let _ = ShellExecuteW(
+                None,
+                operation,
+                PCWSTR(encoded_url.as_ptr()),
+                PCWSTR::null(),
+                PCWSTR::null(),
+                SW_SHOWNORMAL,
+            );
+        }
     }
     #[cfg(target_os = "linux")]
     {
@@ -45,11 +58,32 @@ pub fn open_url(url: &str) {
     }
 }
 
+#[cfg(target_os = "windows")]
+fn windows_url_argument(url: &str) -> Vec<u16> {
+    url.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
 /// 平台默认相对鼠标源工厂。
 pub struct PlatformRelativeSourceFactory;
 
 impl crate::relative::RelativeSourceFactory for PlatformRelativeSourceFactory {
     fn create(&self) -> Result<Box<dyn crate::relative::RelativePointerSource>, String> {
         create()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_url_argument_is_null_terminated_for_shell_execute() {
+        let url = "http://10.10.10.5:3000/kxn/my_ipkvm?from=menu";
+        let encoded = super::windows_url_argument(url);
+
+        assert_eq!(encoded.last(), Some(&0));
+        assert_eq!(
+            String::from_utf16(&encoded[..encoded.len() - 1]).unwrap(),
+            url
+        );
     }
 }
