@@ -5,11 +5,11 @@
 全部由代码绘制，无第三方素材，不引入额外许可证义务。
 依赖 Pillow：python scripts/generate_icon.py
 
-输出（写入 crates/ipkvm-desktop/assets/）：
+输出（写入 crates/ipkvm-desktop-iced/assets/）：
   icon-16.png / icon-24.png / icon-32.png / icon-48.png /
   icon-64.png / icon-128.png / icon-256.png
   icon.ico         多尺寸 ICO（16/24/32/48/64/128/256，供 exe 资源嵌入）
-  icon-32.rgba     32x32 原始 RGBA（供 egui 窗口图标，include_bytes! 直接使用）
+  icon-32.rgba     32x32 原始 RGBA（供桌面端窗口图标，include_bytes! 直接使用）
 """
 
 from pathlib import Path
@@ -17,7 +17,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw
 
 ROOT = Path(__file__).resolve().parents[1]
-ASSETS = ROOT / "crates" / "ipkvm-desktop" / "assets"
+ASSETS = ROOT / "crates" / "ipkvm-desktop-iced" / "assets"
 
 # 以 256 逻辑坐标设计，渲染时 8 倍超采样再降采样，保证小尺寸边缘平滑。
 LOGICAL = 256

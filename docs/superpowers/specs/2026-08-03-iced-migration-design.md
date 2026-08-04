@@ -2,7 +2,7 @@
 
 - **日期**：2026-08-03
 - **关联**：Gitea `kxn/my_ipkvm#73`（调研 + spike 验收）、`docs/superpowers/plans/2026-08-03-iced-spike.md`（进度与实测数据）
-- **状态**：设计草案，待评审后拆迁移实施单
+- **状态**：M0–M5 已完成实现，#79 PR 待合入；本文记录迁移后的长期架构和验收口径
 
 > 本文是长期事实来源。迁移实施期间如有偏离，必须回改本文并注明原因；实现前先开迁移实施单并引用本文。
 
@@ -10,7 +10,7 @@
 
 ### 现状
 
-- 桌面端 `ipkvm-desktop` 基于 egui（eframe 0.33 + wgpu），功能可用（视频、CH9329 键鼠、profile、i18n、模态对话框等），但菜单交互（宽度缓存换行、子菜单缝隙误关）、观感与框架怪癖问题反复出现。
+- 迁移前桌面端 `ipkvm-desktop` 基于 egui（eframe 0.33 + wgpu）；迁移完成后该 crate 收敛为 UI 无关共享集成库，正式界面由 `ipkvm-desktop-iced` 提供。
 - 会话/视频/输入核心（`ipkvm-core` / `ipkvm-session` / `ipkvm-rfb` / `ipkvm-video`）已与 UI 解耦，`DesktopSessionController` 提供平台中立接口。
 - 产品要求：跨平台（至少 Windows/macOS）；现阶段「代码层面跨平台，不堵口子」，macOS 实机验证留待有机器/CI。
 
@@ -18,7 +18,7 @@
 
 1. 用 **iced** 重写桌面 UI 壳，布局与交互对齐现有 egui 桌面版（顶部菜单栏 / 主页面=连接页 / 视频区 / 底部状态栏 / 模态对话框）。
 2. 复用全部核心 crate 与 `DesktopSessionController`，只替换前端渲染与事件适配层。
-3. 迁移完成前 egui 桌面端保持可编译、可测试（双端共存仅限迁移窗口期）；**迁移完成验收后直接删除 egui 桌面端**（用户已确认，不保留过渡期）。
+3. 迁移完成前旧桌面端仅在迁移窗口期与 iced 共存；完成验收后直接删除旧 UI、二进制和专属资源。
 4. 单原生窗口，不做 WebView/双窗口/overlay 分层（已论证并排除）。
 
 ## 2. 本轮调研结论（2026-08-03，来源 #73）
@@ -147,7 +147,7 @@ frame_source.subscribe() → iced Subscription (Recipe)
 | M2 菜单/模态/连接页 | 菜单改用 iced_aw（vendored 补丁，#95）、模态、连接页（设备/预览/刷新/连接）、profile 保存加载 | spike 2 全部 headless 测试移植通过 + 人工观感截图 |
 | M3 输入接线 | keymap 接入、相对鼠标 trait 接 UI、`flush_pending` 定时器、特殊键、粘贴、Ctrl+Alt+K/M | spike 3 测试移植通过；真实硬件冒烟（BIOS 方向键/相对鼠标） |
 | M4 主题与观感 | 菜单/模态/状态栏样式、图标、暗色适配、黑边色设置 | 截图评审（人工项） |
-| M5 打包与收尾 | Windows exe/图标/资源、macOS 打包留口（stub + 文档）、全量门禁、替换发布入口 | 双击可跑；门禁全过；egui 端退役决策 |
+| M5 打包与收尾 | Windows exe/图标/资源、macOS 打包留口（stub + 文档）、全量门禁、替换发布入口、旧 UI 退役 | release 进程存活且创建顶层窗口；门禁全过；workspace 无旧 UI/spike 残留 |
 
 ### 每阶段自动化测试要求（强制）
 
@@ -160,7 +160,7 @@ frame_source.subscribe() → iced Subscription (Recipe)
 | M2 | 移植 spike 2 全部 headless 测试 + 连接页状态机测试（选设备→预览→连接→断开）+ profile 保存/加载/最近使用 + i18n 全量 |
 | M3 | 移植 spike 3 全部测试 + flush_pending 定时接线测试（补送不依赖下一次输入）+ 组合键拦截测试（Ctrl+Alt+K/M 不转发远端）+ 粘贴/特殊键消息测试 |
 | M4 | 主题快照测试（菜单/模态/状态栏）+ 既有交互测试全量回归 |
-| M5 | 发布物冒烟脚本（双击 exe 启动、标题含 GIT_COMMIT）+ 删除 egui 后 workspace 无残留引用断言 |
+| M5 | 发布物冒烟脚本（启动 exe，确认进程存活和非零顶层窗口句柄）+ 删除旧 UI 后 workspace 无旧 UI/spike 残留断言 |
 
 ## 5. 风险与开放问题
 
@@ -181,6 +181,7 @@ frame_source.subscribe() → iced Subscription (Recipe)
 1. **迁移完成后直接删除 egui 桌面端**（`ipkvm-desktop` 的 UI 层；共享的 session/probe/config 等非 UI 逻辑先收编到合适位置再删）。
 2. **macOS 打包/签名/notarization 后置**：有实际分发需求时再做；迁移期只保证代码层面留口（相对鼠标 stub、darwin 编译、AVFoundation 相机未实测）。
 3. **迁移单按 M0→M5 拆分**（本设计第 4 节的粒度），按序实施。
+4. **版本号暂不在 M5 重构**：当前 build.rs 继续注入 `GIT_COMMIT`，About 继续展示 short hash；后续统一版本逻辑应组合正式版本（例如 `1.0.0`）和 short hash，再单独开单实施。
 
 ## 6. 引用文档
 

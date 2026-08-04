@@ -64,6 +64,7 @@ run_check "Test web asset policy" "$SCRIPT_DIR/test-web-assets.sh"
 run_check "Check web assets and browser dependency lock" "$SCRIPT_DIR/verify-web-assets.sh"
 run_check "Test dependency license policy" "$SCRIPT_DIR/test-license-policy.sh"
 run_check "Check dependency licenses and sources" "$SCRIPT_DIR/verify-licenses.sh"
+run_check "Check iced M5 desktop retirement" "$SCRIPT_DIR/test-iced-m5-retirement.sh"
 run_check "Check Rust formatting" cargo fmt --all --check
 run_check "Run workspace tests" cargo test --workspace --all-features
 run_check "Run Clippy" cargo clippy --workspace --all-targets --all-features -- -D warnings
