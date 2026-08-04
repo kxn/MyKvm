@@ -201,7 +201,7 @@
 
   Expected: JavaScript syntax checks and real browser verification exit 0.
 
-- [ ] **Step 3: Inspect the final diff and issue state**
+- [x] **Step 3: Inspect the final diff and issue state**
 
   ```powershell
   git diff origin/main...HEAD --check
@@ -212,7 +212,7 @@
 
   Confirm `artifacts/` is not staged, all commits include `#168`, and issue #168 remains open until the PR is merged.
 
-- [ ] **Step 4: Prepare the PR handoff**
+- [x] **Step 4: Prepare the PR handoff**
 
   PR description must include:
 
