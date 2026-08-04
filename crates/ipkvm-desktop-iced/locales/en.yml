@@ -86,12 +86,22 @@ settings:
   auto_baud: "Auto-detect baud rate"
   preview_fps: "Preview FPS"
   mouse_mode: "Mouse mode"
+  mouse_profile: "Target OS profile"
   relative_sensitivity: "Relative sensitivity"
   scale_mode: "Scaling"
 
 mouse_mode:
   absolute: "Absolute"
   relative: "Relative"
+
+mouse_profile:
+  windows: "Windows"
+  linux: "Linux"
+  bios: "BIOS"
+  android: "Android"
+  macos: "macOS"
+  raw_absolute: "Raw absolute"
+  raw_relative: "Raw relative"
 
 scale_mode:
   fit_window: "Fit window"

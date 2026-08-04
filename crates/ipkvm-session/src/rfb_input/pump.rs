@@ -209,6 +209,7 @@ pub struct RfbInputPump<S: InputSink> {
     pointer: RfbPointerMapper,
     text: TextInputService<S>,
     text_notices: mpsc::Receiver<TextInputNotice>,
+    mouse_mode_observer: Option<watch::Sender<Option<MouseMode>>>,
 }
 
 impl<S: InputSink> RfbInputPump<S> {
@@ -218,15 +219,28 @@ impl<S: InputSink> RfbInputPump<S> {
     where
         S: Clone + Send + 'static,
     {
+        Self::with_mouse_mode_observer(sink, None)
+    }
+
+    /// 创建输入泵，并可把 sink 已确认的鼠标模式发布给会话控制面。
+    pub fn with_mouse_mode_observer(
+        sink: S,
+        mouse_mode_observer: Option<watch::Sender<Option<MouseMode>>>,
+    ) -> Self
+    where
+        S: Clone + Send + 'static,
+    {
+        let initial_mouse_mode = sink.initial_mouse_mode();
         let (text, text_notices) = TextInputService::new(sink.clone(), TextInputConfig::default());
         Self {
             sink,
             active: None,
-            mouse_mode: None,
+            mouse_mode: initial_mouse_mode,
             keyboard: RfbKeyboardMapper::new(),
             pointer: RfbPointerMapper::new(),
             text,
             text_notices,
+            mouse_mode_observer,
         }
     }
 
@@ -532,6 +546,13 @@ impl<S: InputSink> RfbInputPump<S> {
     ) -> Result<RfbInputNotice, RfbInputError> {
         self.require_active(client_id, RfbInputEventKind::SetMouseMode)?;
         self.sink
+            .release_all()
+            .map_err(|source| RfbInputError::Sink {
+                client_id,
+                operation: RfbInputOperation::Release,
+                source,
+            })?;
+        self.sink
             .set_mouse_mode(mode)
             .map_err(|source| RfbInputError::Sink {
                 client_id,
@@ -539,6 +560,9 @@ impl<S: InputSink> RfbInputPump<S> {
                 source,
             })?;
         self.mouse_mode = Some(mode);
+        if let Some(observer) = &self.mouse_mode_observer {
+            let _ = observer.send(Some(mode));
+        }
         Ok(RfbInputNotice::MouseModeChanged { client_id, mode })
     }
 
@@ -551,6 +575,13 @@ impl<S: InputSink> RfbInputPump<S> {
             return Ok(());
         }
         self.sink
+            .release_all()
+            .map_err(|source| RfbInputError::Sink {
+                client_id,
+                operation: RfbInputOperation::Release,
+                source,
+            })?;
+        self.sink
             .set_mouse_mode(mode)
             .map_err(|source| RfbInputError::Sink {
                 client_id,
@@ -558,6 +589,9 @@ impl<S: InputSink> RfbInputPump<S> {
                 source,
             })?;
         self.mouse_mode = Some(mode);
+        if let Some(observer) = &self.mouse_mode_observer {
+            let _ = observer.send(Some(mode));
+        }
         Ok(())
     }
 
@@ -628,6 +662,9 @@ impl<S: InputSink> RfbInputPump<S> {
         let _ = self.text.try_cancel(active.client_id);
         self.active = None;
         self.mouse_mode = None;
+        if let Some(observer) = &self.mouse_mode_observer {
+            let _ = observer.send(None);
+        }
         self.keyboard = RfbKeyboardMapper::new();
         self.pointer = RfbPointerMapper::new();
         Ok(Some(RfbInputNotice::ControllerReleased {
@@ -1160,7 +1197,7 @@ mod tests {
             })
         );
         assert_eq!(pump.active_client(), None);
-        assert_eq!(pump.sink().release_count, 1);
+        assert_eq!(pump.sink().release_count, 2);
 
         pump.handle_event(connected(second, second_peer)).unwrap();
         pump.handle_event(RfbServerEvent::Key {
@@ -1333,7 +1370,7 @@ mod tests {
         assert_eq!(pump.active_client(), None);
         assert_eq!(pump.sink().key_batches.len(), 1);
         assert_eq!(pump.sink().pointer_batches.len(), 1);
-        assert_eq!(pump.sink().release_count, 1);
+        assert_eq!(pump.sink().release_count, 2);
         assert!(matches!(
             notices.as_slice(),
             [
@@ -1464,7 +1501,7 @@ mod tests {
         assert_eq!(batches[1].frames()[0].data()[1], 0);
         assert_eq!(batches[1].frames()[1].command(), 0x05);
         assert_eq!(batches[1].frames()[1].data()[1], 1);
-        // 释放 batch：键盘全 0 + 鼠标相对 buttons=0（协议修正：release 走相对命令）。
+        // 最终释放 batch：键盘全 0 + 鼠标相对 buttons=0（协议修正：release 走相对命令）。
         let release = batches[2].frames();
         assert_eq!(release.len(), 2);
         assert_eq!(release[0].data(), &[0; 8]);
@@ -1653,6 +1690,26 @@ mod tests {
                 mode: MouseMode::Absolute,
             })
         );
+        assert_eq!(pump.sink().release_count, 1);
         assert_eq!(pump.sink().mouse_modes, vec![MouseMode::Absolute]);
+    }
+
+    #[tokio::test]
+    async fn confirmed_mouse_mode_is_published_only_after_sink_update() {
+        let client_id = client(23);
+        let peer_addr = peer(5923);
+        let (mode_tx, mode_rx) = watch::channel(None);
+        let mut pump =
+            RfbInputPump::with_mouse_mode_observer(RecordingSink::default(), Some(mode_tx));
+        pump.handle_event(connected(client_id, peer_addr)).unwrap();
+        assert_eq!(*mode_rx.borrow(), None);
+
+        pump.handle_event(RfbServerEvent::SetMouseMode {
+            client_id,
+            mode: MouseMode::Relative,
+        })
+        .unwrap();
+
+        assert_eq!(*mode_rx.borrow(), Some(MouseMode::Relative));
     }
 }

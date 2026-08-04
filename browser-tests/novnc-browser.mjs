@@ -18,6 +18,7 @@ const DEFAULT_SETTINGS = {
   baud_rate: 115200,
   auto_baud: true,
   preview_fps: 30,
+  mouse_profile: "raw_absolute",
   mouse_mode: "absolute",
   relative_sensitivity: 1.0,
   scale_mode: "fit_window",
@@ -430,6 +431,66 @@ async function assertRelativePointerMessageConstruction(page) {
   assert.deepEqual(probe.bytes, [0x08, 0b101, 0, 10, 0xff, 0xec, 1]);
 }
 
+async function assertRelativeScheduler(page) {
+  const result = await page.evaluate(async () => {
+    const { default: RFB } = await import("/vendor/novnc/core/rfb.js");
+    const messages = [];
+    let current = [];
+    const fake = {
+      _rfbConnectionState: "connected",
+      _viewOnly: false,
+      _relativeMode: false,
+      _relativeSensitivity: 1.0,
+      _relativeDeltaX: 0,
+      _relativeDeltaY: 0,
+      _relativeMoveTimer: null,
+      _relativeLastMoveTime: 0,
+      _ignoreNextRelativeMove: false,
+      _mouseButtonMask: 0,
+      _mouseMoveTimer: null,
+      _flushMouseMoveTimer() {},
+      _flushRelativeMove: RFB.prototype._flushRelativeMove,
+      _clearRelativeMoveState() {
+        if (this._relativeMoveTimer !== null) {
+          clearTimeout(this._relativeMoveTimer);
+          this._relativeMoveTimer = null;
+        }
+        this._relativeDeltaX = 0;
+        this._relativeDeltaY = 0;
+        this._relativeLastMoveTime = 0;
+      },
+      _sock: {
+        sQpush8(value) { current.push(value & 0xff); },
+        sQpush16(value) {
+          current.push((value >> 8) & 0xff, value & 0xff);
+        },
+        flush() {
+          messages.push(current);
+          current = [];
+        },
+      },
+    };
+    RFB.prototype.setRelativeMode.call(fake, true);
+    fake._ignoreNextRelativeMove = false;
+    RFB.prototype._handleRelativeMouseMove.call(fake, 4, 2);
+    RFB.prototype._handleRelativeMouseMove.call(fake, 3, 1);
+    const pendingTimer = fake._relativeMoveTimer;
+    RFB.prototype._flushRelativeMove.call(fake, true);
+    RFB.messages.relativePointerEvent(fake._sock, 1, 0, 0, 0);
+    RFB.prototype.setRelativeMode.call(fake, false);
+    return { messages, pendingCleared: fake._relativeDeltaX === 0 &&
+      fake._relativeDeltaY === 0 && fake._relativeMoveTimer === null,
+      hadPendingTimer: pendingTimer !== null };
+  });
+  assert.deepEqual(result.messages, [
+    [0x08, 0, 0, 4, 0, 2, 0],
+    [0x08, 0, 0, 3, 0, 1, 0],
+    [0x08, 1, 0, 0, 0, 0, 0],
+  ]);
+  assert.equal(result.hadPendingTimer, true);
+  assert.equal(result.pendingCleared, true);
+}
+
 async function assertNoVncCursorRendering(page) {
   const result = await page.evaluate(async () => {
     const { default: RFB } = await import("/vendor/novnc/core/rfb.js");
@@ -505,6 +566,7 @@ async function assertPointerLockFallback(page) {
     });
     controller.supported = true;
     controller.setRfb(rfb);
+    controller.applySettings({ mouse_mode: "relative", relative_sensitivity: 1.0 });
     await controller.toggle({ stopPropagation() {} });
     await new Promise((resolve) => setTimeout(resolve, 0));
     return { requests, messages };
@@ -647,6 +709,7 @@ async function run() {
 
     // ---- 相对指针：协议层消息构造（端到端待 #141b 合入后验证）----
     await assertRelativePointerMessageConstruction(page);
+    await assertRelativeScheduler(page);
     assert.equal(
       await page.locator("#relative-mode").isEnabled(),
       true,

@@ -14,6 +14,42 @@
 pub trait CursorController: Send + Sync {
     fn set_visible(&self, visible: bool);
     fn set_clipped(&self, clipped: bool);
+
+    /// 裁剪到窗口客户区内的实际视频矩形；旧控制器只实现 bool 时仍可
+    /// 退化为“是否裁剪”的行为。
+    fn set_clip_rect(&self, rect: Option<ClipRect>) {
+        self.set_clipped(rect.is_some());
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ClipRect {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+impl ClipRect {
+    pub fn is_valid(self) -> bool {
+        self.x.is_finite()
+            && self.y.is_finite()
+            && self.width.is_finite()
+            && self.height.is_finite()
+            && self.width > 0.0
+            && self.height > 0.0
+    }
+}
+
+fn screen_rect(origin: (i32, i32), scale: f32, clip: ClipRect) -> Option<(i32, i32, i32, i32)> {
+    if !clip.is_valid() || !scale.is_finite() || scale <= 0.0 {
+        return None;
+    }
+    let left = origin.0 + (clip.x * scale).round() as i32;
+    let top = origin.1 + (clip.y * scale).round() as i32;
+    let right = left + (clip.width * scale).round() as i32;
+    let bottom = top + (clip.height * scale).round() as i32;
+    (right > left && bottom > top).then_some((left, top, right, bottom))
 }
 
 /// 只在状态变化时放行（ShowCursor 是计数 API，必须幂等同步）。
@@ -58,16 +94,45 @@ impl CursorController for WindowsCursorController {
 
     fn set_clipped(&self, clipped: bool) {
         unsafe {
-            use windows::Win32::Foundation::RECT;
             use windows::Win32::UI::WindowsAndMessaging::{
                 ClipCursor, GetForegroundWindow, GetWindowRect,
             };
             if clipped {
                 let hwnd = GetForegroundWindow();
                 if !hwnd.is_invalid() {
-                    let mut rect = RECT::default();
+                    let mut rect = windows::Win32::Foundation::RECT::default();
                     if GetWindowRect(hwnd, &mut rect).is_ok() {
-                        let _ = ClipCursor(Some(&rect as *const RECT));
+                        let _ = ClipCursor(Some(&rect as *const _));
+                    }
+                }
+            } else {
+                let _ = ClipCursor(None);
+            }
+        }
+    }
+
+    fn set_clip_rect(&self, clip: Option<ClipRect>) {
+        unsafe {
+            use windows::Win32::Foundation::RECT;
+            use windows::Win32::Graphics::Gdi::ClientToScreen;
+            use windows::Win32::UI::WindowsAndMessaging::{ClipCursor, GetForegroundWindow};
+            if let Some(clip) = clip.filter(|rect| rect.is_valid()) {
+                let hwnd = GetForegroundWindow();
+                if !hwnd.is_invalid() {
+                    let mut origin = windows::Win32::Foundation::POINT { x: 0, y: 0 };
+                    if ClientToScreen(hwnd, &mut origin).as_bool() {
+                        let scale = windows::Win32::UI::HiDpi::GetDpiForWindow(hwnd) as f32 / 96.0;
+                        if let Some((left, top, right, bottom)) =
+                            screen_rect((origin.x, origin.y), scale, clip)
+                        {
+                            let rect = RECT {
+                                left,
+                                top,
+                                right,
+                                bottom,
+                            };
+                            let _ = ClipCursor(Some(&rect as *const RECT));
+                        }
                     }
                 }
             } else {
@@ -95,7 +160,46 @@ pub type ProductionCursorController = NoopCursorController;
 
 #[cfg(test)]
 mod tests {
-    use super::VisibilityGate;
+    use super::{ClipRect, VisibilityGate};
+
+    #[test]
+    fn clip_rect_rejects_empty_video_area() {
+        assert!(
+            ClipRect {
+                x: 0.0,
+                y: 0.0,
+                width: 1.0,
+                height: 1.0
+            }
+            .is_valid()
+        );
+        assert!(
+            !ClipRect {
+                x: 0.0,
+                y: 0.0,
+                width: 0.0,
+                height: 1.0
+            }
+            .is_valid()
+        );
+    }
+
+    #[test]
+    fn screen_rect_uses_client_origin_and_dpi_scale() {
+        assert_eq!(
+            super::screen_rect(
+                (100, 200),
+                1.5,
+                ClipRect {
+                    x: 10.0,
+                    y: 20.0,
+                    width: 320.0,
+                    height: 180.0,
+                }
+            ),
+            Some((115, 230, 595, 500))
+        );
+    }
 
     #[test]
     fn visibility_gate_only_passes_on_change() {

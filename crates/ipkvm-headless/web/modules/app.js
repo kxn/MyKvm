@@ -8,7 +8,7 @@ import { applyLanguage, getStoredLanguage, setLanguage, t } from "./i18n.js";
 import { installKeyboardInterceptor } from "./keyboard.js";
 import { PointerController } from "./pointer.js";
 import { ScreenshotController } from "./screenshot.js";
-import { SETTINGS_DEFAULTS, SettingsController } from "./settings.js";
+import { SETTINGS_DEFAULTS, SettingsController, modeForProfile } from "./settings.js";
 import { SpecialKeysController } from "./special-keys.js";
 import { REASON, StatusController, VIEW } from "./status.js";
 
@@ -32,6 +32,7 @@ export function initApp(root) {
     connectButton: root.querySelector("#connect-button"),
     videoSelect: root.querySelector("#video-select"),
     serialSelect: root.querySelector("#serial-select"),
+    connectionMouseProfile: root.querySelector("#connection-mouse-profile"),
     refreshVideo: root.querySelector("#refresh-video"),
     refreshSerial: root.querySelector("#refresh-serial"),
     videoProbe: root.querySelector("#video-probe"),
@@ -44,6 +45,7 @@ export function initApp(root) {
     sessionState: root.querySelector("#session-state"),
     serialStats: root.querySelector("#serial-stats"),
     inputStats: root.querySelector("#input-stats"),
+    videoMouseProfile: root.querySelector("#video-mouse-profile"),
     videoMessage: root.querySelector("#video-message"),
     pasteButton: root.querySelector("#paste-button"),
     relativeMode: root.querySelector("#relative-mode"),
@@ -54,6 +56,7 @@ export function initApp(root) {
       autoBaud: root.querySelector("#setting-auto-baud"),
       previewFps: root.querySelector("#setting-preview-fps"),
       mouseMode: root.querySelector("#setting-mouse-mode"),
+      mouseProfile: root.querySelector("#setting-mouse-profile"),
       relativeSensitivity: root.querySelector("#setting-relative-sensitivity"),
       scaleMode: root.querySelector("#setting-scale-mode"),
     },
@@ -67,6 +70,7 @@ export function initApp(root) {
   let settings = { ...SETTINGS_DEFAULTS };
   let lastStatus = null;
   let currentReason = null;
+  let profileChangePending = false;
 
   const setConnectionState = (state, text) => {
     root.dataset.connectionState = state;
@@ -318,6 +322,10 @@ export function initApp(root) {
     el.inputStats.textContent = t("video.input", {
       events: status?.session?.input_events ?? 0,
     });
+    if (status?.session?.mouse_profile && !profileChangePending) {
+      el.videoMouseProfile.value = status.session.mouse_profile;
+    }
+    el.videoMouseProfile.disabled = status?.session?.state !== "running";
   };
 
   const connection = new ConnectionController({
@@ -359,6 +367,35 @@ export function initApp(root) {
     getRfb: () => rfb,
   });
 
+  const applySessionProfile = async () => {
+    const profile = el.videoMouseProfile.value;
+    const previous = lastStatus?.session?.mouse_profile ?? settings.mouse_profile;
+    profileChangePending = true;
+    el.videoMouseProfile.disabled = true;
+    try {
+      const result = await postJson("/api/input/mouse-profile", {
+        mouse_profile: profile,
+      });
+      const applied = {
+        ...settings,
+        mouse_profile: result.mouse_profile,
+        mouse_mode: result.mouse_mode ?? modeForProfile(result.mouse_profile),
+      };
+      pointer.applySettings(applied);
+      message(t("video.profileChanged"), "ok");
+    } catch (error) {
+      el.videoMouseProfile.value = previous;
+      message(`${t("video.profileChangeFailed")}：${errorText(error)}`, "error");
+    } finally {
+      profileChangePending = false;
+      el.videoMouseProfile.disabled = lastStatus?.session?.state !== "running";
+    }
+  };
+
+  el.videoMouseProfile.addEventListener("change", () => {
+    void applySessionProfile();
+  });
+
   const specialKeys = new SpecialKeysController({
     button: el.specialKeysButton,
     menu: el.specialKeysMenu,
@@ -377,8 +414,17 @@ export function initApp(root) {
   const statusController = new StatusController({
     onStatus: (status) => {
       lastStatus = status;
+      if (status?.session?.mouse_profile) {
+        pointer.applySettings({
+          ...settings,
+          mouse_profile: status.session.mouse_profile,
+          mouse_mode:
+            status.session.mouse_mode ?? modeForProfile(status.session.mouse_profile),
+        });
+      }
       updateToolbar(status);
       updateVideoBar(status);
+      connection.applyStatus(status);
       screenshot.setFrameAvailable(Boolean(status.video?.frame));
       connection.updateConnectState();
       syncRfbWithStatus(status);

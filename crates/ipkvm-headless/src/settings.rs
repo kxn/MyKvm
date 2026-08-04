@@ -6,7 +6,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use ipkvm_core::MouseMode;
+use ipkvm_core::{MouseMode, MouseProfile};
 use serde::{Deserialize, Serialize};
 
 /// 运行时设置文件名（放在配置目录下）。
@@ -28,11 +28,13 @@ impl Default for ScaleMode {
 }
 
 /// 运行时设置（冻结契约，供前端 #140 并行开发）。
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct WebSettings {
     pub baud_rate: u32,
     pub auto_baud: bool,
     pub preview_fps: u64,
+    #[serde(with = "mouse_profile_serde")]
+    pub mouse_profile: MouseProfile,
     #[serde(with = "mouse_mode_serde")]
     pub mouse_mode: MouseMode,
     pub relative_sensitivity: f32,
@@ -45,6 +47,7 @@ impl Default for WebSettings {
             baud_rate: 9_600,
             auto_baud: true,
             preview_fps: 30,
+            mouse_profile: MouseProfile::RawAbsolute,
             mouse_mode: MouseMode::Absolute,
             relative_sensitivity: 1.0,
             scale_mode: ScaleMode::FitWindow,
@@ -52,10 +55,63 @@ impl Default for WebSettings {
     }
 }
 
+#[derive(Deserialize)]
+struct WebSettingsFile {
+    baud_rate: u32,
+    auto_baud: bool,
+    preview_fps: u64,
+    #[serde(default)]
+    mouse_profile: Option<String>,
+    #[serde(default)]
+    mouse_mode: Option<String>,
+    relative_sensitivity: f32,
+    scale_mode: ScaleMode,
+}
+
+impl<'de> Deserialize<'de> for WebSettings {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error as DeError;
+        let raw = WebSettingsFile::deserialize(deserializer)?;
+        let legacy_mode = raw
+            .mouse_mode
+            .as_deref()
+            .map(|value| match value {
+                "absolute" | "Absolute" => Ok(MouseMode::Absolute),
+                "relative" | "Relative" => Ok(MouseMode::Relative),
+                other => Err(DeError::custom(format!(
+                    "mouse_mode: unknown value {other:?}"
+                ))),
+            })
+            .transpose()?;
+        let profile = raw
+            .mouse_profile
+            .as_deref()
+            .map(MouseProfile::parse)
+            .transpose()
+            .map_err(|error| DeError::custom(format!("mouse_profile: {error}")))?
+            .unwrap_or_else(|| match legacy_mode.unwrap_or(MouseMode::Absolute) {
+                MouseMode::Absolute => MouseProfile::RawAbsolute,
+                MouseMode::Relative => MouseProfile::RawRelative,
+            });
+        Ok(Self {
+            baud_rate: raw.baud_rate,
+            auto_baud: raw.auto_baud,
+            preview_fps: raw.preview_fps,
+            mouse_profile: profile,
+            mouse_mode: profile.resolve_mode(),
+            relative_sensitivity: raw.relative_sensitivity,
+            scale_mode: raw.scale_mode,
+        })
+    }
+}
+
 /// `mouse_mode` 的 JSON/TOML 表示使用小写（与冻结契约一致）。
 mod mouse_mode_serde {
     use ipkvm_core::MouseMode;
-    use serde::{Deserialize, Deserializer, Serializer};
+    use serde::Serializer;
 
     pub fn serialize<S>(mode: &MouseMode, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -66,20 +122,17 @@ mod mouse_mode_serde {
             MouseMode::Relative => "relative",
         })
     }
+}
 
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<MouseMode, D::Error>
+mod mouse_profile_serde {
+    use ipkvm_core::MouseProfile;
+    use serde::Serializer;
+
+    pub fn serialize<S>(profile: &MouseProfile, serializer: S) -> Result<S::Ok, S::Error>
     where
-        D: Deserializer<'de>,
+        S: Serializer,
     {
-        let value = String::deserialize(deserializer)?;
-        match value.as_str() {
-            "absolute" => Ok(MouseMode::Absolute),
-            "relative" => Ok(MouseMode::Relative),
-            other => Err(serde::de::Error::unknown_variant(
-                other,
-                &["absolute", "relative"],
-            )),
-        }
+        serializer.serialize_str(profile.as_str())
     }
 }
 
@@ -263,6 +316,7 @@ mod tests {
         assert_eq!(settings.baud_rate, 9_600);
         assert!(settings.auto_baud);
         assert_eq!(settings.preview_fps, 30);
+        assert_eq!(settings.mouse_profile, MouseProfile::RawAbsolute);
         assert_eq!(settings.mouse_mode, MouseMode::Absolute);
         assert_eq!(settings.relative_sensitivity, 1.0);
         assert_eq!(settings.scale_mode, ScaleMode::FitWindow);
@@ -271,6 +325,7 @@ mod tests {
         assert_eq!(json["baud_rate"], 9_600);
         assert_eq!(json["auto_baud"], true);
         assert_eq!(json["preview_fps"], 30);
+        assert_eq!(json["mouse_profile"], "raw_absolute");
         assert_eq!(json["mouse_mode"], "absolute");
         assert_eq!(json["relative_sensitivity"], 1.0);
         assert_eq!(json["scale_mode"], "fit_window");
@@ -282,6 +337,7 @@ mod tests {
             baud_rate: 57_600,
             auto_baud: false,
             preview_fps: 15,
+            mouse_profile: MouseProfile::Linux,
             mouse_mode: MouseMode::Relative,
             relative_sensitivity: 2.5,
             scale_mode: ScaleMode::ResizeToVideo,
@@ -384,6 +440,7 @@ mod tests {
         let changed = WebSettings {
             baud_rate: 57_600,
             mouse_mode: MouseMode::Relative,
+            mouse_profile: MouseProfile::RawRelative,
             scale_mode: ScaleMode::ActualSize,
             ..WebSettings::default()
         };

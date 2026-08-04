@@ -130,7 +130,26 @@
 - 生产体积测量按 app、demo、fixture 和 iced 四个实际 binary 分别记录，不能把 library 或旧
   `demo` feature 的构建结果当作正式后台体积。
 
-## 12. 常用命令
+## 12. #151/#152/#153/#154/#156 联合输入与 Iced 收口
+
+- 共享 `MouseProfile` 已进入 `ipkvm-core`；桌面 `ConnectionSettings`、headless `WebSettings`
+  以及连接页/状态栏均保留 profile identity，并兼容旧 `mouse_mode` 的 Raw 迁移。
+- 加载桌面连接 profile 后，匹配的控制设备会立即完成 probe，避免 `Checking` 永久阻塞连接。
+- Iced/Web 相对移动统一采用累计、33 ms 调度和控制事件前 flush；输入泵的模式变化执行
+  `release_all -> set_mouse_mode`。
+- Desktop Windows ClipCursor 只锁定视频 screen-space 矩形；视频矩形未布局时释放裁剪，
+  不把整个前台窗口误当视频区域。Web Pointer Lock 的 selected/locked 状态只在浏览器端维护。
+- Web 当前会话切换接口为 `POST /api/input/mouse-profile`，只有 sink 确认实际模式后才更新
+  session selection；服务端 `/api/status.session` 返回 profile 和实际模式，不返回虚构的
+  本地 capture 状态。
+- 本批次保留人工验证例外：Windows DPI/窗口移动下的 ClipCursor、Chrome/Edge Pointer Lock
+  及降级浏览器、真实 CH9329 和 BIOS/Windows/Ubuntu/Android/macOS 目标输入栈。
+- 长期事实来源：`docs/superpowers/specs/2026-08-04-mouse-os-profile-design.md`、
+  `2026-08-04-input-scheduler-order-design.md`、`2026-08-04-headless-web-ui-design.md`、
+  `2026-08-03-iced-migration-design.md`；联合执行计划为
+  `docs/superpowers/plans/2026-08-04-issues-151-156-execution.md`。
+
+## 13. 常用命令
 
 ```powershell
 # tea 写中文前（AGENTS.md 强制）

@@ -163,6 +163,8 @@ mod tests {
         assert!(index_text.contains("id=\"language-select\""));
         assert!(index_text.contains("id=\"connect-button\""));
         assert!(index_text.contains("id=\"relative-mode\""));
+        assert!(index_text.contains("id=\"connection-mouse-profile\""));
+        assert!(index_text.contains("id=\"video-mouse-profile\""));
         assert!(index_text.contains("id=\"settings-modal\""));
 
         let entry = std::str::from_utf8(find_asset("/assets/app.js").unwrap().bytes()).unwrap();
@@ -219,6 +221,10 @@ mod tests {
         assert!(
             rfb.contains("setRelativeSensitivity("),
             "sensitivity scaling hook"
+        );
+        assert!(
+            rfb.contains("_clearRelativeMoveState"),
+            "relative teardown hook"
         );
         assert!(
             rfb.contains("movementX"),

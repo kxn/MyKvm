@@ -38,6 +38,7 @@ impl TestApp {
                 ModalAction::SetPreviewFps(fps) => self.modal.preview_fps = fps,
                 ModalAction::SetAutoBaud(enabled) => self.modal.auto_baud = enabled,
                 ModalAction::SetMouseMode(mode) => self.modal.mouse_mode = mode,
+                ModalAction::SetMouseProfile(profile) => self.modal.mouse_profile = profile,
                 ModalAction::BaudRateTextChanged(text) => self.modal.baud_text = text,
                 ModalAction::PreviewFpsTextChanged(text) => self.modal.fps_text = text,
                 ModalAction::RelativeSensitivityTextChanged(text) => {

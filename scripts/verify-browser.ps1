@@ -97,7 +97,16 @@ function Assert-FixtureFeatureBoundary {
     if ($fixture.Count -ne 1) {
         throw "Expected one ipkvm-browser-fixture target"
     }
-    $requiredFeatures = @($fixture[0]."required-features")
+    $requiredFeaturesProperty = $fixture[0].PSObject.Properties |
+        Where-Object { $_.Name -eq "required-features" }
+    $requiredFeatures = @(
+        if ($null -eq $requiredFeaturesProperty) {
+            @()
+        }
+        else {
+            @($requiredFeaturesProperty.Value)
+        }
+    )
     if ($requiredFeatures.Count -ne 0) {
         throw "Browser fixture must not require a package feature"
     }

@@ -310,6 +310,10 @@ impl<Q: CommandQueue> Ch9329InputSink<Q> {
 }
 
 impl<Q: CommandQueue> InputSink for Ch9329InputSink<Q> {
+    fn initial_mouse_mode(&self) -> Option<MouseMode> {
+        Some(self.mouse.mode)
+    }
+
     fn set_mouse_mode(&mut self, mode: MouseMode) -> InputResult<()> {
         Ch9329InputSink::set_mouse_mode(self, mode)
     }

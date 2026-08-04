@@ -190,6 +190,15 @@ frame_source.subscribe() → iced Subscription (Recipe)
 camera/serial/clipboard production adapter，并对旧模块路径提供 re-export。iced 继续
 依赖 adapter 以保留真实硬件能力，但 UI 无关单元测试和无硬件依赖门禁以 core 为准。
 
+## #153/#154 视觉与捕获实现记录（2026-08-04）
+
+Iced 已建立与 headless 浅色界面对齐的视觉令牌：面板最大宽度 460px、控件高度约 34px、
+控件圆角 4px、面板圆角 8px；设置与连接设置采用标签/控件两列布局，窄窗口再退化为
+单列。按钮、PickList、TextInput、Checkbox、菜单和弹窗使用统一浅色控件样式。
+
+相对模式的目标端 profile 与本地捕获分离。Windows ClipCursor 只锁定视频矩形，视频矩形
+尚未布局时不裁剪整个前台窗口；失焦、断开、切绝对模式和退出远程输入都会释放捕获。
+
 ## 6. 引用文档
 
 - Gitea #73：调研结论、跨平台约束、验收标准、spike 结果

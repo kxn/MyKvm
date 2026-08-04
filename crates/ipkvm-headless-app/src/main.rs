@@ -26,8 +26,8 @@ use std::sync::{Arc, atomic::AtomicBool};
 use std::time::Duration;
 
 use ipkvm_core::{
-    Ch9329InputSink, InputResult, InputSink, KeyEvent, MouseMode, PointerEvent, QueueStats,
-    SerialCommandQueue, fake_serial::FakeCommandQueue,
+    Ch9329InputSink, InputResult, InputSink, KeyEvent, MouseMode, MouseProfile, PointerEvent,
+    QueueStats, SerialCommandQueue, fake_serial::FakeCommandQueue,
 };
 use ipkvm_device::ProductionDeviceInventoryProvider;
 use ipkvm_headless::config::{self, Options};
@@ -64,6 +64,13 @@ enum HeadlessSink {
 }
 
 impl InputSink for HeadlessSink {
+    fn initial_mouse_mode(&self) -> Option<MouseMode> {
+        Some(match self {
+            HeadlessSink::Serial(sink) => sink.initial_mouse_mode().unwrap_or(MouseMode::Absolute),
+            HeadlessSink::Fake(sink) => sink.initial_mouse_mode().unwrap_or(MouseMode::Absolute),
+        })
+    }
+
     fn set_mouse_mode(&mut self, mode: MouseMode) -> InputResult<()> {
         match self {
             HeadlessSink::Serial(sink) => sink.set_mouse_mode(mode),
@@ -323,7 +330,7 @@ fn build_initial_session_components(
         println!("未指定视频源，启动空会话，等待网页选择设备");
         return Ok(None);
     }
-    build_session_components(options, runtime).map(Some)
+    build_session_components(options, runtime, None).map(Some)
 }
 
 /// 按 CLI 参数与运行时设置构造会话所需的帧源与输入 sink。
@@ -335,11 +342,17 @@ fn build_initial_session_components(
 fn build_session_components(
     options: &Options,
     runtime: &WebSettings,
+    profile_override: Option<&str>,
 ) -> Result<SessionComponents, String> {
     let frames_per_second = options.frames_per_second.unwrap_or(runtime.preview_fps);
     let baud = options.serial_baud.unwrap_or(runtime.baud_rate);
     let source = build_source(options, frames_per_second)?;
-    let sink = build_sink(options, baud, runtime.mouse_mode)?;
+    let profile = profile_override
+        .map(MouseProfile::parse)
+        .transpose()
+        .map_err(|error| error.to_string())?
+        .unwrap_or(runtime.mouse_profile);
+    let sink = build_sink(options, baud, profile.resolve_mode())?;
     Ok((source, sink))
 }
 
@@ -388,7 +401,11 @@ impl SessionFactory<HeadlessSink> for HeadlessSessionFactory {
                 Some(serial.clone())
             };
         }
-        build_session_components(&options, &self.settings.get())
+        build_session_components(
+            &options,
+            &self.settings.get(),
+            selection.mouse_profile.as_deref(),
+        )
     }
 }
 
@@ -420,6 +437,7 @@ async fn run(
             let selection = Some(SessionSelection {
                 video: options.camera_name.clone(),
                 serial: options.serial_path.clone(),
+                mouse_profile: Some(settings.get().mouse_profile.as_str().to_string()),
             });
             (switchable_source, manager, selection)
         }

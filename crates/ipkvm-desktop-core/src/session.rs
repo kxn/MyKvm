@@ -1,8 +1,9 @@
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
-use ipkvm_core::{InputSink, MouseMode};
+use ipkvm_core::{InputSink, MouseMode, MouseProfile};
 use ipkvm_session::rfb_connection::{
     RfbClientId, RfbConnectionGate, RfbDisconnectReason, RfbServerEvent,
 };
@@ -19,8 +20,15 @@ pub struct ConnectRequest {
     pub video_device_id: String,
     pub control_device_id: String,
     pub baud_rate: u32,
+    pub mouse_profile: MouseProfile,
     pub mouse_mode: MouseMode,
     pub preview_fps: u64,
+}
+
+impl ConnectRequest {
+    pub fn resolved_mouse_mode(&self) -> MouseMode {
+        self.mouse_profile.resolve_mode()
+    }
 }
 
 #[derive(Debug, Error)]
@@ -233,12 +241,38 @@ where
         })
     }
 
-    /// 在线切换鼠标模式（不经重连，UI 与 CH9329 sink 原子一致）。
-    pub fn set_mouse_mode(&self, mode: MouseMode) -> Result<(), DesktopSessionError> {
+    /// 在线切换鼠标模式（不经重连，等待输入泵确认后才返回成功）。
+    pub fn set_mouse_mode(&mut self, mode: MouseMode) -> Result<(), DesktopSessionError> {
+        let mut mode_rx = self
+            .manager
+            .session()
+            .ok_or(DesktopSessionError::NoEventSender)?
+            .mouse_mode();
         self.send_event(RfbServerEvent::SetMouseMode {
             client_id: RfbClientId::local_desktop(),
             mode,
-        })
+        })?;
+
+        let deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            self.flush_pending()?;
+            if *mode_rx.borrow() == Some(mode) {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(DesktopSessionError::Input(
+                    "input sink did not confirm the requested mouse mode".into(),
+                ));
+            }
+            let changed = self.runtime.block_on(async {
+                tokio::time::timeout(Duration::from_millis(20), mode_rx.changed()).await
+            });
+            if matches!(changed, Ok(Err(_))) {
+                return Err(DesktopSessionError::Input(
+                    "mouse mode confirmation channel closed".into(),
+                ));
+            }
+        }
     }
 
     /// 粘贴文本：以 CutText 进入文本键入服务。
@@ -360,12 +394,17 @@ mod tests {
         key_batches: usize,
         pointer_batches: usize,
         mouse_mode_calls: usize,
+        fail_next_mouse_mode: bool,
         release_count: usize,
     }
 
     impl InputSink for RecordingSink {
         fn set_mouse_mode(&mut self, _mode: MouseMode) -> InputResult<()> {
-            self.recorded.lock().unwrap().mouse_mode_calls += 1;
+            let mut recorded = self.recorded.lock().unwrap();
+            if std::mem::take(&mut recorded.fail_next_mouse_mode) {
+                return Err(ipkvm_core::InputError::PointerPositionUnknown);
+            }
+            recorded.mouse_mode_calls += 1;
             Ok(())
         }
 
@@ -390,6 +429,7 @@ mod tests {
             video_device_id: "cam0".into(),
             control_device_id: "COM9".into(),
             baud_rate: 9_600,
+            mouse_profile: MouseProfile::RawAbsolute,
             mouse_mode: MouseMode::Absolute,
             preview_fps: 30,
         }
@@ -702,6 +742,22 @@ mod tests {
             || sink.recorded.lock().unwrap().mouse_mode_calls == 1,
             "set_mouse_mode 未到达记录型 sink",
         );
+        controller.stop().unwrap();
+    }
+
+    #[test]
+    fn set_mouse_mode_reports_sink_rejection_instead_of_acknowledging_enqueue() {
+        let (mut controller, sink) = controller_with_sink();
+        controller.connect(request()).unwrap();
+        sink.recorded.lock().unwrap().fail_next_mouse_mode = true;
+
+        let error = controller.set_mouse_mode(MouseMode::Relative).unwrap_err();
+
+        assert!(
+            error.to_string().contains("mouse mode"),
+            "sink 拒绝模式切换时，控制器必须报告确认失败，而不是只报告入队成功"
+        );
+        assert_eq!(sink.recorded.lock().unwrap().mouse_mode_calls, 0);
         controller.stop().unwrap();
     }
 

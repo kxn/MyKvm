@@ -331,6 +331,14 @@ select:disabled {
   font-size: 13px;
 }
 
+.profile-picker {
+  grid-template-columns: 160px minmax(0, 1fr);
+}
+
+.profile-picker select {
+  grid-column: 2;
+}
+
 .probe {
   grid-column: 2 / 4;
   min-height: 1.4em;
@@ -429,6 +437,24 @@ select:disabled {
   border-color: var(--accent);
   background: #e2f2e8;
   color: #1f8c59;
+}
+
+.status-profile {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-muted);
+}
+
+.status-profile select {
+  width: 142px;
+  height: 26px;
+  padding: 0 6px;
+  border: 1px solid #c9cdd2;
+  border-radius: 4px;
+  background: #fff;
+  color: #1f1f24;
+  font-size: 12px;
 }
 
 .video-message {
@@ -568,6 +594,14 @@ select:disabled {
 
   .device-picker {
     grid-template-columns: 78px minmax(0, 1fr) auto;
+  }
+
+  .profile-picker {
+    grid-template-columns: 1fr;
+  }
+
+  .profile-picker select {
+    grid-column: 1;
   }
 
   .video-status-bar {

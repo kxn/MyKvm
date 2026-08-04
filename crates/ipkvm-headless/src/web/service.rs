@@ -5,6 +5,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
+    time::Duration,
 };
 
 use axum::{
@@ -18,7 +19,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use ipkvm_core::InputSink;
+use ipkvm_core::{InputSink, MouseMode, MouseProfile};
 use ipkvm_device::{DeviceInventoryProvider, SerialDevice, VideoDevice};
 use ipkvm_session::console_session::InputOfflineInfo;
 use ipkvm_session::session_manager::{SessionManager, SessionState};
@@ -28,6 +29,7 @@ use thiserror::Error;
 use tokio::{
     net::TcpListener,
     sync::{mpsc, watch},
+    time::timeout,
 };
 
 use super::{assets::find_asset, auth};
@@ -69,6 +71,8 @@ pub(super) struct ApiState<I: InputSink + Clone + Send + 'static> {
 pub struct SessionSelection {
     pub video: Option<String>,
     pub serial: Option<String>,
+    #[serde(default)]
+    pub mouse_profile: Option<String>,
 }
 
 impl SessionSelection {
@@ -76,6 +80,10 @@ impl SessionSelection {
         Self {
             video: overrides.video.clone().or_else(|| self.video.clone()),
             serial: overrides.serial.clone().or_else(|| self.serial.clone()),
+            mouse_profile: overrides
+                .mouse_profile
+                .clone()
+                .or_else(|| self.mouse_profile.clone()),
         }
     }
 }
@@ -184,6 +192,7 @@ fn api_router<I: InputSink + Clone + Send + 'static>(api: Arc<ApiState<I>>) -> R
             "/api/settings",
             get(api_get_settings::<I>).post(api_post_settings::<I>),
         )
+        .route("/api/input/mouse-profile", post(api_mouse_profile::<I>))
         .route("/api/session", post(api_session::<I>))
         .with_state(api)
 }
@@ -293,6 +302,8 @@ struct SessionStatus {
     serial: Option<SerialStatsDto>,
     #[serde(skip_serializing_if = "Option::is_none")]
     input_offline: Option<InputOfflineDto>,
+    mouse_profile: &'static str,
+    mouse_mode: &'static str,
 }
 
 #[derive(serde::Serialize)]
@@ -356,6 +367,7 @@ async fn api_status<I: InputSink + Clone + Send + 'static>(
         serial,
         last_frame_ns,
         input_offline,
+        actual_mouse_mode,
     ) = {
         let mut manager = state.manager.lock().await;
         manager.refresh_stats();
@@ -375,6 +387,9 @@ async fn api_status<I: InputSink + Clone + Send + 'static>(
                 }
                 None => (0, None, 0, None, None, None),
             };
+        let actual_mouse_mode = manager
+            .session()
+            .and_then(|session| *session.mouse_mode().borrow());
         (
             state_name,
             input_events,
@@ -383,6 +398,7 @@ async fn api_status<I: InputSink + Clone + Send + 'static>(
             serial,
             last_frame_ns,
             input_offline,
+            actual_mouse_mode,
         )
     };
     let now_ns = ipkvm_session::now_ns();
@@ -392,6 +408,16 @@ async fn api_status<I: InputSink + Clone + Send + 'static>(
             .unwrap_or(true),
         None => session_state != "absent",
     };
+    let (mouse_profile, selected_mouse_mode) = {
+        let selection = state.selection.lock().await;
+        let profile = selection
+            .as_ref()
+            .and_then(|selection| selection.mouse_profile.as_deref())
+            .and_then(|value| MouseProfile::parse(value).ok())
+            .unwrap_or_else(|| state.settings.get().mouse_profile);
+        (profile.as_str(), profile.resolve_mode())
+    };
+    let mouse_mode = actual_mouse_mode.unwrap_or(selected_mouse_mode);
     let status = StatusResponse {
         service: ServiceStatus {
             name: env!("CARGO_PKG_NAME"),
@@ -421,9 +447,18 @@ async fn api_status<I: InputSink + Clone + Send + 'static>(
             dropped_frames,
             serial,
             input_offline,
+            mouse_profile,
+            mouse_mode: mouse_mode_name(mouse_mode),
         },
     };
     json_response(&status)
+}
+
+fn mouse_mode_name(mode: MouseMode) -> &'static str {
+    match mode {
+        MouseMode::Absolute => "absolute",
+        MouseMode::Relative => "relative",
+    }
 }
 
 // ---- /api/settings ----
@@ -458,6 +493,123 @@ async fn api_post_settings<I: InputSink + Clone + Send + 'static>(
             "settings save failed",
             Some(&detail),
         ),
+    }
+}
+
+// ---- /api/input/mouse-profile ----
+
+#[derive(Deserialize)]
+struct MouseProfileRequest {
+    mouse_profile: String,
+}
+
+#[derive(serde::Serialize)]
+struct MouseProfileResponse {
+    mouse_profile: &'static str,
+    mouse_mode: &'static str,
+}
+
+/// 在当前活动 RFB 输入泵中切换 profile。设备状态切换仍由泵统一执行，
+/// API 只负责校验、选取当前控制器并更新会话选择覆盖值。
+async fn api_mouse_profile<I: InputSink + Clone + Send + 'static>(
+    State(state): State<Arc<ApiState<I>>>,
+    body: Result<Json<MouseProfileRequest>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let Json(request) = match body {
+        Ok(body) => body,
+        Err(rejection) => {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                "invalid mouse profile",
+                Some(&rejection.to_string()),
+            );
+        }
+    };
+    let profile = match MouseProfile::parse(&request.mouse_profile) {
+        Ok(profile) => profile,
+        Err(error) => {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                "invalid mouse profile",
+                Some(&error.to_string()),
+            );
+        }
+    };
+    let Some(active) = state.gate.active_controller() else {
+        return json_error(
+            StatusCode::CONFLICT,
+            "no active controller",
+            Some("connect the remote display before changing the mouse profile"),
+        );
+    };
+    let manager = state.manager.lock().await;
+    if manager.state() != SessionState::Running {
+        return json_error(StatusCode::CONFLICT, "session is not running", None);
+    }
+    let Some(session) = manager.session() else {
+        return json_error(StatusCode::CONFLICT, "session is not running", None);
+    };
+    let event_tx = session.event_tx().clone();
+    let mut mode_rx = session.mouse_mode();
+    let current_profile = {
+        let selection = state.selection.lock().await;
+        selection
+            .as_ref()
+            .and_then(|selection| selection.mouse_profile.as_deref())
+            .and_then(|value| MouseProfile::parse(value).ok())
+            .unwrap_or_else(|| state.settings.get().mouse_profile)
+    };
+    if profile.resolve_mode() != current_profile.resolve_mode() {
+        if event_tx
+            .send(RfbServerEvent::SetMouseMode {
+                client_id: active.client_id,
+                mode: profile.resolve_mode(),
+            })
+            .await
+            .is_err()
+        {
+            return json_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "mouse profile switch failed",
+                Some("the input session stopped before the mode change was queued"),
+            );
+        }
+        let applied = timeout(
+            Duration::from_secs(1),
+            wait_for_mouse_mode(&mut mode_rx, profile.resolve_mode()),
+        )
+        .await
+        .unwrap_or(false);
+        if !applied {
+            return json_error(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "mouse profile switch failed",
+                Some("the input sink did not confirm the requested mode"),
+            );
+        }
+    }
+    {
+        let mut selection = state.selection.lock().await;
+        let selection = selection.get_or_insert_with(SessionSelection::default);
+        selection.mouse_profile = Some(profile.as_str().to_string());
+    }
+    json_response(&MouseProfileResponse {
+        mouse_profile: profile.as_str(),
+        mouse_mode: mouse_mode_name(profile.resolve_mode()),
+    })
+}
+
+async fn wait_for_mouse_mode(
+    mode_rx: &mut watch::Receiver<Option<MouseMode>>,
+    expected: MouseMode,
+) -> bool {
+    loop {
+        if *mode_rx.borrow() == Some(expected) {
+            return true;
+        }
+        if mode_rx.changed().await.is_err() {
+            return false;
+        }
     }
 }
 
@@ -599,6 +751,10 @@ struct SessionRequest {
     video: Option<String>,
     #[serde(default)]
     serial: Option<String>,
+    #[serde(default)]
+    mouse_profile: Option<String>,
+    #[serde(default)]
+    mouse_mode: Option<String>,
 }
 
 #[derive(serde::Serialize)]
@@ -611,9 +767,21 @@ async fn api_session<I: InputSink + Clone + Send + 'static>(
     Json(request): Json<SessionRequest>,
 ) -> Response {
     let mut manager = state.manager.lock().await;
+    let mouse_profile =
+        match normalize_session_mouse_profile(request.mouse_profile, request.mouse_mode) {
+            Ok(profile) => profile,
+            Err(detail) => {
+                return json_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid mouse profile",
+                    Some(&detail),
+                );
+            }
+        };
     let selection = SessionSelection {
         video: request.video,
         serial: request.serial,
+        mouse_profile,
     };
     match request.action.as_str() {
         "restart" => {
@@ -721,6 +889,25 @@ async fn api_session<I: InputSink + Clone + Send + 'static>(
             )),
         ),
     }
+}
+
+fn normalize_session_mouse_profile(
+    profile: Option<String>,
+    legacy_mode: Option<String>,
+) -> Result<Option<String>, String> {
+    if let Some(profile) = profile {
+        let parsed = MouseProfile::parse(&profile).map_err(|error| error.to_string())?;
+        return Ok(Some(parsed.as_str().to_string()));
+    }
+    let Some(mode) = legacy_mode else {
+        return Ok(None);
+    };
+    let profile = match mode.as_str() {
+        "absolute" | "Absolute" => MouseProfile::RawAbsolute,
+        "relative" | "Relative" => MouseProfile::RawRelative,
+        other => return Err(format!("unknown mouse_mode: {other}")),
+    };
+    Ok(Some(profile.as_str().to_string()))
 }
 
 pub(super) fn create_and_start_session<I: InputSink + Clone + Send + 'static>(
@@ -843,5 +1030,55 @@ mod tests {
         assert_eq!(session_state_name(SessionState::Absent), "absent");
         assert_eq!(session_state_name(SessionState::Stopped), "stopped");
         assert_eq!(session_state_name(SessionState::Running), "running");
+    }
+
+    #[test]
+    fn session_selection_override_keeps_mouse_profile_with_devices() {
+        let base = SessionSelection {
+            video: Some("cam0".into()),
+            serial: Some("COM9".into()),
+            mouse_profile: Some("windows".into()),
+        };
+        let override_selection = SessionSelection {
+            video: None,
+            serial: None,
+            mouse_profile: Some("linux".into()),
+        };
+        assert_eq!(
+            base.with_overrides(&override_selection),
+            SessionSelection {
+                video: Some("cam0".into()),
+                serial: Some("COM9".into()),
+                mouse_profile: Some("linux".into()),
+            }
+        );
+    }
+
+    #[test]
+    fn mouse_mode_name_matches_wire_values() {
+        assert_eq!(mouse_mode_name(MouseMode::Absolute), "absolute");
+        assert_eq!(mouse_mode_name(MouseMode::Relative), "relative");
+    }
+
+    #[tokio::test]
+    async fn wait_for_mouse_mode_requires_confirmed_value() {
+        let (tx, mut rx) = watch::channel(None);
+        tokio::spawn(async move {
+            tx.send(Some(MouseMode::Relative)).unwrap();
+        });
+        assert!(wait_for_mouse_mode(&mut rx, MouseMode::Relative).await);
+    }
+
+    #[test]
+    fn session_mouse_mode_compatibility_maps_to_raw_profiles() {
+        assert_eq!(
+            normalize_session_mouse_profile(None, Some("relative".into())).unwrap(),
+            Some("raw_relative".into())
+        );
+        assert_eq!(
+            normalize_session_mouse_profile(Some("linux".into()), Some("absolute".into())).unwrap(),
+            Some("linux".into())
+        );
+        assert!(normalize_session_mouse_profile(None, Some("banana".into())).is_err());
     }
 }

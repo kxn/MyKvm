@@ -64,6 +64,10 @@ impl RecordingInputSink {
 }
 
 impl InputSink for RecordingInputSink {
+    fn initial_mouse_mode(&self) -> Option<MouseMode> {
+        Some(self.mouse_mode)
+    }
+
     fn set_mouse_mode(&mut self, mode: MouseMode) -> InputResult<()> {
         self.mouse_mode = mode;
         Ok(())
