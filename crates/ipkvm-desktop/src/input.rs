@@ -139,7 +139,7 @@ fn diff_modifier(previous: bool, current: bool, keysym: u32, actions: &mut Vec<K
     }
 }
 
-/// 当前指针按键掩码：Primary=1、Secondary=2、Middle=4。
+/// 当前指针按键掩码：Primary=1、Middle=2、Secondary=4。
 ///
 /// 指针仍按住但按钮状态事件短暂中断时，沿用上一帧掩码，避免误发抬键。
 pub fn pointer_button_mask(response: &eframe::egui::Response, previous_mask: u8) -> u8 {
@@ -154,13 +154,13 @@ pub fn pointer_button_mask(response: &eframe::egui::Response, previous_mask: u8)
         i.pointer
             .button_down(eframe::egui::PointerButton::Secondary)
     }) {
-        mask |= 0b010;
+        mask |= 0b100;
     }
     if response
         .ctx
         .input(|i| i.pointer.button_down(eframe::egui::PointerButton::Middle))
     {
-        mask |= 0b100;
+        mask |= 0b010;
     }
     if mask == 0 && previous_mask != 0 && response.ctx.input(|i| i.pointer.any_down()) {
         mask = previous_mask;
@@ -395,6 +395,78 @@ mod tests {
         });
         let _ = ctx.run(released, |_| {});
         assert_eq!(pointer_button_mask(&response, 1), 0);
+
+        let mut pressed = egui::RawInput {
+            screen_rect: Some(rect),
+            ..Default::default()
+        };
+        pressed.events.push(egui::Event::PointerButton {
+            pos: egui::pos2(100.0, 100.0),
+            button: egui::PointerButton::Middle,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        });
+        let mut response = None;
+        let _ = ctx.run(pressed, |ctx| {
+            response = Some(
+                egui::CentralPanel::default()
+                    .show(ctx, |ui| {
+                        ui.allocate_response(ui.available_size(), egui::Sense::click_and_drag())
+                    })
+                    .inner,
+            );
+        });
+        let response = response.unwrap();
+        assert_eq!(pointer_button_mask(&response, 0), 0b010);
+
+        let mut released = egui::RawInput {
+            screen_rect: Some(rect),
+            ..Default::default()
+        };
+        released.events.push(egui::Event::PointerButton {
+            pos: egui::pos2(100.0, 100.0),
+            button: egui::PointerButton::Middle,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        let _ = ctx.run(released, |_| {});
+        assert_eq!(pointer_button_mask(&response, 0b010), 0);
+
+        let mut pressed = egui::RawInput {
+            screen_rect: Some(rect),
+            ..Default::default()
+        };
+        pressed.events.push(egui::Event::PointerButton {
+            pos: egui::pos2(100.0, 100.0),
+            button: egui::PointerButton::Secondary,
+            pressed: true,
+            modifiers: egui::Modifiers::NONE,
+        });
+        let mut response = None;
+        let _ = ctx.run(pressed, |ctx| {
+            response = Some(
+                egui::CentralPanel::default()
+                    .show(ctx, |ui| {
+                        ui.allocate_response(ui.available_size(), egui::Sense::click_and_drag())
+                    })
+                    .inner,
+            );
+        });
+        let response = response.unwrap();
+        assert_eq!(pointer_button_mask(&response, 0), 0b100);
+
+        let mut released = egui::RawInput {
+            screen_rect: Some(rect),
+            ..Default::default()
+        };
+        released.events.push(egui::Event::PointerButton {
+            pos: egui::pos2(100.0, 100.0),
+            button: egui::PointerButton::Secondary,
+            pressed: false,
+            modifiers: egui::Modifiers::NONE,
+        });
+        let _ = ctx.run(released, |_| {});
+        assert_eq!(pointer_button_mask(&response, 0b100), 0);
     }
 
     #[test]
