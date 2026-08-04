@@ -44,6 +44,7 @@ Get-Content -Raw -Encoding UTF8 AGENTS.md
   - 列出 PR：`tea pulls list --repo kxn/my_ipkvm`
   - 创建 PR：`tea pulls create --repo kxn/my_ipkvm --base main --head <branch> --title "..." --description "..."`
   - 合并 PR：`tea pulls merge --repo kxn/my_ipkvm <PR编号>`
+  - 关闭 issue：`tea issues close --repo kxn/my_ipkvm <issue编号>`
 - 通过 `tea` 写入中文标题或正文前，先按上文设置 UTF-8 编码，并在写入后读回确认中文内容。
 
 ## 工作入口
@@ -51,6 +52,8 @@ Get-Content -Raw -Encoding UTF8 AGENTS.md
 - 非平凡改动必须围绕 Gitea issue 开发。issue 是工作单元，记录背景、目标、范围、验收标准、测试计划和讨论。
 - 架构、协议、用户行为、开发流程、测试策略发生变化时，必须同步更新长期文档。
 - 文档是长期事实来源；issue 是一次工作的过程记录。PR 负责把两者收口并链接起来。
+- 非平凡改动默认从 `main` 创建带 issue 编号的分支，推送分支并通过 PR 合入；只有用户明确授权时才允许直接提交或推送 `main`。
+- 实现类 PR 必须使用 `Closes #编号` 或等价关键字收口；只有不完成该工作的引用型 PR 才使用 `Refs #编号`。
 - **大设计先调研、后开单**：对大型设计（新 UI/新子系统/协议扩展等），必须先完成深入
   技术调研并把调研结论写入设计文档（`docs/superpowers/specs/`），确认后再决定如何拆
   单。禁止在调研完成前按子 feature 预开一批 issue——按子 feature 预开容易丧失关联性，
@@ -69,6 +72,20 @@ cargo fmt --all --check
 cargo test --workspace --all-features
 ```
 
+## 工作完成与收口
+
+非平凡改动只有完成以下收口步骤后才能声称完成：
+
+1. 已有对应 Gitea issue，且 issue 记录了背景、目标、范围、验收标准、测试计划和文档影响。
+2. 已按 TDD 要求补充失败测试（适用时），完成实现、回归测试和必要的人工验证。
+3. 已创建英文 conventional commit，提交信息包含 `#编号`；不能只修改工作区而不提交。
+4. 默认分支开发流程必须推送 issue 分支、创建 PR，并在 PR 描述中填写 `Closes #编号`、改动摘要、根因或设计依据、测试证据、文档影响和人工验证例外。
+5. PR 合并后必须确认 issue 已自动关闭；如果 issue 仍为 open，必须使用 `tea issues close --repo kxn/my_ipkvm <issue编号>` 关闭，并读回确认状态为 `closed`。
+6. 如果用户明确授权直接推送 `main`，不能创建 PR 的 `Closes` 收口不会自动生效；推送成功后必须手动关闭 issue，并读回确认 issue 状态。
+7. 收口前必须核对本地 commit 与远端目标分支一致、PR/issue 状态正确、工作区没有误纳入的文件；必要时同步 `HANDOFF.md`、台账和长期文档。
+
+没有完成上述步骤时，只能报告为“实现完成但尚未收口”，不能报告为任务完成。
+
 ## 修复原则
 
 - 修改代码应从根因修复，禁止用绕过、吞错、固定延时、只改测试适配坏实现等补丁式修复代替真实修复。
@@ -80,4 +97,4 @@ cargo test --workspace --all-features
 - 不要回滚用户或其他协作者的未提交改动，除非用户明确要求。
 - 提交信息使用简洁英文 conventional commit 风格，例如 `feat: ...`、`fix: ...`、`docs: ...`、`chore: ...`。
 - PR 描述必须包含关联 issue、改动摘要、测试证据、文档影响和人工验证例外。
-- Gitea issue、PR 和提交信息中使用 `#编号` 关联工作；合并 PR 时可使用 `Closes #编号` 收口。
+- Gitea issue、PR 和提交信息中使用 `#编号` 关联工作；实现类 PR 必须使用 `Closes #编号` 或等价关键字收口。
