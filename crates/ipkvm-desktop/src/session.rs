@@ -164,28 +164,10 @@ where
 
     /// 订阅当前会话帧源：新帧到达时通过返回的 watch receiver 通知。
     ///
-    /// 平台中立的重绘入口，供非 egui 前端（如 iced）把帧通知转成自己的重绘
-    /// 信号（iced 的 `Subscription`）。egui 前端继续用 `spawn_frame_repainter`。
+    /// 前端可把帧通知转换为自己的重绘信号（例如 iced 的 `Subscription`）。
     /// 连接前帧源为空，返回 `None`。
     pub fn subscribe_frames(&self) -> Option<ipkvm_video::FrameReceiver> {
         self.frame_source.as_ref().map(|source| source.subscribe())
-    }
-
-    /// 订阅当前帧源：新帧到达时请求 egui 重绘。
-    ///
-    /// eframe 是事件驱动重绘，仅靠 update 内轮询 `latest_frame` 会在空闲时
-    /// 陷入“无事件 → 不重绘 → 看不到新帧 → 不请求重绘”的死循环；必须在后台
-    /// 订阅帧源 watch，帧一到就唤醒重绘。`connect()` 成功后调用。
-    pub fn spawn_frame_repainter(
-        &self,
-        ctx: eframe::egui::Context,
-    ) -> Option<tokio::task::JoinHandle<()>> {
-        let mut receiver = self.frame_source.as_ref()?.subscribe();
-        Some(self.runtime.spawn(async move {
-            while receiver.changed().await.is_ok() {
-                ctx.request_repaint();
-            }
-        }))
     }
 
     /// 会话输入泵是否仍在运行。
@@ -687,18 +669,6 @@ mod tests {
             || sink.recorded.lock().unwrap().pointer_batches == 1,
             "相对指针事件未到达记录型 sink",
         );
-        controller.stop().unwrap();
-    }
-
-    #[test]
-    fn spawn_frame_repainter_returns_task_while_connected() {
-        let (mut controller, _sink) = controller_with_sink();
-        controller.connect(request()).unwrap();
-
-        let task = controller
-            .spawn_frame_repainter(eframe::egui::Context::default())
-            .expect("connected session must expose frame watcher");
-        task.abort();
         controller.stop().unwrap();
     }
 

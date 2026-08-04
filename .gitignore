@@ -1,4 +1,5 @@
 /target/
+/.target-issue79/
 /.cache/
 /.worktrees/
 /browser-tests/node_modules/

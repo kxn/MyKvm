@@ -28,7 +28,6 @@ arboard = "3.6.1"
 axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio", "ws"] }
 cipher = "0.4"
 des = "0.8"
-eframe = { version = "0.33.2", default-features = false, features = ["wgpu", "x11", "wayland"] }
 futures-util = "0.3.33"
 iced_aw = { version = "0.14.1", default-features = false, features = ["menu"] }
 include_dir = { version = "0.7.4", default-features = false }
