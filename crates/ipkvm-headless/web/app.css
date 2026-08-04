@@ -1,20 +1,20 @@
 :root {
-  color-scheme: dark;
+  color-scheme: light;
   font-family:
     "Segoe UI",
     "Microsoft YaHei UI",
     sans-serif;
   letter-spacing: 0;
-  background: #101312;
-  color: #e8ebe9;
-  --accent: #3d9b68;
-  --accent-strong: #267452;
-  --panel: #171b1a;
-  --panel-raised: #1e2422;
-  --border: #333a37;
-  --text-muted: #9aa39f;
-  --danger: #e0665d;
-  --warn: #d9a441;
+  background: #f5f5f7;
+  color: #1f1f24;
+  --accent: #336bd1;
+  --accent-strong: #24519e;
+  --panel: #ffffff;
+  --panel-raised: #ffffff;
+  --border: #d8d8dd;
+  --text-muted: #6b7076;
+  --danger: #c23333;
+  --warn: #b07d13;
 }
 
 * {
@@ -30,7 +30,7 @@ body {
 }
 
 body {
-  background: #101312;
+  background: #f5f5f7;
 }
 
 button,
@@ -77,7 +77,7 @@ select:disabled {
   padding: 0 12px;
   border-bottom: 1px solid var(--border);
   background: var(--panel);
-  box-shadow: 0 1px 4px rgb(0 0 0 / 35%);
+  box-shadow: 0 1px 4px rgb(0 0 0 / 8%);
 }
 
 .identity,
@@ -112,11 +112,11 @@ select:disabled {
   flex: 0 0 auto;
   border-radius: 50%;
   background: var(--warn);
-  box-shadow: 0 0 0 2px rgb(255 255 255 / 10%);
+  box-shadow: 0 0 0 2px rgb(0 0 0 / 8%);
 }
 
 #console[data-connection-state="connected"] .status-indicator {
-  background: #35a76d;
+  background: #1f8c59;
 }
 
 #console[data-connection-state="disconnected"] .status-indicator,
@@ -134,10 +134,10 @@ select:disabled {
 .toolbar-actions a,
 .toolbar-actions .language-control {
   height: 30px;
-  border: 1px solid #48514d;
+  border: 1px solid #c9cdd2;
   border-radius: 4px;
-  background: #232a27;
-  color: #e8ebe9;
+  background: #ffffff;
+  color: #1f1f24;
   font-size: 13px;
   line-height: 28px;
   text-decoration: none;
@@ -152,7 +152,7 @@ select:disabled {
 .toolbar-actions button:hover:not(:disabled),
 .toolbar-actions a:hover {
   border-color: var(--accent);
-  background: #2b3530;
+  background: #e8eef6;
 }
 
 .toolbar-actions button:focus-visible,
@@ -204,7 +204,7 @@ select:disabled {
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--panel-raised);
-  box-shadow: 0 6px 24px rgb(0 0 0 / 55%);
+  box-shadow: 0 6px 24px rgb(0 0 0 / 18%);
 }
 
 .menu-panel h3 {
@@ -225,13 +225,13 @@ select:disabled {
   border: 0;
   border-radius: 4px;
   background: transparent;
-  color: #e8ebe9;
+  color: #1f1f24;
   font-size: 13px;
   text-align: left;
 }
 
 .menu-panel button:hover:not(:disabled) {
-  background: #2b3530;
+  background: #e8eef6;
 }
 
 .special-key-group {
@@ -255,8 +255,8 @@ select:disabled {
   justify-content: center;
   padding: 24px;
   background:
-    radial-gradient(1200px 500px at 50% -10%, rgb(61 155 104 / 12%), transparent),
-    #101312;
+    radial-gradient(1200px 500px at 50% -10%, rgb(51 107 209 / 10%), transparent),
+    #f5f5f7;
 }
 
 .connection-card {
@@ -265,7 +265,7 @@ select:disabled {
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--panel);
-  box-shadow: 0 8px 32px rgb(0 0 0 / 40%);
+  box-shadow: 0 8px 32px rgb(0 0 0 / 15%);
 }
 
 .connection-card h1 {
@@ -295,7 +295,7 @@ select:disabled {
 }
 
 .message[data-level="ok"] {
-  color: #6cc391;
+  color: #1f8c59;
 }
 
 .device-picker {
@@ -318,7 +318,7 @@ select:disabled {
   border: 1px solid var(--border);
   border-radius: 4px;
   background: var(--panel-raised);
-  color: #e8ebe9;
+  color: #1f1f24;
 }
 
 .device-picker button {
@@ -326,8 +326,8 @@ select:disabled {
   padding: 0 12px;
   border: 1px solid #48514d;
   border-radius: 4px;
-  background: #232a27;
-  color: #e8ebe9;
+  background: #ffffff;
+  color: #1f1f24;
   font-size: 13px;
 }
 
@@ -343,7 +343,7 @@ select:disabled {
 }
 
 .probe[data-state="ready"] {
-  color: #6cc391;
+  color: #1f8c59;
 }
 
 .settings-summary {
@@ -365,12 +365,12 @@ select:disabled {
 }
 
 #connect-button:hover:not(:disabled) {
-  background: #2f8a5b;
+  background: #2a5cb8;
 }
 
 #connect-button:disabled {
-  background: #26302b;
-  color: #7c857f;
+  background: #e4e6ea;
+  color: #8a9096;
 }
 
 /* ---- 视频页 ---- */
@@ -378,7 +378,7 @@ select:disabled {
 .video-view {
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto auto;
-  background: #050505;
+  background: #e9e9ec;
 }
 
 #screen {
@@ -388,7 +388,7 @@ select:disabled {
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-  background: #050505;
+  background: #e9e9ec;
 }
 
 #screen:focus-within {
@@ -412,23 +412,23 @@ select:disabled {
 .video-status-bar button {
   height: 26px;
   padding: 0 10px;
-  border: 1px solid #48514d;
+  border: 1px solid #c9cdd2;
   border-radius: 4px;
-  background: #232a27;
-  color: #e8ebe9;
+  background: #ffffff;
+  color: #1f1f24;
   font-size: 12px;
 }
 
 .video-status-bar button[data-state="locked"] {
   border-color: var(--accent);
-  background: #203b2c;
-  color: #9fe0b8;
+  background: #e2edfa;
+  color: #1b4e9e;
 }
 
 .video-status-bar button[data-state="armed"] {
   border-color: var(--accent);
-  background: #263b2d;
-  color: #a8ddbc;
+  background: #e2f2e8;
+  color: #1f8c59;
 }
 
 .video-message {
@@ -440,8 +440,8 @@ select:disabled {
   padding: 6px 12px;
   border: 1px solid var(--border);
   border-radius: 5px;
-  background: rgb(23 27 26 / 88%);
-  box-shadow: 0 4px 16px rgb(0 0 0 / 45%);
+  background: rgb(255 255 255 / 92%);
+  box-shadow: 0 4px 16px rgb(0 0 0 / 15%);
   text-align: center;
   transform: translateX(-50%);
 }
@@ -456,7 +456,7 @@ select:disabled {
   align-items: center;
   justify-content: center;
   padding: 24px;
-  background: rgb(0 0 0 / 55%);
+  background: rgb(0 0 0 / 35%);
 }
 
 .modal-panel {
@@ -467,7 +467,7 @@ select:disabled {
   border: 1px solid var(--border);
   border-radius: 10px;
   background: var(--panel);
-  box-shadow: 0 10px 40px rgb(0 0 0 / 55%);
+  box-shadow: 0 10px 40px rgb(0 0 0 / 18%);
 }
 
 .modal-panel h2 {
@@ -504,7 +504,7 @@ select:disabled {
   border: 1px solid var(--border);
   border-radius: 4px;
   background: var(--panel-raised);
-  color: #e8ebe9;
+  color: #1f1f24;
 }
 
 .modal-actions {
@@ -521,10 +521,10 @@ select:disabled {
 .modal-actions button {
   height: 32px;
   padding: 0 14px;
-  border: 1px solid #48514d;
+  border: 1px solid #c9cdd2;
   border-radius: 4px;
-  background: #232a27;
-  color: #e8ebe9;
+  background: #ffffff;
+  color: #1f1f24;
   font-size: 13px;
 }
 

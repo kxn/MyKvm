@@ -841,7 +841,15 @@ async fn api_session_stop_then_restart_cycles_state() {
         .await;
     assert_eq!(stop.status, 200);
     let stop_body: serde_json::Value = serde_json::from_slice(&stop.body).unwrap();
-    assert_eq!(stop_body["state"], "stopped");
+    assert_eq!(stop_body["state"], "absent");
+
+    // 断开必须真正停止并释放采集：会话销毁、帧源切空、manual_stop 置位。
+    let status_after: serde_json::Value =
+        serde_json::from_slice(&server.request("GET", "/api/status").await.body).unwrap();
+    assert_eq!(status_after["session"]["state"], "absent");
+    assert_eq!(status_after["session"]["manual_stop"], true);
+    assert_eq!(status_after["video"]["source"]["kind"], "generated");
+    assert_eq!(status_after["video"]["source"]["device_name"], "none");
 
     // 停止后再 restart：按当前选择重新启动会话。
     let restart = server
@@ -850,6 +858,9 @@ async fn api_session_stop_then_restart_cycles_state() {
     assert_eq!(restart.status, 200);
     let restart_body: serde_json::Value = serde_json::from_slice(&restart.body).unwrap();
     assert_eq!(restart_body["state"], "running");
+    let status_restarted: serde_json::Value =
+        serde_json::from_slice(&server.request("GET", "/api/status").await.body).unwrap();
+    assert_eq!(status_restarted["session"]["manual_stop"], false);
 
     server.stop().await;
 }
@@ -1033,7 +1044,7 @@ async fn api_status_exposes_manual_stop_and_stop_restart_cycle_flips_it() {
 
     let status = server.request("GET", "/api/status").await;
     let body: serde_json::Value = serde_json::from_slice(&status.body).unwrap();
-    assert_eq!(body["session"]["state"], "stopped");
+    assert_eq!(body["session"]["state"], "absent");
     assert_eq!(body["session"]["manual_stop"], true);
 
     let restart = server
