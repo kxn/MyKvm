@@ -1,7 +1,7 @@
 // 截图：/api/screenshot → 下载（<a download>）或复制（ClipboardItem）。
 
 import { errorText } from "./api.js";
-import { copyBlobToClipboard } from "./clipboard.js";
+import { copyJpegToClipboard } from "./clipboard.js";
 import { t } from "./i18n.js";
 
 export class ScreenshotController {
@@ -88,7 +88,7 @@ export class ScreenshotController {
   async copy() {
     try {
       const blob = await this.fetchScreenshot();
-      await copyBlobToClipboard(blob);
+      await copyJpegToClipboard(blob);
       this.message(t("screenshot.copyOk"), "ok");
     } catch (error) {
       this.message(t("screenshot.copyFail", { detail: errorText(error) }), "error");

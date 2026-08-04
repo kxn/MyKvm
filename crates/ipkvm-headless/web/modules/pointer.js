@@ -48,7 +48,8 @@ export class PointerController {
     this.update();
   }
 
-  async toggle() {
+  async toggle(event) {
+    event?.stopPropagation();
     if (this.locked) {
       this.exit();
       return;
@@ -57,21 +58,29 @@ export class PointerController {
       return;
     }
     const canvas = this.rfb.canvas;
-    try {
-      const result = canvas.requestPointerLock({ unadjustedMovement: true });
-      if (result && typeof result.catch === "function") {
-        result.catch((error) => {
-          this.message(
-            t("video.relative.lockError", { detail: errorText(error) }),
-            "error",
-          );
-        });
-      }
-    } catch (error) {
+    const showError = (error) => {
       this.message(
         t("video.relative.lockError", { detail: errorText(error) }),
         "error",
       );
+    };
+    try {
+      const result = canvas.requestPointerLock({ unadjustedMovement: true });
+      if (result && typeof result.catch === "function") {
+        result.catch(() => {
+          // 旧浏览器/不支持 unadjustedMovement 时退回无选项请求。
+          try {
+            const retry = canvas.requestPointerLock();
+            if (retry && typeof retry.catch === "function") {
+              retry.catch(showError);
+            }
+          } catch (error) {
+            showError(error);
+          }
+        });
+      }
+    } catch (error) {
+      showError(error);
     }
   }
 

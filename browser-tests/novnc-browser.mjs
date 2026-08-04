@@ -430,6 +430,89 @@ async function assertRelativePointerMessageConstruction(page) {
   assert.deepEqual(probe.bytes, [0x08, 0b101, 0, 10, 0xff, 0xec, 1]);
 }
 
+async function assertNoVncCursorRendering(page) {
+  const result = await page.evaluate(async () => {
+    const { default: RFB } = await import("/vendor/novnc/core/rfb.js");
+    return [false, true].map((relativeMode) => {
+      const calls = [];
+      const fake = {
+        _rfbConnectionState: "connected",
+        _relativeMode: relativeMode,
+        _canvas: { style: { cursor: "url(old-cursor)" } },
+        _cursor: { change: () => calls.push("change") },
+        _cursorImage: {
+          rgbaPixels: [255, 0, 0, 255],
+          hotx: 0,
+          hoty: 0,
+          w: 1,
+          h: 1,
+        },
+        _showDotCursor: false,
+        _shouldShowDotCursor: RFB.prototype._shouldShowDotCursor,
+      };
+      RFB.prototype._refreshCursor.call(fake);
+      return { relativeMode, cursor: fake._canvas.style.cursor, calls };
+    });
+  });
+  for (const mode of result) {
+    assert.equal(mode.cursor, "", `mode=${mode.relativeMode} must use system cursor`);
+    assert.deepEqual(
+      mode.calls,
+      [],
+      `mode=${mode.relativeMode} must skip noVNC Cursor.change`,
+    );
+  }
+}
+
+async function assertClipboardImageConversion(page) {
+  const result = await page.evaluate(async () => {
+    const { jpegToPngBlob } = await import("/assets/modules/clipboard.js");
+    const response = await fetch("/api/screenshot");
+    const png = await jpegToPngBlob(await response.blob());
+    return {
+      type: png.type,
+      signature: [...new Uint8Array(await png.arrayBuffer()).subarray(0, 8)],
+    };
+  });
+  assert.equal(result.type, "image/png");
+  assert.deepEqual(result.signature, [137, 80, 78, 71, 13, 10, 26, 10]);
+}
+
+async function assertPointerLockFallback(page) {
+  const result = await page.evaluate(async () => {
+    const { PointerController } = await import("/assets/modules/pointer.js");
+    const button = document.createElement("button");
+    const messages = [];
+    const requests = [];
+    let attempt = 0;
+    const rfb = {
+      canvas: {
+        requestPointerLock(options) {
+          requests.push(options ?? null);
+          attempt += 1;
+          return attempt === 1
+            ? Promise.reject(new Error("unadjusted movement unsupported"))
+            : Promise.resolve();
+        },
+      },
+      setRelativeMode() {},
+      setRelativeSensitivity() {},
+    };
+    const controller = new PointerController({
+      button,
+      message: (text, level) => messages.push({ text, level }),
+      getRfb: () => rfb,
+    });
+    controller.supported = true;
+    controller.setRfb(rfb);
+    await controller.toggle({ stopPropagation() {} });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    return { requests, messages };
+  });
+  assert.deepEqual(result.requests, [{ unadjustedMovement: true }, null]);
+  assert.deepEqual(result.messages, []);
+}
+
 async function run() {
   const fixturePath = process.env.IPKVM_BROWSER_FIXTURE;
   assert(fixturePath, "IPKVM_BROWSER_FIXTURE is required");
@@ -464,6 +547,11 @@ async function run() {
     await assertKeyboardCapture(page, fixture);
     await assertPointer(page, fixture, 0.73, 0.31);
     await assertLayout(page, { width: 1280, height: 800 });
+    await assertNoVncCursorRendering(page);
+    await assertClipboardImageConversion(page);
+    await assertPointerLockFallback(page);
+    assert.equal(await page.locator(".toolbar #paste-button").count(), 1);
+    assert.equal(await page.locator("#video-status-bar #paste-button").count(), 0);
 
     // ---- 特殊键菜单 ----
     const specialKeyMarker = fixture.lines.mark();
