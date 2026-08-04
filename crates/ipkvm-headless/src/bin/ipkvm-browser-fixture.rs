@@ -3,7 +3,9 @@ use std::{
     sync::{Arc, Mutex, atomic::AtomicBool},
 };
 
-use ipkvm_core::{InputResult, InputSink, KeyEvent, MouseMode, PointerButton, PointerEvent};
+use ipkvm_core::{
+    InputError, InputResult, InputSink, KeyEvent, MouseMode, PointerButton, PointerEvent,
+};
 use ipkvm_headless::{
     frame_source::SwitchableFrameSource,
     rfb_connection::{RfbConnectionGate, RfbServerEvent},
@@ -48,16 +50,21 @@ impl LineWriter {
 #[derive(Clone)]
 struct RecordingInputSink {
     output: LineWriter,
+    mouse_mode: MouseMode,
 }
 
 impl RecordingInputSink {
     fn new(output: LineWriter) -> Self {
-        Self { output }
+        Self {
+            output,
+            mouse_mode: MouseMode::Absolute,
+        }
     }
 }
 
 impl InputSink for RecordingInputSink {
-    fn set_mouse_mode(&mut self, _mode: MouseMode) -> InputResult<()> {
+    fn set_mouse_mode(&mut self, mode: MouseMode) -> InputResult<()> {
+        self.mouse_mode = mode;
         Ok(())
     }
 
@@ -76,6 +83,19 @@ impl InputSink for RecordingInputSink {
     }
 
     fn handle_pointer_batch(&mut self, events: &[PointerEvent]) -> InputResult<()> {
+        for event in events {
+            let mismatch = match (self.mouse_mode, event) {
+                (MouseMode::Absolute, PointerEvent::RelativeMove { .. }) => Some("relative move"),
+                (MouseMode::Relative, PointerEvent::AbsoluteMove { .. }) => Some("absolute move"),
+                _ => None,
+            };
+            if let Some(event) = mismatch {
+                return Err(InputError::PointerModeMismatch {
+                    mode: self.mouse_mode,
+                    event,
+                });
+            }
+        }
         for event in events {
             match event {
                 PointerEvent::AbsoluteMove {
@@ -216,6 +236,7 @@ async fn run() -> Result<(), FixtureError> {
         None, // auth：本机回环 fixture，未配置 token 即放行
         settings,
         Arc::new(AtomicBool::new(false)),
+        None,
     )?;
 
     let mut http_task = tokio::spawn(service.serve(listener));

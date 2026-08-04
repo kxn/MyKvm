@@ -21,7 +21,7 @@
 
 `HeadlessWebService` 已把项目自有中文控制台页面、固定 noVNC 1.7.0 资源和现有 `/rfb` 组装为单一嵌入式 HTTP 服务。真实 Chrome 自动化已经证明模拟帧像素、桌面与窄视口等比缩放、键盘 HID、缩放后的绝对坐标、按钮顺序、断开释放和重连到达 `RfbInputPump` 后的 `InputSink`。资源来源、逐文件哈希、许可证和浏览器测试依赖也进入统一本机门禁。
 
-正式 `ipkvm-headless` 二进制已通过 CLI 组装真实视频与设备选择：`--camera <名称>` 按 id 或显示名打开 Windows Media Foundation 相机，`--list-cameras` 枚举设备后退出，`--assets <目录>` 使用 Y4M 文件伪设备（与 `--camera` 互斥），未指定视频参数时默认打开枚举到的第一台相机。`FrameSource` 暴露 `source_info` 元数据，`/api/status` 报告帧源与活动控制器状态，`/api/screenshot` 用 `jpeg-encoder` 把最新 BGRA8888 帧编码为 JPEG 快照，RFB `ClientCutText` 通过独立 `TextInputService` 转模拟键入。
+正式 `ipkvm-headless` 二进制已通过 CLI 组装真实视频与设备选择：`--camera <名称>` 按 id 或显示名打开 Windows Media Foundation 相机，`--list-cameras` 枚举设备后退出，`--assets <目录>` 使用 Y4M 文件伪设备（与 `--camera` 互斥），未指定视频参数时启动空会话，等待网页选择设备后再创建。`FrameSource` 暴露 `source_info` 元数据，`/api/status` 报告帧源与活动控制器状态，`/api/screenshot` 用 `jpeg-encoder` 把最新 BGRA8888 帧编码为 JPEG 快照，RFB `ClientCutText` 通过独立 `TextInputService` 转模拟键入。
 
 上述实现仍不是可控制真实机器的完整无头产品：真实 CH9329 串口尚未实现，键鼠事件进入 `FakeCommandQueue` 后被丢弃；鉴权与 TLS 也未实现。以下设备会话和生产启动描述仍是目标形态，不能当作当前已交付能力。
 
@@ -545,7 +545,7 @@ WebSocket 兼容：
 - 完成视频源能力：`FrameSource::source_info` 元数据接口（类型、显示名、来源标识）覆盖模拟帧源、文件伪设备和相机源；Y4M 文件伪设备 `FileVideoSource` 按文件名排序循环播放并支持分辨率切换；Windows Media Foundation 相机后端（`mf` 功能）提供 `list_cameras` 枚举与 `CameraSource::open` 采集循环，`camera_probe` 示例自动化执行设计文档手工验证步骤（枚举、打开、帧输出、fps）。
 - 完成门闸控制器状态：连接闸门暴露活动 RFB 控制器标识与连接时间，供 `/api/status` 使用。
 - 完成独立文本键入服务 `TextInputService`：RFB `ClientCutText` 文本经键盘映射器转为模拟键入序列，与物理 `InputSink` 解耦；当前假设锁定键未按下，锁定键状态源为注入点，待硬件接入后实现 GetInfo 查询。
-- 完成 HTTP 状态与快照接口：`GET /api/status` 输出帧源、控制器与错误状态；`GET /api/screenshot` 输出最新帧 JPEG（质量 85）；`jpeg-encoder` 的 IJG 例外按许可证策略完整记录。headless CLI 提供 `--list-cameras`、`--camera <名称>`、`--assets <目录>`，未指定视频参数时默认打开第一台相机。
+- 完成 HTTP 状态与快照接口：`GET /api/status` 输出帧源、控制器与错误状态；`GET /api/screenshot` 输出最新帧 JPEG（质量 85）；`jpeg-encoder` 的 IJG 例外按许可证策略完整记录。headless CLI 提供 `--list-cameras`、`--camera <名称>`、`--assets <目录>`，未指定视频参数时启动空会话并由网页选择设备。
 
 待完成：
 

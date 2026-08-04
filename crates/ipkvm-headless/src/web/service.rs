@@ -107,12 +107,13 @@ impl<I: InputSink + Clone + Send + 'static> HeadlessWebService<I> {
         auth: Option<String>,
         settings: Arc<SettingsStore>,
         manual_stop: Arc<AtomicBool>,
+        initial_selection: Option<SessionSelection>,
     ) -> Result<Self, HeadlessWebServiceError> {
         let api = Arc::new(ApiState {
             frame_source: Arc::clone(&frame_source),
             gate: gate.clone(),
             manager,
-            selection: tokio::sync::Mutex::new(Some(SessionSelection::default())),
+            selection: tokio::sync::Mutex::new(initial_selection),
             factory,
             settings,
             manual_stop,
@@ -778,6 +779,7 @@ pub(super) fn session_state_name(state: SessionState) -> &'static str {
 
 fn source_kind_name(kind: VideoSourceKind) -> &'static str {
     match kind {
+        VideoSourceKind::None => "none",
         VideoSourceKind::Camera => "camera",
         VideoSourceKind::VideoFile => "file",
         VideoSourceKind::Generated => "generated",

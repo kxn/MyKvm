@@ -90,6 +90,7 @@ impl VideoFrame {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum VideoSourceKind {
+    None,
     Camera,
     VideoFile,
     Generated,

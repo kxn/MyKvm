@@ -267,6 +267,7 @@ impl ReleaseOrderWebServer {
             None,
             Arc::clone(&settings),
             Arc::clone(&manual_stop),
+            Some(SessionSelection::default()),
         )
         .unwrap();
         let task = tokio::spawn(service.serve(listener));
@@ -355,6 +356,7 @@ impl TestWebServer {
             None,
             Arc::clone(&settings),
             Arc::clone(&manual_stop),
+            Some(SessionSelection::default()),
         )
         .unwrap();
         let task = tokio::spawn(service.serve(listener));
@@ -406,6 +408,7 @@ impl TestWebServer {
             auth, // HTTP 鉴权 token；None 表示仅放行本机来源
             Arc::clone(&settings),
             Arc::clone(&manual_stop),
+            Some(SessionSelection::default()),
         )
         .unwrap();
         let task = tokio::spawn(service.serve(listener));
@@ -848,7 +851,7 @@ async fn api_session_stop_then_restart_cycles_state() {
         serde_json::from_slice(&server.request("GET", "/api/status").await.body).unwrap();
     assert_eq!(status_after["session"]["state"], "absent");
     assert_eq!(status_after["session"]["manual_stop"], true);
-    assert_eq!(status_after["video"]["source"]["kind"], "generated");
+    assert_eq!(status_after["video"]["source"]["kind"], "none");
     assert_eq!(status_after["video"]["source"]["device_name"], "none");
 
     // 停止后再 restart：按当前选择重新启动会话。

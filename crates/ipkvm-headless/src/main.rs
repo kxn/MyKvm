@@ -3,7 +3,7 @@
 //!
 //! 视频源按 CLI 参数选择：`--camera <名称>` 打开 Windows 相机（id 或显示名），
 //! `--assets <目录>` 使用目录内 Y4M 文件伪设备（按文件名排序循环播放），
-//! 未指定任何视频参数时默认打开枚举到的第一台相机。`--list-cameras` 只枚举
+//! 未指定任何视频参数时启动空会话，等待网页选择设备。`--list-cameras` 只枚举
 //! 设备并退出。相机未就绪时可用 `--assets` 的 Y4M 模拟帧源和 `FakeCommandQueue`
 //! 验证画面与键鼠链路（键鼠事件进入模拟队列后被丢弃，不注入真实串口）。
 //!
@@ -30,7 +30,7 @@ use ipkvm_core::{
     SerialCommandQueue, fake_serial::FakeCommandQueue,
 };
 use ipkvm_headless::config::{self, Options};
-use ipkvm_headless::frame_source::SwitchableFrameSource;
+use ipkvm_headless::frame_source::{EmptyFrameSource, SwitchableFrameSource};
 use ipkvm_headless::rfb_connection::{RfbConnectionGate, RfbConnectionSettings};
 use ipkvm_headless::rfb_tcp::{RfbTcpConfig, RfbTcpServer, RfbTcpServerError};
 use ipkvm_headless::rfb_ws::RfbWebSocketConfig;
@@ -156,7 +156,7 @@ fn print_cameras() -> Result<(), String> {
 
 /// 按 CLI 参数选择视频源并统一包装成 `Arc<dyn FrameSource>`。
 ///
-/// 优先级：`--assets`（文件伪设备）> `--camera`（按名打开）> 默认第一台相机。
+/// 优先级：`--assets`（文件伪设备）> `--camera`（按名打开）。
 fn build_source(
     options: &Options,
     frames_per_second: u64,
@@ -175,27 +175,56 @@ fn build_source(
                 .map_err(|error| format!("无法打开相机 {name}：{error}"))?,
         ),
         (None, None) => {
-            let cameras = ipkvm_video::camera::list_cameras()
-                .map_err(|error| format!("枚举相机失败：{error}"))?;
-            // 默认优先 OBS 虚拟摄像头，否则退回第一台。多虚拟摄像头并存时
-            //（如 ToDesk Camera + OBS Virtual Camera），枚举顺序不保证 OBS 在前。
-            let chosen = cameras
-                .iter()
-                .find(|camera| camera.display_name.contains("OBS"))
-                .or_else(|| cameras.first())
-                .ok_or_else(|| "未找到任何相机，请用 --assets 指定素材目录".to_string())?;
-            println!(
-                "未指定视频源，默认使用相机：{}（{}）",
-                chosen.display_name, chosen.id
+            return Err(
+                "未指定视频源，请在网页连接页选择设备，或使用 --camera/--assets 启动".to_string(),
             );
-            std::sync::Arc::new(
-                CameraSource::open(&chosen.id, frames_per_second)
-                    .map_err(|error| format!("无法打开相机 {}：{error}", chosen.id))?,
-            )
         }
     };
     println!("视频源：{:?}", source.source_info());
     Ok(source)
+}
+
+fn initial_video_source_requested(options: &Options) -> bool {
+    options.assets_dir.is_some() || options.camera_name.is_some()
+}
+
+type SessionComponents = (Arc<dyn FrameSource>, HeadlessSink);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn options() -> Options {
+        Options {
+            assets_dir: None,
+            camera_name: None,
+            list_cameras: false,
+            serial_path: None,
+            serial_baud: None,
+            bind_address: "127.0.0.1".to_string(),
+            tcp_port: 5900,
+            http_port: 6080,
+            frames_per_second: None,
+            token: None,
+            vnc_password: None,
+        }
+    }
+
+    #[test]
+    fn no_explicit_video_source_does_not_start_initial_session() {
+        assert!(!initial_video_source_requested(&options()));
+    }
+
+    #[test]
+    fn explicit_camera_or_assets_starts_initial_session() {
+        let mut camera = options();
+        camera.camera_name = Some("Fixture Camera".to_string());
+        assert!(initial_video_source_requested(&camera));
+
+        let mut assets = options();
+        assets.assets_dir = Some(PathBuf::from("assets"));
+        assert!(initial_video_source_requested(&assets));
+    }
 }
 
 #[derive(Debug, Error)]
@@ -271,7 +300,7 @@ async fn main() {
     }
     let settings_store = Arc::new(settings_store);
 
-    let (source, sink) = match build_session_components(&options, &settings_store.get()) {
+    let initial = match build_initial_session_components(&options, &settings_store.get()) {
         Ok(built) => built,
         Err(error) => {
             eprintln!("{error}");
@@ -279,10 +308,21 @@ async fn main() {
         }
     };
 
-    if let Err(error) = run(source, sink, options, settings_store).await {
+    if let Err(error) = run(initial, options, settings_store).await {
         eprintln!("{error}");
         std::process::exit(1);
     }
+}
+
+fn build_initial_session_components(
+    options: &Options,
+    runtime: &WebSettings,
+) -> Result<Option<SessionComponents>, String> {
+    if !initial_video_source_requested(options) {
+        println!("未指定视频源，启动空会话，等待网页选择设备");
+        return Ok(None);
+    }
+    build_session_components(options, runtime).map(Some)
 }
 
 /// 按 CLI 参数与运行时设置构造会话所需的帧源与输入 sink。
@@ -294,7 +334,7 @@ async fn main() {
 fn build_session_components(
     options: &Options,
     runtime: &WebSettings,
-) -> Result<(Arc<dyn FrameSource>, HeadlessSink), String> {
+) -> Result<SessionComponents, String> {
     let frames_per_second = options.frames_per_second.unwrap_or(runtime.preview_fps);
     let baud = options.serial_baud.unwrap_or(runtime.baud_rate);
     let source = build_source(options, frames_per_second)?;
@@ -352,8 +392,7 @@ impl SessionFactory<HeadlessSink> for HeadlessSessionFactory {
 }
 
 async fn run(
-    source: Arc<dyn FrameSource>,
-    sink: HeadlessSink,
+    initial: Option<(Arc<dyn FrameSource>, HeadlessSink)>,
     options: Options,
     settings: Arc<SettingsStore>,
 ) -> Result<(), HeadlessRunError> {
@@ -369,17 +408,30 @@ async fn run(
     // 因此同一时刻只有一个活跃 RFB 控制连接，无论它来自哪个传输层。
     let gate = RfbConnectionGate::new();
 
-    let switchable_source = Arc::new(SwitchableFrameSource::new(Arc::clone(&source)));
-
-    // 会话管理器：启动即绑定（构造并 start），生命周期交由管理器托管。
-    // 输入泵由 ConsoleSession 内部 spawn（run_until_stopped），不再手工组装。
-    // 帧源经 Arc::clone 分发给会话与传输层（同一帧源多读端，各自 latest_frame）。
-    let mut manager = SessionManager::new(Arc::clone(&source), sink, gate.clone());
-    manager
-        .start()
-        .map_err(|error| HeadlessRunError::Session(format!("启动会话失败：{error}")))?;
+    let (switchable_source, manager, initial_selection) = match initial {
+        Some((source, sink)) => {
+            let switchable_source = Arc::new(SwitchableFrameSource::new(Arc::clone(&source)));
+            // 显式指定视频源时启动即绑定；无参数路径使用下面的 empty manager。
+            let mut manager = SessionManager::new(Arc::clone(&source), sink, gate.clone());
+            manager
+                .start()
+                .map_err(|error| HeadlessRunError::Session(format!("启动会话失败：{error}")))?;
+            let selection = Some(SessionSelection {
+                video: options.camera_name.clone(),
+                serial: options.serial_path.clone(),
+            });
+            (switchable_source, manager, selection)
+        }
+        None => {
+            let empty = Arc::new(EmptyFrameSource::new());
+            (
+                Arc::new(SwitchableFrameSource::new(empty)),
+                SessionManager::empty(),
+                None,
+            )
+        }
+    };
     let event_publisher = manager.event_publisher();
-    drop(source);
     let manager = Arc::new(tokio::sync::Mutex::new(manager));
     let factory = Arc::new(HeadlessSessionFactory {
         options: options.clone(),
@@ -424,6 +476,7 @@ async fn run(
         options.token.clone(), // HTTP/WS 鉴权 token（[auth] token）
         settings,
         Arc::new(AtomicBool::new(false)),
+        initial_selection,
     )?;
     let mut http_task = tokio::spawn(async move { web_service.serve(http_listener).await });
 
