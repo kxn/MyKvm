@@ -1,6 +1,6 @@
 use std::{
     io::{self, BufRead, Write},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, atomic::AtomicBool},
 };
 
 use ipkvm_core::{InputResult, InputSink, KeyEvent, MouseMode, PointerButton, PointerEvent};
@@ -10,6 +10,7 @@ use ipkvm_headless::{
     rfb_input::{RfbInputNotice, RfbInputPump, RfbInputRunError},
     rfb_ws::RfbWebSocketConfig,
     session_manager::SessionManager,
+    settings::SettingsStore,
     web::{HeadlessWebService, HeadlessWebServiceError, SessionFactory, SessionSelection},
 };
 use ipkvm_video::{
@@ -193,6 +194,13 @@ async fn run() -> Result<(), FixtureError> {
     let factory: Arc<dyn SessionFactory<RecordingInputSink> + Send + Sync> =
         Arc::new(FixtureFactory);
     let source = Arc::new(SwitchableFrameSource::new(source));
+    let settings = Arc::new(
+        SettingsStore::load_from(std::env::temp_dir().join(format!(
+            "ipkvm-headless-fixture-settings-{}",
+            std::process::id()
+        )))
+        .0,
+    );
     let service = HeadlessWebService::new(
         source,
         manager,
@@ -202,6 +210,8 @@ async fn run() -> Result<(), FixtureError> {
         shutdown_rx,
         RfbConnectionGate::new(),
         None, // auth：本机回环 fixture，未配置 token 即放行
+        settings,
+        Arc::new(AtomicBool::new(false)),
     )?;
 
     let mut http_task = tokio::spawn(service.serve(listener));
