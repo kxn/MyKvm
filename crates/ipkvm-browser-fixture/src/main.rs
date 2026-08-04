@@ -6,6 +6,7 @@ use std::{
 use ipkvm_core::{
     InputError, InputResult, InputSink, KeyEvent, MouseMode, PointerButton, PointerEvent,
 };
+use ipkvm_device::StaticDeviceInventoryProvider;
 use ipkvm_headless::{
     frame_source::SwitchableFrameSource,
     rfb_connection::{RfbConnectionGate, RfbServerEvent},
@@ -229,6 +230,7 @@ async fn run() -> Result<(), FixtureError> {
         source,
         manager,
         factory,
+        Arc::new(StaticDeviceInventoryProvider::new(Vec::new(), Vec::new())),
         event_publisher,
         RfbWebSocketConfig::default(),
         shutdown_rx,

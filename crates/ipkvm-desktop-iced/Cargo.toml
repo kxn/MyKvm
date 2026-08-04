@@ -16,8 +16,9 @@ iced_aw.workspace = true
 iced_futures = "0.14"
 ipkvm-core = { path = "../ipkvm-core", features = ["serial"] }
 ipkvm-desktop = { path = "../ipkvm-desktop" }
+ipkvm-desktop-core = { path = "../ipkvm-desktop-core" }
 ipkvm-session = { path = "../ipkvm-session" }
-ipkvm-video = { path = "../ipkvm-video", features = ["mock", "mf"] }
+ipkvm-video = { path = "../ipkvm-video", features = ["camera", "test-support"] }
 rust-i18n = "4.2.1"
 sys-locale = "0.3.2"
 
@@ -25,7 +26,7 @@ sys-locale = "0.3.2"
 iced_test = "0.14"
 iced_runtime = "0.14"
 iced_tiny_skia = { version = "0.14", default-features = false }
-ipkvm-video = { path = "../ipkvm-video", features = ["mock"] }
+ipkvm-video = { path = "../ipkvm-video", features = ["test-support"] }
 tiny-skia = "0.11"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 

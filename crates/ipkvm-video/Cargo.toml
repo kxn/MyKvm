@@ -44,20 +44,24 @@ tokio = { workspace = true, features = ["macros", "rt"] }
 
 [features]
 default = []
-mock = []
-# 相机后端 feature（命名沿用历史 mf）：
-# - Windows：自研 DirectShow 纯 sink filter（windows crate）
-# - Linux：nokhwa V4L2 后端
-# - macOS：nokhwa AVFoundation 后端
-# 各平台只拉自己 target-specific 的可选依赖；非该平台的 dep: 名被 Cargo 自动忽略。
-mf = [
+camera = [
     "dep:windows",
     "dep:windows-core",
     "dep:windows-interface",
     "dep:windows-implement",
     "dep:nokhwa",
 ]
+assets = []
+test-support = []
+# 相机后端 feature（命名沿用历史 mf）：
+# - Windows：自研 DirectShow 纯 sink filter（windows crate）
+# - Linux：nokhwa V4L2 后端
+# - macOS：nokhwa AVFoundation 后端
+# 各平台只拉自己 target-specific 的可选依赖；非该平台的 dep: 名被 Cargo 自动忽略。
+mf = ["camera"]
+# 历史兼容别名：旧调用方一次启用测试 mock 与 Y4M/file demo 能力。
+mock = ["assets", "test-support"]
 
 [[example]]
 name = "camera_probe"
-required-features = ["mf"]
+required-features = ["camera"]

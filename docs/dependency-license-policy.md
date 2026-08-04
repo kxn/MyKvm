@@ -186,6 +186,16 @@ Cargo 门禁不完整覆盖以下内容：
 
 `cargo-deny` 依赖 crate 元数据和可识别的许可证文件，不会穷举检查每个源码文件，也不构成法律意见。
 
+## #159 依赖边界补充
+
+`ipkvm-device`、`ipkvm-desktop-core` 和 `ipkvm-headless` 不新增第三方许可证类型。真实
+`serialport`、平台 camera backend 和 `arboard` 只由 `ipkvm-desktop` 或
+`ipkvm-headless-app` 等 production package 引入；`ipkvm-browser-fixture` 和 headless
+library 的依赖树不包含这些硬件依赖。发布体积和许可证清单必须分别以
+`ipkvm-headless-app`、`ipkvm-headless-demo`、`ipkvm-browser-fixture`、
+`ipkvm-desktop-iced` 的实际 release 依赖树为准，不能继续使用旧的
+`cargo build -p ipkvm-headless --features demo` 口径。
+
 ## 自动化证明
 
 `scripts/test-license-policy.ps1` 每次生成临时 Cargo 依赖图，并证明：

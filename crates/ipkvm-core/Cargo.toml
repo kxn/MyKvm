@@ -16,7 +16,9 @@ proptest.workspace = true
 
 [features]
 default = []
-mock = []
+test-support = []
+# 历史兼容别名；新 target 使用 test-support。
+mock = ["test-support"]
 # 真实串口后端：SerialCommandQueue（实现 CommandQueue，把 CH9329 帧写入串口设备）。
 serial = ["dep:serialport"]
 

@@ -739,3 +739,16 @@ WebSocket 兼容：
   不依赖目标机分辨率（BIOS/启动菜单用）；Ctrl+Alt+M 切换并通过重连应用；
   灵敏度可在高级设置调整（默认 1.0）。
 - 滚轮通过相对事件通道发送，绝对与相对模式均可用。
+
+## 2026-08-04 #159 crate 边界收敛
+
+- `ipkvm-device` 只提供设备描述和 `DeviceInventoryProvider`；枚举 provider 与打开硬件的
+  session factory 分离，Web/iced 通过不透明 id 传递选择。
+- `ipkvm-session` 只负责 RFB 连接、输入泵和会话生命周期，不再负责设备枚举。
+- `ipkvm-headless` 是无硬件 Web/RFB library；正式 `ipkvm-headless` binary、`ipkvm-demo`
+  和 `ipkvm-browser-fixture` 分别位于 `ipkvm-headless-app`、`ipkvm-headless-demo` 和
+  `ipkvm-browser-fixture` package。
+- `ipkvm-desktop-core` 承载 UI 无关配置、探测抽象、泛型会话控制器和帧转换；
+  `ipkvm-desktop` 只负责真实 camera/CH9329/clipboard adapter 与兼容 re-export。
+- `scripts/test-crate-boundaries.ps1` 和 `.sh` 检查正式 binary、fixture、headless library
+  和 desktop core 的依赖隔离；#157 的发布体积测量按这些新 package 分别统计。

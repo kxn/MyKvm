@@ -11,12 +11,15 @@ my_ipkvm 是一个软件 IPKVM 项目：主控机通过 USB HDMI 采集卡读取
 ## 当前模块
 
 - `ipkvm-core`：CH9329 命令帧和应答解析、串口字节流增量解帧、HID 报告、6KRO 键盘状态、原子键盘和指针批次、绝对和相对鼠标状态、有序命令批次及模拟队列；`serial` 功能下提供真实串口命令队列 `SerialCommandQueue`（9600 8N1，跨平台 COMx / ttyUSBn，帧间延时防丢帧）。
-- `ipkvm-video`：采集设备枚举、格式选择、共享视频帧流与 `source_info` 元数据；`mock` 功能下提供 Y4M 循环播放帧源（可模拟不同分辨率素材顺序切换），`mf` 功能下提供 Windows DirectShow 相机后端（`list_cameras` 枚举、`CameraSource` 采集与 `camera_probe` 示例，含 OBS 虚拟摄像头）——采用自研纯 sink filter（不依赖系统的 Sample Grabber，因其与 OBS 虚拟摄像头不兼容）+ 事件驱动（Condvar 阻塞等待，无帧时零轮询），`file_source` 提供 Y4M 文件伪设备。
-- `ipkvm-session`：真实会话核心——连接驱动与事件模型（`RfbConnectionGate` 仲裁）、输入泵与映射器、设备枚举（`devices`）、`ConsoleSession` 组装与 `SessionManager` 生命周期管理、会话状态统计。
+- `ipkvm-video`：共享视频帧流与 `source_info` 元数据；`camera` 提供真实平台相机后端，`assets` 提供 Y4M/file/looping 素材源，`test-support` 提供 mock 帧源，`mf`/`mock` 仅为历史兼容别名。
+- `ipkvm-device`：无硬件设备描述和 `DeviceInventoryProvider` 注入契约；真实 app 使用 `platform` provider，测试和 browser fixture 使用静态 provider。
+- `ipkvm-session`：真实会话核心——连接驱动与事件模型（`RfbConnectionGate` 仲裁）、输入泵与映射器、`ConsoleSession` 组装与 `SessionManager` 生命周期管理、会话状态统计；不负责设备枚举或打开硬件。
 - `ipkvm-rfb`：传输无关的 RFB 3.8 `None` 握手、客户端消息增量解码、真彩像素转换、`Raw` 更新、`DesktopSize` 和指针输入坐标时期。
-- `ipkvm-desktop`：桌面端共享集成库（配置、设备探测、会话控制、帧转换和剪贴板）。
+- `ipkvm-desktop-core`：无 UI、无真实硬件的桌面配置、设备选择状态、探测抽象、会话控制器和帧转换。
+- `ipkvm-desktop`：桌面 production adapter（真实相机、CH9329、设备 provider、系统剪贴板），并保留旧共享类型路径的兼容 re-export。
 - `ipkvm-desktop-iced`：正式桌面图形界面和唯一桌面发布入口（设备选择、视频控制台、本地键鼠直通、特殊键/粘贴/截图、状态栏与硬件异常状态）。
-- `ipkvm-headless`：RFB TCP 与 WebSocket 传输适配层，以及内嵌中文 noVNC 页面的 HTTP 服务（含 `/api/devices`、`/api/session`、`/api/status`、`/api/screenshot`）；`demo` 功能下提供 `ipkvm-headless` 正式后台进程（`--serial`/`--baud` 真实 CH9329 串口注入）和 `ipkvm-demo` 演示二进制。TLS 尚未实现。
+- `ipkvm-headless`：无硬件 RFB TCP/WebSocket 与内嵌中文 noVNC HTTP library（含 `/api/devices`、`/api/session`、`/api/status`、`/api/screenshot`）。
+- `ipkvm-headless-app`：正式 `ipkvm-headless` 后台 binary，负责真实 camera/serial 组装；`ipkvm-headless-demo` 提供 `ipkvm-demo`，`ipkvm-browser-fixture` 提供 deterministic noVNC 自动化夹具。TLS 尚未实现。
 
 `ipkvm-session` 当前默认按 CH9329 出厂波特率 9600 配置串口。硬件到货前不自动改写芯片参数，也不假定成品线支持 115200。
 
@@ -98,22 +101,22 @@ cargo build --release -p ipkvm-desktop-iced --bin ipkvm-desktop-iced
 
 ```bash
 ./scripts/fetch-demo-assets.sh   # 首次运行下载 Y4M 素材
-cargo run -p ipkvm-headless --features demo --bin ipkvm-headless \
+cargo run -p ipkvm-headless-app --bin ipkvm-headless \
     --assets .cache/demo-assets --tcp 5900 --http 6080 --fps 10
 
 # Windows：使用 OBS 虚拟摄像头或其他相机（无需 --assets）
-cargo run -p ipkvm-headless --features demo --bin ipkvm-headless \
+cargo run -p ipkvm-headless-app --bin ipkvm-headless \
     --camera "OBS Virtual Camera" --tcp 5900 --http 6080
 
 # Windows：相机 + 真实 CH9329 串口注入（CH340 通常为 COMx，默认 9600 8N1）
-cargo run -p ipkvm-headless --features demo --bin ipkvm-headless \
+cargo run -p ipkvm-headless-app --bin ipkvm-headless \
     --camera "OBS Virtual Camera" --tcp 5900 --http 6080 --serial COM9
 
 # 只枚举相机设备
-cargo run -p ipkvm-headless --features demo --bin ipkvm-headless --list-cameras
+cargo run -p ipkvm-headless-app --bin ipkvm-headless --list-cameras
 
 # 配置与鉴权：--config 读取 TOML 文件，CLI 参数覆盖文件字段（CLI > 文件 > 默认）
-cargo run -p ipkvm-headless --features demo --bin ipkvm-headless \
+cargo run -p ipkvm-headless-app --bin ipkvm-headless \
     --assets .cache/demo-assets --config config.toml --token abc12345 --vnc-password abc12345
 ```
 
@@ -167,7 +170,7 @@ vnc_password = "abc12345"        # 可选；RFB VNC 密码（1-8 个 ASCII 字�
 
 ```bash
 ./scripts/fetch-demo-assets.sh   # 下载并转换 640x360 与 1280x720 两个 Y4M 素材
-cargo run -p ipkvm-headless --features demo --bin ipkvm-demo \
+cargo run -p ipkvm-headless-demo --bin ipkvm-demo \
     --assets .cache/demo-assets --tcp 5900 --fps 10
 ```
 

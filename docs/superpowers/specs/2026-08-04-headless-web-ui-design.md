@@ -251,6 +251,13 @@ DTO（与设置弹层字段一致）：
 - #141：headless 后端前置合并单（运行时设置 API + 手动停止标记 + 相对指针 0x08 协议）；
 - #140：headless 前端全量主实施（骨架/设置/特殊键/相对模式/截图/测试）。
 
+## #159 组装边界更新（2026-08-04）
+
+Web API 的 `/api/devices` 通过构造时注入的 `DeviceInventoryProvider` 枚举设备，JSON
+字段和错误状态码不变。正式 app 注入真实 provider，browser fixture 注入静态 provider。
+Web/RFB library 不打开硬件；打开 camera/serial 的职责仍在各 app 的 `SessionFactory`，
+从而保持 stop、释放、重建和失败回滚顺序不变。
+
 ## 12. 建议里程碑（供后续 writing-plans 拆分）
 
 - 前置批次：#133（位序）→ #141（后端前置合并单：设置/手动停止/0x08 协议）；

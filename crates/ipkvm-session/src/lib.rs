@@ -1,7 +1,6 @@
 //! 控制台会话抽象。
 
 pub mod console_session;
-pub mod devices;
 pub mod rfb_connection;
 pub mod rfb_input;
 pub mod serial_stats;

@@ -11,9 +11,9 @@ use ipkvm_core::{
     Ch9329InputSink, InputError, InputSink, KeyEvent, MouseMode, PointerButton, PointerEvent,
     SerialCommandQueue,
 };
-use ipkvm_desktop::{
-    ConnectRequest, DesktopSessionController, DesktopSessionError,
-    ProductionDesktopSessionController, ProductionSessionFactory, SessionParts,
+use ipkvm_desktop::{ProductionDesktopSessionController, ProductionSessionFactory};
+use ipkvm_desktop_core::{
+    ConnectRequest, DesktopSessionController, DesktopSessionError, SessionParts,
 };
 use ipkvm_session::rfb_connection::RfbConnectionGate;
 use ipkvm_session::rfb_input::RfbInputNotice;
@@ -168,10 +168,10 @@ pub type ProductionApp = App<Ch9329InputSink<SerialCommandQueue>, ProductionSess
 #[derive(Default)]
 struct FakeProbeBackend;
 
-impl ipkvm_desktop::probe::ProbeBackend for FakeProbeBackend {
+impl ipkvm_desktop_core::probe::ProbeBackend for FakeProbeBackend {
     fn list_video_devices(
         &mut self,
-    ) -> Result<Vec<crate::connect::DeviceOption>, ipkvm_desktop::probe::ProbeError> {
+    ) -> Result<Vec<crate::connect::DeviceOption>, ipkvm_desktop_core::probe::ProbeError> {
         Ok(vec![crate::connect::DeviceOption {
             id: "cam0".into(),
             label: "Camera 0".into(),
@@ -180,7 +180,7 @@ impl ipkvm_desktop::probe::ProbeBackend for FakeProbeBackend {
 
     fn list_control_devices(
         &mut self,
-    ) -> Result<Vec<crate::connect::DeviceOption>, ipkvm_desktop::probe::ProbeError> {
+    ) -> Result<Vec<crate::connect::DeviceOption>, ipkvm_desktop_core::probe::ProbeError> {
         Ok(vec![crate::connect::DeviceOption {
             id: "COM9".into(),
             label: "CH9329 (COM9)".into(),
@@ -256,7 +256,7 @@ where
     selection: DeviceSelectionState,
     connection: ConnectionSettings,
     default_connection: ConnectionSettings,
-    probe: Box<dyn ipkvm_desktop::probe::ProbeBackend>,
+    probe: Box<dyn ipkvm_desktop_core::probe::ProbeBackend>,
     preview: PreviewRuntime,
     preview_factory: Arc<dyn PreviewSourceFactory>,
     preview_handle: Option<Handle>,
@@ -264,7 +264,7 @@ where
     last_preview_seq: Option<u64>,
     /// 诊断用：上一次记录的在线状态（检测整页切换抖动）。
     last_diag_online: Option<bool>,
-    store: ipkvm_desktop::config::ProfileStore,
+    store: ipkvm_desktop_core::config::ProfileStore,
     active_profile: Option<String>,
     status_message: Option<String>,
     remote_input: bool,
@@ -337,7 +337,7 @@ impl App<RecordingSink, MockFactory> {
             preview_handle: None,
             last_preview_seq: None,
             last_diag_online: None,
-            store: ipkvm_desktop::config::ProfileStore::new(
+            store: ipkvm_desktop_core::config::ProfileStore::new(
                 std::env::temp_dir()
                     .join(format!("my-ipkvm-iced-mock-{}-{seq}", std::process::id())),
             ),
@@ -380,7 +380,7 @@ impl App<Ch9329InputSink<SerialCommandQueue>, ProductionSessionFactory> {
     pub fn production() -> (Self, Task<Message>) {
         let zh = crate::locale::apply_system_locale();
         let controller = ProductionDesktopSessionController::production();
-        let store = ipkvm_desktop::config::ProfileStore::production();
+        let store = ipkvm_desktop_core::config::ProfileStore::production();
         let mut app = Self {
             controller,
             frame_source: None,
@@ -694,7 +694,7 @@ where
                                 );
                             }
                         } else {
-                            let snapshot = ipkvm_desktop::config::ManualSnapshot {
+                            let snapshot = ipkvm_desktop_core::config::ManualSnapshot {
                                 video_device: crate::profile::selected_device_ref(
                                     &self.selection.video_devices,
                                     self.selection.selected_video_id.as_deref(),
@@ -1010,7 +1010,7 @@ where
         }
     }
 
-    fn apply_profile(&mut self, profile: ipkvm_desktop::config::Profile) {
+    fn apply_profile(&mut self, profile: ipkvm_desktop_core::config::Profile) {
         let missing = apply_profile_to_selection(&mut self.selection, &profile);
         self.connection = profile.connection;
         self.active_profile = Some(profile.name);
@@ -1241,7 +1241,7 @@ where
             || crate::input::throttle_elapsed(now, self.last_pointer_sent_at, POINTER_MIN_INTERVAL))
             && crate::input::pointer_changed((self.pointer_mask, x, y), self.last_pointer_sent)
         {
-            let session_frame = ipkvm_desktop::FrameSize {
+            let session_frame = ipkvm_desktop_core::FrameSize {
                 width: frame.width,
                 height: frame.height,
             };
@@ -1429,7 +1429,7 @@ where
             self.status_message = Some(t!("message.no_frame_screenshot").to_string());
             return;
         };
-        match ipkvm_desktop::frame::bgra_to_rgba(&frame) {
+        match ipkvm_desktop_core::frame::bgra_to_rgba(&frame) {
             Ok(rgba) => match ipkvm_desktop::clipboard::ClipboardService::copy_image(&rgba) {
                 Ok(()) => self.status_message = Some(t!("message.screenshot_copied").to_string()),
                 Err(error) => {
@@ -1450,7 +1450,7 @@ where
             self.status_message = Some(t!("message.no_frame_screenshot").to_string());
             return;
         };
-        match ipkvm_desktop::frame::bgra_to_rgba(&frame) {
+        match ipkvm_desktop_core::frame::bgra_to_rgba(&frame) {
             Ok(rgba) => match ipkvm_desktop::clipboard::save_jpeg(&path, &rgba) {
                 Ok(()) => {
                     self.status_message = Some(
@@ -2041,17 +2041,23 @@ mod tests {
     #[derive(Default)]
     struct FailingProbeBackend;
 
-    impl ipkvm_desktop::probe::ProbeBackend for FailingProbeBackend {
+    impl ipkvm_desktop_core::probe::ProbeBackend for FailingProbeBackend {
         fn list_video_devices(
             &mut self,
-        ) -> Result<Vec<crate::connect::DeviceOption>, ipkvm_desktop::probe::ProbeError> {
-            Err(ipkvm_desktop::probe::ProbeError::VideoList("boom".into()))
+        ) -> Result<Vec<crate::connect::DeviceOption>, ipkvm_desktop_core::probe::ProbeError>
+        {
+            Err(ipkvm_desktop_core::probe::ProbeError::VideoList(
+                "boom".into(),
+            ))
         }
 
         fn list_control_devices(
             &mut self,
-        ) -> Result<Vec<crate::connect::DeviceOption>, ipkvm_desktop::probe::ProbeError> {
-            Err(ipkvm_desktop::probe::ProbeError::ControlList("boom".into()))
+        ) -> Result<Vec<crate::connect::DeviceOption>, ipkvm_desktop_core::probe::ProbeError>
+        {
+            Err(ipkvm_desktop_core::probe::ProbeError::ControlList(
+                "boom".into(),
+            ))
         }
 
         fn probe_control(
@@ -2126,16 +2132,16 @@ mod tests {
     #[test]
     fn startup_prefills_last_manual_snapshot() {
         let (mut app, _) = MockApp::new_mock();
-        let snapshot = ipkvm_desktop::config::ManualSnapshot {
-            video_device: Some(ipkvm_desktop::config::DeviceRef {
+        let snapshot = ipkvm_desktop_core::config::ManualSnapshot {
+            video_device: Some(ipkvm_desktop_core::config::DeviceRef {
                 id: "cam0".into(),
                 label: "Camera 0".into(),
             }),
-            control_device: Some(ipkvm_desktop::config::DeviceRef {
+            control_device: Some(ipkvm_desktop_core::config::DeviceRef {
                 id: "COM9".into(),
                 label: "CH9329 (COM9)".into(),
             }),
-            connection: ipkvm_desktop::config::ConnectionSettings {
+            connection: ipkvm_desktop_core::config::ConnectionSettings {
                 baud_rate: 115200,
                 ..Default::default()
             },

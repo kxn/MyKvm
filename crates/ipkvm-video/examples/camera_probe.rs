@@ -1,7 +1,7 @@
 //! 相机探测示例：枚举 DirectShow 相机，打开第一台（优先 OBS 虚拟摄像头）
 //! 并采集若干帧 BGRA8888 数据验证采集循环。
 //!
-//! 用法：`cargo run -p ipkvm-video --example camera_probe --features mf`
+//! 用法：`cargo run -p ipkvm-video --example camera_probe --features camera`
 
 use std::time::{Duration, Instant};
 

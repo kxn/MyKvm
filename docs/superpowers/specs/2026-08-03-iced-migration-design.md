@@ -183,6 +183,13 @@ frame_source.subscribe() → iced Subscription (Recipe)
 3. **迁移单按 M0→M5 拆分**（本设计第 4 节的粒度），按序实施。
 4. **版本号暂不在 M5 重构**：当前 build.rs 继续注入 `GIT_COMMIT`，About 继续展示 short hash；后续统一版本逻辑应组合正式版本（例如 `1.0.0`）和 short hash，再单独开单实施。
 
+## #159 边界更新（2026-08-04）
+
+本文中“`ipkvm-desktop` 承载全部共享逻辑”的表述由 #159 细化为：纯配置、状态、探测
+抽象、泛型会话控制器和帧转换位于 `ipkvm-desktop-core`；`ipkvm-desktop` 保留真实
+camera/serial/clipboard production adapter，并对旧模块路径提供 re-export。iced 继续
+依赖 adapter 以保留真实硬件能力，但 UI 无关单元测试和无硬件依赖门禁以 core 为准。
+
 ## 6. 引用文档
 
 - Gitea #73：调研结论、跨平台约束、验收标准、spike 结果

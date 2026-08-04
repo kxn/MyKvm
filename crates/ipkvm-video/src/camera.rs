@@ -16,12 +16,12 @@
 
 // 非 Windows 平台：CameraSource / list_cameras 由 nokhwa 后端提供，在此 re-export，
 // 使 `ipkvm_video::camera::CameraSource` 路径在所有平台一致（headless 无需改 import）。
-#[cfg(all(unix, feature = "mf"))]
+#[cfg(all(unix, feature = "camera"))]
 pub use crate::camera_nokhwa::{CameraSource, list_cameras};
 
 // Windows 实现和「无相机后端」stub 都用到这些；Linux/macOS（nokhwa 后端接管）不需要。
-// 守卫条件：Windows 或 未启用 mf（stub 路径）。
-#[cfg(any(windows, not(feature = "mf")))]
+// 守卫条件：Windows 或未启用 camera（stub 路径）。
+#[cfg(any(windows, not(feature = "camera")))]
 use std::sync::{Arc, RwLock};
 
 #[cfg(windows)]
@@ -29,10 +29,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use thiserror::Error;
 
-#[cfg(any(windows, not(feature = "mf")))]
+#[cfg(any(windows, not(feature = "camera")))]
 use tokio::sync::watch;
 
-#[cfg(any(windows, not(feature = "mf")))]
+#[cfg(any(windows, not(feature = "camera")))]
 use crate::{FrameReceiver, FrameSource, SharedVideoFrame, VideoSourceInfo, VideoSourceKind};
 
 #[cfg(windows)]
@@ -459,21 +459,21 @@ pub fn list_cameras() -> Result<Vec<CameraDeviceInfo>, CameraSourceError> {
         .collect())
 }
 
-// 非 Windows 且未启用 mf feature 的 stub（保持 API 完整性）。
-#[cfg(not(any(windows, all(unix, feature = "mf"))))]
+// 非 Windows 且未启用 camera feature 的 stub（保持 API 完整性）。
+#[cfg(not(any(windows, all(unix, feature = "camera"))))]
 impl CameraSource {
     pub fn open(_device_id: &str, _frames_per_second: u64) -> Result<Self, CameraSourceError> {
         Err(CameraSourceError::UnsupportedPlatform)
     }
 }
 
-#[cfg(not(any(windows, all(unix, feature = "mf"))))]
+#[cfg(not(any(windows, all(unix, feature = "camera"))))]
 #[derive(Debug)]
 pub struct CameraSource {
     _private: (),
 }
 
-#[cfg(not(any(windows, all(unix, feature = "mf"))))]
+#[cfg(not(any(windows, all(unix, feature = "camera"))))]
 impl FrameSource for CameraSource {
     fn latest_frame(&self) -> Option<SharedVideoFrame> {
         None
@@ -490,7 +490,7 @@ impl FrameSource for CameraSource {
     }
 }
 
-#[cfg(not(any(windows, all(unix, feature = "mf"))))]
+#[cfg(not(any(windows, all(unix, feature = "camera"))))]
 pub fn list_cameras() -> Result<Vec<CameraDeviceInfo>, CameraSourceError> {
     Err(CameraSourceError::UnsupportedPlatform)
 }
@@ -548,7 +548,7 @@ mod tests {
 
     #[test]
     fn camera_open_with_zero_fps_rejected() {
-        #[cfg(any(windows, all(unix, feature = "mf")))]
+        #[cfg(any(windows, all(unix, feature = "camera")))]
         {
             let err = CameraSource::open("nonexistent", 0).unwrap_err();
             assert!(matches!(err, CameraSourceError::ZeroFramesPerSecond));

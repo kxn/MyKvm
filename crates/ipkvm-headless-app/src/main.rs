@@ -11,9 +11,9 @@
 //!
 //! ```text
 //! ./scripts/fetch-demo-assets.sh   # 首次运行下载 Y4M 素材
-//! cargo run -p ipkvm-headless --features demo --bin ipkvm-headless \
+//! cargo run -p ipkvm-headless-app --bin ipkvm-headless \
 //!     --assets .cache/demo-assets --tcp 5900 --http 6080 --fps 10
-//! cargo run -p ipkvm-headless --features demo --bin ipkvm-headless \
+//! cargo run -p ipkvm-headless-app --bin ipkvm-headless \
 //!     --camera "OBS Virtual Camera" --tcp 5900 --http 6080
 //! ```
 //!
@@ -29,6 +29,7 @@ use ipkvm_core::{
     Ch9329InputSink, InputResult, InputSink, KeyEvent, MouseMode, PointerEvent, QueueStats,
     SerialCommandQueue, fake_serial::FakeCommandQueue,
 };
+use ipkvm_device::ProductionDeviceInventoryProvider;
 use ipkvm_headless::config::{self, Options};
 use ipkvm_headless::frame_source::{EmptyFrameSource, SwitchableFrameSource};
 use ipkvm_headless::rfb_connection::{RfbConnectionGate, RfbConnectionSettings};
@@ -469,6 +470,7 @@ async fn run(
         switchable_source,
         Arc::clone(&manager),
         factory,
+        Arc::new(ProductionDeviceInventoryProvider),
         event_publisher,
         ws_config,
         shutdown_rx.clone(),

@@ -94,7 +94,7 @@ async fn fixture_treats_stdin_eof_as_a_normal_shutdown() {
 }
 
 #[test]
-fn fixture_binary_is_guarded_by_its_required_feature() {
+fn fixture_binary_is_an_independent_package_target() {
     let metadata = std::process::Command::new("cargo")
         .args(["metadata", "--format-version", "1", "--no-deps"])
         .output()
@@ -102,7 +102,7 @@ fn fixture_binary_is_guarded_by_its_required_feature() {
     assert!(metadata.status.success());
     let json = String::from_utf8(metadata.stdout).unwrap();
     assert!(json.contains("\"name\":\"ipkvm-browser-fixture\""));
-    assert!(json.contains("\"required-features\":[\"browser-fixture\"]"));
+    assert!(!json.contains("\"required-features\":[\"browser-fixture\"]"));
 }
 
 async fn http_get(base_url: &str, path: &str) -> String {
