@@ -277,7 +277,7 @@ where
     ///
     /// 根因：`send_event` 只在「下一次发送」时补送 pending，突发填满通道后，
     /// 若无后续输入，残余事件（可能包含最后一次 key-up）会无限期滞留。
-    /// UI 层（egui/iced）应在每帧或固定间隔调用本方法，保证补送不依赖下一次输入。
+    /// 前端应在每帧或固定间隔调用本方法，保证补送不依赖下一次输入。
     pub fn flush_pending(&mut self) -> Result<(), DesktopSessionError> {
         let mut pending = self
             .pending_events

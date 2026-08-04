@@ -2,11 +2,11 @@
 #
 # Launches the video_1080p example (release), samples process CPU/memory for the
 # given duration, reads frame stats from the example's stats JSON file, and
-# judges PASS/FAIL against #73 Spike 1 thresholds.
+# judges PASS/FAIL against the M1 performance thresholds.
 #
 # Usage: powershell -File scripts/perf-1080p.ps1 [-DurationSec 120] [-SourceFps 30]
 #
-# Thresholds (#73 Spike 1):
+# Thresholds (M1):
 #   rendered/source fps >= 99% (dropped <= 1%)
 #   avg frame interval <= 34ms, p95 <= 40ms
 #   process CPU (single-core equivalent) < 40%

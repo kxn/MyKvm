@@ -1,9 +1,8 @@
-//! iced 物理键 → X11 keysym 映射（spike 3）。
+//! iced 物理键 → X11 keysym 映射。
 //!
 //! winit/iced 的 `keyboard::key::Code` 是跨平台统一的物理键码（USB HID 风格），
 //! 因此这张表一次实现、Windows/macOS 通用；keysym→HID usage 由 session 输入泵
-//! 内部完成，本表只负责物理键码到 keysym（与 egui desktop 的 `input.rs` 对应，
-//! 迁移后替代 egui 专用映射）。
+//! 内部完成，本表只负责物理键码到 keysym。
 
 use iced::keyboard::key::Code;
 
@@ -39,7 +38,7 @@ pub const XK_MENU: u32 = 0xff67;
 pub const XK_F1: u32 = 0xffbe;
 
 /// 物理键码 → 基础 keysym（未按 Shift 变换大小写/符号；大小写由修饰键状态层处理，
-/// 与 egui desktop 的 `egui_key_to_keysym` 语义一致）。
+/// 与旧桌面端的键码映射语义一致）。
 pub fn physical_code_to_keysym(code: Code) -> Option<u32> {
     // winit 的 Code 是无字段枚举且字母/数字/F 键区间连续；用序数偏移映射。
     let ordinal = code as u32;

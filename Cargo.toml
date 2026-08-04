@@ -8,7 +8,6 @@ members = [
     "crates/ipkvm-desktop",
     "crates/ipkvm-desktop-iced",
     "crates/ipkvm-headless",
-    "crates/ipkvm-desktop-iced-spike",
 ]
 exclude = ["third_party/iced_aw"]
 

@@ -57,7 +57,7 @@ static MOCK_STORE_SEQ: AtomicU64 = AtomicU64::new(0);
 /// 无条件重绘放大闪烁与 CPU 占用。
 const UI_TICK_INTERVAL: Duration = Duration::from_millis(33);
 
-/// 指针最小发送间隔（对齐 egui app.rs：#102 限频，避免高频移动刷爆串口）。
+/// 指针最小发送间隔（#102 限频，避免高频移动刷爆串口）。
 const POINTER_MIN_INTERVAL: Duration = Duration::from_millis(33);
 
 /// 项目主页（实际仓库为内网 Gitea）。
@@ -369,7 +369,7 @@ impl App<RecordingSink, MockFactory> {
             cursor_records,
             dark: false,
         };
-        // 对齐 egui 启动行为：预填上次手动连接（mock 的临时 store 通常为空）。
+        // 预填上次手动连接（mock 的临时 store 通常为空）。
         app.prefill_last_manual();
         (app, Task::done(Self::startup_message()))
     }
@@ -433,7 +433,7 @@ impl App<Ch9329InputSink<SerialCommandQueue>, ProductionSessionFactory> {
             cursor_records: Arc::new(RecordingCursorController::default()),
             dark: false,
         };
-        // 预填上次手动连接（对齐 egui new()），随后由启动 Task 自动枚举。
+        // 预填上次手动连接，随后由启动 Task 自动枚举。
         app.prefill_last_manual();
         let mut startup_tasks = vec![Task::done(Self::startup_message())];
         startup_tasks.extend(crate::fonts::load_tasks());
@@ -451,13 +451,13 @@ where
         self
     }
 
-    /// 启动后立即执行的动作：自动枚举设备（对齐 egui `DesktopApp::new()` 的启动刷新）。
+    /// 启动后立即执行的动作：自动枚举设备。
     /// `Task::done` 的 units 为 1（`Task::none` 为 0），测试可据此断言接线。
     pub(crate) fn startup_message() -> Message {
         Message::RefreshDevices
     }
 
-    /// 预填上次手动连接快照（对齐 egui `new()`：连接参数 + 设备选择）。
+    /// 预填上次手动连接快照（连接参数 + 设备选择）。
     ///
     /// 构造时设备列表尚未枚举，选中 id 直接预填；`RefreshDevices` 完成后由
     /// `refresh_detection` 复核（设备缺失会置为 `Disconnected`，不阻塞启动）。
@@ -1199,7 +1199,7 @@ where
         self.pointer_mask = 0;
         self.last_pointer = None;
         self.last_relative_mask = 0;
-        // 对齐 egui 退出语义：复位去重/限频状态，避免重进同位置点击被节流吞掉。
+        // 复位去重/限频状态，避免重进同位置点击被节流吞掉。
         self.last_pointer_sent = None;
         self.last_pointer_sent_at = None;
         self.relative_sampler.reset();
@@ -1396,7 +1396,7 @@ where
         diag::log("disconnect");
         let _ = self.controller.stop();
         self.sync_status();
-        // 保留已探测状态（对齐 egui stop_session）：Connect 立即恢复可点，
+        // 保留已探测状态：Connect 立即恢复可点，
         // 预览源保持常驻，由 PreviewTick 继续出帧。
         self.latest_frame = None;
         self.frame_size = None;

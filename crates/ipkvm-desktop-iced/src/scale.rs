@@ -1,9 +1,9 @@
-//! 视频帧缩放纯函数（spike 1）。
+//! 视频帧缩放纯函数。
 //!
-//! 移植自 egui 端 `render.rs::VideoViewport`，逻辑等价但核心数学与 GUI 类型解耦，
+//! 来自迁移前桌面端 `VideoViewport`，逻辑等价但核心数学与 GUI 类型解耦，
 //! 便于在 250% DPI 三模式下做纯函数断言。iced 端用 [`frame_rect`] 做薄包装。
 //!
-//! 三模式语义（与 egui 端一致）：
+//! 三模式语义（与迁移前桌面端一致）：
 //! - `FitWindow`：保比例 aspect-fit 居中，不越界。
 //! - `ActualSize`：用帧物理像素尺寸，但超出容器时等比缩小（防底部/右侧被裁剪）。
 //! - `ResizeWindowToVideo`：布局同 `FitWindow`（窗口尺寸调整在外层另做）。
@@ -96,7 +96,7 @@ mod tests {
 
     #[test]
     fn fit_window_preserves_aspect_ratio() {
-        // 与 egui 端 render.rs 同一用例：1000×500 容器装 1920×1080 帧。
+        // 迁移前桌面端的同一用例：1000×500 容器装 1920×1080 帧。
         let container = Rect::from_min_size(0.0, 0.0, 1000.0, 500.0);
         let rect = frame_rect(
             container,

@@ -22,8 +22,3 @@ toml.workspace = true
 
 [dev-dependencies]
 ipkvm-video = { path = "../ipkvm-video", features = ["mock"] }
-
-[package.metadata.i18n]
-available-locales = ["zh-CN", "en"]
-default-locale = "zh-CN"
-load-path = "locales"

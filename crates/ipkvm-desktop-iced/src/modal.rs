@@ -1,7 +1,7 @@
-//! 自绘模态 overlay（spike 2）：遮罩 + 事件拦截 + 三关闭路径。
+//! 自绘模态 overlay：遮罩 + 事件拦截 + 三关闭路径。
 //!
-//! 复刻 egui 端的 settings / connection / save profile / about 模态。
-//! spike 验证：打开后背景事件被拦截；Esc/关闭按钮/点遮罩三关闭路径有效。
+//! 设置、连接、保存 profile 和关于模态。
+//! 打开后背景事件被拦截；Esc/关闭按钮/点遮罩三关闭路径有效。
 
 use iced::advanced::layout;
 use iced::advanced::widget::{Operation, Tree, Widget, tree};
@@ -14,7 +14,7 @@ use iced::{Color, Element, Event, Length, Rectangle, Shadow, Size, Vector};
 use ipkvm_core::MouseMode;
 use rust_i18n::t;
 
-/// 四种模态（对应 egui 端）。
+/// 四种应用模态。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModalKind {
     Settings,
@@ -217,7 +217,7 @@ impl ModalState {
         .into()
     }
 
-    /// 连接参数表单（设置默认值对话框与连接设置对话框共用，复刻 egui
+    /// 连接参数表单（设置默认值对话框与连接设置对话框共用，
     /// `connection_fields_ui`）：波特率/预览 FPS/鼠标模式/相对灵敏度/自动波特率。
     ///
     /// iced_aw 的 number_input feature 在本仓库 vendored 版本上无法编译

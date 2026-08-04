@@ -1,4 +1,4 @@
-//! Spike 3 键盘映射表验证：≥60 个代表键全部可映射（100% 通过）。
+//! M3 键盘映射表验证：≥60 个代表键全部可映射（100% 通过）。
 
 use iced::keyboard::key::Code;
 use ipkvm_desktop_iced::keymap::{
