@@ -1,4 +1,4 @@
-//! 键鼠事件 → RFB keysym/pointer 事件的纯适配逻辑（iced 版，移植自 egui input.rs）。
+//! 键鼠事件 → RFB keysym/pointer 事件的纯适配逻辑。
 
 use std::time::{Duration, Instant};
 
@@ -45,7 +45,7 @@ pub enum SpecialKey {
     AltTab,
 }
 
-/// 特殊键菜单名 → 枚举（spike 菜单发布的是名字字符串）。
+/// 特殊键菜单名 → 枚举（菜单动作发布的是名字字符串）。
 pub fn special_key_from_menu(name: &str) -> Option<SpecialKey> {
     match name {
         "CtrlAltDel" => Some(SpecialKey::CtrlAltDel),

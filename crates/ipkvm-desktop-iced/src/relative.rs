@@ -1,10 +1,10 @@
-//! 相对鼠标：平台中立 trait + 固定间隔采样（spike 3）。
+//! 相对鼠标：平台中立 trait + 固定间隔采样。
 //!
 //! - `RelativePointerSource`：平台差异收口点。Windows 用 Raw Input 实现
-//!   （`platform::windows`）；macOS/其它平台为 stub（迁移时补实现，不堵口子）。
+//!   （`platform::windows`）；macOS/其它平台为 stub（后续补实现，不堵口子）。
 //! - `DeltaSampler`：固定间隔采样，任意增量累计后每个周期最多发出 1 个事件，
-//!   余数保留（语义与 egui desktop `input.rs` 的 `sample_delta` 一致；
-//!   迁移时统一收口到共享 crate）。
+//!   余数保留（语义与迁移前桌面端的 `sample_delta` 一致；
+//!   后续统一收口到共享 crate）。
 
 use std::sync::Arc;
 use std::sync::mpsc::Receiver;

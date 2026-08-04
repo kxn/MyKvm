@@ -1,4 +1,4 @@
-//! Spike 2 模态验证：背景事件拦截 + 三条关闭路径（关闭按钮/点遮罩/Esc）。
+//! M2 模态验证：背景事件拦截 + 三条关闭路径（关闭按钮/点遮罩/Esc）。
 
 use iced::mouse;
 use iced::widget::{button, column, container, stack, text};

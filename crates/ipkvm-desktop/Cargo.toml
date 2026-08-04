@@ -8,38 +8,17 @@ rust-version.workspace = true
 
 [dependencies]
 arboard.workspace = true
-eframe.workspace = true
 ipkvm-core = { path = "../ipkvm-core", features = ["serial"] }
 ipkvm-rfb = { path = "../ipkvm-rfb" }
 ipkvm-session = { path = "../ipkvm-session", features = ["serial"] }
 ipkvm-video = { path = "../ipkvm-video", features = ["mf"] }
 jpeg-encoder.workspace = true
-rust-i18n = "4.2.1"
 serde.workspace = true
 serialport.workspace = true
 sys-locale = "0.3.2"
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"] }
 toml.workspace = true
-# eframe 的 wgpu 依赖只开 std，不会启用任何图形后端；这里显式开启
-# dx12/vulkan/gles/metal，否则运行时创建 wgpu 实例会 panic
-# （"No wgpu backend feature that is implemented for the target platform was enabled"）。
-wgpu = { version = "27.0.1", default-features = false, features = ["dx12", "vulkan", "gles", "metal"] }
-
-[target.'cfg(windows)'.dependencies]
-rfd = { version = "0.15.4", default-features = false, features = ["common-controls-v6"] }
 
 [dev-dependencies]
 ipkvm-video = { path = "../ipkvm-video", features = ["mock"] }
-
-[build-dependencies]
-embed-resource = "3.0.11"
-
-[[bin]]
-name = "ipkvm-desktop"
-path = "src/main.rs"
-
-[package.metadata.i18n]
-available-locales = ["zh-CN", "en"]
-default-locale = "zh-CN"
-load-path = "locales"

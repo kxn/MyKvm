@@ -27,7 +27,7 @@ pub fn create() -> Result<Box<dyn RelativePointerSource>, String> {
     Ok(Box::new(StubRawInput::new()))
 }
 
-/// 用系统默认浏览器打开 URL（对齐 egui `open_url`）。
+/// 用系统默认浏览器打开 URL。
 pub fn open_url(url: &str) {
     #[cfg(target_os = "windows")]
     {

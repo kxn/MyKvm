@@ -3,7 +3,7 @@
 use iced::Color;
 use iced::theme::{Palette, Theme};
 
-/// 亮色主题（默认，对齐 egui 端跟随系统的浅色观感，#95 确认）。
+/// 亮色主题（默认，沿用迁移前桌面端跟随系统的浅色观感，#95 确认）。
 pub const LIGHT: Palette = Palette {
     background: Color::from_rgb(0.96, 0.96, 0.97),
     text: Color::from_rgb(0.12, 0.12, 0.14),

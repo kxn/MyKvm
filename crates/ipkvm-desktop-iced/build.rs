@@ -8,4 +8,11 @@ fn main() {
         .unwrap_or_else(|| "unknown".to_string());
     println!("cargo:rustc-env=GIT_COMMIT={commit}");
     println!("cargo:rerun-if-changed=../../.git/HEAD");
+
+    // 将正式 iced 桌面端图标嵌入 Windows exe；其它目标由 manifest_optional 跳过。
+    embed_resource::compile("assets/icon.rc", embed_resource::NONE)
+        .manifest_optional()
+        .expect("embed iced exe icon resource");
+    println!("cargo:rerun-if-changed=assets/icon.rc");
+    println!("cargo:rerun-if-changed=assets/icon.ico");
 }

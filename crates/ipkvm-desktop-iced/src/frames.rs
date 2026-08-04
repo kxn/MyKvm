@@ -1,5 +1,5 @@
 //! 帧订阅：把 `DesktopSessionController::subscribe_frames` 的 watch receiver
-//! 转成 iced `Subscription`（替代 egui 的 `ctx.request_repaint`）。
+//! 转成 iced `Subscription`，由帧通知驱动重绘。
 //!
 //! 用自定义 `Recipe` 持有 watch receiver，在 `stream` 里 await watch 通知，
 //! 每帧到达就向 iced 投递一条 [`FrameUpdate`]，iced 的 update 因此重绘

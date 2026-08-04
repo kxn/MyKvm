@@ -1,4 +1,4 @@
-﻿# M2 菜单/模态/连接页/profile UI 迁移实施计划
+# M2 菜单/模态/连接页/profile UI 迁移实施计划
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 

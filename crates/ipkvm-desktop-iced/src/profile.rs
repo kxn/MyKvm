@@ -11,7 +11,7 @@ pub struct MissingDevices {
     pub control: bool,
 }
 
-/// 把当前选中设备固化为 DeviceRef（label 兜底用 id，复刻 egui app.rs）。
+/// 把当前选中设备固化为 DeviceRef（label 兜底用 id）。
 pub fn selected_device_ref(
     devices: &[DeviceOption],
     selected_id: Option<&str>,
@@ -92,7 +92,7 @@ fn clear_device_selection(selection: &mut DeviceSelectionState, is_video: bool) 
     }
 }
 
-/// 把当前选择与连接参数固化为 Profile（复刻 egui do_save_profile）。
+/// 把当前选择与连接参数固化为 Profile。
 pub fn build_profile(
     name: String,
     selection: &DeviceSelectionState,

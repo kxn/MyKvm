@@ -75,6 +75,9 @@ try {
     Invoke-CheckedCommand "Check dependency licenses and sources" {
         & (Join-Path $PSScriptRoot "verify-licenses.ps1")
     }
+    Invoke-CheckedCommand "Check iced M5 desktop retirement" {
+        & (Join-Path $PSScriptRoot "test-iced-m5-retirement.ps1")
+    }
     Invoke-CheckedCommand "Check Rust formatting" {
         cargo fmt --all --check
     }

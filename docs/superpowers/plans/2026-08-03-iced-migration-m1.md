@@ -1,4 +1,4 @@
-﻿# M1 视频链路迁移实施计划
+# M1 视频链路迁移实施计划
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 

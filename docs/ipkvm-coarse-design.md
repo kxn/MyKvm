@@ -143,7 +143,8 @@ flowchart LR
 - `ipkvm-core` 不依赖图形界面、不依赖网页服务、不依赖 VNC、不依赖具体视频库。
 - `ipkvm-video` 不知道 CH9329，只产出视频帧流和尺寸变化事件。
 - `ipkvm-session` 组合视频帧源、尺寸变化事件和输入接收端。
-- `ipkvm-desktop` 使用会话，负责窗口、输入事件、视频显示、DPI 换算和桌面鼠标捕获。
+- `ipkvm-desktop` 提供桌面端共享集成库，负责配置、设备探测、会话、帧转换和剪贴板；窗口与输入适配由正式 iced 前端负责。
+- `ipkvm-desktop-iced` 使用共享库，负责窗口、输入事件、视频显示、DPI 换算和桌面鼠标捕获，是唯一桌面发布入口。
 - `ipkvm-headless` 使用会话，负责后台进程生命周期、设备选择、HTTP/noVNC、RFB 监听、状态接口和快照接口。
 - `ipkvm-rfb` 是传输无关的 RFB 协议核心，不依赖 Tokio、TCP、WebSocket 或应用生命周期。
 - RFB TCP 和 WebSocket 传输位于 `ipkvm-headless`，共用 `ipkvm-rfb` 的状态机和编码逻辑。
@@ -156,7 +157,8 @@ ipkvm-core       CH9329 帧、HID 报告、坐标换算、输入状态机、串�
 ipkvm-video      采集设备枚举、格式选择、视频帧流、尺寸变化事件
 ipkvm-session    把视频帧源、尺寸变化事件和输入接收端组合成控制台会话
 ipkvm-rfb        RFB 握手、消息解码、像素转换和帧缓冲编码
-ipkvm-desktop    本地图形界面
+ipkvm-desktop    桌面端共享集成库
+ipkvm-desktop-iced  iced 本地图形界面
 ipkvm-headless   RFB TCP/WebSocket、后台进程、HTTP、noVNC、状态接口、配置
 ```
 
@@ -322,8 +324,8 @@ VideoEvent
 推荐技术：
 
 - 窗口和事件循环：`winit`
-- 界面：`egui` 或极简自绘设置页
-- 渲染：`wgpu` 或 `pixels`
+- 界面：`iced` 单原生窗口
+- 渲染：`iced` 的 wgpu 后端
 
 交互：
 

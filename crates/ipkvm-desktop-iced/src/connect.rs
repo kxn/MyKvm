@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 use ipkvm_video::FrameSource;
 
-/// 控制设备探测超时（与 egui 端一致）。
+/// 控制设备探测超时。
 pub const PROBE_TIMEOUT: Duration = Duration::from_millis(1200);
 /// 预览出帧后停帧视为无信号的超时。
 pub const NO_SIGNAL_TIMEOUT: Duration = Duration::from_secs(3);
@@ -38,7 +38,7 @@ impl PreviewSourceFactory for CameraPreviewFactory {
     }
 }
 
-/// 刷新枚举后视频预览的处理决策（复刻 egui app.rs 纯函数）。
+/// 刷新枚举后视频预览的处理决策。
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PreviewRefreshAction {
     Skip,
@@ -62,7 +62,7 @@ pub fn preview_refresh_action(
     }
 }
 
-/// 超时判定（复刻 egui app.rs）。
+/// 超时判定。
 pub fn elapsed_since(since: Option<Instant>, timeout: Duration, now: Instant) -> bool {
     since.is_some_and(|at| now.duration_since(at) >= timeout)
 }
@@ -89,7 +89,7 @@ impl PreviewRuntime {
         self.source.as_ref()
     }
 
-    /// 推进一帧：按 egui update_preview 语义打开/换源/超时判定。
+    /// 推进一帧：打开/换源并进行超时判定。
     /// 返回 true 表示本 tick 收到了新帧（调用方应刷新预览 Handle）。
     pub fn tick(
         &mut self,

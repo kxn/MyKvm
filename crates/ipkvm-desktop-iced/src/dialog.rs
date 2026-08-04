@@ -1,4 +1,4 @@
-//! 原生文件对话框收口（rfd，Windows only；与 egui 端 rfd 0.15.4 配置一致）。
+//! 原生文件对话框收口（rfd，Windows only）。
 //! rfd 是阻塞调用，调用方必须放在 iced Task::perform 里（异步线程），
 //! 避免阻塞 UI 事件循环。非 Windows 返回 None（菜单项按不支持处理）。
 

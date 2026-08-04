@@ -1,4 +1,4 @@
-//! Windows Raw Input 相对鼠标源（spike 3）。
+//! Windows Raw Input 相对鼠标源。
 //!
 //! 隐藏消息窗口 + `RegisterRawInputDevices(RIDEV_INPUTSINK)`：无论窗口是否前台，
 //! 都能收到原始鼠标移动增量（`WM_INPUT` → `RAWMOUSE.lLastX/lLastY`），
@@ -6,7 +6,7 @@
 //! 线程退出：`stop()` 投递自定义消息 → WNDPROC `PostQuitMessage`。
 //!
 //! 单实例限制：WNDPROC 是进程级静态回调，通过全局 Sender 转发增量
-//! （spike 足够；迁移时如需要多实例再改为按窗口参数寻址）。
+//! （当前实现满足单实例需求；如需多实例再改为按窗口参数寻址）。
 
 use std::ffi::c_void;
 use std::mem::size_of;
@@ -65,7 +65,7 @@ impl RelativePointerSource for WindowsRawInput {
 
         let (init_tx, init_rx) = sync_channel::<Result<isize, String>>(1);
         let handle = thread::Builder::new()
-            .name("raw-input-spike".into())
+            .name("raw-input".into())
             .spawn(move || raw_input_thread(init_tx))
             .map_err(|e| format!("spawn raw input thread: {e}"))?;
 
@@ -114,7 +114,7 @@ fn raw_input_thread(init_tx: SyncSender<Result<isize, String>>) {
             hCursor: Default::default(),
             hbrBackground: Default::default(),
             lpszMenuName: PCWSTR::null(),
-            lpszClassName: w!("IpkvmRawInputSpikeClass"),
+            lpszClassName: w!("IpkvmRawInputClass"),
             hIconSm: Default::default(),
         };
         if unsafe { RegisterClassExW(&class) } == 0 {
@@ -124,7 +124,7 @@ fn raw_input_thread(init_tx: SyncSender<Result<isize, String>>) {
         let hwnd = unsafe {
             CreateWindowExW(
                 WINDOW_EX_STYLE::default(),
-                w!("IpkvmRawInputSpikeClass"),
+                w!("IpkvmRawInputClass"),
                 w!("ipkvm raw input"),
                 WINDOW_STYLE::default(),
                 0,
@@ -173,7 +173,7 @@ fn raw_input_thread(init_tx: SyncSender<Result<isize, String>>) {
         let _ = DestroyWindow(HWND(hwnd_raw as *mut c_void));
         let hinstance: Option<HINSTANCE> = GetModuleHandleW(None).ok().map(Into::into);
         if let Some(hinstance) = hinstance {
-            let _ = UnregisterClassW(w!("IpkvmRawInputSpikeClass"), Some(hinstance));
+            let _ = UnregisterClassW(w!("IpkvmRawInputClass"), Some(hinstance));
         }
     }
 }
