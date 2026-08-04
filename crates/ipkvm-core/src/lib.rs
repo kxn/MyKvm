@@ -21,7 +21,7 @@ pub use ch9329::{
 pub use geometry::map_framebuffer_axis;
 pub use input::{
     FramebufferSize, InputError, InputResult, InputSink, KeyEvent, KeyboardUsage, MouseMode,
-    PointerButton, PointerEvent,
+    MouseProfile, MouseProfileParseError, PointerButton, PointerEvent,
 };
 pub use serial::{
     CommandBatch, CommandBatchError, CommandQueue, CommandQueueError, CommandQueueResult,
@@ -122,5 +122,32 @@ mod tests {
                 framebuffer_size: size
             }]
         );
+    }
+
+    #[test]
+    fn mouse_profiles_keep_identity_and_resolve_modes() {
+        assert_eq!(MouseProfile::Windows.resolve_mode(), MouseMode::Absolute);
+        assert_eq!(MouseProfile::Linux.resolve_mode(), MouseMode::Relative);
+        assert_eq!(MouseProfile::Bios.resolve_mode(), MouseMode::Absolute);
+        assert_eq!(MouseProfile::Android.resolve_mode(), MouseMode::Absolute);
+        assert_eq!(MouseProfile::MacOs.resolve_mode(), MouseMode::Absolute);
+        assert_eq!(
+            MouseProfile::RawAbsolute.resolve_mode(),
+            MouseMode::Absolute
+        );
+        assert_eq!(
+            MouseProfile::RawRelative.resolve_mode(),
+            MouseMode::Relative
+        );
+        assert_ne!(MouseProfile::Windows, MouseProfile::Bios);
+    }
+
+    #[test]
+    fn mouse_profiles_round_trip_stable_identifiers_and_reject_unknown() {
+        for profile in MouseProfile::ALL {
+            assert_eq!(MouseProfile::parse(profile.as_str()), Ok(profile));
+        }
+        assert_eq!(MouseProfile::RawRelative.as_str(), "raw_relative");
+        assert!(MouseProfile::parse("windows-11").is_err());
     }
 }

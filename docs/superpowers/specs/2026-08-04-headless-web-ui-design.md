@@ -263,3 +263,16 @@ Web/RFB library 不打开硬件；打开 camera/serial 的职责仍在各 app �
 - 前置批次：#133（位序）→ #141（后端前置合并单：设置/手动停止/0x08 协议）；
 - 主实施：#140（前端全量：骨架/设置/特殊键/相对模式/截图/语言/多标签）；
 - 收尾：browser-tests 全量闭环与 Chrome/Edge 兼容矩阵验收（并入 #140）。
+
+## 13. #151/#154/#156 输入控制实现边界（2026-08-04）
+
+headless Web 的目标端 profile、RFB 实际鼠标模式和浏览器本地 Pointer Lock 是三个不同
+状态：profile 决定目标端模式，输入泵确认 sink 已应用的实际模式，Pointer Lock 只由用户
+手势建立并由浏览器事件维护。服务端状态接口不返回虚构的本地捕获值。
+
+当前会话 profile 通过 `POST /api/input/mouse-profile` 切换。接口把模式事件送入当前
+RFB 输入泵并等待 sink 确认；确认前不更新 session selection，失败则返回错误。连接页的
+profile 是会话草稿覆盖值，设置页的 profile 是默认值，两者不会互相覆盖。
+
+相对移动在 noVNC 侧累计并按 33 ms 调度，控制事件先冲刷待发移动；退出 Pointer Lock、
+绝对 profile、RFB disconnect 和 DOM 清理都会清除相对定时器与累计量。

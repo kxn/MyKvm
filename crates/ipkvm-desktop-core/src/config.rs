@@ -11,7 +11,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use ipkvm_core::MouseMode;
+use ipkvm_core::{MouseMode, MouseProfile};
 use serde::{Deserialize, Serialize};
 
 /// 最近使用列表上限（菜单 3 条直显 + “更多”二级菜单内共 10 条）。
@@ -28,11 +28,13 @@ pub struct DeviceRef {
 
 /// 连接相关参数：菜单“设置…”里保存的是默认值，主页“连接设置”是连接级
 /// 副本，可被 profile 覆盖；本地视图偏好（缩放/语言）不属于这里。
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ConnectionSettings {
     pub baud_rate: u32,
     pub auto_baud: bool,
     pub preview_fps: u64,
+    #[serde(with = "mouse_profile_serde")]
+    pub mouse_profile: MouseProfile,
     #[serde(with = "mouse_mode_serde")]
     pub mouse_mode: MouseMode,
     pub relative_sensitivity: f32,
@@ -44,11 +46,63 @@ impl Default for ConnectionSettings {
             baud_rate: ipkvm_core::DEFAULT_BAUD_RATE,
             // 默认绝对模式（进系统体验更好）；BIOS/启动菜单若绝对 HID 映射不对，
             // 用 Ctrl+Alt+M 切相对模式。
+            mouse_profile: MouseProfile::RawAbsolute,
             mouse_mode: MouseMode::Absolute,
             preview_fps: 30,
             relative_sensitivity: 1.0,
             auto_baud: true,
         }
+    }
+}
+
+#[derive(Deserialize)]
+struct ConnectionSettingsFile {
+    baud_rate: u32,
+    auto_baud: bool,
+    preview_fps: u64,
+    #[serde(default)]
+    mouse_profile: Option<String>,
+    #[serde(default)]
+    mouse_mode: Option<String>,
+    relative_sensitivity: f32,
+}
+
+impl<'de> Deserialize<'de> for ConnectionSettings {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error as DeError;
+
+        let raw = ConnectionSettingsFile::deserialize(deserializer)?;
+        let legacy_mode = raw
+            .mouse_mode
+            .as_deref()
+            .map(|value| match value {
+                "Absolute" | "absolute" => Ok(MouseMode::Absolute),
+                "Relative" | "relative" => Ok(MouseMode::Relative),
+                other => Err(DeError::unknown_variant(other, &["Absolute", "Relative"])),
+            })
+            .transpose()?;
+        let profile = raw
+            .mouse_profile
+            .as_deref()
+            .map(MouseProfile::parse)
+            .transpose()
+            .map_err(|error| DeError::custom(error.to_string()))?
+            .unwrap_or_else(|| match legacy_mode.unwrap_or(MouseMode::Absolute) {
+                MouseMode::Absolute => MouseProfile::RawAbsolute,
+                MouseMode::Relative => MouseProfile::RawRelative,
+            });
+
+        Ok(Self {
+            baud_rate: raw.baud_rate,
+            auto_baud: raw.auto_baud,
+            preview_fps: raw.preview_fps,
+            mouse_profile: profile,
+            mouse_mode: profile.resolve_mode(),
+            relative_sensitivity: raw.relative_sensitivity,
+        })
     }
 }
 
@@ -309,7 +363,7 @@ fn config_base_dir() -> Option<PathBuf> {
 
 mod mouse_mode_serde {
     use ipkvm_core::MouseMode;
-    use serde::{Deserialize, Deserializer, Serializer};
+    use serde::Serializer;
 
     pub fn serialize<S>(mode: &MouseMode, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -320,20 +374,17 @@ mod mouse_mode_serde {
             MouseMode::Relative => "Relative",
         })
     }
+}
 
-    pub fn deserialize<'de, D>(deserializer: D) -> Result<MouseMode, D::Error>
+mod mouse_profile_serde {
+    use ipkvm_core::MouseProfile;
+    use serde::Serializer;
+
+    pub fn serialize<S>(profile: &MouseProfile, serializer: S) -> Result<S::Ok, S::Error>
     where
-        D: Deserializer<'de>,
+        S: Serializer,
     {
-        let value = String::deserialize(deserializer)?;
-        match value.as_str() {
-            "Absolute" => Ok(MouseMode::Absolute),
-            "Relative" => Ok(MouseMode::Relative),
-            other => Err(serde::de::Error::unknown_variant(
-                other,
-                &["Absolute", "Relative"],
-            )),
-        }
+        serializer.serialize_str(profile.as_str())
     }
 }
 
@@ -355,12 +406,30 @@ mod tests {
             baud_rate: 115200,
             auto_baud: false,
             preview_fps: 15,
+            mouse_profile: MouseProfile::Windows,
             mouse_mode: MouseMode::Absolute,
             relative_sensitivity: 1.5,
         };
         let text = toml::to_string(&settings).unwrap();
         let parsed: ConnectionSettings = toml::from_str(&text).unwrap();
         assert_eq!(parsed, settings);
+    }
+
+    #[test]
+    fn legacy_mouse_mode_migrates_to_raw_profile() {
+        let relative: ConnectionSettings = toml::from_str(
+            "baud_rate = 9600\nauto_baud = true\npreview_fps = 30\nmouse_mode = \"Relative\"\nrelative_sensitivity = 1.0\n",
+        )
+        .unwrap();
+        assert_eq!(relative.mouse_profile, MouseProfile::RawRelative);
+        assert_eq!(relative.mouse_mode, MouseMode::Relative);
+
+        let preset: ConnectionSettings = toml::from_str(
+            "baud_rate = 9600\nauto_baud = true\npreview_fps = 30\nmouse_profile = \"linux\"\nmouse_mode = \"Absolute\"\nrelative_sensitivity = 1.0\n",
+        )
+        .unwrap();
+        assert_eq!(preset.mouse_profile, MouseProfile::Linux);
+        assert_eq!(preset.mouse_mode, MouseMode::Relative);
     }
 
     #[test]

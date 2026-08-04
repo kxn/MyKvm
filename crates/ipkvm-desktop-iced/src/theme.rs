@@ -2,6 +2,13 @@
 
 use iced::Color;
 use iced::theme::{Palette, Theme};
+use iced::widget::button;
+use iced::{Background, Border, Shadow, Vector};
+
+pub const PANEL_MAX_WIDTH: f32 = 460.0;
+pub const PANEL_RADIUS: f32 = 8.0;
+pub const CONTROL_HEIGHT: f32 = 34.0;
+pub const CONTROL_RADIUS: f32 = 4.0;
 
 /// 亮色主题（默认，沿用迁移前桌面端跟随系统的浅色观感，#95 确认）。
 pub const LIGHT: Palette = Palette {
@@ -46,6 +53,50 @@ pub fn hover(palette: Palette) -> Color {
 /// 面板边框：文本色低透明度。
 pub fn border_color(palette: Palette) -> Color {
     Color::from_rgba(palette.text.r, palette.text.g, palette.text.b, 0.16)
+}
+
+pub fn button_style(theme: &Theme, status: button::Status, primary: bool) -> button::Style {
+    let palette = theme.palette();
+    let background = if primary {
+        palette.primary
+    } else {
+        surface(palette)
+    };
+    let background = match status {
+        button::Status::Hovered => hover(palette),
+        button::Status::Pressed => Color::from_rgba(
+            palette.primary.r,
+            palette.primary.g,
+            palette.primary.b,
+            if primary { 0.82 } else { 0.26 },
+        ),
+        button::Status::Disabled => {
+            Color::from_rgba(background.r, background.g, background.b, 0.45)
+        }
+        button::Status::Active => background,
+    };
+    button::Style {
+        background: Some(Background::Color(background)),
+        text_color: if primary { Color::WHITE } else { palette.text },
+        border: Border::default()
+            .rounded(CONTROL_RADIUS)
+            .width(1.0)
+            .color(border_color(palette)),
+        shadow: Shadow {
+            color: Color::from_rgba(0.0, 0.0, 0.0, 0.10),
+            offset: Vector::new(0.0, 1.0),
+            blur_radius: 2.0,
+        },
+        snap: false,
+    }
+}
+
+pub fn primary_button(theme: &Theme, status: button::Status) -> button::Style {
+    button_style(theme, status, true)
+}
+
+pub fn secondary_button(theme: &Theme, status: button::Status) -> button::Style {
+    button_style(theme, status, false)
 }
 
 fn mix(a: Color, b: Color, t: f32) -> Color {
@@ -110,5 +161,16 @@ mod tests {
             assert!(h.a > 0.0 && h.a < 1.0, "hover 必须是半透明高亮");
             assert!(b.a > 0.0, "边框色必须可见");
         }
+    }
+
+    #[test]
+    fn visual_tokens_keep_panels_and_controls_compact() {
+        let panel_width = PANEL_MAX_WIDTH;
+        let control_height = CONTROL_HEIGHT;
+        let panel_radius = PANEL_RADIUS;
+        let control_radius = CONTROL_RADIUS;
+        assert!(panel_width <= 480.0);
+        assert!((30.0..=38.0).contains(&control_height));
+        assert!(panel_radius <= 10.0 && control_radius <= 6.0);
     }
 }

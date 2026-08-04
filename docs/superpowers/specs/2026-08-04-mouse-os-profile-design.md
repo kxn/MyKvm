@@ -2,7 +2,7 @@
 
 日期：2026-08-04
 
-状态：已确认产品方向，待实施计划。
+状态：已实现，待联合 PR 最终收口。
 
 范围：Iced 桌面端和 headless Web。egui 桌面端不纳入本功能，保留现状，后续清理或对齐另行处理。
 
@@ -266,3 +266,16 @@ Web 选择绝对 profile 时立即退出 Pointer Lock，并停止发送相对 RF
 第一版实现应优先建立共享 profile 类型和解析测试，再分别接入 Iced、Web 配置/API、状态栏选择器和切换生命周期。egui 文件不改，避免在即将放弃的 UI 路径上产生新的兼容负担。
 
 实现完成后，长期文档和 OS 实测记录继续沿用：OS profile 的具体映射可以独立更新，不需要重新设计 UI 或改变底层 `MouseMode` 接口。
+
+## 10. 实现记录（2026-08-04）
+
+- `ipkvm-core::MouseProfile` 提供七个稳定标识、解析和 `MouseMode` 映射；桌面配置与
+  WebSettings 保留旧 `mouse_mode` 的 `Raw` 迁移，并同时写出兼容字段。
+- Iced 和 headless Web 的连接设置、当前会话状态栏、连接页均使用同一组 profile 选择；
+  Web 额外提供 `POST /api/input/mouse-profile` 当前会话切换接口。
+- 输入泵通过 watch 状态发布 sink 已成功应用的实际模式。Web 即时切换只有在收到该确认后
+  才提交 session selection；超时、泵停止或 sink 失败会保留旧 profile。
+- Pointer Lock/本地捕获不是服务端状态。Web 的 `selectedRelative` 与 `locked` 分离；
+  `/api/status.session` 只返回 profile 和实际模式，不伪造浏览器捕获状态。
+- Desktop Windows 的 ClipCursor 只接受已计算出的视频 screen-space 矩形；首帧尚未布局时
+  释放裁剪，不能把整个前台窗口当作视频区域。

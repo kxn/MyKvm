@@ -86,12 +86,22 @@ settings:
   auto_baud: "连接时自动检测波特率"
   preview_fps: "预览帧率"
   mouse_mode: "鼠标模式"
+  mouse_profile: "目标端兼容 profile"
   relative_sensitivity: "相对灵敏度"
   scale_mode: "缩放"
 
 mouse_mode:
   absolute: "绝对坐标"
   relative: "相对坐标"
+
+mouse_profile:
+  windows: "Windows"
+  linux: "Linux"
+  bios: "BIOS"
+  android: "Android"
+  macos: "macOS"
+  raw_absolute: "原始绝对坐标"
+  raw_relative: "原始相对坐标"
 
 scale_mode:
   fit_window: "适配窗口"

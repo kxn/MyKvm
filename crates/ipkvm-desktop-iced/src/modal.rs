@@ -9,9 +9,11 @@ use iced::advanced::{Clipboard, Shell, mouse, overlay, renderer};
 use iced::border::Border;
 use iced::keyboard;
 use iced::widget::PickList;
-use iced::widget::{button, button::Status, column, container, mouse_area, space, stack, text};
+use iced::widget::{
+    button, button::Status, column, container, mouse_area, row, space, stack, text,
+};
 use iced::{Color, Element, Event, Length, Rectangle, Shadow, Size, Vector};
-use ipkvm_core::MouseMode;
+use ipkvm_core::{MouseMode, MouseProfile};
 use rust_i18n::t;
 
 /// 四种应用模态。
@@ -35,6 +37,7 @@ pub struct ModalState {
     pub preview_fps: u64,
     pub auto_baud: bool,
     pub mouse_mode: MouseMode,
+    pub mouse_profile: MouseProfile,
     pub relative_sensitivity: f32,
     /// 数字输入编辑缓冲（TextInput 受控文本，改动实时解析并 clamp）。
     pub baud_text: String,
@@ -54,6 +57,7 @@ impl Default for ModalState {
             preview_fps: 30,
             auto_baud: true,
             mouse_mode: MouseMode::Absolute,
+            mouse_profile: MouseProfile::RawAbsolute,
             relative_sensitivity: 1.0,
             baud_text: ipkvm_core::DEFAULT_BAUD_RATE.to_string(),
             fps_text: "30".to_string(),
@@ -84,6 +88,8 @@ pub enum ModalAction {
     SetAutoBaud(bool),
     /// 连接设置：鼠标模式。
     SetMouseMode(MouseMode),
+    /// 目标端鼠标兼容 profile。
+    SetMouseProfile(MouseProfile),
     /// 连接设置：相对灵敏度。
     SetRelativeSensitivity(f32),
     /// 数字输入缓冲变化（波特率，解析成功后同时路由到目标连接参数）。
@@ -156,21 +162,24 @@ impl ModalState {
             })
         });
 
-        column![
-            self.connection_fields(),
-            label(t!("settings.scale_mode")),
-            scale,
-            close_button(),
+        let scale_field = iced::widget::row![
+            label(t!("settings.scale_mode")).width(Length::Fixed(150.0)),
+            scale.width(Length::Fixed(240.0)),
         ]
-        .spacing(8)
-        .into()
+        .spacing(12)
+        .align_y(iced::alignment::Vertical::Center);
+        column![self.connection_fields(), scale_field, close_button()]
+            .spacing(8)
+            .into()
     }
 
     fn connection_content(&self) -> Element<'_, ModalAction> {
         use iced::widget::{button, column};
         column![
             self.connection_fields(),
-            button(label(t!("profile.restore_defaults"))).on_press(ModalAction::RestoreDefaults),
+            button(label(t!("profile.restore_defaults")))
+                .on_press(ModalAction::RestoreDefaults)
+                .style(crate::theme::secondary_button),
             close_button(),
         ]
         .spacing(8)
@@ -182,9 +191,11 @@ impl ModalState {
         let input = text_input("name", &self.save_name).on_input(ModalAction::SaveNameChanged);
         let name_ok = !self.save_name.trim().is_empty();
         let save_button = if name_ok {
-            button(label(t!("modal.save"))).on_press(ModalAction::Save)
-        } else {
             button(label(t!("modal.save")))
+                .on_press(ModalAction::Save)
+                .style(crate::theme::primary_button)
+        } else {
+            button(label(t!("modal.save"))).style(crate::theme::primary_button)
         };
         let mut content = iced::widget::Column::new().spacing(8);
         content = content.push(input);
@@ -193,8 +204,11 @@ impl ModalState {
                 "profile.overwrite_body",
                 name = self.save_name.trim()
             )));
-            content = content
-                .push(button(label(t!("profile.overwrite_confirm"))).on_press(ModalAction::Save));
+            content = content.push(
+                button(label(t!("profile.overwrite_confirm")))
+                    .on_press(ModalAction::Save)
+                    .style(crate::theme::primary_button),
+            );
             content = content
                 .push(button(label(t!("common.cancel"))).on_press(ModalAction::CancelOverwrite));
         } else {
@@ -225,11 +239,15 @@ impl ModalState {
     fn connection_fields(&self) -> iced::widget::Column<'_, ModalAction> {
         use iced::widget::{Checkbox, column, text_input};
 
-        let baud =
-            text_input("1200..115200", &self.baud_text).on_input(ModalAction::BaudRateTextChanged);
-        let fps = text_input("1..60", &self.fps_text).on_input(ModalAction::PreviewFpsTextChanged);
+        let baud = text_input("1200..115200", &self.baud_text)
+            .on_input(ModalAction::BaudRateTextChanged)
+            .width(Length::Fixed(240.0));
+        let fps = text_input("1..60", &self.fps_text)
+            .on_input(ModalAction::PreviewFpsTextChanged)
+            .width(Length::Fixed(240.0));
         let sensitivity = text_input("0.1..5.0", &self.sensitivity_text)
-            .on_input(ModalAction::RelativeSensitivityTextChanged);
+            .on_input(ModalAction::RelativeSensitivityTextChanged)
+            .width(Length::Fixed(240.0));
         let auto_baud = Checkbox::new(self.auto_baud)
             .label(t!("settings.auto_baud"))
             .on_toggle(ModalAction::SetAutoBaud);
@@ -251,23 +269,75 @@ impl ModalState {
             })
         });
 
+        let profile_labels: Vec<String> =
+            MouseProfile::ALL.into_iter().map(profile_label).collect();
+        let selected_profile = profile_label(self.mouse_profile);
+        let profile = PickList::new(profile_labels, Some(selected_profile), |label: String| {
+            ModalAction::SetMouseProfile(profile_from_label(&label))
+        });
+
         column![
-            label(t!("settings.baud_rate")),
-            baud,
-            auto_baud,
-            label(t!("settings.preview_fps")),
-            fps,
-            label(t!("settings.mouse_mode")),
-            mouse,
-            label(t!("settings.relative_sensitivity")),
-            sensitivity,
+            row![
+                label(t!("settings.baud_rate")).width(Length::Fixed(150.0)),
+                baud
+            ]
+            .spacing(12)
+            .align_y(iced::alignment::Vertical::Center),
+            row![label("").width(Length::Fixed(150.0)), auto_baud]
+                .spacing(12)
+                .align_y(iced::alignment::Vertical::Center),
+            row![
+                label(t!("settings.preview_fps")).width(Length::Fixed(150.0)),
+                fps
+            ]
+            .spacing(12)
+            .align_y(iced::alignment::Vertical::Center),
+            row![
+                label(t!("settings.mouse_mode")).width(Length::Fixed(150.0)),
+                mouse
+            ]
+            .spacing(12)
+            .align_y(iced::alignment::Vertical::Center),
+            row![
+                label(t!("settings.mouse_profile")).width(Length::Fixed(150.0)),
+                profile
+            ]
+            .spacing(12)
+            .align_y(iced::alignment::Vertical::Center),
+            row![
+                label(t!("settings.relative_sensitivity")).width(Length::Fixed(150.0)),
+                sensitivity
+            ]
+            .spacing(12)
+            .align_y(iced::alignment::Vertical::Center),
         ]
-        .spacing(8)
+        .spacing(10)
     }
 }
 
+fn profile_label(profile: MouseProfile) -> String {
+    match profile {
+        MouseProfile::Windows => t!("mouse_profile.windows").to_string(),
+        MouseProfile::Linux => t!("mouse_profile.linux").to_string(),
+        MouseProfile::Bios => t!("mouse_profile.bios").to_string(),
+        MouseProfile::Android => t!("mouse_profile.android").to_string(),
+        MouseProfile::MacOs => t!("mouse_profile.macos").to_string(),
+        MouseProfile::RawAbsolute => t!("mouse_profile.raw_absolute").to_string(),
+        MouseProfile::RawRelative => t!("mouse_profile.raw_relative").to_string(),
+    }
+}
+
+fn profile_from_label(label: &str) -> MouseProfile {
+    MouseProfile::ALL
+        .into_iter()
+        .find(|profile| profile_label(*profile) == label)
+        .unwrap_or(MouseProfile::RawAbsolute)
+}
+
 fn close_button<'a>() -> iced::widget::Button<'a, ModalAction> {
-    button(label(t!("modal.close").to_string())).on_press(ModalAction::Close)
+    button(label(t!("modal.close").to_string()))
+        .on_press(ModalAction::Close)
+        .style(crate::theme::secondary_button)
 }
 
 fn title_for(kind: ModalKind) -> String {
@@ -315,10 +385,12 @@ fn modal_card<'a>(title: String, content: Element<'a, ModalAction>) -> Element<'
         .spacing(12)
         .padding(20);
     container(card)
+        .width(Length::Fill)
+        .max_width(crate::theme::PANEL_MAX_WIDTH)
         .style(|theme| container::Style {
-            background: Some(theme.palette().background.into()),
+            background: Some(crate::theme::surface(theme.palette()).into()),
             border: Border::default()
-                .rounded(10)
+                .rounded(crate::theme::PANEL_RADIUS)
                 .width(1.0)
                 .color(crate::theme::border_color(theme.palette())),
             shadow: Shadow {

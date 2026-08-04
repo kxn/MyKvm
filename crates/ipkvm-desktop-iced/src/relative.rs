@@ -139,19 +139,14 @@ impl DeltaSampler {
         self.last_send = None;
     }
 
-    /// 喂入原始增量；到采样点时返回本周期应发送的增量（最多一次，非零才发）。
-    pub fn feed(&mut self, dx: f32, dy: f32, now: Instant) -> Option<(i16, i16)> {
+    /// 累计原始增量但不改变采样节奏。
+    pub fn accumulate(&mut self, dx: f32, dy: f32) {
         self.remainder_x += dx;
         self.remainder_y += dy;
+    }
 
-        let due = match self.last_send {
-            None => true,
-            Some(last) => now.duration_since(last) >= self.interval,
-        };
-        if !due {
-            return None;
-        }
-
+    /// 无视 33ms 周期取出当前整数增量，用于按钮/滚轮等控制边沿前的 flush。
+    pub fn flush(&mut self, now: Instant) -> Option<(i16, i16)> {
         let ix = self
             .remainder_x
             .trunc()
@@ -167,6 +162,21 @@ impl DeltaSampler {
         self.remainder_y -= f32::from(iy);
         self.last_send = Some(now);
         Some((ix, iy))
+    }
+
+    /// 喂入原始增量；到采样点时返回本周期应发送的增量（最多一次，非零才发）。
+    pub fn feed(&mut self, dx: f32, dy: f32, now: Instant) -> Option<(i16, i16)> {
+        self.accumulate(dx, dy);
+
+        let due = match self.last_send {
+            None => true,
+            Some(last) => now.duration_since(last) >= self.interval,
+        };
+        if !due {
+            return None;
+        }
+
+        self.flush(now)
     }
 }
 
@@ -248,5 +258,23 @@ mod tests {
         assert_eq!(s.feed(2.0, 0.0, t(11)), Some((2, 0)));
         assert_eq!(s.feed(1.0, 0.0, t(12)), None); // 新周期内累计。
         assert_eq!(s.feed(0.0, 0.0, t(50)), Some((1, 0)));
+    }
+
+    #[test]
+    fn flush_forces_current_delta_before_interval() {
+        let mut s = DeltaSampler::new(Duration::from_millis(33));
+        assert_eq!(s.feed(4.5, -2.5, t(0)), Some((4, -2)));
+        assert_eq!(s.feed(1.0, 2.0, t(10)), None);
+        assert_eq!(s.flush(t(10)), Some((1, 1)));
+        assert_eq!(s.flush(t(11)), None);
+    }
+
+    #[test]
+    fn flush_preserves_fractional_remainder() {
+        let mut s = DeltaSampler::new(Duration::from_millis(33));
+        s.accumulate(0.75, 0.25);
+        assert_eq!(s.flush(t(0)), None);
+        s.accumulate(0.25, 0.75);
+        assert_eq!(s.flush(t(1)), Some((1, 1)));
     }
 }

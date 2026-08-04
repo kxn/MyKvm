@@ -19,7 +19,7 @@ pub fn production_parts(
     );
     let queue = SerialCommandQueue::open(&request.control_device_id, request.baud_rate)
         .map_err(|error| DesktopSessionError::Build(error.to_string()))?;
-    let sink = Ch9329InputSink::new(queue, 0, request.mouse_mode);
+    let sink = Ch9329InputSink::new(queue, 0, request.resolved_mouse_mode());
     Ok((
         frame_source,
         sink,

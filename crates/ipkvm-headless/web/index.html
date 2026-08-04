@@ -80,6 +80,18 @@
             <button id="refresh-serial" type="button" data-i18n="connection.refresh">刷新</button>
             <span id="serial-probe" class="probe" role="status"></span>
           </div>
+          <div class="device-picker profile-picker">
+            <label for="connection-mouse-profile" data-i18n="settings.mouseProfile">目标端兼容 profile</label>
+            <select id="connection-mouse-profile">
+              <option value="windows" data-i18n="settings.profileWindows">Windows</option>
+              <option value="linux" data-i18n="settings.profileLinux">Linux</option>
+              <option value="bios" data-i18n="settings.profileBios">BIOS</option>
+              <option value="android" data-i18n="settings.profileAndroid">Android</option>
+              <option value="macos" data-i18n="settings.profileMacos">macOS</option>
+              <option value="raw_absolute" selected data-i18n="settings.profileRawAbsolute">原始绝对坐标</option>
+              <option value="raw_relative" data-i18n="settings.profileRawRelative">原始相对坐标</option>
+            </select>
+          </div>
           <p id="connection-settings-summary" class="settings-summary"></p>
           <p id="connection-message" class="message" role="status" aria-live="polite"></p>
           <button id="connect-button" type="button" disabled data-i18n="connection.connect">
@@ -96,6 +108,18 @@
           <span id="session-state"></span>
           <span id="serial-stats"></span>
           <span id="input-stats"></span>
+          <label class="status-profile">
+            <span data-i18n="settings.mouseProfile">目标端兼容 profile</span>
+            <select id="video-mouse-profile">
+              <option value="windows" data-i18n="settings.profileWindows">Windows</option>
+              <option value="linux" data-i18n="settings.profileLinux">Linux</option>
+              <option value="bios" data-i18n="settings.profileBios">BIOS</option>
+              <option value="android" data-i18n="settings.profileAndroid">Android</option>
+              <option value="macos" data-i18n="settings.profileMacos">macOS</option>
+              <option value="raw_absolute" selected data-i18n="settings.profileRawAbsolute">原始绝对坐标</option>
+              <option value="raw_relative" data-i18n="settings.profileRawRelative">原始相对坐标</option>
+            </select>
+          </label>
           <button id="relative-mode" type="button" disabled data-i18n="video.relative">
             相对模式
           </button>
@@ -139,6 +163,18 @@
               <select id="setting-mouse-mode">
                 <option value="absolute" data-i18n="settings.absolute">绝对</option>
                 <option value="relative" data-i18n="settings.relative">相对</option>
+              </select>
+            </label>
+            <label class="field">
+              <span data-i18n="settings.mouseProfile">目标端兼容 profile</span>
+              <select id="setting-mouse-profile">
+                <option value="windows" data-i18n="settings.profileWindows">Windows</option>
+                <option value="linux" data-i18n="settings.profileLinux">Linux</option>
+                <option value="bios" data-i18n="settings.profileBios">BIOS</option>
+                <option value="android" data-i18n="settings.profileAndroid">Android</option>
+                <option value="macos" data-i18n="settings.profileMacos">macOS</option>
+                <option value="raw_absolute" selected data-i18n="settings.profileRawAbsolute">原始绝对坐标</option>
+                <option value="raw_relative" data-i18n="settings.profileRawRelative">原始相对坐标</option>
               </select>
             </label>
             <label class="field">

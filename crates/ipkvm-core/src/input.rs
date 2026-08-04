@@ -31,6 +31,79 @@ pub enum MouseMode {
     Relative,
 }
 
+/// 目标端鼠标兼容预设或显式原始模式。
+///
+/// Profile 身份与解析后的 `MouseMode` 分开保存：即使两个预设当前使用相同
+/// 模式（例如 Windows 与 BIOS），后续仍可独立调整映射。
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum MouseProfile {
+    Windows,
+    Linux,
+    Bios,
+    Android,
+    MacOs,
+    RawAbsolute,
+    RawRelative,
+}
+
+impl MouseProfile {
+    pub const ALL: [Self; 7] = [
+        Self::Windows,
+        Self::Linux,
+        Self::Bios,
+        Self::Android,
+        Self::MacOs,
+        Self::RawAbsolute,
+        Self::RawRelative,
+    ];
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Windows => "windows",
+            Self::Linux => "linux",
+            Self::Bios => "bios",
+            Self::Android => "android",
+            Self::MacOs => "macos",
+            Self::RawAbsolute => "raw_absolute",
+            Self::RawRelative => "raw_relative",
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, MouseProfileParseError> {
+        match value {
+            "windows" => Ok(Self::Windows),
+            "linux" => Ok(Self::Linux),
+            "bios" => Ok(Self::Bios),
+            "android" => Ok(Self::Android),
+            "macos" => Ok(Self::MacOs),
+            "raw_absolute" => Ok(Self::RawAbsolute),
+            "raw_relative" => Ok(Self::RawRelative),
+            other => Err(MouseProfileParseError::Unknown(other.to_owned())),
+        }
+    }
+
+    pub const fn resolve_mode(self) -> MouseMode {
+        match self {
+            Self::Linux | Self::RawRelative => MouseMode::Relative,
+            Self::Windows | Self::Bios | Self::Android | Self::MacOs | Self::RawAbsolute => {
+                MouseMode::Absolute
+            }
+        }
+    }
+}
+
+impl Default for MouseProfile {
+    fn default() -> Self {
+        Self::RawAbsolute
+    }
+}
+
+#[derive(Clone, Debug, Error, Eq, PartialEq)]
+pub enum MouseProfileParseError {
+    #[error("unknown mouse profile: {0}")]
+    Unknown(String),
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FramebufferSize {
     pub width: u32,
@@ -93,6 +166,12 @@ pub enum InputError {
 pub type InputResult<T> = Result<T, InputError>;
 
 pub trait InputSink {
+    /// 返回 sink 创建时已经生效的鼠标模式；未知时返回 `None`，由上层在首个
+    /// 指针事件到达时完成模式收敛。
+    fn initial_mouse_mode(&self) -> Option<MouseMode> {
+        None
+    }
+
     fn set_mouse_mode(&mut self, mode: MouseMode) -> InputResult<()>;
 
     fn handle_key(&mut self, event: KeyEvent) -> InputResult<()> {

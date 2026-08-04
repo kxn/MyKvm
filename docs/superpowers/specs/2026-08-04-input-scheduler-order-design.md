@@ -131,3 +131,12 @@ node browser-tests/novnc-browser.mjs
 ## 文档影响
 
 本设计文档记录 #156 的长期行为约束：键盘独立、鼠标移动限频、控制事件先冲刷移动，以及 Iced/Web 统一语义。实现 PR 使用 `Closes #156`，并在 PR 描述中记录测试证据和必要的人工验证例外。
+
+## 实现记录（2026-08-04）
+
+- Iced `DeltaSampler` 已分离 `accumulate`、周期 `feed`、控制事件 `flush` 和 `reset`；
+  按钮/滚轮路径会先消费相对增量，再提交独立控制边沿。
+- noVNC 相对移动已使用 33 ms 累计定时器；按钮、滚轮、Pointer Lock 退出和 RFB 断开都会
+  清理或冲刷待发增量，键盘路径不经过鼠标采样器。
+- 输入泵的显式模式切换和自动模式收敛均执行 `release_all -> set_mouse_mode`，并发布成功
+  的实际模式供上层控制面确认。

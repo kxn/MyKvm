@@ -44,6 +44,7 @@ const DEFAULT_BACKGROUND = 'rgb(40, 40, 40)';
 
 // Minimum wait (ms) between two mouse moves
 const MOUSE_MOVE_DELAY = 17;
+const RELATIVE_MOVE_DELAY = 33;
 
 // Wheel thresholds
 const WHEEL_STEP = 50; // Pixels needed for one step
@@ -202,6 +203,10 @@ export default class RFB extends EventTargetMixin {
         // Skip the first movement event right after locking so the browser's
         // initial movement report cannot cause a large jump.
         this._ignoreNextRelativeMove = false;
+        this._relativeDeltaX = 0;
+        this._relativeDeltaY = 0;
+        this._relativeMoveTimer = null;
+        this._relativeLastMoveTime = 0;
 
         // Gesture state
         this._gestureLastTapTime = null;
@@ -621,6 +626,9 @@ export default class RFB extends EventTargetMixin {
 
     _disconnect() {
         Log.Debug(">> RFB.disconnect");
+        // my_ipkvm local patch: do not let a pending relative timer survive
+        // an RFB teardown, even when the pointer controller is not involved.
+        this._clearRelativeMoveState();
         this._cursor.detach();
         this._canvas.removeEventListener("gesturestart", this._eventHandlers.handleGesture);
         this._canvas.removeEventListener("gesturemove", this._eventHandlers.handleGesture);
@@ -1191,6 +1199,9 @@ export default class RFB extends EventTargetMixin {
     }
 
     _handleMouseButton(x, y, bmask) {
+        // Relative movement is queued independently; flush it before the
+        // button edge so the target observes movement -> button ordering.
+        this._flushRelativeMove(true);
         // Flush waiting move event first
         this._flushMouseMoveTimer(x, y);
 
@@ -1229,12 +1240,53 @@ export default class RFB extends EventTargetMixin {
 
         dx = Math.trunc(dx * this._relativeSensitivity);
         dy = Math.trunc(dy * this._relativeSensitivity);
-        if (dx === 0 && dy === 0) { return; }
-        dx = Math.max(-32768, Math.min(32767, dx));
-        dy = Math.max(-32768, Math.min(32767, dy));
+        this._relativeDeltaX += dx;
+        this._relativeDeltaY += dy;
+        const elapsed = Date.now() - this._relativeLastMoveTime;
+        if (this._relativeMoveTimer === null &&
+            (this._relativeLastMoveTime === 0 || elapsed >= RELATIVE_MOVE_DELAY)) {
+            this._flushRelativeMove(false);
+        } else if (this._relativeMoveTimer === null) {
+            this._relativeMoveTimer = setTimeout(
+                () => this._flushRelativeMove(false),
+                RELATIVE_MOVE_DELAY - elapsed,
+            );
+        }
+    }
 
+    _flushRelativeMove(force) {
+        if (this._relativeMoveTimer !== null) {
+            clearTimeout(this._relativeMoveTimer);
+            this._relativeMoveTimer = null;
+        }
+        const dx = Math.trunc(this._relativeDeltaX);
+        const dy = Math.trunc(this._relativeDeltaY);
+        if (dx === 0 && dy === 0) {
+            return;
+        }
+        const boundedX = Math.max(-32768, Math.min(32767, dx));
+        const boundedY = Math.max(-32768, Math.min(32767, dy));
         RFB.messages.relativePointerEvent(this._sock, this._mouseButtonMask,
-                                          dx, dy, 0);
+                                          boundedX, boundedY, 0);
+        this._relativeDeltaX -= boundedX;
+        this._relativeDeltaY -= boundedY;
+        this._relativeLastMoveTime = Date.now();
+        if (this._relativeDeltaX !== 0 || this._relativeDeltaY !== 0) {
+            this._relativeMoveTimer = setTimeout(
+                () => this._flushRelativeMove(false),
+                RELATIVE_MOVE_DELAY,
+            );
+        }
+    }
+
+    _clearRelativeMoveState() {
+        if (this._relativeMoveTimer !== null) {
+            clearTimeout(this._relativeMoveTimer);
+            this._relativeMoveTimer = null;
+        }
+        this._relativeDeltaX = 0;
+        this._relativeDeltaY = 0;
+        this._relativeLastMoveTime = 0;
     }
 
     // my_ipkvm local patch: switch absolute/relative pointer sending.
@@ -1245,6 +1297,7 @@ export default class RFB extends EventTargetMixin {
         }
         this._relativeMode = on;
         this._ignoreNextRelativeMove = on;
+        this._clearRelativeMoveState();
         if (!on && this._mouseMoveTimer !== null) {
             clearTimeout(this._mouseMoveTimer);
             this._mouseMoveTimer = null;
@@ -1326,6 +1379,7 @@ export default class RFB extends EventTargetMixin {
         // my_ipkvm local patch: the relative message carries a single wheel
         // byte (+1 up / -1 down); horizontal wheel has no channel there.
         if (this._relativeMode) {
+            this._flushRelativeMove(true);
             this._accumulatedWheelDeltaX = 0;
             if (Math.abs(this._accumulatedWheelDeltaY) >= WHEEL_STEP) {
                 const step = this._accumulatedWheelDeltaY < 0 ? 1 : -1;

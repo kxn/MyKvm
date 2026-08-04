@@ -8,12 +8,16 @@ export const SETTINGS_DEFAULTS = Object.freeze({
   baud_rate: 115200,
   auto_baud: true,
   preview_fps: 30,
+  mouse_profile: "raw_absolute",
   mouse_mode: "absolute",
   relative_sensitivity: 1.0,
   scale_mode: "fit_window",
 });
 
 const MOUSE_MODES = new Set(["absolute", "relative"]);
+export const MOUSE_PROFILES = new Set([
+  "windows", "linux", "bios", "android", "macos", "raw_absolute", "raw_relative",
+]);
 const SCALE_MODES = new Set(["fit_window", "original", "follow_window"]);
 
 export class SettingsController {
@@ -26,6 +30,12 @@ export class SettingsController {
     cancelButton.addEventListener("click", () => this.cancel());
     saveButton.addEventListener("click", () => this.save());
     resetButton.addEventListener("click", () => this.reset());
+    this.el.fields.mouseProfile.addEventListener("change", () => {
+      this.el.fields.mouseMode.value = modeForProfile(this.el.fields.mouseProfile.value);
+    });
+    this.el.fields.mouseMode.addEventListener("change", () => {
+      this.el.fields.mouseProfile.value = profileForMode(this.el.fields.mouseMode.value);
+    });
     this.el.modal.addEventListener("click", (event) => {
       if (event.target === this.el.modal) {
         this.cancel();
@@ -71,6 +81,7 @@ export class SettingsController {
     this.el.fields.autoBaud.checked = Boolean(settings.auto_baud);
     this.el.fields.previewFps.value = settings.preview_fps;
     this.el.fields.mouseMode.value = settings.mouse_mode;
+    this.el.fields.mouseProfile.value = settings.mouse_profile;
     this.el.fields.relativeSensitivity.value = settings.relative_sensitivity;
     this.el.fields.scaleMode.value = settings.scale_mode;
   }
@@ -80,7 +91,8 @@ export class SettingsController {
       baud_rate: Number(this.el.fields.baudRate.value),
       auto_baud: this.el.fields.autoBaud.checked,
       preview_fps: Number(this.el.fields.previewFps.value),
-      mouse_mode: this.el.fields.mouseMode.value,
+      mouse_profile: profileForForm(this.el.fields.mouseProfile.value, this.el.fields.mouseMode.value),
+      mouse_mode: modeForProfile(this.el.fields.mouseProfile.value),
       relative_sensitivity: Number(this.el.fields.relativeSensitivity.value),
       scale_mode: this.el.fields.scaleMode.value,
     };
@@ -100,6 +112,9 @@ export class SettingsController {
     }
     if (!MOUSE_MODES.has(settings.mouse_mode)) {
       return t("settings.error.mouseMode", { mode: settings.mouse_mode });
+    }
+    if (!MOUSE_PROFILES.has(settings.mouse_profile)) {
+      return t("settings.error.mouseProfile", { profile: settings.mouse_profile });
     }
     if (!SCALE_MODES.has(settings.scale_mode)) {
       return t("settings.error.scaleMode", { mode: settings.scale_mode });
@@ -150,9 +165,14 @@ function normalizeSettings(value) {
     preview_fps: Number.isFinite(Number(source.preview_fps))
       ? Number(source.preview_fps)
       : SETTINGS_DEFAULTS.preview_fps,
-    mouse_mode: MOUSE_MODES.has(source.mouse_mode)
-      ? source.mouse_mode
-      : SETTINGS_DEFAULTS.mouse_mode,
+    mouse_profile: MOUSE_PROFILES.has(source.mouse_profile)
+      ? source.mouse_profile
+      : profileForMode(source.mouse_mode),
+    mouse_mode: MOUSE_PROFILES.has(source.mouse_profile)
+      ? modeForProfile(source.mouse_profile)
+      : MOUSE_MODES.has(source.mouse_mode)
+        ? source.mouse_mode
+        : modeForProfile(source.mouse_profile),
     relative_sensitivity: Number.isFinite(Number(source.relative_sensitivity))
       ? Number(source.relative_sensitivity)
       : SETTINGS_DEFAULTS.relative_sensitivity,
@@ -160,4 +180,22 @@ function normalizeSettings(value) {
       ? source.scale_mode
       : SETTINGS_DEFAULTS.scale_mode,
   };
+}
+
+export function profileForMode(mode) {
+  return mode === "relative" ? "raw_relative" : "raw_absolute";
+}
+
+export function modeForProfile(profile) {
+  return profile === "linux" || profile === "raw_relative" ? "relative" : "absolute";
+}
+
+function profileForForm(profile, mode) {
+  if (mode === "relative" && profile === "raw_absolute") {
+    return "raw_relative";
+  }
+  if (mode === "absolute" && profile === "raw_relative") {
+    return "raw_absolute";
+  }
+  return MOUSE_PROFILES.has(profile) ? profile : profileForMode(mode);
 }

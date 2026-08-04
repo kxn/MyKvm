@@ -11,12 +11,16 @@ export class ConnectionController {
     this.onSettingsSummary = onSettingsSummary;
     this.onConnected = onConnected;
     this.devices = { video: [], serial: [] };
+    this.profileDirty = false;
 
     this.el.refreshVideo.addEventListener("click", () => this.refresh("video"));
     this.el.refreshSerial.addEventListener("click", () => this.refresh("serial"));
     this.el.connectButton.addEventListener("click", () => this.connect());
     this.el.videoSelect.addEventListener("change", () => this.updateConnectState());
     this.el.serialSelect.addEventListener("change", () => this.updateConnectState());
+    this.el.connectionMouseProfile.addEventListener("change", () => {
+      this.profileDirty = true;
+    });
   }
 
   async refreshAll() {
@@ -70,7 +74,12 @@ export class ConnectionController {
       t(action === "create" ? "connection.message.create" : "connection.message.restart"),
     );
     try {
-      await postJson("/api/session", { action, video, serial });
+      await postJson("/api/session", {
+        action,
+        video,
+        serial,
+        mouse_profile: this.el.connectionMouseProfile.value || null,
+      });
       this.onConnected?.();
     } catch (error) {
       this.onMessage(`${t("connection.connectFailed")}：${errorText(error)}`, "error");
@@ -79,12 +88,22 @@ export class ConnectionController {
   }
 
   updateSettingsSummary(settings) {
+    if (!this.profileDirty && settings?.mouse_profile) {
+      this.el.connectionMouseProfile.value = settings.mouse_profile;
+    }
     const text = t("connection.settingsSummary", {
       baud: settings?.baud_rate ?? "-",
       auto: settings?.auto_baud ? t("common.on") : t("common.off"),
       fps: settings?.preview_fps ?? "-",
+      profile: settings?.mouse_profile ?? "raw_absolute",
     });
     this.onSettingsSummary?.(text);
+  }
+
+  applyStatus(status) {
+    if (!this.profileDirty && status?.session?.mouse_profile) {
+      this.el.connectionMouseProfile.value = status.session.mouse_profile;
+    }
   }
 }
 

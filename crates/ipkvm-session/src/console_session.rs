@@ -106,6 +106,8 @@ pub struct ConsoleSession<S: InputSink + Clone + Send + 'static> {
     event_publisher: watch::Sender<Option<mpsc::Sender<RfbServerEvent>>>,
     /// 可选 notice 镜像：把输入泵每条 notice 转发给桌面本地控制器等观察者。
     notice_mirror: Option<mpsc::UnboundedSender<RfbInputNotice>>,
+    /// 输入泵最近一次成功应用的鼠标模式；服务端控制面用它确认异步切换。
+    mouse_mode: watch::Sender<Option<ipkvm_core::MouseMode>>,
 }
 
 impl<S: InputSink + Clone + Send + 'static> ConsoleSession<S> {
@@ -121,6 +123,7 @@ impl<S: InputSink + Clone + Send + 'static> ConsoleSession<S> {
         event_publisher: watch::Sender<Option<mpsc::Sender<RfbServerEvent>>>,
     ) -> Self {
         let (stop_tx, _) = watch::channel(false);
+        let (mouse_mode, _) = watch::channel(None);
         Self {
             frame_source,
             sink,
@@ -133,6 +136,7 @@ impl<S: InputSink + Clone + Send + 'static> ConsoleSession<S> {
             stats: Arc::new(Mutex::new(SessionStats::default())),
             event_publisher,
             notice_mirror: None,
+            mouse_mode,
         }
     }
 
@@ -153,6 +157,11 @@ impl<S: InputSink + Clone + Send + 'static> ConsoleSession<S> {
     /// 后能拿到新 channel。
     pub fn event_publisher(&self) -> watch::Receiver<Option<mpsc::Sender<RfbServerEvent>>> {
         self.event_publisher.subscribe()
+    }
+
+    /// 订阅输入泵已确认的鼠标模式；`None` 表示当前没有活动控制器。
+    pub fn mouse_mode(&self) -> watch::Receiver<Option<ipkvm_core::MouseMode>> {
+        self.mouse_mode.subscribe()
     }
 
     /// 设置 notice 镜像发送端；`None` 关闭镜像。
@@ -223,7 +232,10 @@ impl<S: InputSink + Clone + Send + 'static> ConsoleSession<S> {
         // 发布新事件出口：传输层订阅端据此拿到当前 channel 的发送端。
         self.event_publisher
             .send_replace(Some(self.event_tx.clone()));
-        let mut pump = RfbInputPump::new(self.sink.clone());
+        let mut pump = RfbInputPump::with_mouse_mode_observer(
+            self.sink.clone(),
+            Some(self.mouse_mode.clone()),
+        );
         let stats = Arc::clone(&self.stats);
         let running = Arc::clone(&self.running);
         let notice_mirror = self.notice_mirror.clone();
@@ -498,10 +510,10 @@ mod tests {
         drop(session.stop().unwrap());
         assert!(!session.is_running());
 
-        // 释放是异步完成的：pump 自身 release_all 一次，其文本键入服务在收到
-        // 取消命令后对 sink 克隆再 release_all 一次，共享计数应为 2。
+        // 释放是异步完成的：首次指针模式收敛释放一次，pump 停止时再释放一次，
+        // 文本键入服务收到取消后对 sink 克隆再释放一次，共享计数应为 3。
         assert!(
-            yield_until(|| sink.recorded.lock().unwrap().release_count == 2).await,
+            yield_until(|| sink.recorded.lock().unwrap().release_count == 3).await,
             "stop 后 release_all 未被执行（异步释放未完成）"
         );
         let _ = handle;

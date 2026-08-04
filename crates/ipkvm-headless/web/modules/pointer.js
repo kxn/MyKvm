@@ -15,6 +15,7 @@ export class PointerController {
     this.getRfb = getRfb;
     this.rfb = null;
     this.locked = false;
+    this.selectedRelative = false;
     this.supported = relativePointerSupported();
     this.settings = null;
     this.sensitivity = 1.0;
@@ -38,11 +39,12 @@ export class PointerController {
 
   applySettings(settings) {
     this.settings = settings;
+    this.selectedRelative = settings?.mouse_mode === "relative";
     const sensitivity = Number(settings?.relative_sensitivity);
     this.sensitivity =
       Number.isFinite(sensitivity) && sensitivity > 0 ? sensitivity : 1.0;
     this.rfb?.setRelativeSensitivity(this.sensitivity);
-    if (settings?.mouse_mode !== "relative" && this.locked) {
+    if (!this.selectedRelative && this.locked) {
       this.exit();
     }
     this.update();
@@ -54,7 +56,10 @@ export class PointerController {
       this.exit();
       return;
     }
-    if (!this.supported || !this.rfb) {
+    if (!this.selectedRelative || !this.supported || !this.rfb) {
+      if (this.selectedRelative && !this.supported) {
+        this.message(t("video.relative.unsupported"), "error");
+      }
       return;
     }
     const canvas = this.rfb.canvas;
@@ -89,6 +94,9 @@ export class PointerController {
       document.exitPointerLock?.();
     }
     this.rfb?.setRelativeMode(false);
+    if (this.rfb?.canvas) {
+      this.rfb.canvas.style.cursor = "";
+    }
     this.locked = false;
     this.update();
   }
@@ -97,6 +105,9 @@ export class PointerController {
     const canvas = this.rfb?.canvas;
     this.locked = canvas != null && document.pointerLockElement === canvas;
     this.rfb?.setRelativeMode(this.locked);
+    if (this.rfb?.canvas) {
+      this.rfb.canvas.style.cursor = this.locked ? "none" : "";
+    }
     this.update();
     if (this.locked) {
       this.message(t("video.relative.on"), "ok");
@@ -106,6 +117,12 @@ export class PointerController {
   };
 
   onPointerLockError = () => {
+    this.locked = false;
+    this.rfb?.setRelativeMode(false);
+    if (this.rfb?.canvas) {
+      this.rfb.canvas.style.cursor = "";
+    }
+    this.update();
     this.message(t("video.relative.lockError", { detail: "pointerlockerror" }), "error");
   };
 
@@ -121,7 +138,7 @@ export class PointerController {
       this.button.disabled = !this.rfb;
       this.button.title = "";
     }
-    const armed = !this.locked && this.settings?.mouse_mode === "relative";
+    const armed = !this.locked && this.selectedRelative;
     if (this.locked) {
       this.button.textContent = t("video.relative.locked");
       this.button.dataset.state = "locked";

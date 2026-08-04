@@ -4,6 +4,8 @@
 
 **Goal:** 先完成五单的依赖调研和逐单计划，再按依赖顺序实现、验证、推送、合并，并确认五个 issue 全部关闭。
 
+**状态：** 五个阶段已连续实现并完成针对性回归，当前进入最终全量门禁、提交、PR 合并和 issue 自动收口。
+
 **Architecture:** #151 建立共享 MouseProfile；#152 修复 profile 应用后的 control probe；#156 统一 Iced/Web 鼠标调度；#154 在稳定调度上分离本地捕获；#153 最后统一 iced 外观和布局。所有阶段使用同一分支和一份最终 PR，PR 描述使用 `Closes #151`、`Closes #152`、`Closes #153`、`Closes #154`、`Closes #156`。
 
 ## 顺序
@@ -46,3 +48,9 @@ cargo build --release -p ipkvm-headless-app --bin ipkvm-headless
 真实 Windows 光标裁剪、Pointer Lock、CH9329 和目标端 OS 输入栈写入 PR 人工验证例外，
 不伪装成自动化通过。
 
+## 执行记录（2026-08-04）
+
+按 #151 → #152 → #156 → #154 → #153 的依赖顺序完成：共享 profile 与兼容迁移先落地，
+随后收口 profile 探测、Iced/Web 输入调度、视频区域捕获和 iced 视觉布局。实现使用同一
+issue 分支和最终 PR；Web 即时切换增加 sink 实际模式确认，避免异步输入失败时错误提交
+session selection。剩余步骤仅为最终门禁、代码审查、提交、推送、合并及读回五个 issue 状态。
