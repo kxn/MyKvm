@@ -30,6 +30,8 @@ impl CommandBatch {
 pub enum CommandQueueError {
     #[error("command queue is closed")]
     Closed,
+    #[error("command queue is full")]
+    Full,
 }
 
 pub type CommandQueueResult<T> = Result<T, CommandQueueError>;

@@ -70,14 +70,14 @@ impl Ch9329Response {
         let command = frame.command();
         match command {
             0x81 => parse_info(frame),
-            0x82 | 0x84 | 0x85 => {
+            0x82 | 0x84 | 0x85 | 0x8f => {
                 require_data_length(frame, 1)?;
                 Ok(Self::Acknowledgement {
                     command: command & 0x7f,
                     status: frame.data()[0].into(),
                 })
             }
-            0xc1 | 0xc2 | 0xc4 | 0xc5 => {
+            0xc1 | 0xc2 | 0xc4 | 0xc5 | 0xcf => {
                 require_data_length(frame, 1)?;
                 Ok(Self::Error {
                     command: command & 0x3f,
@@ -184,6 +184,27 @@ mod tests {
         assert_eq!(
             Ch9329Response::parse(&frame),
             Err(Ch9329ResponseError::UnexpectedCommand(0x83))
+        );
+    }
+
+    #[test]
+    fn parses_reset_ack_and_error() {
+        let ok = Ch9329Frame::new(0, 0x8f, &[0]).unwrap();
+        let error = Ch9329Frame::new(0, 0xcf, &[0xe6]).unwrap();
+
+        assert_eq!(
+            Ch9329Response::parse(&ok).unwrap(),
+            Ch9329Response::Acknowledgement {
+                command: 0x0f,
+                status: CommandStatus::Success,
+            }
+        );
+        assert_eq!(
+            Ch9329Response::parse(&error).unwrap(),
+            Ch9329Response::Error {
+                command: 0x0f,
+                status: CommandStatus::OperationFailed,
+            }
         );
     }
 }

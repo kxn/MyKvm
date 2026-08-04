@@ -4,7 +4,7 @@
 
 关联 issue：[#165](http://10.10.10.5:3000/kxn/my_ipkvm/issues/165)
 
-状态：设计已确认，待实现。
+状态：设计已确认，核心实现已完成；真实硬件故障注入和目标 OS 回归待验证。
 
 ## 1. 背景
 
@@ -377,3 +377,24 @@ Pointer Lock 逻辑混合实现。
   https://github.com/mofeng-git/One-KVM/tree/e87942a5a9893918d0ce7ea015dd712ddb4b1793/kvmd/plugins/hid/ch9329
 - `kvm-serial`：https://github.com/sjmf/kvm-serial
 
+## 13. 本次实现记录
+
+本次 issue #165 已落地以下核心能力：
+
+- `Ch9329Command::Reset` 及 `0x8F/0xCF` Reset 响应解析；
+- `SerialCommandQueue` 改为单一串口 worker，持续读取响应并按 FIFO 关联 pending；
+- 启动时 GetInfo 同步屏障、响应超时/设备错误/协议错误统计和有界批次队列；
+- CH9329 执行故障使用 Reset、等待、GetInfo、键盘零报告和相对鼠标零报告恢复；
+- 串口读写故障跳过软件 Reset，关闭并重开串口后重新探测；
+- 预览无响应或错误响应时最多自动 Reset 一次；自动波特率扫描不发送 Reset；
+- `ch9329_probe info` 等待真实 GetInfo/恢复结果，键鼠测试在进程退出前等待 pending 和队列清空。
+
+自动化验证已覆盖协议金样、响应匹配、超时状态、预览恢复决策，以及正式恢复序列：
+fake serial 会确认软件依次写出 Reset、GetInfo、键盘零报告和相对鼠标零报告，并覆盖
+Reset 无应答后的失败分支。当前尚未具备稳定的 CH9329 无响应故障注入设备，因此真实
+硬件不能单独证明软件恢复链路；如果设备在观察期间自行恢复或故障没有再次发生，应记录
+“设备自行恢复/故障未复现”，不能记录为软件 Reset 恢复通过。
+
+最近一次真实硬件验证：`COM11 @ 9600` 执行
+`cargo run -p ipkvm-core --example ch9329_probe --features serial -- COM11 9600 info`，
+收到正常 GetInfo 应答并进入 `Ready`，结果为 `timeouts=0`、`resets=0`、`reopens=0`。
