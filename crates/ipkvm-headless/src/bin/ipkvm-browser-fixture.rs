@@ -125,8 +125,12 @@ impl SessionFactory<RecordingInputSink> for FixtureFactory {
         &self,
         _selection: &SessionSelection,
     ) -> Result<(Arc<dyn FrameSource>, RecordingInputSink), String> {
+        // 浏览器测试会经 `POST /api/session` 触发 create/restart：工厂构建的
+        // 新帧源必须先发布一帧，否则 RFB 连接会在初始帧检查处立即失败。
+        let source = Arc::new(MockFrameSource::new());
+        source.publish_frame(fixture_frame());
         Ok((
-            Arc::new(MockFrameSource::new()) as Arc<dyn FrameSource>,
+            source as Arc<dyn FrameSource>,
             RecordingInputSink::new(LineWriter::new()),
         ))
     }

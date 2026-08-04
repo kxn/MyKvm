@@ -163,6 +163,7 @@ fn static_router() -> Router {
         .route("/index.html", get(serve_asset))
         .route("/assets/app.css", get(serve_asset))
         .route("/assets/app.js", get(serve_asset))
+        .route("/assets/modules/{*path}", get(serve_asset))
         .route("/licenses", get(serve_asset))
         .route("/licenses/", get(serve_asset))
         .route("/vendor/novnc/{*path}", get(serve_asset))

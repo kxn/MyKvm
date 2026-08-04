@@ -534,6 +534,39 @@ async fn serves_fixed_novnc_modules_with_explicit_headers() {
 }
 
 #[tokio::test]
+async fn serves_web_modules_with_explicit_headers() {
+    let server = TestWebServer::start().await;
+
+    let response = server
+        .request("GET", "/assets/modules/special-keys.js")
+        .await;
+
+    assert_eq!(response.status, 200);
+    assert_eq!(
+        response.headers.get("content-type").map(String::as_str),
+        Some("text/javascript; charset=utf-8")
+    );
+    assert_eq!(
+        response.headers.get("cache-control").map(String::as_str),
+        Some("no-cache")
+    );
+    assert_eq!(
+        response
+            .headers
+            .get("x-content-type-options")
+            .map(String::as_str),
+        Some("nosniff")
+    );
+    assert!(
+        std::str::from_utf8(&response.body)
+            .unwrap()
+            .contains("special keys")
+    );
+
+    server.stop().await;
+}
+
+#[tokio::test]
 async fn serves_the_console_and_chinese_license_page() {
     let server = TestWebServer::start().await;
 
