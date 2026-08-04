@@ -1,4 +1,5 @@
 /target/
+/target-*/
 /.target-issue79/
 /.cache/
 /.worktrees/
