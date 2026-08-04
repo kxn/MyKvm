@@ -381,10 +381,12 @@ mod tests {
         let (store, warning) = SettingsStore::load_from(dir.path().clone());
         assert!(warning.is_none());
 
-        let mut changed = WebSettings::default();
-        changed.baud_rate = 57_600;
-        changed.mouse_mode = MouseMode::Relative;
-        changed.scale_mode = ScaleMode::ActualSize;
+        let changed = WebSettings {
+            baud_rate: 57_600,
+            mouse_mode: MouseMode::Relative,
+            scale_mode: ScaleMode::ActualSize,
+            ..WebSettings::default()
+        };
         store.save(&changed).await.unwrap();
 
         let path = dir.path().join(SETTINGS_FILE);
@@ -410,8 +412,10 @@ mod tests {
     async fn save_rejects_invalid_settings_without_writing() {
         let dir = TempDir::new();
         let (store, _) = SettingsStore::load_from(dir.path().clone());
-        let mut invalid = WebSettings::default();
-        invalid.preview_fps = 0;
+        let invalid = WebSettings {
+            preview_fps: 0,
+            ..WebSettings::default()
+        };
 
         assert!(store.save(&invalid).await.is_err());
         assert!(!dir.path().join(SETTINGS_FILE).exists(), "非法设置不得落盘");
