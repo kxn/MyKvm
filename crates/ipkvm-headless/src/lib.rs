@@ -5,6 +5,7 @@ pub mod config;
 pub mod frame_source;
 pub mod rfb_tcp;
 pub mod rfb_ws;
+pub mod settings;
 pub mod web;
 
 #[derive(Clone, Debug, Eq, PartialEq)]

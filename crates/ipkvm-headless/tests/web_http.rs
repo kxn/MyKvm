@@ -1,9 +1,10 @@
 use std::{
     collections::HashMap,
     net::SocketAddr,
+    path::PathBuf,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -15,6 +16,7 @@ use ipkvm_headless::{
     rfb_connection::RfbConnectionGate,
     rfb_ws::RfbWebSocketConfig,
     session_manager::SessionManager,
+    settings::SettingsStore,
     web::{HeadlessWebService, HeadlessWebServiceError, SessionFactory, SessionSelection},
 };
 use ipkvm_video::{
@@ -191,11 +193,42 @@ struct HttpResponse {
     body: Vec<u8>,
 }
 
+/// 测试专用临时设置目录：进程内自增避免并行测试互踩，Drop 时清理。
+struct TempSettingsDir {
+    path: PathBuf,
+}
+
+impl TempSettingsDir {
+    fn new() -> Self {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "ipkvm-headless-web-http-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        Self { path }
+    }
+
+    fn store(&self) -> Arc<SettingsStore> {
+        Arc::new(SettingsStore::load_from(self.path.clone()).0)
+    }
+}
+
+impl Drop for TempSettingsDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
 struct ReleaseOrderWebServer {
     address: SocketAddr,
     manager: Arc<tokio::sync::Mutex<SessionManager<RecordingSink>>>,
     shutdown: watch::Sender<bool>,
     task: JoinHandle<Result<(), HeadlessWebServiceError>>,
+    _settings: Arc<SettingsStore>,
+    _manual_stop: Arc<AtomicBool>,
+    _settings_dir: TempSettingsDir,
 }
 
 impl ReleaseOrderWebServer {
@@ -219,6 +252,9 @@ impl ReleaseOrderWebServer {
             old_released,
             replacement: Arc::new(NamedFrameSource::new("wide", Some(wide_frame()))),
         });
+        let settings_dir = TempSettingsDir::new();
+        let settings = settings_dir.store();
+        let manual_stop = Arc::new(AtomicBool::new(false));
         let (shutdown, shutdown_rx) = watch::channel(false);
         let service = HeadlessWebService::<RecordingSink>::new(
             switchable,
@@ -229,6 +265,8 @@ impl ReleaseOrderWebServer {
             shutdown_rx,
             gate,
             None,
+            Arc::clone(&settings),
+            Arc::clone(&manual_stop),
         )
         .unwrap();
         let task = tokio::spawn(service.serve(listener));
@@ -237,6 +275,9 @@ impl ReleaseOrderWebServer {
             manager,
             shutdown,
             task,
+            _settings: settings,
+            _manual_stop: manual_stop,
+            _settings_dir: settings_dir,
         }
     }
 
@@ -273,6 +314,9 @@ struct TestWebServer {
     manager: Arc<tokio::sync::Mutex<SessionManager<RecordingSink>>>,
     shutdown: watch::Sender<bool>,
     task: JoinHandle<Result<(), HeadlessWebServiceError>>,
+    settings: Arc<SettingsStore>,
+    manual_stop: Arc<AtomicBool>,
+    _settings_dir: TempSettingsDir,
 }
 
 impl TestWebServer {
@@ -293,6 +337,9 @@ impl TestWebServer {
         let factory = Arc::new(TestSessionFactory {
             replacement: Arc::new(NamedFrameSource::new("wide", Some(wide_frame()))),
         });
+        let settings_dir = TempSettingsDir::new();
+        let settings = settings_dir.store();
+        let manual_stop = Arc::new(AtomicBool::new(false));
         let (shutdown, shutdown_rx) = watch::channel(false);
         let switchable = Arc::new(SwitchableFrameSource::new(
             Arc::clone(&source) as Arc<dyn FrameSource>
@@ -306,6 +353,8 @@ impl TestWebServer {
             shutdown_rx,
             gate,
             None,
+            Arc::clone(&settings),
+            Arc::clone(&manual_stop),
         )
         .unwrap();
         let task = tokio::spawn(service.serve(listener));
@@ -315,6 +364,9 @@ impl TestWebServer {
             manager,
             shutdown,
             task,
+            settings,
+            manual_stop,
+            _settings_dir: settings_dir,
         }
     }
 
@@ -336,6 +388,9 @@ impl TestWebServer {
         let factory = Arc::new(TestSessionFactory {
             replacement: Arc::new(NamedFrameSource::new("wide", Some(wide_frame()))),
         });
+        let settings_dir = TempSettingsDir::new();
+        let settings = settings_dir.store();
+        let manual_stop = Arc::new(AtomicBool::new(false));
         let (shutdown, shutdown_rx) = watch::channel(false);
         let switchable = Arc::new(SwitchableFrameSource::new(
             Arc::clone(&source) as Arc<dyn FrameSource>
@@ -349,6 +404,8 @@ impl TestWebServer {
             shutdown_rx,
             gate,
             auth, // HTTP 鉴权 token；None 表示仅放行本机来源
+            Arc::clone(&settings),
+            Arc::clone(&manual_stop),
         )
         .unwrap();
         let task = tokio::spawn(service.serve(listener));
@@ -358,6 +415,9 @@ impl TestWebServer {
             manager,
             shutdown,
             task,
+            settings,
+            manual_stop,
+            _settings_dir: settings_dir,
         }
     }
 
@@ -592,6 +652,10 @@ async fn api_status_reports_video_and_controller() {
         status["session"].get("input_offline").is_none(),
         "会话正常时 input_offline 不应序列化"
     );
+    assert_eq!(
+        status["session"]["manual_stop"], false,
+        "默认未手动停止时 manual_stop 必须恒序列化为 false"
+    );
 
     server.stop().await;
 }
@@ -810,6 +874,163 @@ async fn api_session_rejects_unknown_action() {
     assert_eq!(response.status, 400);
     let body: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
     assert_eq!(body["error"], "unknown action");
+
+    server.stop().await;
+}
+
+// ---- GET/POST /api/settings ----
+
+#[tokio::test]
+async fn api_settings_returns_defaults_matching_contract() {
+    let server = TestWebServer::start().await;
+
+    let response = server.request("GET", "/api/settings").await;
+    assert_eq!(response.status, 200);
+    let settings: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
+    assert_eq!(settings["baud_rate"], 115200);
+    assert_eq!(settings["auto_baud"], true);
+    assert_eq!(settings["preview_fps"], 30);
+    assert_eq!(settings["mouse_mode"], "absolute");
+    assert_eq!(settings["relative_sensitivity"], 1.0);
+    assert_eq!(settings["scale_mode"], "fit_window");
+
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn api_settings_post_roundtrips_and_persists_to_file() {
+    let server = TestWebServer::start().await;
+
+    let body = br#"{"baud_rate":57600,"auto_baud":false,"preview_fps":15,
+        "mouse_mode":"relative","relative_sensitivity":2.5,"scale_mode":"resize_to_video"}"#;
+    let response = server
+        .request_with_body("POST", "/api/settings", body)
+        .await;
+    assert_eq!(
+        response.status,
+        200,
+        "{}",
+        String::from_utf8_lossy(&response.body)
+    );
+    let saved: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
+    assert_eq!(saved["baud_rate"], 57600);
+    assert_eq!(saved["auto_baud"], false);
+    assert_eq!(saved["preview_fps"], 15);
+    assert_eq!(saved["mouse_mode"], "relative");
+    assert_eq!(saved["relative_sensitivity"], 2.5);
+    assert_eq!(saved["scale_mode"], "resize_to_video");
+
+    let response = server.request("GET", "/api/settings").await;
+    let loaded: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
+    assert_eq!(loaded, saved);
+
+    // 持久化落盘：从设置文件所在目录重新加载存储可见相同值。
+    let dir = server.settings.path().parent().unwrap().to_path_buf();
+    let (reloaded, warning) = SettingsStore::load_from(dir);
+    assert!(warning.is_none(), "重新加载不应有警告：{warning:?}");
+    assert_eq!(reloaded.get().baud_rate, 57_600);
+    assert_eq!(reloaded.get().preview_fps, 15);
+    assert_eq!(reloaded.get().mouse_mode, ipkvm_core::MouseMode::Relative);
+
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn api_settings_rejects_invalid_values_with_400() {
+    let server = TestWebServer::start().await;
+
+    let cases: [(&[u8], &str); 5] = [
+        (
+            br#"{"baud_rate":960,"auto_baud":true,"preview_fps":30,"mouse_mode":"absolute","relative_sensitivity":1.0,"scale_mode":"fit_window"}"#.as_slice(),
+            "baud_rate",
+        ),
+        (
+            br#"{"baud_rate":115200,"auto_baud":true,"preview_fps":0,"mouse_mode":"absolute","relative_sensitivity":1.0,"scale_mode":"fit_window"}"#.as_slice(),
+            "preview_fps",
+        ),
+        (
+            br#"{"baud_rate":115200,"auto_baud":true,"preview_fps":30,"mouse_mode":"absolute","relative_sensitivity":6.0,"scale_mode":"fit_window"}"#.as_slice(),
+            "relative_sensitivity",
+        ),
+        (
+            br#"{"baud_rate":115200,"auto_baud":true,"preview_fps":30,"mouse_mode":"banana","relative_sensitivity":1.0,"scale_mode":"fit_window"}"#.as_slice(),
+            "mouse_mode",
+        ),
+        (
+            br#"{"baud_rate":115200,"auto_baud":true,"preview_fps":30,"mouse_mode":"absolute","relative_sensitivity":1.0,"scale_mode":"bogus"}"#.as_slice(),
+            "scale_mode",
+        ),
+    ];
+    for (body, detail_contains) in cases {
+        let response = server
+            .request_with_body("POST", "/api/settings", body)
+            .await;
+        assert_eq!(
+            response.status,
+            400,
+            "非法设置应 400：{}",
+            String::from_utf8_lossy(body)
+        );
+        let error: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
+        assert_eq!(error["error"], "invalid settings");
+        let detail = error["detail"].as_str().unwrap();
+        assert!(
+            detail.contains(detail_contains),
+            "detail 应指明字段 {detail_contains}：{detail}"
+        );
+    }
+
+    server.stop().await;
+}
+
+// ---- 手动停止标记 ----
+
+#[tokio::test]
+async fn api_status_exposes_manual_stop_and_stop_restart_cycle_flips_it() {
+    let server = TestWebServer::start().await;
+
+    let status = server.request("GET", "/api/status").await;
+    let body: serde_json::Value = serde_json::from_slice(&status.body).unwrap();
+    assert_eq!(body["session"]["manual_stop"], false);
+
+    let stop = server
+        .request_with_body("POST", "/api/session", br#"{"action":"stop"}"#)
+        .await;
+    assert_eq!(stop.status, 200);
+
+    let status = server.request("GET", "/api/status").await;
+    let body: serde_json::Value = serde_json::from_slice(&status.body).unwrap();
+    assert_eq!(body["session"]["state"], "stopped");
+    assert_eq!(body["session"]["manual_stop"], true);
+
+    let restart = server
+        .request_with_body("POST", "/api/session", br#"{"action":"restart"}"#)
+        .await;
+    assert_eq!(restart.status, 200);
+
+    let status = server.request("GET", "/api/status").await;
+    let body: serde_json::Value = serde_json::from_slice(&status.body).unwrap();
+    assert_eq!(body["session"]["state"], "running");
+    assert_eq!(body["session"]["manual_stop"], false);
+
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn api_session_create_clears_manual_stop() {
+    let server = TestWebServer::start_empty().await;
+    // 预置手动停止标记（模拟先前 stop 后尚未 create 的状态）。
+    server.manual_stop.store(true, Ordering::SeqCst);
+
+    let create = server
+        .request_with_body("POST", "/api/session", br#"{"action":"create"}"#)
+        .await;
+    assert_eq!(create.status, 200);
+
+    let status = server.request("GET", "/api/status").await;
+    let body: serde_json::Value = serde_json::from_slice(&status.body).unwrap();
+    assert_eq!(body["session"]["state"], "running");
+    assert_eq!(body["session"]["manual_stop"], false);
 
     server.stop().await;
 }

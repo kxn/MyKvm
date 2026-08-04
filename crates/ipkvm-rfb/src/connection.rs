@@ -45,6 +45,12 @@ pub enum RfbEvent {
         y: u16,
         framebuffer_size: RfbSize,
     },
+    PointerRelative {
+        button_mask: u8,
+        dx: i16,
+        dy: i16,
+        wheel: i8,
+    },
     CutText(Vec<u8>),
     EnableContinuousUpdates {
         enable: bool,
@@ -308,6 +314,19 @@ impl RfbConnectionCore {
                         x,
                         y,
                         framebuffer_size: input_coordinate_size,
+                    }));
+                }
+                Ok(ClientMessage::PointerRelative {
+                    button_mask,
+                    dx,
+                    dy,
+                    wheel,
+                }) => {
+                    results.push(Ok(RfbEvent::PointerRelative {
+                        button_mask,
+                        dx,
+                        dy,
+                        wheel,
                     }));
                 }
                 Ok(ClientMessage::CutText(bytes)) => {
@@ -853,6 +872,7 @@ mod tests {
         messages.extend_from_slice(&format.to_wire());
         messages.extend_from_slice(&[3, 0, 0, 1, 0, 2, 0, 3, 0, 4]);
         messages.extend_from_slice(&[5, 3, 0, 10, 0, 20]);
+        messages.extend_from_slice(&[8, 3, 0x00, 0x0c, 0xff, 0xfc, 0x02]);
         messages.extend_from_slice(&[6, 0, 0, 0, 0, 0, 0, 2, 0x41, 0xff]);
         messages.extend_from_slice(&[150, 1, 0, 5, 0, 6, 0, 7, 0, 8]);
 
@@ -875,6 +895,12 @@ mod tests {
                     x: 10,
                     y: 20,
                     framebuffer_size: RfbSize::new(640, 480).unwrap(),
+                }),
+                Ok(RfbEvent::PointerRelative {
+                    button_mask: 3,
+                    dx: 12,
+                    dy: -4,
+                    wheel: 2,
                 }),
                 Ok(RfbEvent::CutText(vec![0x41, 0xff])),
                 Ok(RfbEvent::EnableContinuousUpdates {

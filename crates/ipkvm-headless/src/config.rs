@@ -1,7 +1,8 @@
 //! headless 运行配置：`--config` TOML 文件与 CLI 参数合并。
 //!
-//! 合并优先级：CLI 参数 > 配置文件字段 > 默认值。所有配置错误都返回
-//! 确定性中文报错（含文件路径），供 `main` 打印后以非零码退出。
+//! 合并优先级：CLI 参数 > 配置文件字段 > 运行时设置（`/api/settings`）>
+//! 默认值。所有配置错误都返回确定性中文报错（含文件路径），供 `main` 打印后
+//! 以非零码退出。
 
 use std::path::PathBuf;
 
@@ -18,11 +19,11 @@ pub const USAGE: &str = "\
   --assets <目录>  存放 *.y4m 素材的目录（文件伪设备，按文件名排序循环）
   --serial <串口>  CH9329 串口路径（如 COM9 / /dev/ttyUSB0），启用真实键鼠注入；
                    不指定时键鼠事件进入模拟队列被丢弃
-  --baud <波特率>  CH9329 串口波特率，默认 9600（出厂值）
+  --baud <波特率>  CH9329 串口波特率；未指定时取运行时设置（初始 115200）
   --bind <地址>    监听地址，默认 127.0.0.1
   --tcp <端口>     RFB TCP 监听端口，默认 5900
   --http <端口>    HTTP/noVNC 监听端口，默认 6080
-  --fps <帧率>     播放帧率，默认 10
+  --fps <帧率>     播放帧率；未指定时取运行时设置（初始 30）
   --config <路径>  读取 TOML 配置文件；CLI 参数覆盖文件字段（CLI > 文件 > 默认）
   --token <token>  [auth] HTTP/WS 鉴权 token（非空，仅含字母数字与 - _ . ~）；未配置时仅允许本机访问
   --vnc-password <密码>
@@ -46,19 +47,21 @@ pub struct CliOptions {
     pub vnc_password: Option<String>,
 }
 
-/// 合并后的最终配置（CLI > 文件 > 默认）。`assets_dir`/`camera_name` 均为
-/// `None` 表示默认相机选择（build_source 的既有语义）。
+/// 合并后的最终配置（CLI > 文件 > 运行时设置 > 默认）。`assets_dir`/
+/// `camera_name` 均为 `None` 表示默认相机选择（build_source 的既有语义）；
+/// `serial_baud`/`frames_per_second` 为 `None` 表示 CLI 与配置文件均未指定，
+/// 由组装层回退到运行时设置。
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Options {
     pub assets_dir: Option<PathBuf>,
     pub camera_name: Option<String>,
     pub list_cameras: bool,
     pub serial_path: Option<String>,
-    pub serial_baud: u32,
+    pub serial_baud: Option<u32>,
     pub bind_address: String,
     pub tcp_port: u16,
     pub http_port: u16,
-    pub frames_per_second: u64,
+    pub frames_per_second: Option<u64>,
     pub token: Option<String>,
     pub vnc_password: Option<String>,
 }
@@ -110,7 +113,7 @@ pub fn load_config(path: &std::path::Path) -> Result<FileConfig, String> {
     toml::from_str(&text).map_err(|error| format!("解析配置文件 {} 失败：{error}", path.display()))
 }
 
-/// 合并 CLI 与文件配置（CLI > 文件 > 默认），并做互斥与 token 校验。
+/// 合并 CLI 与文件配置（CLI > 文件 > 运行时设置 > 默认），并做互斥与 token 校验。
 pub fn resolve(cli: CliOptions, file: Option<FileConfig>) -> Result<Options, String> {
     let file = file.unwrap_or_default();
     let server = file.server.as_ref();
@@ -166,9 +169,7 @@ pub fn resolve(cli: CliOptions, file: Option<FileConfig>) -> Result<Options, Str
             .serial_path
             .clone()
             .or_else(|| input.and_then(|i| i.serial.clone())),
-        serial_baud: cli
-            .serial_baud
-            .unwrap_or_else(|| input.and_then(|i| i.baud).unwrap_or(9600)),
+        serial_baud: cli.serial_baud.or_else(|| input.and_then(|i| i.baud)),
         bind_address: cli.bind_address.clone().unwrap_or_else(|| {
             server
                 .and_then(|s| s.bind.clone())
@@ -180,9 +181,7 @@ pub fn resolve(cli: CliOptions, file: Option<FileConfig>) -> Result<Options, Str
         http_port: cli
             .http_port
             .unwrap_or_else(|| server.and_then(|s| s.http_port).unwrap_or(6080)),
-        frames_per_second: cli
-            .frames_per_second
-            .unwrap_or_else(|| video.and_then(|v| v.fps).unwrap_or(10)),
+        frames_per_second: cli.frames_per_second.or_else(|| video.and_then(|v| v.fps)),
         token,
         vnc_password,
     })
@@ -328,8 +327,9 @@ mod tests {
         assert_eq!(options.bind_address, "127.0.0.1");
         assert_eq!(options.tcp_port, 5900);
         assert_eq!(options.http_port, 6080);
-        assert_eq!(options.frames_per_second, 10);
-        assert_eq!(options.serial_baud, 9600);
+        // 未指定时保留 None：组装层回退到运行时设置（CLI > 文件 > 运行时 > 默认）。
+        assert_eq!(options.frames_per_second, None);
+        assert_eq!(options.serial_baud, None);
         assert_eq!(options.token, None);
         assert_eq!(options.vnc_password, None);
         assert_eq!(options.assets_dir, None);
@@ -363,11 +363,11 @@ vnc_password = "abc12345"
         assert_eq!(options.bind_address, "0.0.0.0");
         assert_eq!(options.tcp_port, 6000);
         assert_eq!(options.http_port, 7000);
-        assert_eq!(options.frames_per_second, 30);
+        assert_eq!(options.frames_per_second, Some(30));
         assert_eq!(options.assets_dir, Some(PathBuf::from(r"C:\assets")));
         assert_eq!(options.camera_name, None);
         assert_eq!(options.serial_path, Some("COM9".to_string()));
-        assert_eq!(options.serial_baud, 115200);
+        assert_eq!(options.serial_baud, Some(115200));
         assert_eq!(options.token, Some("secret".to_string()));
         assert_eq!(options.vnc_password, Some("abc12345".to_string()));
     }
@@ -412,10 +412,10 @@ vnc_password = "filepass"
         assert_eq!(options.bind_address, "10.0.0.1");
         assert_eq!(options.tcp_port, 5901);
         assert_eq!(options.http_port, 7000); // CLI 未指定，文件生效
-        assert_eq!(options.frames_per_second, 15);
+        assert_eq!(options.frames_per_second, Some(15));
         assert_eq!(options.camera_name, Some("OBS Virtual Camera".to_string()));
         assert_eq!(options.serial_path, Some("COM9".to_string()));
-        assert_eq!(options.serial_baud, 115200);
+        assert_eq!(options.serial_baud, Some(115200));
         assert_eq!(options.token, Some("secret".to_string()));
         assert_eq!(options.vnc_password, Some("clipass".to_string())); // CLI 覆盖文件
     }

@@ -1,4 +1,11 @@
-use std::{borrow::Cow, net::SocketAddr, sync::Arc};
+use std::{
+    borrow::Cow,
+    net::SocketAddr,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use axum::{
     Json, Router,
@@ -25,6 +32,7 @@ use tokio::{
 use super::{assets::find_asset, auth};
 use crate::frame_source::{EmptyFrameSource, SwitchableFrameSource};
 use crate::rfb_ws::{RfbWebSocketConfig, RfbWebSocketService, RfbWebSocketServiceError};
+use crate::settings::{SettingsStore, WebSettings, validate};
 use ipkvm_session::rfb_connection::{RfbConnectionGate, RfbServerEvent, RfbTransportKind};
 
 const CONTENT_TYPE_OPTIONS: &str = "x-content-type-options";
@@ -47,6 +55,10 @@ pub(super) struct ApiState<I: InputSink + Clone + Send + 'static> {
     pub(super) selection: tokio::sync::Mutex<Option<SessionSelection>>,
     /// 会话工厂：按请求中的设备选择构造帧源与 sink。
     pub(super) factory: Arc<dyn SessionFactory<I> + Send + Sync>,
+    /// 运行时设置存储：`/api/settings` 读写 + 会话组装分层取默认值。
+    pub(super) settings: Arc<SettingsStore>,
+    /// 手动停止标记：`stop` 置位，`create`/`restart` 清除，恢复循环尊重。
+    pub(super) manual_stop: Arc<AtomicBool>,
 }
 
 /// 一次运行时会话选择。字段为 `None` 时由工厂沿用启动配置默认值。
@@ -93,6 +105,8 @@ impl<I: InputSink + Clone + Send + 'static> HeadlessWebService<I> {
         shutdown: watch::Receiver<bool>,
         gate: RfbConnectionGate,
         auth: Option<String>,
+        settings: Arc<SettingsStore>,
+        manual_stop: Arc<AtomicBool>,
     ) -> Result<Self, HeadlessWebServiceError> {
         let api = Arc::new(ApiState {
             frame_source: Arc::clone(&frame_source),
@@ -100,6 +114,8 @@ impl<I: InputSink + Clone + Send + 'static> HeadlessWebService<I> {
             manager,
             selection: tokio::sync::Mutex::new(Some(SessionSelection::default())),
             factory,
+            settings,
+            manual_stop,
         });
         let rfb = RfbWebSocketService::new(
             frame_source,
@@ -157,6 +173,10 @@ fn api_router<I: InputSink + Clone + Send + 'static>(api: Arc<ApiState<I>>) -> R
         .route("/api/status", get(api_status::<I>))
         .route("/api/screenshot", get(api_screenshot::<I>))
         .route("/api/devices", get(api_devices))
+        .route(
+            "/api/settings",
+            get(api_get_settings::<I>).post(api_post_settings::<I>),
+        )
         .route("/api/session", post(api_session::<I>))
         .with_state(api)
 }
@@ -191,6 +211,16 @@ fn json_error(code: StatusCode, error: &str, detail: Option<&str>) -> Response {
         .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
         .body(Body::from(body))
         .expect("error response headers are valid")
+}
+
+/// 统一 JSON 成功响应。
+fn json_response<T: serde::Serialize>(value: &T) -> Response {
+    let body = serde_json::to_vec(value).expect("response serialization cannot fail");
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
+        .body(Body::from(body))
+        .expect("response headers are valid")
 }
 
 // ---- /api/status ----
@@ -246,6 +276,8 @@ struct ControllerStatus {
 #[derive(serde::Serialize)]
 struct SessionStatus {
     state: &'static str,
+    /// 手动停止标记：恒序列化（契约要求恒存在）。
+    manual_stop: bool,
     input_events: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     last_input_ns: Option<u64>,
@@ -376,6 +408,7 @@ async fn api_status<I: InputSink + Clone + Send + 'static>(
         controller,
         session: SessionStatus {
             state: session_state,
+            manual_stop: state.manual_stop.load(Ordering::Relaxed),
             input_events,
             last_input_ns,
             dropped_frames,
@@ -383,12 +416,42 @@ async fn api_status<I: InputSink + Clone + Send + 'static>(
             input_offline,
         },
     };
-    let body = serde_json::to_vec(&status).expect("status serialization cannot fail");
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
-        .body(Body::from(body))
-        .expect("status response headers are valid")
+    json_response(&status)
+}
+
+// ---- /api/settings ----
+
+async fn api_get_settings<I: InputSink + Clone + Send + 'static>(
+    State(state): State<Arc<ApiState<I>>>,
+) -> Response {
+    json_response(&state.settings.get())
+}
+
+async fn api_post_settings<I: InputSink + Clone + Send + 'static>(
+    State(state): State<Arc<ApiState<I>>>,
+    body: Result<Json<WebSettings>, axum::extract::rejection::JsonRejection>,
+) -> Response {
+    let settings = match body {
+        Ok(Json(settings)) => settings,
+        Err(rejection) => {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                "invalid settings",
+                Some(&rejection.to_string()),
+            );
+        }
+    };
+    if let Err(detail) = validate(&settings) {
+        return json_error(StatusCode::BAD_REQUEST, "invalid settings", Some(&detail));
+    }
+    match state.settings.save(&settings).await {
+        Ok(()) => json_response(&settings),
+        Err(detail) => json_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "settings save failed",
+            Some(&detail),
+        ),
+    }
 }
 
 // ---- /api/screenshot ----
@@ -539,6 +602,8 @@ async fn api_session<I: InputSink + Clone + Send + 'static>(
     };
     match request.action.as_str() {
         "restart" => {
+            // 手动停止标记由 restart 清除：用户显式要求重建会话。
+            state.manual_stop.store(false, Ordering::Relaxed);
             let (previous_selection, target_selection) = {
                 let current = state.selection.lock().await;
                 let base = current.clone().unwrap_or_default();
@@ -590,6 +655,8 @@ async fn api_session<I: InputSink + Clone + Send + 'static>(
             if manager.state() != SessionState::Absent {
                 return session_error(ipkvm_session::console_session::SessionError::AlreadyCreated);
             }
+            // 手动停止标记由 create 清除：用户显式要求启动会话。
+            state.manual_stop.store(false, Ordering::Relaxed);
             let target_selection = {
                 let current = state.selection.lock().await;
                 current
@@ -620,6 +687,7 @@ async fn api_session<I: InputSink + Clone + Send + 'static>(
         "stop" => match manager.stop() {
             Ok(()) => {
                 manager.wait_stopped().await;
+                state.manual_stop.store(true, Ordering::Relaxed);
                 json_session_state(&manager)
             }
             Err(error) => session_error(error),

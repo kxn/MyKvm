@@ -3,6 +3,11 @@ pub(crate) fn read_u16(bytes: &[u8], offset: usize) -> Option<u16> {
     Some(u16::from_be_bytes(bytes.get(offset..end)?.try_into().ok()?))
 }
 
+pub(crate) fn read_i16(bytes: &[u8], offset: usize) -> Option<i16> {
+    let end = offset.checked_add(2)?;
+    Some(i16::from_be_bytes(bytes.get(offset..end)?.try_into().ok()?))
+}
+
 pub(crate) fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
     let end = offset.checked_add(4)?;
     Some(u32::from_be_bytes(bytes.get(offset..end)?.try_into().ok()?))
@@ -31,8 +36,9 @@ mod tests {
 
     #[test]
     fn reads_and_writes_rfb_big_endian_integers() {
-        let bytes = [0x12, 0x34, 0x89, 0xab, 0xcd, 0xef];
+        let bytes = [0x12, 0x34, 0x89, 0xab, 0xcd, 0xef, 0x12, 0x34];
         assert_eq!(read_u16(&bytes, 0), Some(0x1234));
+        assert_eq!(read_i16(&bytes, 4), Some(-0x3211));
         assert_eq!(read_u32(&bytes, 2), Some(0x89ab_cdef));
 
         let mut output = Vec::new();
@@ -48,6 +54,7 @@ mod tests {
     #[test]
     fn short_reads_return_none() {
         assert_eq!(read_u16(&[1], 0), None);
+        assert_eq!(read_i16(&[1], 0), None);
         assert_eq!(read_u32(&[1, 2, 3], 0), None);
         assert_eq!(read_i32(&[1, 2, 3], 0), None);
     }

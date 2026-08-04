@@ -1,8 +1,16 @@
 #![allow(dead_code)]
 
-use std::{io, net::SocketAddr};
+use std::{
+    io,
+    net::SocketAddr,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+};
 
 use futures_util::{SinkExt, StreamExt};
+use ipkvm_headless::settings::SettingsStore;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
@@ -11,6 +19,17 @@ use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream,
     tungstenite::{Error as WebSocketError, Message},
 };
+
+/// 测试用独立设置存储（进程内自增目录，避免并行测试互踩）。
+pub fn temp_settings_store() -> Arc<SettingsStore> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "ipkvm-headless-settings-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    Arc::new(SettingsStore::load_from(dir).0)
+}
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct ServerInit {
