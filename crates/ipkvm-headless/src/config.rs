@@ -48,7 +48,7 @@ pub struct CliOptions {
 }
 
 /// 合并后的最终配置（CLI > 文件 > 运行时设置 > 默认）。`assets_dir`/
-/// `camera_name` 均为 `None` 表示默认相机选择（build_source 的既有语义）；
+/// `camera_name` 均为 `None` 表示启动空会话，网页创建会话时必须提供视频选择；
 /// `serial_baud`/`frames_per_second` 为 `None` 表示 CLI 与配置文件均未指定，
 /// 由组装层回退到运行时设置。
 #[derive(Clone, Debug, Eq, PartialEq)]

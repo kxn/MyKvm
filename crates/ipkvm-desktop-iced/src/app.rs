@@ -763,10 +763,9 @@ where
                 Task::none()
             }
             Message::SetMouseMode(mode) => {
-                // 当前路径仅设置页/测试可达，不会在远程输入态生效；
-                // 若未来远程输入态可达，需在此接 sync_cursor()。
                 self.connection.mouse_mode = mode;
                 self.active_profile = None;
+                self.sync_cursor();
                 Task::none()
             }
             Message::LoadProfile(name) => {
@@ -792,6 +791,9 @@ where
                 let _ = self.controller.flush_pending();
                 self.sync_status();
                 self.drain_notices();
+                // Win32 ClipCursor 依赖窗口已成为前台窗口；进入远程输入的
+                // 首帧可能早于原生焦点更新，因此按 tick 持续重试。
+                self.sync_cursor();
                 self.poll_relative();
                 if self.remote_input
                     && self.connection.mouse_mode == MouseMode::Absolute
@@ -2015,6 +2017,24 @@ mod tests {
         assert!(app.subscribed());
         let _ = app.update(Message::FrameClosed);
         assert!(!app.subscribed(), "FrameClosed 后订阅必须停");
+    }
+
+    #[test]
+    fn ui_tick_retries_relative_cursor_capture() {
+        let (mut app, _) = MockApp::new_mock();
+        app.remote_input = true;
+        app.connection.mouse_mode = MouseMode::Relative;
+
+        let _ = app.update(Message::UiTick);
+
+        assert_eq!(
+            app.cursor_records.visible.lock().unwrap().last().copied(),
+            Some(false)
+        );
+        assert_eq!(
+            app.cursor_records.clipped.lock().unwrap().last().copied(),
+            Some(true)
+        );
     }
 
     /// 枚举失败测试后端：列表接口直接报错（复刻真实设备不可枚举场景）。

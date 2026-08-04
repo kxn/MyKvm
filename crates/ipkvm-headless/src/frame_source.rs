@@ -67,7 +67,7 @@ impl FrameSource for EmptyFrameSource {
 
     fn source_info(&self) -> VideoSourceInfo {
         VideoSourceInfo {
-            kind: VideoSourceKind::Generated,
+            kind: VideoSourceKind::None,
             device_name: "none".to_string(),
             is_loop: false,
         }
@@ -109,5 +109,14 @@ mod tests {
 
         assert_eq!(switchable.latest_frame().unwrap().width, 4);
         assert_eq!(switchable.subscribe().borrow().as_ref().unwrap().seq, 2);
+    }
+
+    #[test]
+    fn empty_source_reports_none_kind() {
+        let source = EmptyFrameSource::new();
+        let info = source.source_info();
+        assert_eq!(info.kind, VideoSourceKind::None);
+        assert_eq!(info.device_name, "none");
+        assert!(source.latest_frame().is_none());
     }
 }

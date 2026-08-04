@@ -11,6 +11,7 @@ mod support;
 
 use std::{
     net::SocketAddr,
+    process::Stdio,
     sync::{Arc, atomic::AtomicBool},
 };
 
@@ -26,7 +27,14 @@ use ipkvm_headless::{
 };
 use ipkvm_video::{MonotonicTimestamp, PixelFormat, VideoFrame, mock::MockFrameSource};
 use support::{TestRfbClient, TestWebSocketRfbClient};
-use tokio::{io::AsyncReadExt, net::TcpListener, sync::watch, task::JoinHandle, time::Duration};
+use tokio::{
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
+    net::TcpListener,
+    process::Command,
+    sync::watch,
+    task::JoinHandle,
+    time::Duration,
+};
 use tokio_tungstenite::{connect_async, tungstenite::Error as WebSocketError};
 
 /// 复刻正式 `src/main.rs` 的组装结构：TCP + HTTP/WS 共享 gate/source/event。
@@ -91,6 +99,7 @@ impl HeadlessAssembly {
             None, // auth：未配置 token，仅放行本机来源（本测试不覆盖鉴权）
             settings,
             Arc::new(AtomicBool::new(false)),
+            Some(SessionSelection::default()),
         )
         .unwrap();
         let http_task = tokio::spawn(async move { web_service.serve(http_listener).await });
@@ -343,9 +352,6 @@ async fn shutdown_stops_both_transports_cleanly() {
     );
 }
 
-// re-export 用于 write_all 的 trait。
-use tokio::io::AsyncWriteExt;
-
 /// `--list-cameras` 枚举成功即退出 0，即使枚举到 0 台设备（避免依赖 OBS 是否在运行）。
 /// 仅 Windows 断言：非 Windows 的 stub 返回 UnsupportedPlatform、退出非 0，属预期行为。
 #[test]
@@ -401,4 +407,97 @@ fn headless_assets_and_camera_are_mutually_exclusive() {
         "--assets with --camera should exit 2, stdout: {}",
         String::from_utf8_lossy(&output.stdout)
     );
+}
+
+/// 无显式视频参数时正式二进制必须先提供空会话，让网页选择设备；
+/// 这个测试故意使用动态端口并读取真实 `/api/status`，防止只测到单元辅助函数。
+#[tokio::test]
+async fn headless_without_video_arguments_starts_empty_session() {
+    struct ChildGuard(Option<tokio::process::Child>);
+
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            if let Some(child) = self.0.as_mut() {
+                let _ = child.start_kill();
+            }
+        }
+    }
+
+    let mut child = ChildGuard(Some(
+        Command::new(env!("CARGO_BIN_EXE_ipkvm-headless"))
+            .args(["--tcp", "0", "--http", "0"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("headless process should spawn"),
+    ));
+    let stdout = child
+        .0
+        .as_mut()
+        .and_then(|child| child.stdout.take())
+        .expect("stdout should be piped");
+    let mut lines = BufReader::new(stdout).lines();
+    let mut saw_empty_session_message = false;
+    let startup = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let Some(line) = lines.next_line().await.expect("stdout should be readable") else {
+                panic!("headless exited before reporting startup");
+            };
+            if line.contains("启动空会话，等待网页选择设备") {
+                saw_empty_session_message = true;
+            }
+            if line.contains("ipkvm-headless 已启动") {
+                break line;
+            }
+        }
+    })
+    .await
+    .expect("headless startup should be reported");
+    assert!(
+        saw_empty_session_message,
+        "startup should describe the empty-session path: {startup}"
+    );
+
+    let http_address = startup
+        .split("noVNC 网页 http://")
+        .nth(1)
+        .and_then(|rest| rest.split('（').next())
+        .expect("startup should contain the HTTP address")
+        .parse::<SocketAddr>()
+        .expect("HTTP address should be parseable");
+    let mut stream = tokio::net::TcpStream::connect(http_address)
+        .await
+        .expect("HTTP listener should accept connections");
+    stream
+        .write_all(b"GET /api/status HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        .await
+        .unwrap();
+    let mut response = Vec::new();
+    stream.read_to_end(&mut response).await.unwrap();
+    let body = response
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|index| &response[index + 4..])
+        .expect("HTTP response should contain a body separator");
+    let status: serde_json::Value = serde_json::from_slice(body).unwrap();
+    assert_eq!(status["session"]["state"], "absent");
+    assert_eq!(status["video"]["source"]["kind"], "none");
+    assert_eq!(status["video"]["source"]["device_name"], "none");
+    assert!(status["video"]["frame"].is_null());
+
+    child
+        .0
+        .as_mut()
+        .expect("child should still be running")
+        .kill()
+        .await
+        .expect("headless process should stop");
+    let _ = child
+        .0
+        .take()
+        .expect("child should be available for reaping")
+        .wait()
+        .await
+        .expect("headless process should be reaped");
 }

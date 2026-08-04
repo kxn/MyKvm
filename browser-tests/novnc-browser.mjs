@@ -617,6 +617,24 @@ async function run() {
     await page
       .locator('#relative-mode[data-state="armed"]')
       .waitFor({ state: "attached" });
+    // 设置为 relative 但尚未取得 Pointer Lock 时，noVNC 仍可能先发一笔
+    // absolute Pointer。正式 CH9329 sink 也必须能处理这条过渡事件，否则
+    // 输入泵会退出，/api/status 的 input_offline 再把页面推回重连流程。
+    const relativeTransitionMarker = fixture.lines.mark();
+    const transitionPoint = await page.locator("#screen canvas").evaluate((canvas) => {
+      const rect = canvas.getBoundingClientRect();
+      return { x: rect.left + rect.width * 0.5, y: rect.top + rect.height * 0.5 };
+    });
+    await page.mouse.move(transitionPoint.x, transitionPoint.y);
+    await fixture.lines.waitForLine(
+      (line) => line.startsWith("POINTER\tMOVE\t"),
+      "absolute pointer transition while relative mode is armed",
+      relativeTransitionMarker,
+    );
+    await page
+      .locator('#console[data-connection-state="connected"]')
+      .waitFor({ state: "attached" });
+
     await page.locator("#open-settings").click();
     await page.locator("#settings-modal:not([hidden])").waitFor({ state: "attached" });
     await page.locator("#setting-mouse-mode").selectOption("absolute");

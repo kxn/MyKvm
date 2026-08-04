@@ -1181,11 +1181,11 @@ impl DesktopApp {
     fn sync_cursor_capture(&mut self, ctx: &egui::Context) {
         let should_grab = self.video_focused && self.connection.mouse_mode == MouseMode::Relative;
         if should_grab {
-            if !self.cursor_grabbed {
-                ctx.send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::CursorGrab::Locked));
-                ctx.send_viewport_cmd(egui::ViewportCommand::CursorVisible(false));
-                self.cursor_grabbed = true;
-            }
+            // egui-winit 在窗口尚未真正获得原生焦点时会丢弃失败的 grab
+            // 请求且不向业务返回错误；持续重发才能覆盖首次点击的焦点竞态。
+            ctx.send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::CursorGrab::Locked));
+            ctx.send_viewport_cmd(egui::ViewportCommand::CursorVisible(false));
+            self.cursor_grabbed = true;
         } else {
             self.release_cursor_capture(ctx);
         }
@@ -1987,6 +1987,32 @@ mod tests {
             .unwrap_or_default();
         assert!(commands.contains(&egui::ViewportCommand::CursorGrab(egui::CursorGrab::None)));
         assert!(commands.contains(&egui::ViewportCommand::CursorVisible(true)));
+    }
+
+    #[test]
+    fn relative_cursor_capture_is_reissued_while_remote_input_is_active() {
+        let mut app = DesktopApp::empty();
+        app.showing_device_dialog = false;
+        app.video_focused = true;
+        app.connection.mouse_mode = MouseMode::Relative;
+        let ctx = egui::Context::default();
+
+        app.sync_cursor_capture(&ctx);
+        let first = ctx.run(egui::RawInput::default(), |_| {});
+        app.sync_cursor_capture(&ctx);
+        let second = ctx.run(egui::RawInput::default(), |_| {});
+
+        for output in [first, second] {
+            let commands = output
+                .viewport_output
+                .get(&egui::ViewportId::ROOT)
+                .map(|viewport| viewport.commands.clone())
+                .unwrap_or_default();
+            assert!(
+                commands.contains(&egui::ViewportCommand::CursorGrab(egui::CursorGrab::Locked))
+            );
+            assert!(commands.contains(&egui::ViewportCommand::CursorVisible(false)));
+        }
     }
 
     #[test]

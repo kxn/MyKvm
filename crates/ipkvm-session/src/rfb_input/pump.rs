@@ -201,6 +201,10 @@ struct ActiveController {
 pub struct RfbInputPump<S: InputSink> {
     sink: S,
     active: Option<ActiveController>,
+    /// 当前控制连接最后一次声明/使用的指针协议模式。RFB 没有在标准
+    /// Pointer 消息中携带模式字段，因此网页端切换 Pointer Lock 时，
+    /// 以实际到达的消息类型同步 sink，避免设置值与首个事件竞态。
+    mouse_mode: Option<MouseMode>,
     keyboard: RfbKeyboardMapper,
     pointer: RfbPointerMapper,
     text: TextInputService<S>,
@@ -218,6 +222,7 @@ impl<S: InputSink> RfbInputPump<S> {
         Self {
             sink,
             active: None,
+            mouse_mode: None,
             keyboard: RfbKeyboardMapper::new(),
             pointer: RfbPointerMapper::new(),
             text,
@@ -483,6 +488,7 @@ impl<S: InputSink> RfbInputPump<S> {
         framebuffer_size: FramebufferSize,
     ) -> Result<RfbInputNotice, RfbInputError> {
         self.require_active(client_id, RfbInputEventKind::Pointer)?;
+        self.ensure_mouse_mode(client_id, MouseMode::Absolute)?;
         match self
             .pointer
             .handle_pointer(&mut self.sink, button_mask, x, y, framebuffer_size)
@@ -505,6 +511,7 @@ impl<S: InputSink> RfbInputPump<S> {
         wheel: i8,
     ) -> Result<RfbInputNotice, RfbInputError> {
         self.require_active(client_id, RfbInputEventKind::PointerRelative)?;
+        self.ensure_mouse_mode(client_id, MouseMode::Relative)?;
         match self
             .pointer
             .handle_relative_pointer(&mut self.sink, button_mask, dx, dy, wheel)
@@ -531,7 +538,27 @@ impl<S: InputSink> RfbInputPump<S> {
                 operation: RfbInputOperation::Pointer,
                 source,
             })?;
+        self.mouse_mode = Some(mode);
         Ok(RfbInputNotice::MouseModeChanged { client_id, mode })
+    }
+
+    fn ensure_mouse_mode(
+        &mut self,
+        client_id: RfbClientId,
+        mode: MouseMode,
+    ) -> Result<(), RfbInputError> {
+        if self.mouse_mode == Some(mode) {
+            return Ok(());
+        }
+        self.sink
+            .set_mouse_mode(mode)
+            .map_err(|source| RfbInputError::Sink {
+                client_id,
+                operation: RfbInputOperation::Pointer,
+                source,
+            })?;
+        self.mouse_mode = Some(mode);
+        Ok(())
     }
 
     fn disconnect(
@@ -600,6 +627,7 @@ impl<S: InputSink> RfbInputPump<S> {
         // 取消进行中的文本键入（服务内部 release_all 复位其 sink）。
         let _ = self.text.try_cancel(active.client_id);
         self.active = None;
+        self.mouse_mode = None;
         self.keyboard = RfbKeyboardMapper::new();
         self.pointer = RfbPointerMapper::new();
         Ok(Some(RfbInputNotice::ControllerReleased {
@@ -1518,6 +1546,37 @@ mod tests {
         assert_eq!(
             &batches[0].frames()[0].data()[2..6],
             &[0xeb, 0x0f, 0xd7, 0x0f]
+        );
+    }
+
+    #[tokio::test]
+    async fn ch9329_pointer_events_switch_sink_mode_before_dispatch() {
+        let client_id = client(19);
+        let queue = FakeCommandQueue::new();
+        let sink = Ch9329InputSink::new(queue.clone(), 0, MouseMode::Relative);
+        let mut pump = RfbInputPump::new(sink);
+        pump.handle_event(connected(client_id, peer(5919))).unwrap();
+
+        pump.handle_event(RfbServerEvent::Pointer {
+            client_id,
+            button_mask: 0,
+            x: 10,
+            y: 20,
+            framebuffer_size: RfbSize::new(100, 100).unwrap(),
+        })
+        .expect("an absolute browser pointer event must not stop a relative sink");
+        pump.handle_event(RfbServerEvent::PointerRelative {
+            client_id,
+            button_mask: 0,
+            dx: 3,
+            dy: -2,
+            wheel: 0,
+        })
+        .expect("a later pointer-lock event must switch the sink back to relative");
+
+        assert!(
+            queue.accepted_batches().len() >= 2,
+            "both absolute and relative pointer events must reach CH9329"
         );
     }
 
