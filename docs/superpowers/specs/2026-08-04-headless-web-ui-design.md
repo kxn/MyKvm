@@ -180,8 +180,9 @@ DTO（与设置弹层字段一致）：
 ### 7.2 鼠标
 
 - 默认绝对模式（设置可改默认值）：noVNC 原生绝对指针，点击画布直接发送；
-- 相对模式：进入视频区 `requestPointerLock()`（用户手势内），锁定后把
-  `movementX/Y` 增量经相对指针扩展发送；`pointerlockchange`/失焦/Esc 退出并释放；
+- 相对模式：相对 profile 生效后，视频画布的首次用户点击自动在手势上下文内调用
+  `requestPointerLock()`；锁定后把 `movementX/Y` 增量经相对指针扩展发送。独立的
+  相对模式按钮仍用于显式锁定/退出；`pointerlockchange`/失焦/Esc 退出并释放；
 - 触屏/无指针锁定环境：相对模式置灰并提示；
 - 位序：遵循 §11 的右/中键位序统一修复（#133）后再定前端掩码映射。
 
@@ -275,4 +276,7 @@ RFB 输入泵并等待 sink 确认；确认前不更新 session selection，失�
 profile 是会话草稿覆盖值，设置页的 profile 是默认值，两者不会互相覆盖。
 
 相对移动在 noVNC 侧累计并按 33 ms 调度，控制事件先冲刷待发移动；退出 Pointer Lock、
-绝对 profile、RFB disconnect 和 DOM 清理都会清除相对定时器与累计量。
+绝对 profile、RFB disconnect 和 DOM 清理都会清除相对定时器与累计量。相对 profile 生效后，
+输入泵必须保持目标端的 `MouseMode::Relative`。Pointer Lock 建立前 noVNC 可能产生一笔
+绝对过渡事件，这类事件不得把 sink 降级为绝对模式，也不得使输入泵离线；只有 Pointer
+Lock 后的相对消息才驱动目标端移动。

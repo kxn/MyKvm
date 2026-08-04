@@ -7,7 +7,7 @@ use ipkvm_core::{
 use ipkvm_headless::rfb_input::{
     RfbControllerReleaseReason, RfbInputError, RfbInputEventError, RfbInputEventKind,
     RfbInputLifecycleError, RfbInputNotice, RfbInputOperation, RfbInputPump, RfbInputRunError,
-    RfbKeyboardRejection,
+    RfbKeyboardRejection, RfbPointerOutcome,
 };
 use ipkvm_headless::{
     rfb_connection::{RfbConnectionGate, RfbDisconnectReason},
@@ -58,6 +58,14 @@ impl EndToEndClient {
         let mut message = vec![5, buttons];
         message.extend_from_slice(&x.to_be_bytes());
         message.extend_from_slice(&y.to_be_bytes());
+        self.stream.write_all(&message).await.unwrap();
+    }
+
+    async fn send_relative_pointer(&mut self, buttons: u8, dx: i16, dy: i16, wheel: i8) {
+        let mut message = vec![8, buttons];
+        message.extend_from_slice(&dx.to_be_bytes());
+        message.extend_from_slice(&dy.to_be_bytes());
+        message.push(wheel as u8);
         self.stream.write_all(&message).await.unwrap();
     }
 
@@ -189,4 +197,114 @@ async fn real_tcp_client_drives_ch9329_input_and_disconnect_release() {
     let release_frames = release.last().unwrap().frames();
     assert_eq!(release_frames[0].data(), &[0; 8]);
     assert_eq!(release_frames[1].data()[1], 0);
+}
+
+#[tokio::test]
+async fn real_tcp_relative_client_ignores_absolute_transition_and_drives_relative_input() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let source = Arc::new(MockFrameSource::new());
+    source.publish_frame(Arc::new(VideoFrame::new(
+        1,
+        MonotonicTimestamp::from_nanos(1),
+        2,
+        1,
+        8,
+        PixelFormat::Bgra8888,
+        Arc::from(vec![0_u8; 8].into_boxed_slice()),
+    )));
+    let (event_tx, mut event_rx) = mpsc::channel(2);
+    let event_publisher = watch::channel(Some(event_tx)).1;
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let server = RfbTcpServer::new(
+        listener,
+        Arc::clone(&source),
+        event_publisher,
+        RfbTcpConfig::default(),
+        RfbConnectionGate::new(),
+    )
+    .unwrap();
+    let server_task = tokio::spawn(server.run(shutdown_rx));
+
+    let queue = FakeCommandQueue::new();
+    let pump_queue = queue.clone();
+    let pump_task = tokio::spawn(async move {
+        let sink = Ch9329InputSink::new(pump_queue, 0, MouseMode::Relative);
+        let mut pump = RfbInputPump::new(sink);
+        let mut notices = Vec::new();
+        pump.run(&mut event_rx, |notice| notices.push(notice.clone()))
+            .await
+            .unwrap();
+        (notices, pump.active_client())
+    });
+
+    let mut client = EndToEndClient::connect(address).await;
+    assert_eq!(client.handshake().await, (2, 1));
+    // noVNC may emit this absolute transition before Pointer Lock is established.
+    client.send_pointer(0, 1, 0).await;
+    client.send_relative_pointer(0, 12, -7, 0).await;
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let relative_seen = queue.accepted_batches().iter().any(|batch| {
+                batch
+                    .frames()
+                    .iter()
+                    .any(|frame| frame.command() == 0x05 && frame.data() == [1, 0, 12, 249, 0])
+            });
+            if relative_seen {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("RFB 0x08 message did not reach the relative input sink");
+
+    drop(client);
+
+    shutdown_tx.send(true).unwrap();
+    assert!(server_task.await.unwrap().is_ok());
+    let (notices, active_client) = tokio::time::timeout(Duration::from_secs(1), pump_task)
+        .await
+        .expect("RFB input pump did not finish after the TCP client disconnected")
+        .unwrap();
+
+    assert_eq!(active_client, None);
+    assert!(notices.iter().any(|notice| {
+        matches!(
+            notice,
+            RfbInputNotice::Pointer {
+                outcome: RfbPointerOutcome::IgnoredForMouseMode {
+                    mode: MouseMode::Relative,
+                },
+                ..
+            }
+        )
+    }));
+    assert!(notices.iter().any(|notice| {
+        matches!(
+            notice,
+            RfbInputNotice::Pointer {
+                outcome: RfbPointerOutcome::Applied,
+                ..
+            }
+        )
+    }));
+
+    let batches = queue.accepted_batches();
+    assert!(
+        batches
+            .iter()
+            .flat_map(|batch| batch.frames())
+            .all(|frame| frame.command() != 0x04),
+        "a relative headless session must not emit an absolute CH9329 frame"
+    );
+    assert!(
+        batches
+            .iter()
+            .flat_map(|batch| batch.frames())
+            .any(|frame| { frame.command() == 0x05 && frame.data() == [1, 0, 12, 249, 0] }),
+        "the RFB 0x08 message must reach CH9329 as relative motion"
+    );
 }

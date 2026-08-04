@@ -575,6 +575,70 @@ async function assertPointerLockFallback(page) {
   assert.deepEqual(result.messages, []);
 }
 
+async function assertCanvasRelativeCapture(page) {
+  const result = await page.evaluate(async () => {
+    const { PointerController } = await import("/assets/modules/pointer.js");
+    const host = document.createElement("div");
+    const canvas = document.createElement("canvas");
+    host.appendChild(canvas);
+    document.body.appendChild(host);
+
+    const requests = [];
+    let parentMouseDowns = 0;
+    let canvasMouseDowns = 0;
+    host.addEventListener("mousedown", () => {
+      parentMouseDowns += 1;
+    });
+    canvas.addEventListener("mousedown", () => {
+      canvasMouseDowns += 1;
+    });
+    canvas.requestPointerLock = (options) => {
+      requests.push(options ?? null);
+      return Promise.resolve();
+    };
+
+    const rfb = {
+      canvas,
+      setRelativeMode() {},
+      setRelativeSensitivity() {},
+    };
+    const controller = new PointerController({
+      button: document.createElement("button"),
+      message() {},
+      getRfb: () => rfb,
+    });
+    controller.supported = true;
+    controller.setRfb(rfb);
+    controller.applySettings({
+      mouse_mode: "relative",
+      relative_sensitivity: 1.0,
+    });
+
+    canvas.dispatchEvent(
+      new MouseEvent("mousedown", {
+        bubbles: true,
+        clientX: 4,
+        clientY: 5,
+      }),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    host.remove();
+    return { requests, parentMouseDowns, canvasMouseDowns };
+  });
+
+  assert.deepEqual(result.requests, [{ unadjustedMovement: true }]);
+  assert.equal(
+    result.parentMouseDowns,
+    0,
+    "relative canvas capture must stop the absolute pointer transition",
+  );
+  assert.equal(
+    result.canvasMouseDowns,
+    0,
+    "relative canvas capture must stop other canvas handlers",
+  );
+}
+
 async function run() {
   const fixturePath = process.env.IPKVM_BROWSER_FIXTURE;
   assert(fixturePath, "IPKVM_BROWSER_FIXTURE is required");
@@ -612,6 +676,7 @@ async function run() {
     await assertNoVncCursorRendering(page);
     await assertClipboardImageConversion(page);
     await assertPointerLockFallback(page);
+    await assertCanvasRelativeCapture(page);
     assert.equal(await page.locator(".toolbar #paste-button").count(), 1);
     assert.equal(await page.locator("#video-status-bar #paste-button").count(), 0);
 
