@@ -9,7 +9,10 @@
 
 mod support;
 
-use std::{net::SocketAddr, sync::Arc};
+use std::{
+    net::SocketAddr,
+    sync::{Arc, atomic::AtomicBool},
+};
 
 use futures_util::StreamExt;
 use ipkvm_core::{Ch9329InputSink, MouseMode, fake_serial::FakeCommandQueue};
@@ -62,6 +65,7 @@ impl HeadlessAssembly {
         let switchable_source = Arc::new(SwitchableFrameSource::new(
             Arc::clone(&source) as Arc<dyn ipkvm_video::FrameSource>
         ));
+        let settings = support::temp_settings_store();
 
         // TCP 任务（clone gate）。
         let tcp_server = RfbTcpServer::new(
@@ -85,6 +89,8 @@ impl HeadlessAssembly {
             shutdown_rx.clone(),
             gate,
             None, // auth：未配置 token，仅放行本机来源（本测试不覆盖鉴权）
+            settings,
+            Arc::new(AtomicBool::new(false)),
         )
         .unwrap();
         let http_task = tokio::spawn(async move { web_service.serve(http_listener).await });

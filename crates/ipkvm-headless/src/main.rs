@@ -22,7 +22,7 @@
 //! 只有一个客户端能获得控制权。
 
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, atomic::AtomicBool};
 use std::time::Duration;
 
 use ipkvm_core::{
@@ -35,6 +35,7 @@ use ipkvm_headless::rfb_connection::{RfbConnectionGate, RfbConnectionSettings};
 use ipkvm_headless::rfb_tcp::{RfbTcpConfig, RfbTcpServer, RfbTcpServerError};
 use ipkvm_headless::rfb_ws::RfbWebSocketConfig;
 use ipkvm_headless::session_manager::SessionManager;
+use ipkvm_headless::settings::{SettingsStore, WebSettings};
 use ipkvm_headless::web::{
     HeadlessWebService, HeadlessWebServiceError, SessionFactory, SessionSelection,
 };
@@ -156,18 +157,21 @@ fn print_cameras() -> Result<(), String> {
 /// 按 CLI 参数选择视频源并统一包装成 `Arc<dyn FrameSource>`。
 ///
 /// 优先级：`--assets`（文件伪设备）> `--camera`（按名打开）> 默认第一台相机。
-fn build_source(options: &Options) -> Result<std::sync::Arc<dyn FrameSource>, String> {
+fn build_source(
+    options: &Options,
+    frames_per_second: u64,
+) -> Result<std::sync::Arc<dyn FrameSource>, String> {
     let source: std::sync::Arc<dyn FrameSource> = match (&options.assets_dir, &options.camera_name)
     {
         (Some(directory), _) => {
             let assets = load_assets(directory)?;
             std::sync::Arc::new(
-                FileVideoSource::new(assets, options.frames_per_second)
+                FileVideoSource::new(assets, frames_per_second)
                     .map_err(|error| format!("无法启动文件视频源：{error}"))?,
             )
         }
         (None, Some(name)) => std::sync::Arc::new(
-            CameraSource::open(name, options.frames_per_second)
+            CameraSource::open(name, frames_per_second)
                 .map_err(|error| format!("无法打开相机 {name}：{error}"))?,
         ),
         (None, None) => {
@@ -185,7 +189,7 @@ fn build_source(options: &Options) -> Result<std::sync::Arc<dyn FrameSource>, St
                 chosen.display_name, chosen.id
             );
             std::sync::Arc::new(
-                CameraSource::open(&chosen.id, options.frames_per_second)
+                CameraSource::open(&chosen.id, frames_per_second)
                     .map_err(|error| format!("无法打开相机 {}：{error}", chosen.id))?,
             )
         }
@@ -260,7 +264,14 @@ async fn main() {
         }
     }
 
-    let (source, sink) = match build_session_components(&options) {
+    // 运行时设置存储：构造一次，注入 Web API 与会话工厂；损坏/缺失回退默认。
+    let (settings_store, settings_warning) = SettingsStore::load();
+    if let Some(warning) = settings_warning {
+        eprintln!("{warning}");
+    }
+    let settings_store = Arc::new(settings_store);
+
+    let (source, sink) = match build_session_components(&options, &settings_store.get()) {
         Ok(built) => built,
         Err(error) => {
             eprintln!("{error}");
@@ -268,43 +279,44 @@ async fn main() {
         }
     };
 
-    if let Err(error) = run(source, sink, options).await {
+    if let Err(error) = run(source, sink, options, settings_store).await {
         eprintln!("{error}");
         std::process::exit(1);
     }
 }
 
-/// 按 CLI 参数构造会话所需的帧源与输入 sink。
+/// 按 CLI 参数与运行时设置构造会话所需的帧源与输入 sink。
 ///
 /// 返回的 `(frame_source, sink)` 同时用于启动即绑定（`run` 首启）与零初始
 /// 会话启动后的工厂 `build()`。两条 sink 路径（真实串口/模拟队列）经
-/// `HeadlessSink` 统一类型。
+/// `HeadlessSink` 统一类型。`serial_baud`/`frames_per_second` 未指定时取
+/// 运行时设置（`auto_baud` 本单仅存储，不在 headless 使用）。
 fn build_session_components(
     options: &Options,
+    runtime: &WebSettings,
 ) -> Result<(Arc<dyn FrameSource>, HeadlessSink), String> {
-    let source = build_source(options)?;
-    let sink = build_sink(options)?;
+    let frames_per_second = options.frames_per_second.unwrap_or(runtime.preview_fps);
+    let baud = options.serial_baud.unwrap_or(runtime.baud_rate);
+    let source = build_source(options, frames_per_second)?;
+    let sink = build_sink(options, baud, runtime.mouse_mode)?;
     Ok((source, sink))
 }
 
 /// 按 `--serial` 选择输入 sink：真实串口或模拟队列。
-fn build_sink(options: &Options) -> Result<HeadlessSink, String> {
+fn build_sink(options: &Options, baud: u32, mouse_mode: MouseMode) -> Result<HeadlessSink, String> {
     if let Some(serial_path) = &options.serial_path {
-        let baud = options.serial_baud;
         let queue = SerialCommandQueue::open(serial_path, baud)
             .map_err(|e| format!("无法打开串口 {serial_path}@{baud}：{e}"))?;
         println!("输入：CH9329 串口 {serial_path}@{baud}（8N1）");
         Ok(HeadlessSink::Serial(Ch9329InputSink::new(
-            queue,
-            0,
-            MouseMode::Absolute,
+            queue, 0, mouse_mode,
         )))
     } else {
         println!("输入：模拟队列（无 --serial，键鼠事件不注入真实串口）");
         Ok(HeadlessSink::Fake(Ch9329InputSink::new(
             FakeCommandQueue::new(),
             0,
-            MouseMode::Absolute,
+            mouse_mode,
         )))
     }
 }
@@ -313,6 +325,7 @@ fn build_sink(options: &Options) -> Result<HeadlessSink, String> {
 /// create/restart 按设备选择重新构造帧源/sink。
 struct HeadlessSessionFactory {
     options: Options,
+    settings: Arc<SettingsStore>,
 }
 
 impl SessionFactory<HeadlessSink> for HeadlessSessionFactory {
@@ -334,7 +347,7 @@ impl SessionFactory<HeadlessSink> for HeadlessSessionFactory {
                 Some(serial.clone())
             };
         }
-        build_session_components(&options)
+        build_session_components(&options, &self.settings.get())
     }
 }
 
@@ -342,6 +355,7 @@ async fn run(
     source: Arc<dyn FrameSource>,
     sink: HeadlessSink,
     options: Options,
+    settings: Arc<SettingsStore>,
 ) -> Result<(), HeadlessRunError> {
     let tcp_listener = TcpListener::bind((options.bind_address.as_str(), options.tcp_port)).await?;
     let tcp_local = tcp_listener.local_addr()?;
@@ -369,6 +383,7 @@ async fn run(
     let manager = Arc::new(tokio::sync::Mutex::new(manager));
     let factory = Arc::new(HeadlessSessionFactory {
         options: options.clone(),
+        settings: Arc::clone(&settings),
     });
 
     // 鉴权注入：VNC 密码（若有）同时作用于 TCP 与 WS 两条 RFB 传输，
@@ -407,6 +422,8 @@ async fn run(
         shutdown_rx.clone(),
         gate,
         options.token.clone(), // HTTP/WS 鉴权 token（[auth] token）
+        settings,
+        Arc::new(AtomicBool::new(false)),
     )?;
     let mut http_task = tokio::spawn(async move { web_service.serve(http_listener).await });
 
