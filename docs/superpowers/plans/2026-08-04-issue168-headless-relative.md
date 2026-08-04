@@ -44,7 +44,7 @@
 
   Expected: no unresolved placeholders; the design text explicitly mentions canvas-first capture.
 
-- [ ] **Step 3: Commit the design record**
+- [x] **Step 3: Commit the design record**
 
   ```powershell
   git add docs/superpowers/specs/2026-08-04-headless-web-ui-design.md docs/superpowers/specs/2026-08-04-mouse-os-profile-design.md docs/superpowers/plans/2026-08-04-issue168-headless-relative.md
@@ -62,11 +62,11 @@
 - Consumes: `RfbInputPump::mouse_mode`, `RfbServerEvent::Pointer`, `RfbServerEvent::PointerRelative`, and `RfbPointerOutcome`.
 - Produces: `RfbPointerOutcome::IgnoredForMouseMode { mode: MouseMode }` for an absolute event received while the pump is already in Relative mode; the mapper state and sink remain unchanged.
 
-- [ ] **Step 1: Write the failing regression test**
+- [x] **Step 1: Write the failing regression test**
 
   Change `ch9329_pointer_events_switch_sink_mode_before_dispatch` to assert that a sink created in `MouseMode::Relative` receives no CH9329 batch for the absolute transition event, still receives the later relative move, and never emits an absolute frame. Assert the first event result is `RfbPointerOutcome::IgnoredForMouseMode { mode: MouseMode::Relative }`.
 
-- [ ] **Step 2: Run the focused test and verify the expected failure**
+- [x] **Step 2: Run the focused test and verify the expected failure**
 
   ```powershell
   cargo test -p ipkvm-session ch9329_pointer_events_switch_sink_mode_before_dispatch -- --exact --nocapture
@@ -74,11 +74,11 @@
 
   Expected: FAIL because the current pump calls `ensure_mouse_mode(Absolute)` and dispatches an absolute frame.
 
-- [ ] **Step 3: Implement the minimal mode guard**
+- [x] **Step 3: Implement the minimal mode guard**
 
   Add the outcome variant and, after `require_active` in `handle_pointer`, return the ignored outcome when `self.mouse_mode == Some(MouseMode::Relative)`. Do not call `ensure_mouse_mode`, `RfbPointerMapper::handle_pointer`, `release_all`, or `set_mouse_mode` on this branch. Preserve the current absolute-to-relative behavior in `handle_pointer_relative`.
 
-- [ ] **Step 4: Run the focused tests and verify they pass**
+- [x] **Step 4: Run the focused tests and verify they pass**
 
   ```powershell
   cargo test -p ipkvm-session ch9329_pointer_events_switch_sink_mode_before_dispatch -- --exact --nocapture
@@ -87,7 +87,7 @@
 
   Expected: the regression and existing pump tests pass with zero failures.
 
-- [ ] **Step 5: Commit the input guard**
+- [x] **Step 5: Commit the input guard**
 
   ```powershell
   git add crates/ipkvm-session/src/rfb_input/mod.rs crates/ipkvm-session/src/rfb_input/pump.rs
@@ -104,11 +104,11 @@
 - Consumes: `PointerController.setRfb`, `PointerController.toggle`, `RFB.prototype.canvas`, and the existing `selectedRelative`, `locked`, and `supported` state.
 - Produces: a capture-phase `mousedown` listener attached only to the active noVNC canvas; it invokes `toggle(event)` only for a supported, selected-relative, not-yet-locked controller and removes the listener when the RFB instance changes.
 
-- [ ] **Step 1: Write the failing browser regression test**
+- [x] **Step 1: Write the failing browser regression test**
 
   Add a browser assertion that constructs a `PointerController` with a real canvas, sets a fake RFB whose canvas records `requestPointerLock` calls, applies `{ mouse_mode: "relative" }`, dispatches a bubbling `mousedown` on the canvas, and asserts that the request list contains `{ unadjustedMovement: true }`. Add a parent listener and assert it is not reached, proving the first click is reserved for capture rather than an absolute noVNC pointer event.
 
-- [ ] **Step 2: Run the browser test and verify the expected failure**
+- [x] **Step 2: Run the browser test and verify the expected failure**
 
   ```powershell
   npm ci --ignore-scripts --prefix browser-tests
@@ -119,11 +119,11 @@
 
   Expected: FAIL at the new canvas-gesture assertion because the current controller only listens to the relative-mode button.
 
-- [ ] **Step 3: Implement the minimal canvas listener lifecycle**
+- [x] **Step 3: Implement the minimal canvas listener lifecycle**
 
   Add `onCanvasMouseDown` as an instance handler. In `setRfb`, remove it from the previous canvas, assign the new RFB, and add it to the new canvas with capture enabled. The handler must return for absolute mode, unsupported environments, missing RFB, or an already locked controller; otherwise call `toggle(event)`. Keep the existing button listener and all Pointer Lock cleanup handlers.
 
-- [ ] **Step 4: Run the focused browser verification**
+- [x] **Step 4: Run the focused browser verification**
 
   ```powershell
   node browser-tests/novnc-browser.mjs
@@ -131,7 +131,7 @@
 
   Expected: the new canvas capture assertion and all existing noVNC/browser assertions pass.
 
-- [ ] **Step 5: Commit the browser capture**
+- [x] **Step 5: Commit the browser capture**
 
   ```powershell
   git add crates/ipkvm-headless/web/modules/pointer.js browser-tests/novnc-browser.mjs
@@ -149,11 +149,11 @@
 - Consumes: the public headless RFB input pump, `FakeCommandQueue`, and browser fixture output.
 - Produces: coverage proving a Relative sink ignores a pre-lock absolute event and accepts a relative `0x08` event without `input_offline` behavior.
 
-- [ ] **Step 1: Add a headless integration assertion**
+- [x] **Step 1: Add a headless integration assertion**
 
   Extend the existing real TCP test helper with a `send_relative_pointer(buttons, dx, dy, wheel)` method that writes `[0x08, buttons, dx_be, dy_be, wheel]`, then assert the fake queue receives the relative CH9329 command after an initial relative-mode setup. Keep the existing absolute path test unchanged.
 
-- [ ] **Step 2: Run the focused headless integration tests**
+- [x] **Step 2: Run the focused headless integration tests**
 
   ```powershell
   cargo test -p ipkvm-headless --test rfb_pointer --test rfb_input_pump
@@ -161,11 +161,11 @@
 
   Expected: all headless pointer and input-pump integration tests pass.
 
-- [ ] **Step 3: Extend the browser scenario**
+- [x] **Step 3: Extend the browser scenario**
 
   After the existing profile-selection path, assert that selecting a relative profile leaves the profile selected, the canvas gesture requests Pointer Lock, and the existing RFB scheduler still emits the `0x08` byte layout. Keep the real fixture’s absolute transition assertion for absolute mode only.
 
-- [ ] **Step 4: Commit the end-to-end coverage**
+- [x] **Step 4: Commit the end-to-end coverage**
 
   ```powershell
   git add crates/ipkvm-headless/tests/rfb_pointer.rs crates/ipkvm-headless/tests/rfb_input_pump.rs browser-tests/novnc-browser.mjs
@@ -182,7 +182,7 @@
 - Consumes: commits from Tasks 1-4 and Gitea issue #168.
 - Produces: verified branch state, commit evidence, and a PR-ready description containing `Closes #168`.
 
-- [ ] **Step 1: Run formatting and the required workspace test gate**
+- [x] **Step 1: Run formatting and the required workspace test gate**
 
   ```powershell
   cargo fmt --all --check
@@ -191,7 +191,7 @@
 
   Expected: both commands exit 0; report any unrelated Windows process-execution failure separately instead of claiming the gate passed.
 
-- [ ] **Step 2: Run browser and static checks**
+- [x] **Step 2: Run browser and static checks**
 
   ```powershell
   node --check browser-tests/novnc-browser.mjs
