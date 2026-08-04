@@ -1,0 +1,307 @@
+// 极简 zh/en 文案与切换；选择存 localStorage，默认跟随 navigator.language。
+
+const STORAGE_KEY = "my_ipkvm.language";
+
+const MESSAGES = {
+  "zh-CN": {
+    "status.unknown": "正在获取状态",
+    "status.connecting": "正在连接",
+    "status.connected": "运行中",
+    "status.disconnected": "已停止",
+    "status.manualStop": "已手动停止",
+    "status.recovering": "会话停止，等待恢复",
+    "status.error": "状态获取失败",
+    "status.synced": "已同步会话状态",
+    "toolbar.connect": "连接",
+    "toolbar.disconnect": "断开",
+    "toolbar.settings": "设置",
+    "toolbar.specialKeys": "特殊键",
+    "toolbar.screenshot": "截图",
+    "toolbar.language": "语言",
+    "toolbar.licenses": "许可证",
+    "language.browser": "跟随浏览器",
+    "language.zh": "中文",
+    "language.en": "English",
+    "connection.title": "连接远程主机",
+    "connection.hint.initial":
+      "选择视频与串口设备后连接；未配置设备时由服务端使用默认设备。",
+    "connection.hint.stopped": "会话已停止，选择设备后重新连接。",
+    "connection.hint.manualStop":
+      "会话已手动停止。再次连接或重启服务前保持停止。",
+    "connection.hint.recovering":
+      "会话异常停止，正在等待服务端自动恢复。",
+    "connection.hint.switch": "切换设备会重启当前会话。",
+    "connection.video": "视频设备",
+    "connection.serial": "串口设备",
+    "connection.refresh": "刷新",
+    "connection.probing": "探测中…",
+    "connection.ready": "就绪（{count} 个）",
+    "connection.empty": "未发现设备",
+    "connection.probeFailed": "枚举失败",
+    "connection.connect": "连接",
+    "connection.connectFailed": "连接失败",
+    "connection.message.create": "已请求创建会话，等待画面…",
+    "connection.message.restart": "已请求重启会话，等待画面…",
+    "connection.settingsSummary":
+      "连接参数（来自设置）：波特率 {baud}，自动波特率 {auto}，预览帧率 {fps}",
+    "video.resolution": "分辨率：{w}×{h}",
+    "video.noFrame": "暂无画面",
+    "video.device": "设备：{name}",
+    "video.session": "会话：{state}",
+    "video.serial": "串口：{batches} 批 / {frames} 帧",
+    "video.input": "输入事件：{events}",
+    "video.relative": "相对模式",
+    "video.relative.locked": "相对模式（已锁定）",
+    "video.relative.unsupported": "当前环境不支持相对模式",
+    "video.relative.on": "已进入相对模式",
+    "video.relative.off": "已退出相对模式",
+    "video.relative.error": "进入相对模式失败",
+    "video.rfbConnected": "远程画面已连接",
+    "video.rfbDisconnected": "远程画面已断开",
+    "video.rfbFailed": "远程画面连接失败",
+    "clipboard.paste": "粘贴",
+    "clipboard.pasteOk": "已粘贴剪贴板内容",
+    "clipboard.pasteFail": "读取剪贴板失败：{detail}",
+    "settings.title": "设置",
+    "settings.baudRate": "波特率",
+    "settings.autoBaud": "自动波特率",
+    "settings.previewFps": "预览帧率",
+    "settings.mouseMode": "默认鼠标模式",
+    "settings.absolute": "绝对",
+    "settings.relative": "相对",
+    "settings.relativeSensitivity": "相对灵敏度",
+    "settings.scaleMode": "缩放模式",
+    "settings.fitWindow": "适配窗口",
+    "settings.original": "原始大小",
+    "settings.followWindow": "窗口跟随视频",
+    "settings.save": "保存",
+    "settings.cancel": "取消",
+    "settings.reset": "恢复默认值",
+    "settings.loadFailed": "设置获取失败：{detail}",
+    "settings.invalid": "设置无效：{detail}",
+    "settings.saved": "设置已保存",
+    "settings.saveFailed": "设置保存失败：{detail}",
+    "screenshot.save": "保存截图",
+    "screenshot.copy": "复制截图",
+    "screenshot.noFrame": "暂无画面，无法截图",
+    "screenshot.downloading": "正在保存截图…",
+    "screenshot.downloaded": "截图已保存",
+    "screenshot.downloadFailed": "截图失败：{detail}",
+    "screenshot.copyOk": "截图已复制到剪贴板",
+    "screenshot.copyFail": "复制截图失败：{detail}",
+    "special.desktop": "桌面",
+    "special.tabs": "标签页 / 窗口",
+    "special.refresh": "刷新 / 导航",
+    "special.developer": "开发者 / 查看",
+    "special.other": "其它",
+    "special.ctrlAltDel": "Ctrl+Alt+Del",
+    "special.win": "Win",
+    "special.altTab": "Alt+Tab",
+    "special.printScreen": "PrintScreen",
+    "special.ctrlW": "Ctrl+W",
+    "special.ctrlT": "Ctrl+T",
+    "special.ctrlN": "Ctrl+N",
+    "special.ctrlShiftT": "Ctrl+Shift+T",
+    "special.ctrlTab": "Ctrl+Tab",
+    "special.ctrlShiftTab": "Ctrl+Shift+Tab",
+    "special.ctrlShiftN": "Ctrl+Shift+N",
+    "special.f5": "F5",
+    "special.ctrlR": "Ctrl+R",
+    "special.ctrlShiftR": "Ctrl+Shift+R",
+    "special.altLeft": "Alt+←",
+    "special.altRight": "Alt+→",
+    "special.ctrlShiftI": "Ctrl+Shift+I",
+    "special.ctrlShiftJ": "Ctrl+Shift+J",
+    "special.ctrlShiftC": "Ctrl+Shift+C",
+    "special.ctrlU": "Ctrl+U",
+    "special.f11": "F11",
+    "special.f1": "F1",
+    "special.ctrlP": "Ctrl+P",
+    "special.ctrlS": "Ctrl+S",
+    "special.ctrlF": "Ctrl+F",
+    "special.ctrlH": "Ctrl+H",
+    "special.ctrlD": "Ctrl+D",
+    "special.ctrlO": "Ctrl+O",
+    "special.ctrlShiftDelete": "Ctrl+Shift+Delete",
+    "special.sent": "已发送 {name}",
+    "special.unsent": "未连接远程会话",
+  },
+  en: {
+    "status.unknown": "Fetching status",
+    "status.connecting": "Connecting",
+    "status.connected": "Running",
+    "status.disconnected": "Stopped",
+    "status.manualStop": "Stopped manually",
+    "status.recovering": "Session stopped, awaiting recovery",
+    "status.error": "Failed to fetch status",
+    "status.synced": "session state synced",
+    "toolbar.connect": "Connect",
+    "toolbar.disconnect": "Disconnect",
+    "toolbar.settings": "Settings",
+    "toolbar.specialKeys": "Special keys",
+    "toolbar.screenshot": "Screenshot",
+    "toolbar.language": "Language",
+    "toolbar.licenses": "License",
+    "language.browser": "Follow browser",
+    "language.zh": "中文",
+    "language.en": "English",
+    "connection.title": "Connect to remote host",
+    "connection.hint.initial":
+      "Pick a video and serial device, then connect; the server falls back to its defaults when unset.",
+    "connection.hint.stopped": "Session stopped. Pick devices and reconnect.",
+    "connection.hint.manualStop":
+      "Session was stopped manually. It stays stopped until reconnected or the server restarts.",
+    "connection.hint.recovering":
+      "Session stopped unexpectedly; waiting for the server to recover it.",
+    "connection.hint.switch": "Switching devices restarts the current session.",
+    "connection.video": "Video device",
+    "connection.serial": "Serial device",
+    "connection.refresh": "Refresh",
+    "connection.probing": "Probing…",
+    "connection.ready": "Ready ({count})",
+    "connection.empty": "No devices found",
+    "connection.probeFailed": "Enumeration failed",
+    "connection.connect": "Connect",
+    "connection.connectFailed": "Connection failed",
+    "connection.message.create": "Session create requested, waiting for video…",
+    "connection.message.restart": "Session restart requested, waiting for video…",
+    "connection.settingsSummary":
+      "Connection parameters (from settings): baud {baud}, auto baud {auto}, preview fps {fps}",
+    "video.resolution": "Resolution: {w}×{h}",
+    "video.noFrame": "No frame yet",
+    "video.device": "Device: {name}",
+    "video.session": "Session: {state}",
+    "video.serial": "Serial: {batches} batches / {frames} frames",
+    "video.input": "Input events: {events}",
+    "video.relative": "Relative mode",
+    "video.relative.locked": "Relative mode (locked)",
+    "video.relative.unsupported": "Relative mode is unsupported here",
+    "video.relative.on": "Relative mode active",
+    "video.relative.off": "Relative mode exited",
+    "video.relative.error": "Failed to enter relative mode",
+    "video.rfbConnected": "Remote display connected",
+    "video.rfbDisconnected": "Remote display disconnected",
+    "video.rfbFailed": "Remote display connection failed",
+    "clipboard.paste": "Paste",
+    "clipboard.pasteOk": "Clipboard content pasted",
+    "clipboard.pasteFail": "Failed to read clipboard: {detail}",
+    "settings.title": "Settings",
+    "settings.baudRate": "Baud rate",
+    "settings.autoBaud": "Auto baud",
+    "settings.previewFps": "Preview FPS",
+    "settings.mouseMode": "Default mouse mode",
+    "settings.absolute": "Absolute",
+    "settings.relative": "Relative",
+    "settings.relativeSensitivity": "Relative sensitivity",
+    "settings.scaleMode": "Scale mode",
+    "settings.fitWindow": "Fit window",
+    "settings.original": "Original size",
+    "settings.followWindow": "Follow window",
+    "settings.save": "Save",
+    "settings.cancel": "Cancel",
+    "settings.reset": "Restore defaults",
+    "settings.loadFailed": "Failed to load settings: {detail}",
+    "settings.invalid": "Invalid settings: {detail}",
+    "settings.saved": "Settings saved",
+    "settings.saveFailed": "Failed to save settings: {detail}",
+    "screenshot.save": "Save screenshot",
+    "screenshot.copy": "Copy screenshot",
+    "screenshot.noFrame": "No frame to capture",
+    "screenshot.downloading": "Saving screenshot…",
+    "screenshot.downloaded": "Screenshot saved",
+    "screenshot.downloadFailed": "Screenshot failed: {detail}",
+    "screenshot.copyOk": "Screenshot copied to clipboard",
+    "screenshot.copyFail": "Failed to copy screenshot: {detail}",
+    "special.desktop": "Desktop",
+    "special.tabs": "Tabs / windows",
+    "special.refresh": "Refresh / navigation",
+    "special.developer": "Developer / view",
+    "special.other": "Other",
+    "special.ctrlAltDel": "Ctrl+Alt+Del",
+    "special.win": "Win",
+    "special.altTab": "Alt+Tab",
+    "special.printScreen": "PrintScreen",
+    "special.ctrlW": "Ctrl+W",
+    "special.ctrlT": "Ctrl+T",
+    "special.ctrlN": "Ctrl+N",
+    "special.ctrlShiftT": "Ctrl+Shift+T",
+    "special.ctrlTab": "Ctrl+Tab",
+    "special.ctrlShiftTab": "Ctrl+Shift+Tab",
+    "special.ctrlShiftN": "Ctrl+Shift+N",
+    "special.f5": "F5",
+    "special.ctrlR": "Ctrl+R",
+    "special.ctrlShiftR": "Ctrl+Shift+R",
+    "special.altLeft": "Alt+←",
+    "special.altRight": "Alt+→",
+    "special.ctrlShiftI": "Ctrl+Shift+I",
+    "special.ctrlShiftJ": "Ctrl+Shift+J",
+    "special.ctrlShiftC": "Ctrl+Shift+C",
+    "special.ctrlU": "Ctrl+U",
+    "special.f11": "F11",
+    "special.f1": "F1",
+    "special.ctrlP": "Ctrl+P",
+    "special.ctrlS": "Ctrl+S",
+    "special.ctrlF": "Ctrl+F",
+    "special.ctrlH": "Ctrl+H",
+    "special.ctrlD": "Ctrl+D",
+    "special.ctrlO": "Ctrl+O",
+    "special.ctrlShiftDelete": "Ctrl+Shift+Delete",
+    "special.sent": "Sent {name}",
+    "special.unsent": "Remote session not connected",
+  },
+};
+
+const VALID_CHOICES = new Set(["browser", "zh-CN", "en"]);
+
+export function detectLanguage() {
+  return String(navigator.language ?? "en").toLowerCase().startsWith("zh")
+    ? "zh-CN"
+    : "en";
+}
+
+export function getStoredLanguage() {
+  const stored = localStorage.getItem(STORAGE_KEY);
+  return VALID_CHOICES.has(stored) ? stored : "browser";
+}
+
+export function setLanguage(choice) {
+  if (!VALID_CHOICES.has(choice)) {
+    choice = "browser";
+  }
+  if (choice === "browser") {
+    localStorage.removeItem(STORAGE_KEY);
+  } else {
+    localStorage.setItem(STORAGE_KEY, choice);
+  }
+}
+
+export function getLanguage() {
+  const stored = getStoredLanguage();
+  return stored === "browser" ? detectLanguage() : stored;
+}
+
+export function t(key, params = {}) {
+  const table = MESSAGES[getLanguage()] ?? MESSAGES.en;
+  let text = table[key] ?? MESSAGES.en[key] ?? key;
+  for (const [name, value] of Object.entries(params)) {
+    text = text.replaceAll(`{${name}}`, String(value));
+  }
+  return text;
+}
+
+export function applyLanguage(root = document) {
+  const lang = getLanguage();
+  root.documentElement.lang = lang === "zh-CN" ? "zh-CN" : "en";
+  for (const element of root.querySelectorAll("[data-i18n]")) {
+    const text = t(element.dataset.i18n);
+    if (text !== element.dataset.i18n) {
+      element.textContent = text;
+    }
+  }
+  for (const element of root.querySelectorAll("[data-i18n-title]")) {
+    const text = t(element.dataset.i18nTitle);
+    if (text !== element.dataset.i18nTitle) {
+      element.title = text;
+    }
+  }
+}

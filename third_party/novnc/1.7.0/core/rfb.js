@@ -194,6 +194,10 @@ export default class RFB extends EventTargetMixin {
         this._viewportHasMoved = false;
         this._accumulatedWheelDeltaX = 0;
         this._accumulatedWheelDeltaY = 0;
+        // my_ipkvm local patch: relative pointer mode (0x08) for the headless
+        // web console. Off by default; enabled via setRelativeMode() while
+        // pointer lock is active.
+        this._relativeMode = false;
 
         // Gesture state
         this._gestureLastTapTime = null;
@@ -335,6 +339,9 @@ export default class RFB extends EventTargetMixin {
 
     get touchButton() { return 0; }
     set touchButton(button) { Log.Warn("Using old API!"); }
+
+    // my_ipkvm local patch: expose the canvas for pointer lock handling.
+    get canvas() { return this._canvas; }
 
     get clipViewport() { return this._clipViewport; }
     set clipViewport(viewport) {
@@ -1164,6 +1171,13 @@ export default class RFB extends EventTargetMixin {
                     // Skip sending mouse events
                     break;
                 }
+                // my_ipkvm local patch: while pointer lock is active send
+                // movement deltas through the relative pointer message.
+                if (this._relativeMode) {
+                    this._handleRelativeMouseMove(ev.movementX || 0,
+                                                  ev.movementY || 0);
+                    break;
+                }
                 this._handleMouseMove(pos.x, pos.y);
                 break;
         }
@@ -1196,6 +1210,34 @@ export default class RFB extends EventTargetMixin {
         }
     }
 
+    // my_ipkvm local patch: relative movement deltas (CSS pixels) via 0x08.
+    _handleRelativeMouseMove(dx, dy) {
+        if (this._rfbConnectionState !== 'connected') { return; }
+        if (this._viewOnly) { return; }
+
+        dx = Math.trunc(dx);
+        dy = Math.trunc(dy);
+        if (dx === 0 && dy === 0) { return; }
+        dx = Math.max(-32768, Math.min(32767, dx));
+        dy = Math.max(-32768, Math.min(32767, dy));
+
+        RFB.messages.relativePointerEvent(this._sock, this._mouseButtonMask,
+                                          dx, dy, 0);
+    }
+
+    // my_ipkvm local patch: switch absolute/relative pointer sending.
+    setRelativeMode(on) {
+        on = !!on;
+        if (on === this._relativeMode) {
+            return;
+        }
+        this._relativeMode = on;
+        if (!on && this._mouseMoveTimer !== null) {
+            clearTimeout(this._mouseMoveTimer);
+            this._mouseMoveTimer = null;
+        }
+    }
+
     _handleDelayedMouseMove() {
         this._mouseMoveTimer = null;
         this._sendMouse(this._mousePos.x, this._mousePos.y,
@@ -1210,6 +1252,13 @@ export default class RFB extends EventTargetMixin {
         // Highest bit in mask is never sent to the server
         if (mask & 0x8000) {
             throw new Error("Illegal mouse button mask (mask: " + mask + ")");
+        }
+
+        // my_ipkvm local patch: in relative mode buttons and clicks carry no
+        // coordinates; deltas travel through _handleRelativeMouseMove.
+        if (this._relativeMode) {
+            RFB.messages.relativePointerEvent(this._sock, mask, 0, 0, 0);
+            return;
         }
 
         let extendedMouseButtons = mask & 0x7f80;
@@ -1253,6 +1302,18 @@ export default class RFB extends EventTargetMixin {
         this._accumulatedWheelDeltaX += dX;
         this._accumulatedWheelDeltaY += dY;
 
+        // my_ipkvm local patch: the relative message carries a single wheel
+        // byte (+1 up / -1 down); horizontal wheel has no channel there.
+        if (this._relativeMode) {
+            this._accumulatedWheelDeltaX = 0;
+            if (Math.abs(this._accumulatedWheelDeltaY) >= WHEEL_STEP) {
+                const step = this._accumulatedWheelDeltaY < 0 ? 1 : -1;
+                RFB.messages.relativePointerEvent(this._sock, bmask, 0, 0,
+                                                  step);
+                this._accumulatedWheelDeltaY = 0;
+            }
+            return;
+        }
 
         // Generate a mouse wheel step event when the accumulated delta
         // for one of the axes is large enough.
@@ -3120,6 +3181,23 @@ RFB.messages = {
 
         sock.sQpush16(x);
         sock.sQpush16(y);
+
+        sock.flush();
+    },
+
+    // my_ipkvm local patch: relative pointer message (type 0x08).
+    // 7 bytes big-endian: button_mask u8 + dx i16 + dy i16 + wheel i8.
+    relativePointerEvent(sock, mask, dx, dy, wheel) {
+        sock.sQpush8(0x08); // msg-type
+
+        // Mask only carries persistent buttons; wheel travels in its own byte.
+        mask = mask & 0x7f;
+        sock.sQpush8(mask);
+
+        sock.sQpush16(dx);
+        sock.sQpush16(dy);
+
+        sock.sQpush8(wheel);
 
         sock.flush();
     },

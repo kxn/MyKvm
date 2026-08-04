@@ -11,22 +11,164 @@
     <link rel="stylesheet" href="/assets/app.css">
   </head>
   <body>
-    <main id="console" data-connection-state="connecting">
-      <header class="status-bar">
+    <main id="console" data-connection-state="connecting" data-view="connection">
+      <header class="toolbar">
         <div class="identity">
           <span class="status-indicator" aria-hidden="true"></span>
           <strong>my_ipkvm</strong>
-          <span id="connection-status" role="status" aria-live="polite">
-            正在连接
+          <span id="connection-status" role="status" aria-live="polite" data-i18n="status.unknown">
+            正在获取状态
           </span>
         </div>
-        <nav class="session-actions" aria-label="会话操作">
-          <button id="reconnect" type="button" disabled>重新连接</button>
-          <button id="disconnect" type="button" disabled>断开</button>
-          <a href="/licenses/" target="_blank" rel="noreferrer">许可证</a>
+        <nav class="toolbar-actions" aria-label="控制台操作">
+          <button id="toolbar-connect" type="button" data-i18n="toolbar.connect">连接</button>
+          <button id="toolbar-disconnect" type="button" disabled data-i18n="toolbar.disconnect">
+            断开
+          </button>
+          <button id="open-settings" type="button" data-i18n="toolbar.settings">设置</button>
+          <div class="menu-anchor">
+            <button
+              id="special-keys-button"
+              type="button"
+              aria-haspopup="true"
+              aria-expanded="false"
+              data-i18n="toolbar.specialKeys"
+            >特殊键</button>
+            <div id="special-keys-menu" class="menu-panel" hidden></div>
+          </div>
+          <div class="menu-anchor">
+            <button
+              id="screenshot-button"
+              type="button"
+              aria-haspopup="true"
+              aria-expanded="false"
+              data-i18n="toolbar.screenshot"
+            >截图</button>
+            <div id="screenshot-menu" class="menu-panel" hidden>
+              <button id="save-screenshot" type="button" data-i18n="screenshot.save">保存截图</button>
+              <button id="copy-screenshot" type="button" data-i18n="screenshot.copy">复制截图</button>
+            </div>
+          </div>
+          <label class="language-control">
+            <span data-i18n="toolbar.language">语言</span>
+            <select id="language-select">
+              <option value="browser" data-i18n="language.browser">跟随浏览器</option>
+              <option value="zh-CN" data-i18n="language.zh">中文</option>
+              <option value="en" data-i18n="language.en">English</option>
+            </select>
+          </label>
+          <a href="/licenses/" target="_blank" rel="noreferrer" data-i18n="toolbar.licenses">
+            许可证
+          </a>
         </nav>
       </header>
-      <section id="screen" aria-label="远程控制台"></section>
+
+      <section id="connection-view" class="view connection-view" data-view="connection" aria-label="连接">
+        <div class="connection-card">
+          <h1 data-i18n="connection.title">连接远程主机</h1>
+          <p id="connection-hint" class="hint" role="status" aria-live="polite"></p>
+          <div class="device-picker">
+            <label for="video-select" data-i18n="connection.video">视频设备</label>
+            <select id="video-select"></select>
+            <button id="refresh-video" type="button" data-i18n="connection.refresh">刷新</button>
+            <span id="video-probe" class="probe" role="status"></span>
+          </div>
+          <div class="device-picker">
+            <label for="serial-select" data-i18n="connection.serial">串口设备</label>
+            <select id="serial-select"></select>
+            <button id="refresh-serial" type="button" data-i18n="connection.refresh">刷新</button>
+            <span id="serial-probe" class="probe" role="status"></span>
+          </div>
+          <p id="connection-settings-summary" class="settings-summary"></p>
+          <p id="connection-message" class="message" role="status" aria-live="polite"></p>
+          <button id="connect-button" type="button" disabled data-i18n="connection.connect">
+            连接
+          </button>
+        </div>
+      </section>
+
+      <section id="video-view" class="view video-view" data-view="video" hidden aria-label="远程画面">
+        <div id="screen" aria-label="远程控制台"></div>
+        <footer id="video-status-bar" class="video-status-bar">
+          <span id="video-resolution"></span>
+          <span id="video-device"></span>
+          <span id="session-state"></span>
+          <span id="serial-stats"></span>
+          <span id="input-stats"></span>
+          <button id="paste-button" type="button" data-i18n="clipboard.paste">粘贴</button>
+          <button id="relative-mode" type="button" disabled data-i18n="video.relative">
+            相对模式
+          </button>
+        </footer>
+        <p id="video-message" class="message video-message" role="status" aria-live="polite"></p>
+      </section>
+
+      <div id="settings-modal" class="modal" hidden>
+        <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+          <h2 id="settings-title" data-i18n="settings.title">设置</h2>
+          <p id="settings-message" class="message" role="status" aria-live="polite"></p>
+          <form id="settings-form">
+            <label class="field">
+              <span data-i18n="settings.baudRate">波特率</span>
+              <input
+                id="setting-baud-rate"
+                type="number"
+                min="1200"
+                max="115200"
+                step="1"
+                required
+              >
+            </label>
+            <label class="field field-check">
+              <input id="setting-auto-baud" type="checkbox">
+              <span data-i18n="settings.autoBaud">自动波特率</span>
+            </label>
+            <label class="field">
+              <span data-i18n="settings.previewFps">预览帧率</span>
+              <input
+                id="setting-preview-fps"
+                type="number"
+                min="1"
+                max="60"
+                step="1"
+                required
+              >
+            </label>
+            <label class="field">
+              <span data-i18n="settings.mouseMode">默认鼠标模式</span>
+              <select id="setting-mouse-mode">
+                <option value="absolute" data-i18n="settings.absolute">绝对</option>
+                <option value="relative" data-i18n="settings.relative">相对</option>
+              </select>
+            </label>
+            <label class="field">
+              <span data-i18n="settings.relativeSensitivity">相对灵敏度</span>
+              <input
+                id="setting-relative-sensitivity"
+                type="number"
+                min="0.1"
+                max="5.0"
+                step="0.1"
+                required
+              >
+            </label>
+            <label class="field">
+              <span data-i18n="settings.scaleMode">缩放模式</span>
+              <select id="setting-scale-mode">
+                <option value="fit_window" data-i18n="settings.fitWindow">适配窗口</option>
+                <option value="original" data-i18n="settings.original">原始大小</option>
+                <option value="follow_window" data-i18n="settings.followWindow">窗口跟随视频</option>
+              </select>
+            </label>
+          </form>
+          <div class="modal-actions">
+            <button id="settings-reset" type="button" data-i18n="settings.reset">恢复默认值</button>
+            <span class="spacer"></span>
+            <button id="settings-cancel" type="button" data-i18n="settings.cancel">取消</button>
+            <button id="settings-save" type="button" data-i18n="settings.save">保存</button>
+          </div>
+        </div>
+      </div>
     </main>
     <script type="module" src="/assets/app.js"></script>
   </body>

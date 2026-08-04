@@ -26,6 +26,15 @@ pub(crate) fn find_asset(request_path: &str) -> Option<WebAsset> {
         "" | "index.html" => (&PROJECT_ASSETS, "index.html"),
         "assets/app.css" => (&PROJECT_ASSETS, "app.css"),
         "assets/app.js" => (&PROJECT_ASSETS, "app.js"),
+        path if path.starts_with("assets/modules/") => {
+            let module_path = path.strip_prefix("assets/modules/").unwrap();
+            let asset_path = format!("modules/{module_path}");
+            let file = PROJECT_ASSETS.get_file(&asset_path)?;
+            return Some(WebAsset {
+                bytes: file.contents(),
+                content_type: content_type_for(&asset_path),
+            });
+        }
         "licenses" | "licenses/" => (&PROJECT_ASSETS, "licenses.html"),
         path => (&NOVNC_ASSETS, path.strip_prefix("vendor/novnc/")?),
     };
@@ -142,13 +151,75 @@ mod tests {
         assert_eq!(index.content_type(), "text/html; charset=utf-8");
         assert!(index_text.contains("lang=\"zh-CN\""));
         assert!(index_text.contains("data-connection-state=\"connecting\""));
+        assert!(index_text.contains("data-view=\"connection\""));
+        assert!(index_text.contains("data-view=\"video\""));
+        assert!(index_text.contains("id=\"connection-view\""));
+        assert!(index_text.contains("id=\"video-view\""));
+        assert!(index_text.contains("id=\"toolbar-connect\""));
+        assert!(index_text.contains("id=\"toolbar-disconnect\""));
+        assert!(index_text.contains("id=\"open-settings\""));
+        assert!(index_text.contains("id=\"special-keys-button\""));
+        assert!(index_text.contains("id=\"screenshot-button\""));
+        assert!(index_text.contains("id=\"language-select\""));
+        assert!(index_text.contains("id=\"connect-button\""));
+        assert!(index_text.contains("id=\"relative-mode\""));
+        assert!(index_text.contains("id=\"settings-modal\""));
 
-        let script = std::str::from_utf8(find_asset("/assets/app.js").unwrap().bytes()).unwrap();
+        let entry = std::str::from_utf8(find_asset("/assets/app.js").unwrap().bytes()).unwrap();
+        assert!(entry.contains("./modules/app.js"));
+
+        let script =
+            std::str::from_utf8(find_asset("/assets/modules/app.js").unwrap().bytes()).unwrap();
         assert!(script.contains("from \"/vendor/novnc/core/rfb.js\""));
         assert!(script.contains("next.scaleViewport = true"));
         assert!(script.contains("next.resizeSession = false"));
 
         let licenses = std::str::from_utf8(find_asset("/licenses/").unwrap().bytes()).unwrap();
         assert!(licenses.contains("第三方组件与许可证"));
+    }
+
+    #[test]
+    fn serves_every_web_module_with_javascript_mime() {
+        for module in [
+            "app.js",
+            "api.js",
+            "status.js",
+            "i18n.js",
+            "connection.js",
+            "settings.js",
+            "special-keys.js",
+            "keyboard.js",
+            "pointer.js",
+            "clipboard.js",
+            "screenshot.js",
+        ] {
+            let asset = find_asset(&format!("/assets/modules/{module}")).unwrap_or_else(|| {
+                panic!("web module {module} should be whitelisted");
+            });
+            assert_eq!(
+                asset.content_type(),
+                "text/javascript; charset=utf-8",
+                "{module} should use JavaScript MIME"
+            );
+            assert!(
+                !std::str::from_utf8(asset.bytes()).unwrap().is_empty(),
+                "{module} should be non-empty"
+            );
+        }
+    }
+
+    #[test]
+    fn novnc_patch_implements_relative_pointer_message_and_mode() {
+        let rfb =
+            std::str::from_utf8(find_asset("/vendor/novnc/core/rfb.js").unwrap().bytes()).unwrap();
+
+        assert!(rfb.contains("relativePointerEvent"), "0x08 message builder");
+        assert!(rfb.contains("sQpush8(0x08)"), "0x08 message type byte");
+        assert!(rfb.contains("setRelativeMode("), "relative mode switch");
+        assert!(
+            rfb.contains("movementX"),
+            "movement deltas in relative mode"
+        );
+        assert!(rfb.contains("get canvas()"), "public canvas accessor");
     }
 }
