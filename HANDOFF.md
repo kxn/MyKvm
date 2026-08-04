@@ -108,7 +108,8 @@ egui 桌面端仍是当前发布物；**iced 迁移已完成调研与验证（#7
   main=f84b00b。
 - 大设计流程：先调研后开单（AGENTS.md 已加规则）；设计/调研/计划文档在
   docs/superpowers/specs/ 与 plans/。
-- 行为变化需知会：headless 未指定 --baud/--fps 时默认由 9600/10 变为 115200/30。
+- 默认值（#145 已定稿）：headless 未指定 --baud 时运行时默认 9600（保险优先）；
+  桌面与 headless 默认鼠标模式均为绝对（BIOS 用 Ctrl+Alt+M 切相对）。
 - 待人工验收：真实相机+CH9329、pointer lock 手感、Chrome/Edge 兼容矩阵；
   运行 `my_ipkvm-headless.exe` 后浏览器开 http://127.0.0.1:6080。
 - 遗留：#79（M5）、#82（横切测试要求）；#140 复评 2 项 Minor 建议记录在台账。

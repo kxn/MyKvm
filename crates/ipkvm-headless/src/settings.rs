@@ -42,7 +42,7 @@ pub struct WebSettings {
 impl Default for WebSettings {
     fn default() -> Self {
         Self {
-            baud_rate: 115_200,
+            baud_rate: 9_600,
             auto_baud: true,
             preview_fps: 30,
             mouse_mode: MouseMode::Absolute,
@@ -260,7 +260,7 @@ mod tests {
     #[test]
     fn default_matches_frozen_contract() {
         let settings = WebSettings::default();
-        assert_eq!(settings.baud_rate, 115_200);
+        assert_eq!(settings.baud_rate, 9_600);
         assert!(settings.auto_baud);
         assert_eq!(settings.preview_fps, 30);
         assert_eq!(settings.mouse_mode, MouseMode::Absolute);
@@ -268,7 +268,7 @@ mod tests {
         assert_eq!(settings.scale_mode, ScaleMode::FitWindow);
 
         let json = serde_json::to_value(&settings).unwrap();
-        assert_eq!(json["baud_rate"], 115_200);
+        assert_eq!(json["baud_rate"], 9_600);
         assert_eq!(json["auto_baud"], true);
         assert_eq!(json["preview_fps"], 30);
         assert_eq!(json["mouse_mode"], "absolute");
