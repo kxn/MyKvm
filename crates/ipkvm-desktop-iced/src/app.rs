@@ -64,6 +64,9 @@ const POINTER_MIN_INTERVAL: Duration = Duration::from_millis(33);
 pub const PROJECT_URL: &str = "http://10.10.10.5:3000/kxn/my_ipkvm";
 
 /// 记录型 sink：测试与 mock 连接用。
+/// 相对指针发送记录（mask, dx, dy, wheel）。
+type RelativeEvent = (u8, i16, i16, i8);
+
 #[derive(Clone, Debug, Default)]
 pub struct RecordingSink {
     pub key_batches: Arc<std::sync::Mutex<usize>>,
@@ -75,7 +78,7 @@ pub struct RecordingSink {
     /// 按到达顺序记录的相对指针增量（dx, dy）。
     pub relative_deltas: Arc<std::sync::Mutex<Vec<(i16, i16)>>>,
     /// 按到达顺序记录的相对指针发送（mask, dx, dy, wheel）。
-    pub relative_events: Arc<std::sync::Mutex<Vec<(u8, i16, i16, i8)>>>,
+    pub relative_events: Arc<std::sync::Mutex<Vec<RelativeEvent>>>,
     /// 重建按钮掩码：sink 只收到事件流，跨批次跟踪当前掩码。
     relative_mask: Arc<std::sync::Mutex<u8>>,
     /// release_all 调用次数。
@@ -2176,7 +2179,7 @@ mod tests {
         loop {
             if let Some(sink) = app.recording_sink() {
                 let events = sink.relative_events.lock().unwrap();
-                if events.iter().any(|&event| event == (1, 0, 0, 0)) {
+                if events.contains(&(1, 0, 0, 0)) {
                     break;
                 }
             }
@@ -2194,7 +2197,7 @@ mod tests {
         loop {
             if let Some(sink) = app.recording_sink() {
                 let events = sink.relative_events.lock().unwrap();
-                if events.iter().any(|&event| event == (0, 0, 0, 0)) {
+                if events.contains(&(0, 0, 0, 0)) {
                     break;
                 }
             }
