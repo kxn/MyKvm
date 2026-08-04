@@ -36,7 +36,50 @@ pub mod video_area;
 /// 窗口标题（M5 将嵌入 GIT_COMMIT）。
 pub const WINDOW_TITLE: &str = "my_ipkvm iced (M0)";
 /// 默认窗口尺寸。
-pub const WINDOW_SIZE: Size = Size::new(1280.0, 800.0);
+pub const DEFAULT_WINDOW_SIZE: Size = Size::new(1024.0, 640.0);
+
+/// 初始窗口尺寸收敛：取 min(默认, 工作区 90%)，下限 640x480，避免状态栏出屏。
+pub fn fit_initial_size(default: Size, work_area: Size) -> Size {
+    Size::new(
+        default.width.min(work_area.width * 0.9).max(640.0),
+        default.height.min(work_area.height * 0.9).max(480.0),
+    )
+}
+
+/// 桌面工作区（逻辑点）。Windows 读 SPI_GETWORKAREA 并按系统 DPI 换算；
+/// 失败/非 Windows 返回足够大的兜底（1920x1080），使 fit 结果=默认值。
+#[cfg(windows)]
+pub fn desktop_work_area() -> Size {
+    unsafe {
+        use windows::Win32::Foundation::RECT;
+        use windows::Win32::UI::HiDpi::GetDpiForSystem;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            SPI_GETWORKAREA, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW,
+        };
+        let mut rect = RECT::default();
+        let ok = SystemParametersInfoW(
+            SPI_GETWORKAREA,
+            0,
+            Some(&mut rect as *mut RECT as *mut core::ffi::c_void),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        )
+        .is_ok();
+        if ok {
+            let dpi = GetDpiForSystem().max(96) as f32 / 96.0;
+            Size::new(
+                (rect.right - rect.left) as f32 / dpi,
+                (rect.bottom - rect.top) as f32 / dpi,
+            )
+        } else {
+            Size::new(1920.0, 1080.0)
+        }
+    }
+}
+
+#[cfg(not(windows))]
+pub fn desktop_work_area() -> Size {
+    Size::new(1920.0, 1080.0)
+}
 
 pub use app::run;
 pub use app::{App, MockApp};
@@ -319,7 +362,24 @@ mod tests {
     fn window_title_and_size_are_stable() {
         // 窗口元数据走常量，M5 改标题时此处会强制更新。
         assert_eq!(WINDOW_TITLE, "my_ipkvm iced (M0)");
-        assert_eq!(WINDOW_SIZE, Size::new(1280.0, 800.0));
+        assert_eq!(DEFAULT_WINDOW_SIZE, Size::new(1024.0, 640.0));
+    }
+
+    #[test]
+    fn fit_initial_size_clamps_to_work_area() {
+        let default = Size::new(1024.0, 640.0);
+        assert_eq!(
+            fit_initial_size(default, Size::new(800.0, 600.0)),
+            Size::new(720.0, 540.0)
+        );
+        assert_eq!(
+            fit_initial_size(default, Size::new(1920.0, 1080.0)),
+            default
+        );
+        assert_eq!(
+            fit_initial_size(default, Size::new(100.0, 100.0)),
+            Size::new(640.0, 480.0)
+        );
     }
 
     #[test]

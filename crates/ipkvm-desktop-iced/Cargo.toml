@@ -33,6 +33,7 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 windows = { version = "0.61", default-features = false, features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
+    "Win32_UI_HiDpi",
     "Win32_System_LibraryLoader",
     "Win32_UI_Input",
     "Win32_UI_Input_KeyboardAndMouse",
