@@ -119,7 +119,11 @@ Web 视频状态栏增加同一组选项。当前已有的相对模式按钮不�
 - 下拉框决定目标端使用绝对还是相对输入；
 - 独立的锁定按钮决定浏览器是否已经捕获和隐藏本地指针。
 
-当当前 profile 解析为绝对模式时，Pointer Lock 按钮禁用或隐藏；当解析为相对模式时，按钮显示“锁定/退出锁定”状态。选择相对 profile 不强制调用 Pointer Lock，用户仍需通过用户手势触发浏览器锁定。这样可以处理浏览器的权限、焦点和 `Esc` 退出约束。
+当当前 profile 解析为绝对模式时，Pointer Lock 按钮禁用或隐藏；当解析为相对模式时，按钮显示“锁定/退出锁定”状态。选择相对 profile 不在设置变更时直接调用 Pointer Lock，但用户首次点击视频画布或点击按钮时通过用户手势触发浏览器锁定。这样可以处理浏览器的权限、焦点和 `Esc` 退出约束。
+
+相对 profile 生效后，输入泵保持目标端的 `MouseMode::Relative`。Pointer Lock 建立前 noVNC
+可能产生一笔绝对过渡事件，这类事件被忽略，不得把 sink 降级为绝对模式，也不得使输入泵
+离线；只有 Pointer Lock 后的相对消息才驱动目标端移动。
 
 Web 连接页增加鼠标选择项，作为本次连接的草稿覆盖值。连接页选择项初始继承 Web 默认设置；提交连接时随 `POST /api/session` 发送，不能因为用户只调整连接草稿就意外修改全局默认设置。
 
@@ -196,7 +200,7 @@ profile 相同但实际模式相同的切换（例如 `Windows` 切换到 `BIOS`
 
 ### 6.3 Web Pointer Lock
 
-Web 选择相对 profile 后只进入“待锁定”状态。用户点击锁定按钮后请求 Pointer Lock；浏览器触发 `pointerlockchange` 后再更新“已锁定”状态。窗口失焦、按 `Esc` 或 Pointer Lock 失败时，只退出本地捕获，不自动切回绝对 profile。
+Web 选择相对 profile 后只进入“待锁定”状态。用户首次点击视频画布或点击锁定按钮后请求 Pointer Lock；浏览器触发 `pointerlockchange` 后再更新“已锁定”状态。窗口失焦、按 `Esc` 或 Pointer Lock 失败时，只退出本地捕获，不自动切回绝对 profile。
 
 Web 选择绝对 profile 时立即退出 Pointer Lock，并停止发送相对 RFB `0x08` 消息。
 
