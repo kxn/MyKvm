@@ -1,4 +1,5 @@
 // 设置弹层：GET/POST /api/settings；缺失 API 时显示错误并回退默认值。
+// 表单编辑只影响弹层；保存成功后才经 onChanged 应用到运行中的输入/画面路径。
 
 import { errorText, getJson, postJson } from "./api.js";
 import { t } from "./i18n.js";
@@ -22,36 +23,46 @@ export class SettingsController {
     this.current = { ...SETTINGS_DEFAULTS };
 
     openButton.addEventListener("click", () => this.open());
-    cancelButton.addEventListener("click", () => this.close());
+    cancelButton.addEventListener("click", () => this.cancel());
     saveButton.addEventListener("click", () => this.save());
     resetButton.addEventListener("click", () => this.reset());
     this.el.modal.addEventListener("click", (event) => {
       if (event.target === this.el.modal) {
-        this.close();
+        this.cancel();
       }
     });
   }
 
-  open() {
+  async open() {
     this.el.modal.hidden = false;
-    this.load();
+    this.setMessage("");
+    try {
+      const fetched = normalizeSettings(await getJson("/api/settings"));
+      this.fill(fetched);
+    } catch (error) {
+      this.fill(this.current);
+      this.setMessage(t("settings.loadFailed", { detail: errorText(error) }), "error");
+    }
   }
 
   close() {
     this.el.modal.hidden = true;
-    this.el.message.textContent = "";
+    this.setMessage("");
   }
 
-  async load() {
+  cancel() {
+    this.fill(this.current);
+    this.close();
+  }
+
+  /// 应用启动时读取并应用一次服务端设置；失败回退默认值（仍会应用）。
+  async loadInitial() {
     try {
       this.current = normalizeSettings(await getJson("/api/settings"));
-      this.fill(this.current);
-      this.setMessage("");
     } catch (error) {
       this.current = { ...SETTINGS_DEFAULTS };
-      this.fill(this.current);
-      this.setMessage(t("settings.loadFailed", { detail: errorText(error) }), "error");
     }
+    this.fill(this.current);
     this.onChanged?.(this.current);
   }
 
@@ -77,21 +88,21 @@ export class SettingsController {
 
   validate(settings) {
     if (!Number.isInteger(settings.baud_rate) || settings.baud_rate < 1200 || settings.baud_rate > 115200) {
-      return "波特率必须是 1200..=115200 的整数";
+      return t("settings.error.baudRate");
     }
     if (!Number.isInteger(settings.preview_fps) || settings.preview_fps < 1 || settings.preview_fps > 60) {
-      return "预览帧率必须是 1..=60 的整数";
+      return t("settings.error.previewFps");
     }
     if (!Number.isFinite(settings.relative_sensitivity) ||
         settings.relative_sensitivity < 0.1 ||
         settings.relative_sensitivity > 5.0) {
-      return "相对灵敏度必须是 0.1..=5.0 的数字";
+      return t("settings.error.relativeSensitivity");
     }
     if (!MOUSE_MODES.has(settings.mouse_mode)) {
-      return `未知鼠标模式：${settings.mouse_mode}`;
+      return t("settings.error.mouseMode", { mode: settings.mouse_mode });
     }
     if (!SCALE_MODES.has(settings.scale_mode)) {
-      return `未知缩放模式：${settings.scale_mode}`;
+      return t("settings.error.scaleMode", { mode: settings.scale_mode });
     }
     return null;
   }
@@ -115,10 +126,8 @@ export class SettingsController {
   }
 
   reset() {
-    this.current = { ...SETTINGS_DEFAULTS };
-    this.fill(this.current);
+    this.fill({ ...SETTINGS_DEFAULTS });
     this.setMessage("");
-    this.onChanged?.(this.current);
   }
 
   setMessage(text, level) {

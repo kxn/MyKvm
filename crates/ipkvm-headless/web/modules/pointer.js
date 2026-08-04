@@ -1,4 +1,5 @@
-// 相对指针：pointer lock 内 movement 增量经 noVNC 0x08 相对消息发送。
+// 相对指针：pointer lock 内 movement 增量经 noVNC 0x08 相对消息发送；
+// 灵敏度与默认模式来自 /api/settings（保存后经 applySettings 下发）。
 
 import { errorText } from "./api.js";
 import { t } from "./i18n.js";
@@ -15,22 +16,39 @@ export class PointerController {
     this.rfb = null;
     this.locked = false;
     this.supported = relativePointerSupported();
+    this.settings = null;
+    this.sensitivity = 1.0;
 
     this.button.addEventListener("click", () => this.toggle());
     document.addEventListener("pointerlockchange", this.onPointerLockChange);
+    document.addEventListener("pointerlockerror", this.onPointerLockError);
     window.addEventListener("blur", this.onWindowBlur);
     this.update();
   }
 
   setRfb(rfb) {
     this.rfb = rfb;
-    if (!rfb) {
+    if (rfb) {
+      rfb.setRelativeSensitivity(this.sensitivity);
+    } else {
       this.exit();
     }
     this.update();
   }
 
-  toggle() {
+  applySettings(settings) {
+    this.settings = settings;
+    const sensitivity = Number(settings?.relative_sensitivity);
+    this.sensitivity =
+      Number.isFinite(sensitivity) && sensitivity > 0 ? sensitivity : 1.0;
+    this.rfb?.setRelativeSensitivity(this.sensitivity);
+    if (settings?.mouse_mode !== "relative" && this.locked) {
+      this.exit();
+    }
+    this.update();
+  }
+
+  async toggle() {
     if (this.locked) {
       this.exit();
       return;
@@ -42,10 +60,18 @@ export class PointerController {
     try {
       const result = canvas.requestPointerLock({ unadjustedMovement: true });
       if (result && typeof result.catch === "function") {
-        result.catch(() => {});
+        result.catch((error) => {
+          this.message(
+            t("video.relative.lockError", { detail: errorText(error) }),
+            "error",
+          );
+        });
       }
     } catch (error) {
-      this.message(`${t("video.relative.error")}：${errorText(error)}`, "error");
+      this.message(
+        t("video.relative.lockError", { detail: errorText(error) }),
+        "error",
+      );
     }
   }
 
@@ -70,6 +96,10 @@ export class PointerController {
     }
   };
 
+  onPointerLockError = () => {
+    this.message(t("video.relative.lockError", { detail: "pointerlockerror" }), "error");
+  };
+
   onWindowBlur = () => {
     this.exit();
   };
@@ -82,7 +112,16 @@ export class PointerController {
       this.button.disabled = !this.rfb;
       this.button.title = "";
     }
-    this.button.textContent = this.locked ? t("video.relative.locked") : t("video.relative");
-    this.button.dataset.state = this.locked ? "locked" : "off";
+    const armed = !this.locked && this.settings?.mouse_mode === "relative";
+    if (this.locked) {
+      this.button.textContent = t("video.relative.locked");
+      this.button.dataset.state = "locked";
+    } else if (armed) {
+      this.button.textContent = t("video.relative.armed");
+      this.button.dataset.state = "armed";
+    } else {
+      this.button.textContent = t("video.relative");
+      this.button.dataset.state = "off";
+    }
   }
 }

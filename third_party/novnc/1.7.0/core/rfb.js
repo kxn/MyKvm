@@ -198,6 +198,10 @@ export default class RFB extends EventTargetMixin {
         // web console. Off by default; enabled via setRelativeMode() while
         // pointer lock is active.
         this._relativeMode = false;
+        this._relativeSensitivity = 1.0;
+        // Skip the first movement event right after locking so the browser's
+        // initial movement report cannot cause a large jump.
+        this._ignoreNextRelativeMove = false;
 
         // Gesture state
         this._gestureLastTapTime = null;
@@ -342,6 +346,9 @@ export default class RFB extends EventTargetMixin {
 
     // my_ipkvm local patch: expose the canvas for pointer lock handling.
     get canvas() { return this._canvas; }
+    // my_ipkvm local patch: expose the noVNC screen container so the app can
+    // clean it up when a connection is discarded.
+    get screenElement() { return this._screen; }
 
     get clipViewport() { return this._clipViewport; }
     set clipViewport(viewport) {
@@ -1215,8 +1222,13 @@ export default class RFB extends EventTargetMixin {
         if (this._rfbConnectionState !== 'connected') { return; }
         if (this._viewOnly) { return; }
 
-        dx = Math.trunc(dx);
-        dy = Math.trunc(dy);
+        if (this._ignoreNextRelativeMove) {
+            this._ignoreNextRelativeMove = false;
+            return;
+        }
+
+        dx = Math.trunc(dx * this._relativeSensitivity);
+        dy = Math.trunc(dy * this._relativeSensitivity);
         if (dx === 0 && dy === 0) { return; }
         dx = Math.max(-32768, Math.min(32767, dx));
         dy = Math.max(-32768, Math.min(32767, dy));
@@ -1232,10 +1244,19 @@ export default class RFB extends EventTargetMixin {
             return;
         }
         this._relativeMode = on;
+        this._ignoreNextRelativeMove = on;
         if (!on && this._mouseMoveTimer !== null) {
             clearTimeout(this._mouseMoveTimer);
             this._mouseMoveTimer = null;
         }
+    }
+
+    // my_ipkvm local patch: configure the movement scaling factor applied to
+    // movementX/Y before they are sent in the relative pointer message.
+    setRelativeSensitivity(sensitivity) {
+        const value = Number(sensitivity);
+        this._relativeSensitivity =
+            Number.isFinite(value) && value > 0 ? value : 1.0;
     }
 
     _handleDelayedMouseMove() {

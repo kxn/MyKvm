@@ -79,7 +79,7 @@ export class ConnectionController {
   updateSettingsSummary(settings) {
     const text = t("connection.settingsSummary", {
       baud: settings?.baud_rate ?? "-",
-      auto: settings?.auto_baud ? "开" : "关",
+      auto: settings?.auto_baud ? t("common.on") : t("common.off"),
       fps: settings?.preview_fps ?? "-",
     });
     this.onSettingsSummary?.(text);

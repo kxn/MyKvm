@@ -425,6 +425,12 @@ select:disabled {
   color: #9fe0b8;
 }
 
+.video-status-bar button[data-state="armed"] {
+  border-color: var(--accent);
+  background: #263b2d;
+  color: #a8ddbc;
+}
+
 .video-message {
   position: absolute;
   top: 10px;

@@ -60,7 +60,10 @@ export function initApp(root) {
   };
 
   let rfb = null;
+  let rfbDom = null;
   let rfbState = "idle";
+  let rfbBackoffMs = 2000;
+  let rfbNextRetryAt = 0;
   let settings = { ...SETTINGS_DEFAULTS };
   let lastStatus = null;
   let currentReason = null;
@@ -98,18 +101,56 @@ export function initApp(root) {
     rfb.resizeSession = mode === "follow_window";
   };
 
+  const cleanupRfbDom = () => {
+    if (rfbDom) {
+      rfbDom.remove();
+      rfbDom = null;
+    }
+  };
+
+  /// 按状态驱动 RFB 生命周期：控制器被其它客户端占用时不建实例并提示；
+  /// 失败后按指数退避重试；切回连接页时显式断开并停止自动重连。
+  const syncRfbWithStatus = (status) => {
+    if (status?.session?.state !== "running") {
+      return;
+    }
+    if (rfb || rfbState === "connecting") {
+      return;
+    }
+    if (status?.controller?.active) {
+      if (rfbState !== "busy") {
+        rfbState = "busy";
+        cleanupRfbDom();
+        message(t("video.controllerBusy"), "error");
+      }
+      return;
+    }
+    if (rfbState === "failed" && Date.now() < rfbNextRetryAt) {
+      return;
+    }
+    if (rfbState !== "idle" && rfbState !== "failed" && rfbState !== "busy") {
+      return;
+    }
+    rfbState = "idle";
+    connectRfb();
+  };
+
   const connectRfb = () => {
     if (rfb || rfbState === "connecting") {
       return;
     }
+    cleanupRfbDom();
     rfbState = "connecting";
     setConnectionState("connecting", t("status.connecting"));
     try {
       const next = new RFB(el.screen, websocketUrl(), { shared: true });
       rfb = next;
+      rfbDom = next.screenElement ?? null;
       next.scaleViewport = true;
       next.resizeSession = false;
       next.focusOnClick = true;
+      pointer.setRfb(next);
+      specialKeys.updateEnabled();
       applyScaleMode();
 
       next.addEventListener("connect", () => {
@@ -117,9 +158,10 @@ export function initApp(root) {
           return;
         }
         rfbState = "connected";
+        rfbBackoffMs = 2000;
+        rfbNextRetryAt = 0;
         setConnectionState("connected", t("status.connected"));
         message(t("video.rfbConnected"), "ok");
-        pointer.setRfb(next);
         specialKeys.updateEnabled();
       });
 
@@ -128,19 +170,23 @@ export function initApp(root) {
           return;
         }
         const clean = Boolean(event?.detail?.clean);
-        rfbState = "disconnected";
+        cleanupRfbDom();
         rfb = null;
-        pointer.setRfb(null);
-        specialKeys.updateEnabled();
         if (clean) {
+          rfbState = "idle";
           message(t("video.rfbDisconnected"));
         } else {
+          rfbState = "failed";
+          rfbNextRetryAt = Date.now() + rfbBackoffMs;
+          rfbBackoffMs = Math.min(rfbBackoffMs * 2, 30000);
           message(t("video.rfbFailed"), "error");
         }
+        pointer.setRfb(null);
+        specialKeys.updateEnabled();
         if (lastStatus?.session?.state !== "running") {
           setConnectionState("disconnected", t("status.disconnected"));
         } else {
-          setConnectionState("failed", t("status.error"));
+          setConnectionState("failed", t("status.connectionFailed"));
         }
       });
 
@@ -155,22 +201,25 @@ export function initApp(root) {
       });
     } catch (error) {
       rfbState = "failed";
+      rfbNextRetryAt = Date.now() + rfbBackoffMs;
+      rfbBackoffMs = Math.min(rfbBackoffMs * 2, 30000);
       rfb = null;
       message(`${t("video.rfbFailed")}：${errorText(error)}`, "error");
     }
   };
 
   const disconnectRfb = () => {
-    if (!rfb) {
+    if (rfb) {
+      const current = rfb;
+      rfb = null;
       rfbState = "idle";
-      return;
+      pointer.setRfb(null);
+      specialKeys.updateEnabled();
+      current.disconnect();
     }
-    const current = rfb;
-    rfb = null;
+    cleanupRfbDom();
     rfbState = "idle";
-    pointer.setRfb(null);
-    specialKeys.updateEnabled();
-    current.disconnect();
+    rfbNextRetryAt = 0;
   };
 
   const showConnectionReason = (reason) => {
@@ -204,7 +253,7 @@ export function initApp(root) {
     el.videoView.hidden = view !== VIEW.VIDEO;
     root.dataset.view = view;
     if (view === VIEW.VIDEO) {
-      connectRfb();
+      syncRfbWithStatus(lastStatus);
       connection.updateConnectState();
     } else {
       disconnectRfb();
@@ -282,6 +331,7 @@ export function initApp(root) {
     onChanged: (saved) => {
       settings = saved;
       applyScaleMode();
+      pointer.applySettings(saved);
       connection.updateSettingsSummary(saved);
     },
   });
@@ -314,9 +364,7 @@ export function initApp(root) {
       updateVideoBar(status);
       screenshot.setFrameAvailable(Boolean(status.video?.frame));
       connection.updateConnectState();
-      if (status?.session?.state === "running" && !rfb && rfbState !== "connecting") {
-        connectRfb();
-      }
+      syncRfbWithStatus(status);
     },
     onViewChange: (view, reason) => setView(view, reason),
     onError: (error) => {
@@ -380,5 +428,6 @@ export function initApp(root) {
   applyUiLanguage();
   statusController.start();
   connection.refreshAll();
+  settingsController.loadInitial();
   setView(VIEW.CONNECTION, REASON.ABSENT);
 }

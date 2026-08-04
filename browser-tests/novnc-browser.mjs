@@ -186,6 +186,7 @@ function findBrowserExecutable() {
 }
 
 async function installApiMocks(context, postedSettings) {
+  const storedSettings = { ...DEFAULT_SETTINGS };
   await context.route("**/api/devices", (route) => {
     return route.fulfill({
       json: { video: VIDEO_DEVICES, serial: SERIAL_DEVICES },
@@ -194,16 +195,22 @@ async function installApiMocks(context, postedSettings) {
   await context.route("**/api/settings", async (route) => {
     const request = route.request();
     if (request.method() === "GET") {
-      return route.fulfill({ json: { ...DEFAULT_SETTINGS } });
+      return route.fulfill({ json: { ...storedSettings } });
     }
     const posted = request.postDataJSON();
     postedSettings.push(posted);
-    return route.fulfill({ json: { ...DEFAULT_SETTINGS, ...posted } });
+    Object.assign(storedSettings, posted);
+    return route.fulfill({ json: { ...storedSettings } });
   });
 }
 
 async function openConsole(browser, url, options = {}) {
-  const { mockApi = true, permissions = ["clipboard-read", "clipboard-write"] } = options;
+  const {
+    mockApi = true,
+    permissions = ["clipboard-read", "clipboard-write"],
+    beforeGoto,
+    onConsoleError,
+  } = options;
   const context = await browser.newContext({
     viewport: { width: 1280, height: 800 },
     permissions,
@@ -212,13 +219,18 @@ async function openConsole(browser, url, options = {}) {
   if (mockApi) {
     await installApiMocks(context, postedSettings);
   }
+  if (beforeGoto) {
+    await beforeGoto(context, postedSettings);
+  }
   const page = await context.newPage();
   const browserErrors = [];
   page.on("console", (message) => {
     const location = message.location();
     const source = location.url ? ` (${location.url})` : "";
     if (message.type() === "error") {
-      browserErrors.push(`${message.text()}${source}`);
+      const entry = `${message.text()}${source}`;
+      browserErrors.push(entry);
+      onConsoleError?.(entry);
     }
     process.stdout.write(`[browser ${message.type()}] ${message.text()}${source}\n`);
   });
@@ -403,13 +415,18 @@ async function assertRelativePointerMessageConstruction(page) {
       hasMessageBuilder:
         typeof RFB.messages.relativePointerEvent === "function",
       hasModeSwitch: typeof RFB.prototype.setRelativeMode === "function",
+      hasSensitivitySwitch:
+        typeof RFB.prototype.setRelativeSensitivity === "function",
       hasCanvasAccessor: "canvas" in RFB.prototype,
+      hasScreenAccessor: "screenElement" in RFB.prototype,
     };
   });
 
   assert.equal(probe.hasMessageBuilder, true);
   assert.equal(probe.hasModeSwitch, true);
+  assert.equal(probe.hasSensitivitySwitch, true);
   assert.equal(probe.hasCanvasAccessor, true);
+  assert.equal(probe.hasScreenAccessor, true);
   assert.deepEqual(probe.bytes, [0x08, 0b101, 0, 10, 0xff, 0xec, 1]);
 }
 
@@ -480,6 +497,48 @@ async function run() {
     assert.equal(postedSettings[0].baud_rate, 9600);
     assert.equal(postedSettings[0].preview_fps, 30);
 
+    // ---- 设置：恢复默认值只改表单，取消还原旧值 ----
+    await page.locator("#open-settings").click();
+    await page.locator("#settings-modal:not([hidden])").waitFor({ state: "attached" });
+    await page.locator("#setting-baud-rate").fill("12345");
+    await page.locator("#settings-reset").click();
+    assert.equal(
+      await page.locator("#setting-baud-rate").inputValue(),
+      "115200",
+      "reset fills the form with defaults without applying",
+    );
+    await page.locator("#setting-baud-rate").fill("9600");
+    await page.locator("#settings-cancel").click();
+    await page.locator("#settings-modal[hidden]").waitFor({ state: "attached" });
+    await page.locator("#open-settings").click();
+    await page.locator("#settings-modal:not([hidden])").waitFor({ state: "attached" });
+    assert.equal(
+      await page.locator("#setting-baud-rate").inputValue(),
+      "9600",
+      "cancel restores the previously applied value",
+    );
+
+    // ---- 设置：mouse_mode 与 relative_sensitivity 接入实际输入路径 ----
+    await page.locator("#setting-mouse-mode").selectOption("relative");
+    await page.locator("#setting-relative-sensitivity").fill("2.0");
+    await page.locator("#settings-save").click();
+    await page.locator("#settings-modal[hidden]").waitFor({ state: "attached" });
+    assert.equal(postedSettings.length, 2);
+    assert.equal(postedSettings[1].mouse_mode, "relative");
+    assert.equal(postedSettings[1].relative_sensitivity, 2.0);
+    await page
+      .locator('#relative-mode[data-state="armed"]')
+      .waitFor({ state: "attached" });
+    await page.locator("#open-settings").click();
+    await page.locator("#settings-modal:not([hidden])").waitFor({ state: "attached" });
+    await page.locator("#setting-mouse-mode").selectOption("absolute");
+    await page.locator("#settings-save").click();
+    await page.locator("#settings-modal[hidden]").waitFor({ state: "attached" });
+    assert.equal(postedSettings.length, 3);
+    await page
+      .locator('#relative-mode[data-state="off"]')
+      .waitFor({ state: "attached" });
+
     // ---- 相对指针：协议层消息构造（端到端待 #141b 合入后验证）----
     await assertRelativePointerMessageConstruction(page);
     assert.equal(
@@ -505,7 +564,21 @@ async function run() {
     await second.page
       .locator("#video-view:not([hidden])")
       .waitFor({ state: "attached" });
-    // 第二个标签不持有 RFB 控制器（单控制器闸门），但会话状态仍同步。
+    // 第二个标签看到 controller.active=true 时不创建 RFB 实例：显式断言
+    // 忙提示、零画布与零错误（单控制器由状态机预防，不再盲试）。
+    await second.page
+      .locator("#video-message", { hasText: "另一处已连接" })
+      .waitFor({ state: "attached" });
+    assert.equal(
+      await second.page.locator("#screen canvas").count(),
+      0,
+      "second tab must not create an RFB instance while another controller is active",
+    );
+    assert.deepEqual(
+      second.browserErrors,
+      [],
+      "second tab should not observe connection errors while guarded",
+    );
     const releaseMarker = fixture.lines.mark();
     await second.page.locator("#toolbar-disconnect").click();
     await waitForConnectionView(second.page);
@@ -515,6 +588,7 @@ async function run() {
       /停止/,
       "first tab should sync the stopped session",
     );
+    await second.context.close();
 
     // ---- 重新连接 ----
     await fixture.lines.waitForLine(
@@ -523,6 +597,53 @@ async function run() {
       releaseMarker,
     );
     await connectSession(page);
+
+    // ---- 单控制器竞态：显式断言 409/1006 且失败后不再盲试 ----
+    let mockStatusBusy = true;
+    const race = await openConsole(browser, url, {
+      beforeGoto: async (context) => {
+        await context.route("**/api/status", async (route) => {
+          if (!mockStatusBusy) {
+            return route.continue();
+          }
+          const response = await route.fetch();
+          const body = await response.json();
+          body.controller.active = false;
+          await route.fulfill({ response, json: body });
+        });
+      },
+      onConsoleError: (entry) => {
+        if (entry.includes("409")) {
+          mockStatusBusy = false;
+        }
+      },
+    });
+    contexts.push(race.context);
+    await race.page
+      .locator("#video-message", { hasText: "远程画面连接失败" })
+      .waitFor({ state: "attached", timeout: DEADLINE_MS });
+    await race.page
+      .locator("#video-message", { hasText: "另一处已连接" })
+      .waitFor({ state: "attached", timeout: DEADLINE_MS });
+    // 取消状态模拟后由真实状态接管：409 只应出现一次，不做 2s 盲试。
+    await race.page.waitForTimeout(2500);
+    const race409 = race.browserErrors.filter((entry) => entry.includes("409"));
+    assert.ok(
+      race409.length >= 1,
+      "race page should observe the single-controller 409",
+    );
+    assert.equal(
+      race409.length,
+      1,
+      "race page must not retry blindly after the 409",
+    );
+    assert.ok(
+      race.browserErrors.some(
+        (entry) => entry.includes("1006") || entry.includes("Failed when connecting"),
+      ),
+      "race page should observe the failed-connect close",
+    );
+    await race.context.close();
 
     // ---- 语言切换 ----
     await page.locator("#language-select").selectOption("en");

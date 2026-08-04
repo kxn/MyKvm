@@ -217,9 +217,17 @@ mod tests {
         assert!(rfb.contains("sQpush8(0x08)"), "0x08 message type byte");
         assert!(rfb.contains("setRelativeMode("), "relative mode switch");
         assert!(
+            rfb.contains("setRelativeSensitivity("),
+            "sensitivity scaling hook"
+        );
+        assert!(
             rfb.contains("movementX"),
             "movement deltas in relative mode"
         );
         assert!(rfb.contains("get canvas()"), "public canvas accessor");
+        assert!(
+            rfb.contains("get screenElement()"),
+            "public screen accessor"
+        );
     }
 }
