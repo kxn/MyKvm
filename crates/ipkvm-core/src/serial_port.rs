@@ -498,9 +498,29 @@ fn write_available(
 fn recover(
     path: &str,
     baud: u32,
+    port: Box<dyn SerialPort>,
+    health: &Arc<Mutex<SerialHealth>>,
+    allow_in_place_reset: bool,
+) -> Option<Box<dyn SerialPort>> {
+    recover_with_timing(
+        path,
+        baud,
+        port,
+        health,
+        allow_in_place_reset,
+        RECOVERY_DELAY,
+        RESPONSE_TIMEOUT,
+    )
+}
+
+fn recover_with_timing(
+    path: &str,
+    baud: u32,
     mut port: Box<dyn SerialPort>,
     health: &Arc<Mutex<SerialHealth>>,
     allow_in_place_reset: bool,
+    recovery_delay: Duration,
+    response_timeout: Duration,
 ) -> Option<Box<dyn SerialPort>> {
     set_health_state(health, SerialHealthState::Recovering, 0);
     if allow_in_place_reset {
@@ -512,9 +532,9 @@ fn recover(
         let in_place =
             port.clear(ClearBuffer::All).is_ok() && write_command(&mut port, reset_frame()).is_ok();
         if in_place {
-            let reset_ack = wait_for_response(&mut port, 0x0f);
-            thread::sleep(RECOVERY_DELAY);
-            if reset_ack && probe_and_release(&mut port) {
+            let reset_ack = wait_for_response(&mut port, 0x0f, response_timeout);
+            thread::sleep(recovery_delay);
+            if reset_ack && probe_and_release(&mut port, response_timeout) {
                 eprintln!("[ch9329:{path}] recovery ready");
                 set_health_state(health, SerialHealthState::Ready, 0);
                 return Some(port);
@@ -536,7 +556,9 @@ fn recover(
             return None;
         }
     };
-    if reopened.clear(ClearBuffer::All).is_ok() && probe_and_release(&mut reopened) {
+    if reopened.clear(ClearBuffer::All).is_ok()
+        && probe_and_release(&mut reopened, response_timeout)
+    {
         eprintln!("[ch9329:{path}] recovery ready after reopen");
         set_health_state(health, SerialHealthState::Ready, 0);
         Some(reopened)
@@ -545,11 +567,11 @@ fn recover(
     }
 }
 
-fn probe_and_release(port: &mut Box<dyn SerialPort>) -> bool {
+fn probe_and_release(port: &mut Box<dyn SerialPort>, response_timeout: Duration) -> bool {
     if port.clear(ClearBuffer::Input).is_err() || write_command(port, info_frame()).is_err() {
         return false;
     }
-    if !wait_for_response(port, 0x01) {
+    if !wait_for_response(port, 0x01, response_timeout) {
         return false;
     }
     let keyboard = Ch9329Command::Keyboard(KeyboardReport::new(0, [0; 6]))
@@ -561,13 +583,17 @@ fn probe_and_release(port: &mut Box<dyn SerialPort>) -> bool {
     .to_frame(0)
     .expect("zero mouse report is valid");
     write_command(port, keyboard).is_ok()
-        && wait_for_response(port, 0x02)
+        && wait_for_response(port, 0x02, response_timeout)
         && write_command(port, mouse).is_ok()
-        && wait_for_response(port, 0x05)
+        && wait_for_response(port, 0x05, response_timeout)
 }
 
-fn wait_for_response(port: &mut Box<dyn SerialPort>, expected: u8) -> bool {
-    let deadline = Instant::now() + RESPONSE_TIMEOUT;
+fn wait_for_response(
+    port: &mut Box<dyn SerialPort>,
+    expected: u8,
+    response_timeout: Duration,
+) -> bool {
+    let deadline = Instant::now() + response_timeout;
     let mut decoder = Ch9329Decoder::new();
     let mut buffer = [0_u8; 256];
     while Instant::now() < deadline {
@@ -665,6 +691,187 @@ fn set_offline(health: &Arc<Mutex<SerialHealth>>, _fault: &TransportFault) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::VecDeque;
+    use std::io::{self, Read, Write};
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    struct FakeSerialState {
+        writes: Vec<Vec<u8>>,
+        reads: VecDeque<Vec<u8>>,
+    }
+
+    struct FakeSerialPort {
+        state: Arc<Mutex<FakeSerialState>>,
+        timeout: Duration,
+        respond: bool,
+    }
+
+    impl FakeSerialPort {
+        fn new() -> (Self, Arc<Mutex<FakeSerialState>>) {
+            let state = Arc::new(Mutex::new(FakeSerialState::default()));
+            (
+                Self {
+                    state: Arc::clone(&state),
+                    timeout: Duration::from_millis(1),
+                    respond: true,
+                },
+                state,
+            )
+        }
+    }
+
+    impl Read for FakeSerialPort {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            let mut state = self.state.lock().expect("fake state lock");
+            let Some(mut response) = state.reads.pop_front() else {
+                return Err(io::Error::new(io::ErrorKind::TimedOut, "fake timeout"));
+            };
+            let count = response.len().min(buffer.len());
+            buffer[..count].copy_from_slice(&response[..count]);
+            if count < response.len() {
+                response.drain(..count);
+                state.reads.push_front(response);
+            }
+            Ok(count)
+        }
+    }
+
+    impl Write for FakeSerialPort {
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            let frame = Ch9329Frame::parse(buffer)
+                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
+            let response = match frame.command() {
+                0x0f => Ch9329Frame::new(0, 0x8f, &[0]).ok(),
+                0x01 => Ch9329Frame::new(0, 0x81, &[1, 1, 0, 0, 0, 0, 0, 0]).ok(),
+                0x02 => Ch9329Frame::new(0, 0x82, &[0]).ok(),
+                0x05 => Ch9329Frame::new(0, 0x85, &[0]).ok(),
+                _ => None,
+            };
+            let mut state = self.state.lock().expect("fake state lock");
+            state.writes.push(buffer.to_vec());
+            if self.respond {
+                if let Some(response) = response {
+                    state.reads.push_back(response.as_bytes().to_vec());
+                }
+            }
+            Ok(buffer.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl SerialPort for FakeSerialPort {
+        fn name(&self) -> Option<String> {
+            Some("fake-ch9329".into())
+        }
+
+        fn baud_rate(&self) -> serialport::Result<u32> {
+            Ok(9600)
+        }
+
+        fn data_bits(&self) -> serialport::Result<serialport::DataBits> {
+            Ok(serialport::DataBits::Eight)
+        }
+
+        fn flow_control(&self) -> serialport::Result<serialport::FlowControl> {
+            Ok(serialport::FlowControl::None)
+        }
+
+        fn parity(&self) -> serialport::Result<serialport::Parity> {
+            Ok(serialport::Parity::None)
+        }
+
+        fn stop_bits(&self) -> serialport::Result<serialport::StopBits> {
+            Ok(serialport::StopBits::One)
+        }
+
+        fn timeout(&self) -> Duration {
+            self.timeout
+        }
+
+        fn set_baud_rate(&mut self, _baud_rate: u32) -> serialport::Result<()> {
+            Ok(())
+        }
+
+        fn set_data_bits(&mut self, _data_bits: serialport::DataBits) -> serialport::Result<()> {
+            Ok(())
+        }
+
+        fn set_flow_control(
+            &mut self,
+            _flow_control: serialport::FlowControl,
+        ) -> serialport::Result<()> {
+            Ok(())
+        }
+
+        fn set_parity(&mut self, _parity: serialport::Parity) -> serialport::Result<()> {
+            Ok(())
+        }
+
+        fn set_stop_bits(&mut self, _stop_bits: serialport::StopBits) -> serialport::Result<()> {
+            Ok(())
+        }
+
+        fn set_timeout(&mut self, timeout: Duration) -> serialport::Result<()> {
+            self.timeout = timeout;
+            Ok(())
+        }
+
+        fn write_request_to_send(&mut self, _level: bool) -> serialport::Result<()> {
+            Ok(())
+        }
+
+        fn write_data_terminal_ready(&mut self, _level: bool) -> serialport::Result<()> {
+            Ok(())
+        }
+
+        fn read_clear_to_send(&mut self) -> serialport::Result<bool> {
+            Ok(true)
+        }
+
+        fn read_data_set_ready(&mut self) -> serialport::Result<bool> {
+            Ok(true)
+        }
+
+        fn read_ring_indicator(&mut self) -> serialport::Result<bool> {
+            Ok(false)
+        }
+
+        fn read_carrier_detect(&mut self) -> serialport::Result<bool> {
+            Ok(true)
+        }
+
+        fn bytes_to_read(&self) -> serialport::Result<u32> {
+            let state = self.state.lock().expect("fake state lock");
+            Ok(state.reads.iter().map(|frame| frame.len() as u32).sum())
+        }
+
+        fn bytes_to_write(&self) -> serialport::Result<u32> {
+            Ok(0)
+        }
+
+        fn clear(&self, _buffer_to_clear: ClearBuffer) -> serialport::Result<()> {
+            Ok(())
+        }
+
+        fn try_clone(&self) -> serialport::Result<Box<dyn SerialPort>> {
+            Err(serialport::Error::new(
+                serialport::ErrorKind::NoDevice,
+                "fake port cannot clone",
+            ))
+        }
+
+        fn set_break(&self) -> serialport::Result<()> {
+            Ok(())
+        }
+
+        fn clear_break(&self) -> serialport::Result<()> {
+            Ok(())
+        }
+    }
 
     #[test]
     fn response_command_must_match_fifo_pending_command() {
@@ -709,5 +916,58 @@ mod tests {
         });
         assert_eq!(state.accept_response(&info), Ok(0x01));
         assert!(state.pending.is_empty());
+    }
+
+    #[test]
+    fn recovery_writes_reset_probe_and_release_sequence() {
+        let (port, state) = FakeSerialPort::new();
+        let health = Arc::new(Mutex::new(SerialHealth::default()));
+
+        let recovered = recover_with_timing(
+            "fake",
+            9600,
+            Box::new(port),
+            &health,
+            true,
+            Duration::ZERO,
+            Duration::from_millis(10),
+        );
+
+        assert!(recovered.is_some());
+        let commands: Vec<u8> = state
+            .lock()
+            .expect("fake state lock")
+            .writes
+            .iter()
+            .map(|bytes| Ch9329Frame::parse(bytes).expect("fake frame").command())
+            .collect();
+        assert_eq!(commands, vec![0x0f, 0x01, 0x02, 0x05]);
+        let health = health.lock().expect("health lock");
+        assert_eq!(health.state, SerialHealthState::Ready);
+        assert_eq!(health.resets, 1);
+        assert_eq!(health.reopens, 0);
+    }
+
+    #[test]
+    fn recovery_without_reset_ack_returns_failure() {
+        let (mut port, _state) = FakeSerialPort::new();
+        port.respond = false;
+        let health = Arc::new(Mutex::new(SerialHealth::default()));
+
+        let recovered = recover_with_timing(
+            "path-that-is-not-a-real-port",
+            9600,
+            Box::new(port),
+            &health,
+            true,
+            Duration::ZERO,
+            Duration::from_millis(1),
+        );
+
+        assert!(recovered.is_none());
+        let health = health.lock().expect("health lock");
+        assert_eq!(health.state, SerialHealthState::Recovering);
+        assert_eq!(health.resets, 1);
+        assert_eq!(health.reopens, 1);
     }
 }
