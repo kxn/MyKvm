@@ -1534,7 +1534,7 @@ mod tests {
                 button_mask: 1,
                 dx: 12,
                 dy: -4,
-                wheel: 0,
+                wheel: 2,
             }),
             Ok(RfbInputNotice::Pointer {
                 client_id,
@@ -1549,6 +1549,7 @@ mod tests {
                     button: PointerButton::Left,
                     down: true,
                 },
+                PointerEvent::Wheel { delta: 2 },
             ]]
         );
     }
