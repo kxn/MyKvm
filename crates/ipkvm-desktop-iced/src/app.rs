@@ -790,6 +790,7 @@ where
             Message::UiTick => {
                 diag::ui_tick();
                 let _ = self.controller.flush_pending();
+                self.sync_status();
                 self.drain_notices();
                 self.poll_relative();
                 if self.remote_input
@@ -1071,9 +1072,7 @@ where
                     return;
                 };
                 if is_remote_exit_combo(code, modifiers, repeat) {
-                    self.remote_input = false;
-                    self.last_modifiers = iced::keyboard::Modifiers::empty();
-                    self.sync_cursor();
+                    self.exit_remote_input();
                     return;
                 }
                 if is_mode_toggle_combo(code, modifiers, repeat) {
@@ -1204,6 +1203,7 @@ where
         self.last_pointer_sent = None;
         self.last_pointer_sent_at = None;
         self.relative_sampler.reset();
+        self.stop_relative_source();
         let _ = self.controller.release_all();
     }
 
@@ -1332,10 +1332,12 @@ where
                     }
                     Err(error) => {
                         self.status_message = Some(format!("relative capture: {error}"));
+                        self.exit_remote_input();
                     }
                 },
                 Err(error) => {
                     self.status_message = Some(format!("relative capture: {error}"));
+                    self.exit_remote_input();
                 }
             }
         }
@@ -1816,6 +1818,9 @@ where
 
     pub fn sync_status(&mut self) {
         let online = self.controller.is_control_online();
+        if !online && self.remote_input {
+            self.exit_remote_input();
+        }
         // 诊断：整页切换抖动取证（main_view 按在线状态切视频页/连接页）。
         if self.last_diag_online != Some(online) {
             diag::log(format!("online_flip online={online}"));
@@ -2788,6 +2793,7 @@ mod tests {
             Some(false),
             "Ctrl+Alt+K 退出必须解除裁剪"
         );
+        wait_releases(&app, 1);
         let _ = app.update(press_key(iced::keyboard::key::Code::KeyA));
         std::thread::sleep(std::time::Duration::from_millis(50));
         if let Some(sink) = app.recording_sink() {
@@ -2898,6 +2904,37 @@ mod tests {
         assert!(!app.remote_input, "断开必须退出远程输入");
         assert_eq!(last_visible(&app), Some(true), "断开必须恢复光标可见");
         assert_eq!(last_clipped(&app), Some(false), "断开必须解除裁剪");
+    }
+
+    #[test]
+    fn control_offline_exits_remote_input_and_restores_cursor() {
+        let (mut app, _) = MockApp::new_mock();
+        app.connection.mouse_mode = MouseMode::Relative;
+        click_video(&mut app);
+        assert!(app.remote_input);
+        assert_eq!(last_visible(&app), Some(false));
+        assert_eq!(last_clipped(&app), Some(true));
+
+        app.controller.stop().unwrap();
+        app.sync_status();
+
+        assert!(!app.remote_input, "控制端离线必须退出远程输入");
+        assert_eq!(last_visible(&app), Some(true), "离线必须恢复光标可见");
+        assert_eq!(last_clipped(&app), Some(false), "离线必须解除裁剪");
+    }
+
+    #[test]
+    fn exiting_relative_input_stops_relative_capture_source() {
+        let (mut app, _) = MockApp::new_mock();
+        app.connection.mouse_mode = MouseMode::Relative;
+        click_video(&mut app);
+        let _ = app.update(Message::UiTick);
+        assert!(app.relative_rx.is_some(), "进入相对模式后必须启动相对源");
+
+        app.exit_remote_input();
+
+        assert!(app.relative_rx.is_none(), "退出远程输入必须丢弃相对接收器");
+        assert!(app.relative_source.is_none(), "退出远程输入必须停止相对源");
     }
 
     #[test]

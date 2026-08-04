@@ -187,7 +187,7 @@ impl DesktopApp {
     fn update_impl(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.drain_notices();
         self.refresh_video(ctx);
-        self.sync_control_state();
+        self.sync_control_state(ctx);
 
         let menu = egui::TopBottomPanel::top("menu").show(ctx, |ui| self.menu_bar(ui));
         self.menu_chrome = menu.response.rect.height();
@@ -297,7 +297,7 @@ impl DesktopApp {
 
     /// 控制设备离线时的状态同步：标记离线并复位所有输入/粘贴 UI 状态，
     /// 保证停止、掉线后不会残留"聚焦可输入/粘贴中/按键按下"等过期状态。
-    fn sync_control_state(&mut self) {
+    fn sync_control_state(&mut self, ctx: &egui::Context) {
         if !self.showing_device_dialog && !self.session.is_control_online() {
             self.selection.mark_control_offline();
             self.paste_busy = false;
@@ -305,7 +305,7 @@ impl DesktopApp {
             self.pointer_mask = 0;
             self.last_pointer = None;
             self.last_modifiers = egui::Modifiers::NONE;
-            self.cursor_grabbed = false;
+            self.release_cursor_capture(ctx);
             self.relative_remainder = (0.0, 0.0);
             self.pending_pointer = None;
             self.relative_wheel = 0;
@@ -370,7 +370,7 @@ impl DesktopApp {
     /// 文件：连接生命周期 + profile 加载/最近使用 + 退出。
     fn file_menu(&mut self, ui: &mut egui::Ui) {
         if ui.button(t!("menu.reselect_device")).clicked() {
-            self.show_device_dialog();
+            self.show_device_dialog(ui.ctx());
             ui.close();
         }
         let online = self.session.is_control_online();
@@ -378,7 +378,7 @@ impl DesktopApp {
             .add_enabled(online, egui::Button::new(t!("menu.stop_connection")))
             .clicked()
         {
-            self.stop_session();
+            self.stop_session(ui.ctx());
             ui.close();
         }
         ui.separator();
@@ -1068,7 +1068,7 @@ impl DesktopApp {
         )
     }
 
-    fn toggle_mouse_mode(&mut self) {
+    fn toggle_mouse_mode(&mut self, ctx: &egui::Context) {
         let next = match self.connection.mouse_mode {
             MouseMode::Absolute => MouseMode::Relative,
             MouseMode::Relative => MouseMode::Absolute,
@@ -1083,6 +1083,7 @@ impl DesktopApp {
                 self.relative_remainder = (0.0, 0.0);
                 self.relative_wheel = 0;
                 self.last_pointer_sent = None;
+                self.sync_cursor_capture(ctx);
                 self.status_message = Some(
                     t!("message.mouse_mode_switched", mode = mouse_mode_label(next)).to_string(),
                 );
@@ -1176,6 +1177,30 @@ impl DesktopApp {
             .is_some_and(|at| at.elapsed() >= NO_SIGNAL_TIMEOUT)
     }
 
+    /// 按当前远程输入和鼠标模式同步本地窗口的捕捉/可见状态。
+    fn sync_cursor_capture(&mut self, ctx: &egui::Context) {
+        let should_grab = self.video_focused && self.connection.mouse_mode == MouseMode::Relative;
+        if should_grab {
+            if !self.cursor_grabbed {
+                ctx.send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::CursorGrab::Locked));
+                ctx.send_viewport_cmd(egui::ViewportCommand::CursorVisible(false));
+                self.cursor_grabbed = true;
+            }
+        } else {
+            self.release_cursor_capture(ctx);
+        }
+    }
+
+    /// 释放窗口捕捉并恢复本地系统光标；调用幂等，适用于所有退出路径。
+    fn release_cursor_capture(&mut self, ctx: &egui::Context) {
+        if !self.cursor_grabbed {
+            return;
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::CursorGrab::None));
+        ctx.send_viewport_cmd(egui::ViewportCommand::CursorVisible(true));
+        self.cursor_grabbed = false;
+    }
+
     fn handle_input(
         &mut self,
         response: &egui::Response,
@@ -1183,15 +1208,7 @@ impl DesktopApp {
         frame: FrameSize,
     ) {
         if !self.session.is_control_online() {
-            if self.cursor_grabbed {
-                response
-                    .ctx
-                    .send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::CursorGrab::None));
-                response
-                    .ctx
-                    .send_viewport_cmd(egui::ViewportCommand::CursorVisible(true));
-                self.cursor_grabbed = false;
-            }
+            self.release_cursor_capture(&response.ctx);
             self.pointer_mask = 0;
             self.last_pointer = None;
             return;
@@ -1238,6 +1255,7 @@ impl DesktopApp {
             self.relative_wheel = 0;
             self.last_pointer_sent = None;
             self.last_pointer_sent_at = None;
+            self.release_cursor_capture(&response.ctx);
         }
 
         // Ctrl+Alt+K：本地退出热键。先于指针/键盘转发处理，拦截后不发送远端。
@@ -1254,6 +1272,7 @@ impl DesktopApp {
                 self.pointer_mask = 0;
                 self.last_pointer = None;
                 self.last_modifiers = response.ctx.input(|input| input.modifiers);
+                self.release_cursor_capture(&response.ctx);
                 return;
             }
         }
@@ -1264,7 +1283,7 @@ impl DesktopApp {
                 .ctx
                 .input(|input| input.events.iter().any(crate::input::is_mode_toggle_combo));
             if toggle_requested {
-                self.toggle_mouse_mode();
+                self.toggle_mouse_mode(&response.ctx);
                 return;
             }
         }
@@ -1278,25 +1297,7 @@ impl DesktopApp {
 
         // 相对模式锁定并隐藏本地光标，绝对模式恢复光标。
         let relative_mode = self.connection.mouse_mode == MouseMode::Relative;
-        if self.video_focused && relative_mode {
-            if !self.cursor_grabbed {
-                response
-                    .ctx
-                    .send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::CursorGrab::Locked));
-                response
-                    .ctx
-                    .send_viewport_cmd(egui::ViewportCommand::CursorVisible(false));
-                self.cursor_grabbed = true;
-            }
-        } else if self.cursor_grabbed {
-            response
-                .ctx
-                .send_viewport_cmd(egui::ViewportCommand::CursorGrab(egui::CursorGrab::None));
-            response
-                .ctx
-                .send_viewport_cmd(egui::ViewportCommand::CursorVisible(true));
-            self.cursor_grabbed = false;
-        }
+        self.sync_cursor_capture(&response.ctx);
 
         // 指针：相对模式用增量（本地光标已锁定），绝对模式用窗口坐标。
         let mask = pointer_button_mask(response, self.pointer_mask);
@@ -1532,7 +1533,8 @@ impl DesktopApp {
         }
     }
 
-    fn stop_session(&mut self) {
+    fn stop_session(&mut self, ctx: &egui::Context) {
+        self.release_cursor_capture(ctx);
         let _ = self.session.stop();
         self.latest_frame = None;
         self.frame_size = None;
@@ -1543,7 +1545,6 @@ impl DesktopApp {
         self.pointer_mask = 0;
         self.last_pointer = None;
         self.last_modifiers = egui::Modifiers::NONE;
-        self.cursor_grabbed = false;
         self.relative_remainder = (0.0, 0.0);
         self.pending_pointer = None;
         self.relative_wheel = 0;
@@ -1556,8 +1557,8 @@ impl DesktopApp {
         self.last_frame_at = None;
     }
 
-    fn show_device_dialog(&mut self) {
-        self.stop_session();
+    fn show_device_dialog(&mut self, ctx: &egui::Context) {
+        self.stop_session(ctx);
         self.showing_device_dialog = true;
     }
 
@@ -1956,7 +1957,7 @@ mod tests {
             ..Default::default()
         };
 
-        app.sync_control_state();
+        app.sync_control_state(&egui::Context::default());
 
         assert!(!app.paste_busy);
         assert!(!app.video_focused);
@@ -1970,17 +1971,46 @@ mod tests {
     }
 
     #[test]
-    fn stop_session_resets_input_state() {
+    fn offline_sync_releases_cursor_capture() {
+        let mut app = DesktopApp::empty();
+        app.showing_device_dialog = false;
+        app.cursor_grabbed = true;
+        let ctx = egui::Context::default();
+
+        app.sync_control_state(&ctx);
+
+        let output = ctx.run(egui::RawInput::default(), |_| {});
+        let commands = output
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .map(|viewport| viewport.commands.clone())
+            .unwrap_or_default();
+        assert!(commands.contains(&egui::ViewportCommand::CursorGrab(egui::CursorGrab::None)));
+        assert!(commands.contains(&egui::ViewportCommand::CursorVisible(true)));
+    }
+
+    #[test]
+    fn stop_session_resets_input_state_and_releases_cursor_capture() {
         let mut app = DesktopApp::empty();
         app.paste_busy = true;
         app.video_focused = true;
         app.pointer_mask = 1;
+        app.cursor_grabbed = true;
+        let ctx = egui::Context::default();
 
-        app.stop_session();
+        app.stop_session(&ctx);
 
         assert!(!app.paste_busy);
         assert!(!app.video_focused);
         assert_eq!(app.pointer_mask, 0);
+        let output = ctx.run(egui::RawInput::default(), |_| {});
+        let commands = output
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .map(|viewport| viewport.commands.clone())
+            .unwrap_or_default();
+        assert!(commands.contains(&egui::ViewportCommand::CursorGrab(egui::CursorGrab::None)));
+        assert!(commands.contains(&egui::ViewportCommand::CursorVisible(true)));
     }
 
     #[test]
