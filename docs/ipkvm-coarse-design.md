@@ -389,7 +389,7 @@ noVNC 静态资源打包现状：
 - `include_dir 0.7.4` 在编译时嵌入 noVNC 与项目页面，运行时不需要 Node.js 或外部静态目录。
 - 项目页面只导入 noVNC 核心库，不复制上游完整应用界面。
 - `/licenses/` 提供 noVNC、MPL、pako 和 DES 许可证与嵌入源码入口。
-- 资源门禁已加入 `scripts/verify.ps1`（快速门禁）与 `scripts/verify-full.ps1`（全量门禁）；真实浏览器闭环由 `scripts/verify-browser.ps1` 独立提供，不包含在默认门禁链内。
+- 资源门禁已加入 `cargo make quick`（快速门禁）与 `cargo make full`（全量门禁）；真实浏览器闭环由 `cargo make browser` 独立提供，不包含在默认门禁链内。
 
 ### RFB/VNC 服务
 

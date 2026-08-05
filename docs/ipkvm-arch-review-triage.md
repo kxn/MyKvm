@@ -29,7 +29,7 @@
 | mock 视频源 | 采纳。`ipkvm-video` 的 `mock` feature 提供 `MockFrameSource`。 |
 | fake serial | 采纳。`ipkvm-core` 的 `mock` feature 提供 `FakeSerialWriter`。 |
 | `[workspace.dependencies]` | 采纳。集中管理 `thiserror` 和 `tokio`。 |
-| 最小 CI | 原采纳。后续确认没有经过维护的可用 runner，按 issue `#4` 移除无效 workflow，改由 `.\scripts\verify.ps1` 提供本地自动化门禁；恢复远端 CI 前需另行设计 runner 和维护责任。 |
+| 最小 CI | 原采纳。后续确认没有经过维护的可用 runner，按 issue `#4` 移除无效 workflow，改由 `cargo make quick` 提供本地自动化门禁；恢复远端 CI 前需另行设计 runner 和维护责任。 |
 
 ## 部分采纳
 
