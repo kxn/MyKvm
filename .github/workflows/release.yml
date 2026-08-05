@@ -146,6 +146,8 @@ jobs:
             echo "发布义务核对清单见 docs/dependency-license-policy.md（发布责任章节）。"
           } > notes.md
       - name: Create release and upload
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           TAG="${{ needs.resolve.outputs.tag }}"
           ARGS=(--target "$GITHUB_SHA" --title "$TAG" --notes-file notes.md)
