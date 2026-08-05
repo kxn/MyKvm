@@ -35,6 +35,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.89
+      # cargo make quick 的 licenses 任务依赖 cargo-deny（与 verify.yml 对齐）
+      - run: cargo install --locked --version 0.20.2 cargo-deny
       - run: cargo install --locked cargo-make
       - run: cargo make quick
 
@@ -116,6 +118,8 @@ jobs:
           find artifacts -type f -name 'ipkvm-*' | sort | xargs sha256sum > SHA256SUMS.txt
           cat SHA256SUMS.txt
       - name: Prepare release notes
+        env:
+          NOTES_INPUT: ${{ github.event.inputs.notes }}
         run: |
           TAG="${{ needs.resolve.outputs.tag }}"
           PREV="$(git describe --tags --abbrev=0 --exclude "$TAG" 2>/dev/null || true)"
@@ -127,8 +131,8 @@ jobs:
           {
             echo "## $TAG"
             echo
-            if [[ -n "${{ github.event.inputs.notes }}" ]]; then
-              echo "${{ github.event.inputs.notes }}"
+            if [[ -n "$NOTES_INPUT" ]]; then
+              echo "$NOTES_INPUT"
             else
               echo "### Changelog"
               echo
