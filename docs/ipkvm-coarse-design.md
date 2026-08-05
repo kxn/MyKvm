@@ -462,22 +462,39 @@ WebSocket 兼容：
 
 无头版第一版也不直接进入视频编码。VNC/RFB 当前最小版本使用 `Raw` 编码加帧率限制，用于验证协议兼容性和控制台操作闭环。
 
-后续优化顺序：
+> **状态更新（2026-08-05）**：视频采集到传输链路的性能调研已完成，结论写入
+> `docs/superpowers/specs/2026-08-04-video-pipeline-performance-research.md`（长期事实
+> 来源）。下面的优化顺序已对齐调研的分阶段方案。详见本文档 [阶段计划 → 阶段 4：性能优化](#阶段-4性能优化)。
+> 调研关键结论：
+>
+> - 分发层（`tokio::sync::watch` + `Arc<VideoFrame>` + `Arc<[u8]>`）设计正确，多消费者只
+>   做 refcount bump、慢消费者自动丢帧，**不在性能优化范围内重构**。
+> - 全链路最大瓶颈是"只支持 Raw 全帧编码"和"YUV→BGRA 标量转换"，二者在 ARM 弱单核上
+>   是硬伤。
+> - **Raw 全帧在 1080p 下网络不可行（约 240 MB/s）**，编码压缩（Tight+软件 JPEG 或硬件
+>   编码透传）是 ARM 可用性的硬前提，不是可选优化。
+> - 必须先建指标埋点（阶段 0）作为所有后续优化的回归基线，禁止在无基线前做大规模重构。
 
-1. 脏块检测
-   - 对帧缓冲分块计算摘要，只发送变化块。
+后续优化顺序（已对齐调研阶段 1–3）：
+
+1. 指标埋点（调研阶段 0，所有优化的前置）
+   - 在采集、转换、分发、RFB 编码、传输各段加测量点；修正 `last_frame_ns` 语义。
+
+2. 脏块检测（调研阶段 2.1）
+   - 发布帧时附带 dirty rects，`FramebufferUpdate` 支持多矩形，`incremental` 请求真正发差分。
    - 对 BIOS、终端、安装器这类静态画面收益大。
 
-2. RFB 压缩编码
-   - 优先调研 `ZRLE` 或 `Tight/JPEG`。
+3. RFB 压缩编码（调研阶段 2.2）
+   - 选 `Tight/JPEG`（noVNC 原生支持，`jpeg-encoder` 已是 workspace 依赖）；`ZRLE` 作为备选。
    - 只有确认许可证和复杂度可控后再进入实现。
+   - ARM 长期落点：RK3588/树莓派的 V4L2 M2M 硬件 JPEG/H.264 编码器，Tight/JPEG 是承接硬件编码的天然落点。
 
-3. 采集卡 MJPEG 透传和解码优化
+4. 采集卡 MJPEG 透传和解码优化（调研阶段 3.1）
    - 如果 UVC 设备已经输出 MJPEG，优先避免 CPU 重新编码。
    - 解码优先评估 libjpeg-turbo，不引入完整 FFmpeg。
    - 可另做原生网页视频流或 RFB JPEG 路径。
 
-4. WebRTC/H.264/VP8
+5. WebRTC/H.264/VP8（调研阶段 3.1，超 issue #3/#162 范围，单独立项）
    - 用于跨公网、低带宽、多客户端。
    - 不自己写视频编码器。
    - Windows 用 Media Foundation H.264 编码器。
@@ -599,14 +616,48 @@ WebSocket 兼容：
 
 ### 阶段 4：性能优化
 
-- 脏块检测。
-- RFB 帧率控制和延迟指标。
-- RFB `ZRLE` 或 `Tight/JPEG` 验证。
-- 采集卡 MJPEG 透传验证。
-- libjpeg-turbo 解码路径验证。
-- Windows H.264 Media Foundation 编码器验证。
-- WebRTC 验证。
-- 桌面端 YUY2/NV12 到 RGB 的 GPU shader 转换。
+本阶段已对齐视频链路性能调研（`docs/superpowers/specs/2026-08-04-video-pipeline-performance-research.md`，
+收口 issue #3）。调研覆盖现状代码事实、实测基线、性能预算、瓶颈优先级和测试矩阵；
+本节给出分阶段实施顺序与对应实施单。
+
+**实测基线摘要**（来源调研第 3 节）：
+
+| 场景 | FPS | Raw 输出 | 单核等效 CPU | 备注 |
+|------|-----|----------|-------------|------|
+| 640×360/720p Y4M, --fps 30, 无客户端 | 23.9 | — | 6.1% | demo 素材 |
+| 同上 + Raw RFB | 21.7 | 50.4 MB/s | 14.4% | 编码吃额外 ~8% 单核 |
+| 1080p desktop (iced), 30fps 目标 | ~22 实际 | — | 31.7% | avg 44ms / p95 59ms 超阈值 |
+
+**瓶颈优先级**（P0 最高）：① 只支持 Raw 全帧编码（网络 240 MB/s 不可行）；② YUV→BGRA 标量
+转换（ARM 弱单核硬伤）；③ Raw 编码 per-pixel + scale 乘法；④ 无脏区/差分；⑤ 每帧 Arc wrap
+分配；⑥ 无 TCP_NODELAY；⑦ 指标缺口。完整排序与位置见调研第 5 节。
+
+**性能预算**（ARM 盒子，1080p30 参考）：Raw 全帧网络不可行是硬约束，编码压缩是 ARM 可用性
+硬前提；YUY2/NV12→BGRA 标量在 ARM 上吃满一个小核，NEON SIMD 后可降到 < 15%。详见调研第 4 节。
+
+**分阶段实施顺序**（每阶段拆成可独立验证、独立 PR 的实施单，依赖关系见各 issue）：
+
+- **调研阶段 0：指标埋点**（实施单 A）。采集/转换/分发/编码/传输各段加测量点；修正
+  `last_frame_ns` 语义为采集时间；`/api/status` 同时暴露 capture_ns 与 observe_ns。
+  **是所有后续优化的回归基线，必须最先做。** 依赖：无。
+
+- **调研阶段 1：当前协议与依赖内可做**（低风险高收益）
+  - 实施单 B：Raw 编码热路径清理（恒等 8bpc 跳过 scale 乘法、复用输出 buffer）+ TCP_NODELAY。依赖 A。
+  - 实施单 C：YUV→BGRA 可移植 SIMD（`std::simd`/`wide`，x86 SSE + ARM NEON 通用）+ buffer 池化（消除每帧 Arc wrap）。依赖 A。ARM 收益最大。
+  - 实施单 D：采集 FPS 配置真正生效（DirectShow `IAMStreamConfig::SetFormat`、nokhwa `RequestedFormat` 带 FPS）。依赖 A。
+
+- **调研阶段 2：RFB 编码升级**（中等风险，决定能不能上 ARM）
+  - 实施单 E：脏区追踪 + 多矩形 update（`FramebufferUpdate` 支持多矩形、`incremental` 真正发差分）。依赖 A、B。
+  - 实施单 F：Tight + JPEG 子编码（noVNC 原生支持，`jpeg-encoder` 已是 workspace 依赖；ARM 硬件编码的天然落点）。依赖 A、E。**ARM 可用性硬前提。**
+
+- **调研阶段 3：架构级**（超 issue #3/#162 范围，单独立项）
+  - 实施单 G：硬件视频编码后端（MJPEG 透传 / H.264，通用 aarch64 + 平台最优后端 trait 分流）。依赖 F；需先确认目标 SoC。
+
+测试矩阵（平台 × 采集源 × 客户端 × 自动化）见调研第 7 节；Rust 改动统一遵守
+`cargo fmt --all --check` 与 `cargo test --workspace --all-features`。
+
+阶段 4 的早期愿景项（libjpeg-turbo 解码、Windows MF H.264、WebRTC、桌面端 GPU shader 转换）
+归入实施单 C/G 或后续独立 issue，不再单列。
 
 ### 阶段 5：运维化、安全叠加和辅助能力
 
@@ -640,6 +691,10 @@ WebSocket 兼容：
 | H.264/WebRTC 工程复杂度 | 不进当前最小版本 |
 | 视频编码器许可风险 | 当前最小版本不引入 FFmpeg/GStreamer |
 | RFB `Raw` 带宽风险 | 当前最小版本用于验证闭环，限制帧率；性能优化后置 |
+| Raw 全帧 1080p 网络不可行（约 240 MB/s） | 调研阶段 2 引入 Tight+JPEG（实施单 F）压缩到几 MB/s；ARM 可用性硬前提，不是可选优化 |
+| YUV→BGRA 标量转换在 ARM 弱单核吃满一个核 | 调研阶段 1.2 用可移植 SIMD（实施单 C），NEON 后降到 < 15% 小核 |
+| 无性能指标导致优化无法验证回归 | 调研阶段 0 先建指标埋点（实施单 A），作为所有后续优化的回归基线，禁止无基线重构 |
+| `last_frame_ns` 语义错误（观察时间非采集时间） | 实施单 A 修正为采集时间，`/api/status` 同时暴露 capture_ns 与 observe_ns |
 | 键盘布局差异 | 当前最小版本只承诺 `en_US` HID 映射 |
 | Caps Lock/NumLock 状态竞争 | 使用 `GetInfo` 读取 LED 状态；文本键入仍说明查询后状态可能变化 |
 | 多客户端输入冲突 | 当前最小版本单控制者 |
