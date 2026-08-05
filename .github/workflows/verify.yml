@@ -42,10 +42,11 @@ jobs:
       - run: cargo install --locked cargo-make
       - run: cargo make full
 
-  # 非阻塞 job：真实浏览器闭环，在 GitHub runner 上稳定跑绿后再改为必需
+  # 必需 job：真实浏览器闭环（node 20 + Chrome）。历史上因 runner 环境
+  # 不稳以 advisory 存在（continue-on-error），现已连续多轮全绿转正，
+  # 失败会标红 workflow，不再被静默吞掉。
   browser:
     runs-on: windows-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.89

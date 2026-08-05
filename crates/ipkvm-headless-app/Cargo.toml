@@ -24,3 +24,7 @@ tokio = { workspace = true, features = ["process"] }
 [[bin]]
 name = "ipkvm-headless"
 path = "src/main.rs"
+# 不生成 rustdoc：bin 名与 ipkvm-headless lib 输出同名
+# target/doc/ipkvm_headless/，两个 rustdoc 并行渲染会互删目录
+# （cargo #6313），导致 cargo doc 偶发 I/O 错误。
+doc = false

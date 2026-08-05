@@ -32,15 +32,14 @@ dependencies = ["quick"]
 
 [tasks.quick]
 description = "快速门禁（秒级~十秒级，无全量编译）"
-dependencies = [
-    "text-encoding",
-    "web-assets-policy",
-    "web-assets-lock",
-    "licenses",
-    "crate-boundaries",
-    "fmt",
-    "diff-check",
-]
+dependencies = ["quick-checkers", "fmt", "diff-check"]
+
+# 无依赖关系的检查并行执行（cargo-make run_task parallel）。
+# licenses（cargo-deny 读 Cargo.lock）与 crate-boundaries（cargo metadata/tree）
+# 均为只读 Cargo 元数据操作，互不冲突；文件类检查无共享状态。
+[tasks.quick-checkers]
+description = "并行执行无依赖的快速检查"
+run_task = { name = ["text-encoding", "web-assets-policy", "web-assets-lock", "licenses", "crate-boundaries"], parallel = true }
 
 [tasks.text-encoding]
 description = "检查跟踪文本文件均为无 BOM 的合法 UTF-8"
