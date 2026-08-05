@@ -39,7 +39,7 @@ use crate::{FrameReceiver, FrameSource, SharedVideoFrame, VideoSourceInfo, Video
 use crate::{MonotonicTimestamp, PixelFormat, VideoFrame};
 
 #[cfg(windows)]
-use crate::dshow_sink::{SinkFilter, SinkFrameSlot, convert_to_bgra};
+use crate::dshow_sink::{SinkFilter, SinkFrameSlot, convert_to_bgra_into};
 #[cfg(windows)]
 use windows::Win32::System::Com::{
     COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize, IEnumMoniker, IMoniker,
@@ -272,6 +272,8 @@ impl CameraSource {
                 // raw_buf 复用：next_frame_into 把帧数据拷进它（复用容量，稳定后零分配）。
                 let mut seq = 0_u64;
                 let mut raw_buf: Vec<u8> = Vec::new();
+                // BGRA 输出 buffer 复用：消除每帧 vec![0u8; w*h*4] 分配（调研阶段 1.2，#19）。
+                let mut bgra_buf: Vec<u8> = Vec::new();
                 loop {
                     // 等下一帧；长超时只是兜底（防极端情况下永远等不到帧的死锁），
                     // 正常路径由 Receive 的 notify_one 立即唤醒，drop 时 stop() 返回 Stopped。
@@ -284,10 +286,16 @@ impl CameraSource {
                             task_stats.record_capture_wait(wait_start.elapsed());
                             // 按协商到的真实 subtype 转 BGRA8888（NV12/YUY2/RGB24/ARGB32）。
                             let convert_start = std::time::Instant::now();
-                            let Some((bgra, w, h)) = convert_to_bgra(&raw_buf[..len], &mt) else {
+                            let Some((w, h)) =
+                                convert_to_bgra_into(&raw_buf[..len], &mt, &mut bgra_buf)
+                            else {
                                 continue;
                             };
                             task_stats.record_convert(convert_start.elapsed());
+                            // mem::take 把 bgra_buf 整体取出转 Arc（数据不拷贝，只加 refcount 头），
+                            // bgra_buf 变空 Vec 下一帧重新填充——消除每帧 vec![0u8; N] 分配。
+                            let data: Arc<[u8]> =
+                                Arc::from(std::mem::take(&mut bgra_buf).into_boxed_slice());
                             let capture_ns = crate::now_ns();
                             seq = seq.saturating_add(1);
                             let frame = VideoFrame::new(
@@ -297,7 +305,7 @@ impl CameraSource {
                                 h,
                                 w * 4,
                                 PixelFormat::Bgra8888,
-                                Arc::from(bgra),
+                                data,
                             );
                             let shared = Arc::new(frame);
                             task_stats.record_publish(seq, capture_ns);

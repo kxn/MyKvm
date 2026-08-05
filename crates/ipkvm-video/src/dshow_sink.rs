@@ -844,10 +844,24 @@ impl Default for OwnedMediaType {
 
 /// 把协商到的源帧转成 BGRA8888。返回 (bgra 数据, 宽, 高)。None 表示格式不支持。
 pub fn convert_to_bgra(src: &[u8], mt: &NegotiatedMediaType) -> Option<(Vec<u8>, u32, u32)> {
+    let mut out = Vec::new();
+    let (w, h) = convert_to_bgra_into(src, mt, &mut out)?;
+    Some((out, w, h))
+}
+
+/// 把协商到的源帧转成 BGRA8888，写入 caller 传入的 `out`（复用容量，消除每帧
+/// `vec![0u8; N]` 分配）。返回 (宽, 高)，None 表示格式不支持或数据不足。
+/// 见调研阶段 1.2（issue #19）。
+pub fn convert_to_bgra_into(
+    src: &[u8],
+    mt: &NegotiatedMediaType,
+    out: &mut Vec<u8>,
+) -> Option<(u32, u32)> {
     let w = mt.width as usize;
     let h = mt.height as usize;
     let out_size = w * h * 4;
-    let mut bgra = vec![0u8; out_size];
+    out.clear();
+    out.resize(out_size, 0);
     match mt.format {
         NegotiatedFormat::Nv12 => {
             if src.len() < w * h * 3 / 2 {
@@ -855,7 +869,7 @@ pub fn convert_to_bgra(src: &[u8], mt: &NegotiatedMediaType) -> Option<(Vec<u8>,
             }
             // NV12 是打包 YUV，数据始终 top-to-bottom 线性排列；biHeight 正负号对它
             // 无意义（很多驱动对 YUV 仍填正 biHeight）。绝不按 biHeight 翻转，否则画面头朝下。
-            nv12_to_bgra_inner(src, w, h, true, &mut bgra);
+            nv12_to_bgra_inner(src, w, h, true, out);
         }
         NegotiatedFormat::Yuy2 => {
             // YUY2: packed 4:2:2，每 4 字节 [Y0 U Y1 V] = 2 像素。stride 行 = w*2。
@@ -863,7 +877,7 @@ pub fn convert_to_bgra(src: &[u8], mt: &NegotiatedMediaType) -> Option<(Vec<u8>,
             if src.len() < w * h * 2 {
                 return None;
             }
-            yuy2_to_bgra_inner(src, w, h, true, &mut bgra);
+            yuy2_to_bgra_inner(src, w, h, true, out);
         }
         NegotiatedFormat::Rgb24 => {
             // BGR 字节序（DirectShow RGB24 = BGR 内存序）。未压缩 RGB 遵守 biHeight：
@@ -871,17 +885,17 @@ pub fn convert_to_bgra(src: &[u8], mt: &NegotiatedMediaType) -> Option<(Vec<u8>,
             if src.len() < w * h * 3 {
                 return None;
             }
-            rgb24_to_bgra_inner(src, w, h, mt.top_down, &mut bgra);
+            rgb24_to_bgra_inner(src, w, h, mt.top_down, out);
         }
         NegotiatedFormat::Argb32 => {
             // 32bpp 未压缩 RGB：源是 BGRA/ARGB 字节序，遵守 biHeight 行序。
             if src.len() < w * h * 4 {
                 return None;
             }
-            copy_bgra_with_flip(src, w, h, mt.top_down, &mut bgra);
+            copy_bgra_with_flip(src, w, h, mt.top_down, out);
         }
     }
-    Some((bgra, mt.width, mt.height))
+    Some((mt.width, mt.height))
 }
 
 /// NV12 (4:2:0, 12bpp) -> BGRA8888。src 布局：Y 平面（w*h）+ 交错 UV 平面（w*h/2）。
