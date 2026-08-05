@@ -89,10 +89,10 @@ cargo install --locked cargo-make
 可独立运行静态资源检查：
 
 ```powershell
-.\scripts\verify-web-assets.ps1
+py .\scripts\verify-web-assets.py
 ```
 
-固定工具版本、许可证分级和非 Cargo 组件边界见 `docs/dependency-license-policy.md`。`Makefile.toml` 是唯一流程编排层，门禁链由任务依赖图直接定义，实现逻辑在 `scripts/` 下的原子脚本中（`check-text-encoding.py`、`test-*.ps1/sh` 等）。
+固定工具版本、许可证分级和非 Cargo 组件边界见 `docs/dependency-license-policy.md`。`Makefile.toml` 是唯一流程编排层，门禁链由任务依赖图直接定义；检查逻辑全部为 `scripts/` 下跨平台 Python 单份实现（`check-text-encoding.py`、`test-*.py`、`web_assets_tools.py` 等），仅 `verify-desktop-release.ps1`（Windows 窗口句柄 P/Invoke）与维护工具 `update-novnc.ps1` 保留平台脚本。
 
 ## 运行无头后台进程
 

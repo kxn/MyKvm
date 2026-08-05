@@ -13,20 +13,20 @@ cargo install --locked --version 0.20.2 cargo-deny
 独立运行策略自测：
 
 ```powershell
-.\scripts\test-license-policy.ps1
+py .\scripts\test-license-policy.py
 ```
 
 独立检查当前 Cargo 依赖图：
 
 ```powershell
-.\scripts\verify-licenses.ps1
+py .\scripts\verify-licenses.py
 ```
 
 独立检查非 Cargo 网页资源：
 
 ```powershell
-.\scripts\test-web-assets.ps1
-.\scripts\verify-web-assets.ps1
+py .\scripts\test-web-assets.py
+py .\scripts\verify-web-assets.py
 ```
 
 统一验收 `cargo make quick`（快速门禁）与 `cargo make full`（全量门禁，合并前）已包含以上各项。工具缺失或版本不符时必须失败，不能自动安装或跳过。
@@ -141,8 +141,8 @@ LGPL Rust 代码不是绝对禁止，但普通 Cargo 依赖通常会静态链接
 2. 查阅 crate 元数据、上游许可证文件和必要的分发说明。
 3. 先判断是否属于全局自动允许范围。
 4. 条件许可证或非 crates.io 来源必须开独立审查记录。
-5. 修改依赖后运行 `.\scripts\test-license-policy.ps1`。
-6. 运行 `.\scripts\verify-licenses.ps1` 检查实际锁定依赖图。
+5. 修改依赖后运行 `py .\scripts\test-license-policy.py`。
+6. 运行 `py .\scripts\verify-licenses.py` 检查实际锁定依赖图。
 7. 合并前运行 `cargo make full`。
 
 禁止通过以下方式绕过审查：
@@ -198,7 +198,7 @@ library 的依赖树不包含这些硬件依赖。发布体积和许可证清单
 
 ## 自动化证明
 
-`scripts/test-license-policy.ps1` 每次生成临时 Cargo 依赖图，并证明：
+`scripts/test-license-policy.py` 每次生成临时 Cargo 依赖图，并证明：
 
 - MIT 和 BSD-3-Clause 依赖可以通过。
 - GPL-3.0-only 依赖产生许可证拒绝。
@@ -206,4 +206,4 @@ library 的依赖树不包含这些硬件依赖。发布体积和许可证清单
 
 夹具只使用系统临时目录和本地 `file://` Git 仓库，不访问远端。清理前会验证路径仍位于系统临时目录，避免递归删除越界。
 
-`scripts/test-web-assets.ps1` 使用隔离副本证明 noVNC 文件被篡改、缺失、额外增加，固定元数据或许可证缺失，浏览器锁文件出现未批准包、浮动版本、非 npm registry 来源或缺少 integrity 时都会失败。正常验证不下载 noVNC；只有显式运行 `scripts/update-novnc.ps1` 才访问固定 tarball 来源。
+`scripts/test-web-assets.py` 使用隔离副本证明 noVNC 文件被篡改、缺失、额外增加，固定元数据或许可证缺失，浏览器锁文件出现未批准包、浮动版本、非 npm registry 来源或缺少 integrity 时都会失败。正常验证不下载 noVNC；只有显式运行 `scripts/update-novnc.ps1` 才访问固定 tarball 来源。

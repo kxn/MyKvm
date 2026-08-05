@@ -6,8 +6,6 @@ param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-Import-Module (Join-Path $PSScriptRoot "web-assets-tools.psm1") -Force
-
 function Invoke-CheckedNativeCommand {
     param(
         [Parameter(Mandatory)]
@@ -30,6 +28,40 @@ function Invoke-CheckedNativeCommand {
         throw "$Executable failed with exit code $exitCode"
     }
     return $output
+}
+
+# 调用跨平台 Python 校验工具 web_assets_tools.py（#9 阶段 B1 起替代 web-assets-tools.psm1）。
+function Invoke-PyTool {
+    param(
+        [Parameter(Mandatory)]
+        [string[]]$Arguments
+    )
+
+    # Python 解释器解析（既定模式优先 python3，Windows 下回退到 py 启动器）。
+    $python = if (Get-Command python3 -ErrorAction SilentlyContinue) {
+        "python3"
+    }
+    elseif (Get-Command py -ErrorAction SilentlyContinue) {
+        "py"
+    }
+    else {
+        throw "未找到 python3，请先安装 Python 3"
+    }
+
+    $toolPath = Join-Path $PSScriptRoot "web_assets_tools.py"
+    return Invoke-CheckedNativeCommand `
+        -Executable $python `
+        -Arguments (@($toolPath) + $Arguments)
+}
+
+function ConvertFrom-PolicyJson {
+    param(
+        [Parameter(Mandatory)]
+        [string[]]$Lines
+    )
+
+    $json = $Lines -join [Environment]::NewLine
+    return $json | ConvertFrom-Json
 }
 
 function Assert-Archive {
@@ -64,19 +96,28 @@ function Assert-Archive {
 
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $noVncRoot = Join-Path $repositoryRoot "third_party/novnc"
-$policy = Get-NoVncReleasePolicy
+$policy = ConvertFrom-PolicyJson (Invoke-PyTool @("policy"))
 $target = Join-Path $noVncRoot $policy.Version
-Assert-SafeRepositoryTarget `
-    -Path $target `
-    -RepositoryRoot $repositoryRoot `
-    -AllowedRelativeRoot "third_party/novnc"
+$novncApprovedRoot = Join-Path $repositoryRoot "third_party/novnc"
+$null = Invoke-PyTool @(
+    "check-path-under-root",
+    "--path", $target,
+    "--root", $novncApprovedRoot,
+    "--message", "Path is outside the approved repository target"
+)
 
 $temporaryRoot = [System.IO.Path]::GetFullPath(
     (Join-Path `
         ([System.IO.Path]::GetTempPath()) `
         ("my-ipkvm-update-novnc-" + [guid]::NewGuid()))
 )
-Assert-SafeTemporaryPath -Path $temporaryRoot
+$systemTemp = [System.IO.Path]::GetTempPath()
+$null = Invoke-PyTool @(
+    "check-path-under-root",
+    "--path", $temporaryRoot,
+    "--root", $systemTemp,
+    "--message", "Path is outside the system temporary directory"
+)
 $null = New-Item -ItemType Directory -Path $temporaryRoot
 
 try {
@@ -107,19 +148,29 @@ try {
             -Executable "tar.exe" `
             -Arguments @("-tvf", $archivePath)
     )
-    Assert-SafeTarEntries -Names $names -VerboseLines $verboseLines
+    $namesFile = Join-Path $temporaryRoot "tar-names.txt"
+    $verboseFile = Join-Path $temporaryRoot "tar-verbose.txt"
+    [System.IO.File]::WriteAllLines($namesFile, $names)
+    [System.IO.File]::WriteAllLines($verboseFile, $verboseLines)
+    $null = Invoke-PyTool @(
+        "check-tar-entries",
+        "--names", $namesFile,
+        "--verbose", $verboseFile
+    )
 
     $extractRoot = Join-Path $temporaryRoot "extracted"
     $null = New-Item -ItemType Directory -Path $extractRoot
     $null = Invoke-CheckedNativeCommand `
         -Executable "tar.exe" `
         -Arguments @("-xf", $archivePath, "-C", $extractRoot)
-    Assert-SafeExtractedTree -Root $extractRoot
+    $null = Invoke-PyTool @("check-extracted-tree", "--root", $extractRoot)
     $packageRoot = Join-Path $extractRoot "package"
-    Assert-NoVncPackage `
-        -PackageRoot $packageRoot `
-        -MetadataPath $metadataPath `
-        -AttestationsPath $attestationsPath
+    $null = Invoke-PyTool @(
+        "check-novnc-package",
+        "--package-root", $packageRoot,
+        "--metadata", $metadataPath,
+        "--attestations", $attestationsPath
+    )
 
     if (Test-Path -LiteralPath $target) {
         if (-not $Replace) {
@@ -128,10 +179,12 @@ try {
                 $target
             )
         }
-        Assert-SafeRepositoryTarget `
-            -Path $target `
-            -RepositoryRoot $repositoryRoot `
-            -AllowedRelativeRoot "third_party/novnc"
+        $null = Invoke-PyTool @(
+            "check-path-under-root",
+            "--path", $target,
+            "--root", $novncApprovedRoot,
+            "--message", "Path is outside the approved repository target"
+        )
         Remove-Item -LiteralPath $target -Recurse -Force
     }
 
@@ -143,21 +196,32 @@ try {
     Copy-Item `
         -LiteralPath $attestationsPath `
         -Destination (Join-Path $noVncRoot "npm-attestations.json")
-    Write-WebAssetManifest `
-        -Root $target `
-        -Path (Join-Path $noVncRoot "manifest.sha256")
-
-    Assert-WebAssetTree `
-        -Root $target `
-        -ManifestPath (Join-Path $noVncRoot "manifest.sha256")
-    Assert-NoVncPackage `
-        -PackageRoot $target `
-        -MetadataPath (Join-Path $noVncRoot "npm-metadata.json") `
-        -AttestationsPath (Join-Path $noVncRoot "npm-attestations.json")
+    $manifestPath = Join-Path $noVncRoot "manifest.sha256"
+    $null = Invoke-PyTool @(
+        "write-manifest",
+        "--root", $target,
+        "--path", $manifestPath
+    )
+    $null = Invoke-PyTool @(
+        "check-tree",
+        "--root", $target,
+        "--manifest", $manifestPath
+    )
+    $null = Invoke-PyTool @(
+        "check-novnc-package",
+        "--package-root", $target,
+        "--metadata", (Join-Path $noVncRoot "npm-metadata.json"),
+        "--attestations", (Join-Path $noVncRoot "npm-attestations.json")
+    )
 }
 finally {
     if (Test-Path -LiteralPath $temporaryRoot) {
-        Assert-SafeTemporaryPath -Path $temporaryRoot
+        $null = Invoke-PyTool @(
+            "check-path-under-root",
+            "--path", $temporaryRoot,
+            "--root", $systemTemp,
+            "--message", "Path is outside the system temporary directory"
+        )
         Remove-Item -LiteralPath $temporaryRoot -Recurse -Force
     }
 }

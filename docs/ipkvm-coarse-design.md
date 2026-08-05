@@ -750,5 +750,5 @@ WebSocket 兼容：
   `ipkvm-browser-fixture` package。
 - `ipkvm-desktop-core` 承载 UI 无关配置、探测抽象、泛型会话控制器和帧转换；
   `ipkvm-desktop` 只负责真实 camera/CH9329/clipboard adapter 与兼容 re-export。
-- `scripts/test-crate-boundaries.ps1` 和 `.sh` 检查正式 binary、fixture、headless library
+- `scripts/test-crate-boundaries.py` 检查正式 binary、fixture、headless library
   和 desktop core 的依赖隔离；#157 的发布体积测量按这些新 package 分别统计。

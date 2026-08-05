@@ -64,7 +64,7 @@
 - spike 计划与实测数据（历史记录）：`docs/superpowers/plans/2026-08-03-iced-spike.md`
 - M1/M2/M3/M4 实施计划（已执行，含执行记录）：`docs/superpowers/plans/2026-08-03-iced-migration-m{1,2,3,4}.md`
 - M5 设计与实施计划：`docs/superpowers/specs/2026-08-04-iced-m5-packaging-design.md`、`docs/superpowers/plans/2026-08-04-iced-m5-packaging.md`
-- M5 门禁与发布冒烟：`scripts/test-iced-m5-retirement.ps1`、`scripts/test-iced-m5-retirement.sh`、`scripts/verify-desktop-release.ps1`
+- M5 门禁与发布冒烟：`scripts/test-iced-m5-retirement.py`、`scripts/verify-desktop-release.ps1`
 - M2 观感截图：`docs/superpowers/artifacts/m2-screenshots/m2-connection-page.png`
 - M4 观感截图：`docs/superpowers/artifacts/m4-screenshots/m4-themed-connection-page.png`
 - 正式迁移 crate：`crates/ipkvm-desktop-iced/`（M0 壳：lib.rs/main.rs）
@@ -127,7 +127,7 @@
 - 正式后台：`cargo run -p ipkvm-headless-app --bin ipkvm-headless`。
 - Y4M 演示：`cargo run -p ipkvm-headless-demo --bin ipkvm-demo`。
 - 浏览器夹具：`cargo build -p ipkvm-browser-fixture --bin ipkvm-browser-fixture`。
-- 无硬件边界检查：`powershell -NoProfile -ExecutionPolicy Bypass -File scripts/test-crate-boundaries.ps1`。
+- 无硬件边界检查：`python3 scripts/test-crate-boundaries.py`。
 - 生产体积测量按 app、demo、fixture 和 iced 四个实际 binary 分别记录，不能把 library 或旧
   `demo` feature 的构建结果当作正式后台体积。
 
