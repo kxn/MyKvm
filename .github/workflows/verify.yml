@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   # 必需 job（Windows）：全量门禁，作 main 分支保护 required status check。
-  # 直接调用 verify-full.ps1，与本地合并前门禁一致，避免步骤清单漂移。
+  # 通过 cargo make full 统一入口，Makefile.toml 自动选择平台对应脚本。
   core:
     runs-on: windows-latest
     steps:
@@ -23,12 +23,13 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      # verify-full.ps1 内的 verify-licenses.ps1 依赖 cargo-deny；与本机一致锁版本
+      # cargo make full 内部调用 verify-full.ps1，后者依赖 cargo-deny
       - run: cargo install --locked --version 0.20.2 cargo-deny
-      - run: .\scripts\verify-full.ps1
+      - run: cargo install --locked cargo-make
+      - run: cargo make full
 
   # 必需 job（Linux）：跨平台编译与静态检查覆盖，作 main 分支保护 required status check。
-  # 与 Windows core 共用同一组脚本的 sh 版本，覆盖 crate 平台 feature 回归。
+  # 与 Windows core 共用 Makefile.toml，自动选择 sh 版本脚本。
   core-linux:
     runs-on: ubuntu-latest
     steps:
@@ -37,9 +38,9 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      # verify-full.sh 内的 verify-licenses.sh 依赖 cargo-deny；与本机一致锁版本
       - run: cargo install --locked --version 0.20.2 cargo-deny
-      - run: ./scripts/verify-full.sh
+      - run: cargo install --locked cargo-make
+      - run: cargo make full
 
   # 非阻塞 job：真实浏览器闭环，在 GitHub runner 上稳定跑绿后再改为必需
   browser:
