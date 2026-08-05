@@ -98,4 +98,4 @@ jobs:
           gh release create dev --prerelease --target "$GITHUB_SHA" \
             --title "Dev build $(git rev-parse --short "$GITHUB_SHA")" \
             --notes-file notes.md
-          gh release upload dev artifacts/*/* SHA256SUMS.txt --clobber
+          gh release upload dev artifacts/*/*.zip artifacts/*/*.tar.gz SHA256SUMS.txt --clobber

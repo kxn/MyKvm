@@ -130,6 +130,7 @@ def main() -> int:
             for f in files:
                 archive.add(f, arcname=f.relative_to(staging))
 
+    shutil.rmtree(staging)
     print(out_path.resolve())
     return 0
 
