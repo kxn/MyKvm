@@ -127,13 +127,22 @@ impl Y4mAsset {
 
     /// 把一帧 YUV420 平面数据转换为 `BGRA8888` 字节，不包含行填充。
     pub fn frame_bgra(&self, index: usize) -> Option<Vec<u8>> {
+        let mut output = Vec::new();
+        self.frame_bgra_into(index, &mut output)?;
+        Some(output)
+    }
+
+    /// 把一帧 YUV420 平面数据转换为 `BGRA8888`，写入 caller 传入的 `out`（复用容量，
+    /// 消除每帧 Vec 分配）。见调研阶段 1.2（issue #19）。
+    pub fn frame_bgra_into(&self, index: usize, out: &mut Vec<u8>) -> Option<()> {
         let frame = self.frames.get(index)?;
         let width = usize::try_from(self.width).ok()?;
         let height = usize::try_from(self.height).ok()?;
         let uv_width = width.div_ceil(2);
         let uv_height = height.div_ceil(2);
         let y_len = width * height;
-        let mut output = Vec::with_capacity(width * height * 4);
+        out.clear();
+        out.reserve(width * height * 4);
 
         for row in 0..height {
             for column in 0..width {
@@ -141,10 +150,10 @@ impl Y4mAsset {
                 let u = frame[y_len + (row / 2) * uv_width + column / 2];
                 let v = frame[y_len + uv_width * uv_height + (row / 2) * uv_width + column / 2];
                 let (r, g, b) = yuv_to_bgr(y, u, v);
-                output.extend_from_slice(&[b, g, r, 255]);
+                out.extend_from_slice(&[b, g, r, 255]);
             }
         }
-        Some(output)
+        Some(())
     }
 }
 
@@ -246,5 +255,30 @@ mod tests {
             vec![0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255, 0, 0, 0, 255]
         );
         assert_eq!(white.unwrap(), vec![255u8; 16]);
+    }
+
+    /// buffer 复用：连续两次 frame_bgra_into 写入同一 buffer，第二次数据正确覆盖。
+    #[test]
+    fn frame_bgra_into_reuses_buffer_across_calls() {
+        let mut bytes = b"YUV4MPEG2 W2 H2 F10:1 Ip A1:1 C420\nFRAME\n".to_vec();
+        bytes.extend_from_slice(&[0; 6]); // 黑色帧 Y=0,U=128,V=128
+        let black_len = bytes.len();
+        bytes[black_len - 2] = 128;
+        bytes[black_len - 1] = 128;
+        bytes.extend_from_slice(b"FRAME\n");
+        bytes.extend_from_slice(&[255; 4]); // 白色帧
+        bytes.extend_from_slice(&[128; 2]);
+
+        let asset = Y4mAsset::parse(&bytes).unwrap();
+        let mut buf = Vec::new();
+
+        asset.frame_bgra_into(0, &mut buf).unwrap();
+        let black = buf.clone();
+        assert_eq!(black.len(), 16);
+        assert!(black.iter().all(|&b| b == 0 || b == 255));
+
+        // 第二次写入同一 buffer（白色帧），数据应正确覆盖黑色帧。
+        asset.frame_bgra_into(1, &mut buf).unwrap();
+        assert_eq!(buf, vec![255u8; 16]);
     }
 }

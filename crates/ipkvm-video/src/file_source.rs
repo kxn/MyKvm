@@ -45,14 +45,18 @@ impl FileVideoSource {
         tokio::spawn(async move {
             let interval = Duration::from_nanos((1_000_000_000 / frames_per_second).max(1));
             let mut seq = 0_u64;
+            // BGRA 输出 buffer 复用：消除每帧 Vec 分配（调研阶段 1.2，#19）。
+            let mut bgra_buf: Vec<u8> = Vec::new();
             loop {
                 for asset in &assets {
                     for index in 0..asset.frame_count() {
                         let convert_start = Instant::now();
-                        let Some(pixels) = asset.frame_bgra(index) else {
+                        let Some(()) = asset.frame_bgra_into(index, &mut bgra_buf) else {
                             continue;
                         };
                         task_stats.record_convert(convert_start.elapsed());
+                        let data: Arc<[u8]> =
+                            Arc::from(std::mem::take(&mut bgra_buf).into_boxed_slice());
                         let capture_ns = now_ns();
                         seq = seq.saturating_add(1);
                         let frame = VideoFrame::new(
@@ -62,7 +66,7 @@ impl FileVideoSource {
                             asset.height(),
                             asset.width() * 4,
                             PixelFormat::Bgra8888,
-                            Arc::from(pixels.into_boxed_slice()),
+                            data,
                         );
                         let shared = Arc::new(frame);
                         task_stats.record_publish(seq, capture_ns);
