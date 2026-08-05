@@ -29,8 +29,8 @@ use windows::Win32::Media::DirectShow::{
 };
 use windows::Win32::Media::IReferenceClock;
 use windows::Win32::Media::MediaFoundation::{
-    AM_MEDIA_TYPE, FORMAT_VideoInfo, MEDIASUBTYPE_ARGB32, MEDIASUBTYPE_NV12, MEDIASUBTYPE_RGB24,
-    MEDIASUBTYPE_RGB32, MEDIASUBTYPE_YUY2, MEDIATYPE_Video, VIDEOINFOHEADER,
+    AM_MEDIA_TYPE, FORMAT_VideoInfo, MEDIASUBTYPE_ARGB32, MEDIASUBTYPE_MJPG, MEDIASUBTYPE_NV12,
+    MEDIASUBTYPE_RGB24, MEDIASUBTYPE_RGB32, MEDIASUBTYPE_YUY2, MEDIATYPE_Video, VIDEOINFOHEADER,
 };
 use windows::core::{PCWSTR, PWSTR, Ref};
 
@@ -43,6 +43,8 @@ pub enum NegotiatedFormat {
     Rgb24,
     /// 32bpp，按 subtype 区分 ARGB（有 alpha）/ RGB32（不透明，alpha=255）。
     Argb32,
+    /// MJPEG 压缩格式（原始 JPEG 字节流，不解码直通，供 F 透传）。
+    Mjpeg,
 }
 
 impl NegotiatedFormat {
@@ -55,6 +57,8 @@ impl NegotiatedFormat {
             Some(Self::Rgb24)
         } else if subtype == MEDIASUBTYPE_RGB32 || subtype == MEDIASUBTYPE_ARGB32 {
             Some(Self::Argb32)
+        } else if subtype == MEDIASUBTYPE_MJPG {
+            Some(Self::Mjpeg)
         } else {
             None
         }
@@ -64,8 +68,8 @@ impl NegotiatedFormat {
         match self {
             Self::Rgb24 => 3,
             Self::Argb32 => 4,
-            // NV12/YUY2 是打包格式，不按每像素字节数计；上层按平面/打包布局单独处理。
-            Self::Nv12 | Self::Yuy2 => 0,
+            // NV12/YUY2/MJPEG 是打包/压缩格式，不按每像素字节数计；上层按布局单独处理。
+            Self::Nv12 | Self::Yuy2 | Self::Mjpeg => 0,
         }
     }
 }
@@ -397,6 +401,11 @@ impl SinkFilter {
     pub fn attach_filter_reference(&self, filter: IBaseFilter) {
         self.pin.get().attach_filter(filter);
     }
+
+    /// 切换 pin 到兜底模式（认所有格式），供两轮连接第二轮调用。
+    pub fn accept_all_formats(&self) {
+        self.pin.get().accept_all_formats();
+    }
 }
 
 impl windows::Win32::System::Com::IPersist_Impl for SinkFilter_Impl {
@@ -509,6 +518,10 @@ struct SinkPin {
     connected_mt: Mutex<OwnedMediaType>,
     /// 所属 filter 的弱引用（QueryPinInfo 回填）。filter 持有 pin，故用克隆 AddRef。
     filter: Mutex<Option<IBaseFilter>>,
+    /// 格式过滤模式（两轮连接，issue #20）：
+    /// - false（第一轮）：只认 MJPEG + BGRA，让 DirectShow 插转换 filter 帮转 YUV。
+    /// - true（第二轮兜底）：认所有视频格式，设备原生格式直连 + 自己 convert。
+    accept_all: std::sync::atomic::AtomicBool,
 }
 
 impl SinkPin {
@@ -518,12 +531,19 @@ impl SinkPin {
             connected_to: Mutex::new(None),
             connected_mt: Mutex::new(OwnedMediaType::empty()),
             filter: Mutex::new(None),
+            accept_all: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
     /// 供 SinkFilter 注入所属 filter 引用，QueryPinInfo 时回填（AddRef 副本）。
     pub fn attach_filter(&self, filter: IBaseFilter) {
         *self.filter.lock().expect("pin filter lock poisoned") = Some(filter);
+    }
+
+    /// 切换到兜底模式：接受所有视频格式（第一轮 MJPEG/BGRA 直通失败后调用）。
+    pub fn accept_all_formats(&self) {
+        self.accept_all
+            .store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
     const PIN_NAME: &'static str = "In";
@@ -555,6 +575,16 @@ impl IPin_Impl for SinkPin_Impl {
             // 尝试其它格式或失败（明确返回错误，而非崩溃）。
             return Err(windows::Win32::Media::DirectShow::VFW_E_TYPE_NOT_ACCEPTED.into());
         };
+        // 两轮连接（issue #20）：第一轮只认 MJPEG + BGRA（让 DS 插转换 filter 帮转
+        // YUV）；第二轮 accept_all 放开认所有格式（设备原生直连 + 自己 convert）。
+        if !self.accept_all.load(std::sync::atomic::Ordering::Relaxed) {
+            match parsed.format {
+                NegotiatedFormat::Mjpeg | NegotiatedFormat::Argb32 => {}
+                _ => {
+                    return Err(windows::Win32::Media::DirectShow::VFW_E_TYPE_NOT_ACCEPTED.into());
+                }
+            }
+        }
         // 深拷贝媒体类型（pbFormat 走 CoTaskMemAlloc），独立于上游缓冲。
         let owned = OwnedMediaType::copy_from(mt);
         // 缓存对端 pin 与媒体类型，供 ConnectedTo / ConnectionMediaType 返回。
@@ -859,40 +889,44 @@ pub fn convert_to_bgra_into(
 ) -> Option<(u32, u32)> {
     let w = mt.width as usize;
     let h = mt.height as usize;
-    let out_size = w * h * 4;
-    out.clear();
-    out.resize(out_size, 0);
     match mt.format {
-        NegotiatedFormat::Nv12 => {
-            if src.len() < w * h * 3 / 2 {
-                return None;
-            }
-            // NV12 是打包 YUV，数据始终 top-to-bottom 线性排列；biHeight 正负号对它
-            // 无意义（很多驱动对 YUV 仍填正 biHeight）。绝不按 biHeight 翻转，否则画面头朝下。
-            nv12_to_bgra_inner(src, w, h, true, out);
+        NegotiatedFormat::Mjpeg => {
+            // MJPEG 直通：原始 JPEG 字节不解码，直接拷出（供 F 透传）。
+            // 下游需按 PixelFormat::Mjpeg 处理，不走 BGRA 路径。
+            out.clear();
+            out.extend_from_slice(src);
         }
-        NegotiatedFormat::Yuy2 => {
-            // YUY2: packed 4:2:2，每 4 字节 [Y0 U Y1 V] = 2 像素。stride 行 = w*2。
-            // 同 NV12，YUV 打包格式数据 top-to-bottom，不翻转。
-            if src.len() < w * h * 2 {
-                return None;
+        _ => {
+            let out_size = w * h * 4;
+            out.clear();
+            out.resize(out_size, 0);
+            match mt.format {
+                NegotiatedFormat::Nv12 => {
+                    if src.len() < w * h * 3 / 2 {
+                        return None;
+                    }
+                    nv12_to_bgra_inner(src, w, h, true, out);
+                }
+                NegotiatedFormat::Yuy2 => {
+                    if src.len() < w * h * 2 {
+                        return None;
+                    }
+                    yuy2_to_bgra_inner(src, w, h, true, out);
+                }
+                NegotiatedFormat::Rgb24 => {
+                    if src.len() < w * h * 3 {
+                        return None;
+                    }
+                    rgb24_to_bgra_inner(src, w, h, mt.top_down, out);
+                }
+                NegotiatedFormat::Argb32 => {
+                    if src.len() < w * h * 4 {
+                        return None;
+                    }
+                    copy_bgra_with_flip(src, w, h, mt.top_down, out);
+                }
+                NegotiatedFormat::Mjpeg => unreachable!(),
             }
-            yuy2_to_bgra_inner(src, w, h, true, out);
-        }
-        NegotiatedFormat::Rgb24 => {
-            // BGR 字节序（DirectShow RGB24 = BGR 内存序）。未压缩 RGB 遵守 biHeight：
-            // 正=bottom-up（需翻转），负=top-down。
-            if src.len() < w * h * 3 {
-                return None;
-            }
-            rgb24_to_bgra_inner(src, w, h, mt.top_down, out);
-        }
-        NegotiatedFormat::Argb32 => {
-            // 32bpp 未压缩 RGB：源是 BGRA/ARGB 字节序，遵守 biHeight 行序。
-            if src.len() < w * h * 4 {
-                return None;
-            }
-            copy_bgra_with_flip(src, w, h, mt.top_down, out);
         }
     }
     Some((mt.width, mt.height))
