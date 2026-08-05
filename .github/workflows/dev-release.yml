@@ -95,7 +95,7 @@ jobs:
           git tag -f dev "$GITHUB_SHA"
           git push origin dev --force
           gh release delete dev --yes 2>/dev/null || true
-          gh release create dev --prerelease --target dev \
+          gh release create dev --prerelease --target "$GITHUB_SHA" \
             --title "Dev build $(git rev-parse --short "$GITHUB_SHA")" \
             --notes-file notes.md
           gh release upload dev artifacts/*/* SHA256SUMS.txt --clobber
