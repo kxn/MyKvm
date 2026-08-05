@@ -1,0 +1,99 @@
+# dev 预发布：main 上 verify CI 全绿后自动构建多平台产物，
+# 覆盖式更新固定的 dev 预发布，方便随时下载测试（#12）。
+name: dev-release
+
+on:
+  workflow_run:
+    workflows: ["verify"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: dev-release
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: build (${{ matrix.os }})
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            runner_os: Windows
+            python: python
+          - os: ubuntu-latest
+            runner_os: Linux
+            python: python3
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.89
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Linux system deps (iced/winit runtime libs)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev
+      - name: Build release binaries
+        run: >-
+          cargo build --release
+          -p ipkvm-headless-app --bin ipkvm-headless
+          -p ipkvm-headless-demo --bin ipkvm-demo
+          -p ipkvm-desktop-iced --bin ipkvm-desktop-iced
+      - name: Package
+        run: ${{ matrix.python }} scripts/build-release-package.py --os ${{ matrix.runner_os }} --version dev --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ipkvm-dev-${{ matrix.runner_os }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 1
+
+  publish:
+    name: Publish dev release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Checksums
+        run: |
+          find artifacts -type f -name 'ipkvm-dev-*' | sort | xargs sha256sum > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - name: Prepare release notes
+        run: |
+          SHORT_SHA="$(git rev-parse --short "$GITHUB_SHA")"
+          {
+            echo "## Dev build \`$SHORT_SHA\` · $(date -u +%Y-%m-%d)"
+            echo
+            echo "main 分支 verify 全绿后自动构建，覆盖式更新（dev 预发布）。"
+            echo
+            echo "### 产物"
+            echo
+            grep -o 'ipkvm-dev-[^ ]*' SHA256SUMS.txt | sort | sed 's/^/- /'
+            echo
+            echo "每包内含 ipkvm-headless / ipkvm-demo / ipkvm-desktop-iced 与 README、LICENSE、THIRD_PARTY_LICENSES.txt；校验和见 SHA256SUMS.txt。"
+            echo
+            echo "### 最新提交"
+            echo
+            echo "\`$(git log -1 --format='%h %s')\`"
+            echo
+            echo "> 开发预发布，仅用于测试。正式版本走 release workflow（v* tag）。"
+          } > notes.md
+      - name: Update dev tag and release
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f dev "$GITHUB_SHA"
+          git push origin dev --force
+          gh release delete dev --yes 2>/dev/null || true
+          gh release create dev --prerelease --target dev \
+            --title "Dev build $(git rev-parse --short "$GITHUB_SHA")" \
+            --notes-file notes.md
+          gh release upload dev artifacts/*/* SHA256SUMS.txt --clobber

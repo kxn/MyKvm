@@ -94,6 +94,29 @@ py .\scripts\verify-web-assets.py
 
 固定工具版本、许可证分级和非 Cargo 组件边界见 `docs/dependency-license-policy.md`。`Makefile.toml` 是唯一流程编排层，门禁链由任务依赖图直接定义；检查逻辑全部为 `scripts/` 下跨平台 Python 单份实现（`check-text-encoding.py`、`test-*.py`、`web_assets_tools.py` 等），仅 `verify-desktop-release.ps1`（Windows 窗口句柄 P/Invoke）与维护工具 `update-novnc.ps1` 保留平台脚本。
 
+## 发布
+
+全部由 GitHub Actions 完成，无需本地打包。
+
+### dev 预发布（自动）
+
+main 分支 verify CI 全绿后，`dev-release` workflow 自动构建 Windows/Linux 产物并覆盖更新固定的 `dev` 预发布（GitHub Releases 页面），方便随时下载测试：
+
+- `ipkvm-dev-windows-x86_64.zip` / `ipkvm-dev-linux-x86_64.tar.gz`
+- 每包内含 `ipkvm-headless`、`ipkvm-demo`、`ipkvm-desktop-iced` 与 README、LICENSE、`THIRD_PARTY_LICENSES.txt`（由 `cargo metadata` 自动生成）；Release 页附 `SHA256SUMS.txt` 校验和。
+
+### 正式发版
+
+```bash
+# 方式一：workflow_dispatch（版本号留空自动取 Cargo.toml 版本）
+gh workflow run release.yml -f version=v0.2.0 -f prerelease=false
+
+# 方式二：push tag
+# git tag v0.2.0 && git push origin v0.2.0
+```
+
+`release` workflow 自动执行快速门禁、多平台 release 构建、校验和与 changelog，发布到 GitHub Releases。发布前请按 `docs/dependency-license-policy.md` 的发布责任章节人工核对第三方组件清单与许可证文本。
+
 ## 运行无头后台进程
 
 正式 `ipkvm-headless` 二进制同时提供 RFB TCP（供标准 VNC 客户端）和嵌入式 noVNC 网页 + RFB WebSocket（供浏览器），两个入口共享同一个单活动控制者连接闸门。视频源按 CLI 参数提供启动默认值：`--camera <名称>` 打开 Windows 相机（按 id 或显示名，DirectShow 后端，含 OBS 虚拟摄像头），`--assets <目录>` 使用目录内 Y4M 文件伪设备（按文件名排序循环播放）；未指定任何视频参数时启动空会话，网页连接页选择设备后再创建；`--list-cameras` 只枚举设备并退出。真实 CH9329 串口可通过 `--serial` 接入；未指定时键鼠事件进入模拟队列后被丢弃。
