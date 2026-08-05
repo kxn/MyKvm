@@ -192,7 +192,7 @@ cargo make full
 
 本仓库日常开发在 GitHub 公开仓库 `kxn/MyKvm`（https://github.com/kxn/MyKvm）进行。GitHub 支持仓库内 issue/PR 模板（`.github/`），也支持在 issue、PR、commit 中使用 `#编号` 自动链接引用。
 
-远端 CI 通过 `.github/workflows/verify.yml` 在 GitHub Actions 上运行（Windows 与 Linux 两个 core job，Rust 1.89，通过 `cargo make full` 统一入口调用验证脚本）。两个 core job 覆盖跨平台编译与静态检查，作为 main 分支保护的 required status check；真实浏览器门禁在 GitHub runner 上稳定跑绿前以 advisory 形式存在（continue-on-error），不锁死合并。PR 仍需记录本地 `cargo make full` 的实际结果作为补充证据。
+远端 CI 通过 `.github/workflows/verify.yml` 在 GitHub Actions 上运行（Windows core、Linux core 与真实浏览器三个必需 job，Rust 1.89，通过 `cargo make full` / `cargo make browser` 统一入口调用验证脚本）。两个 core job 覆盖跨平台编译与静态检查，browser job 覆盖真实浏览器闭环，均作为 main 分支保护的 required status check；浏览器门禁已由 advisory 转正（曾以 continue-on-error 存在，连续多轮全绿后移除），失败会标红 workflow 而非被静默吞掉。PR 仍需记录本地 `cargo make full` 的实际结果作为补充证据。
 
 私有 Gitea 仅保留为代码备份和灾难恢复副本（远端 `private`），不在其上开新 Issue/PR。历史 Gitea Issue 编号（#1–#169 等）属私有 Gitea，与 GitHub 新编号无对应关系；历史 commit message 中的 `#编号` 指向 Gitea 旧 Issue。
 

@@ -84,7 +84,7 @@ cargo install --locked cargo-make
 
 **快速门禁**检查文本 UTF-8 编码、noVNC 资产来源和逐文件哈希、浏览器依赖锁文件、锁定依赖图许可证与来源、crate 依赖边界、Rust 格式和 Git 差异。**全量门禁**在快速门禁基础上增加全工作区测试、Clippy 和 Rust 文档构建。
 
-真实浏览器闭环不包含在默认门禁内，涉及 noVNC/前端改动时运行 `cargo make browser`（首次通过 `npm ci` 安装锁定的 `playwright-core`，需要 Node.js 20 以上版本、npm、受支持的系统 Chrome 或 Edge 和 npm registry 网络访问）。Windows release 发布物启动冒烟通过 `cargo make desktop-release` 一键完成构建和验证（验证 release 进程持续存活并创建非零顶层窗口句柄，不读取窗口标题、About 文本或 `GIT_COMMIT`）。
+真实浏览器闭环不包含在本地默认门禁内（需 Node 20+、Chrome/Edge、npm 联网），涉及 noVNC/前端改动时运行 `cargo make browser`（首次通过 `npm ci` 安装锁定的 `playwright-core`）；CI 的 `browser` job 为必需检查，失败会标红 workflow。Windows release 发布物启动冒烟通过 `cargo make desktop-release` 一键完成构建和验证（验证 release 进程持续存活并创建非零顶层窗口句柄，不读取窗口标题、About 文本或 `GIT_COMMIT`）。
 
 可独立运行静态资源检查：
 
