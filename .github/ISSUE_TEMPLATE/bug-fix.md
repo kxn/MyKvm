@@ -1,3 +1,11 @@
+---
+name: 缺陷修复
+about: 报告并修复可观察到的缺陷
+title: ""
+labels: []
+assignees: []
+---
+
 # 缺陷修复
 
 ## 现象

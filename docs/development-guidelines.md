@@ -5,7 +5,7 @@
 ## 基本原则
 
 - 所有仓库内自写文档使用中文。
-- 非平凡工作以 Gitea issue 为入口。
+- 非平凡工作以 GitHub issue 为入口。
 - 默认优先自动化测试，人工验证只作为无法稳定自动化时的例外。
 - 代码修改优先从根因修复，禁止用临时绕过代替真实修复。
 - 设计结论、协议约定和开发规则一旦确定，应写入长期文档，而不是只留在 issue 讨论里。
@@ -16,7 +16,7 @@
 
 - `README.md`。
 - `docs/` 下的设计、计划、审查、规范和说明文档。
-- `.gitea/` 下的 issue 模板和 PR 模板。
+- `.github/` 下的 issue 模板、PR 模板和 Actions workflow。
 - `AGENTS.md`。
 
 以下内容可以保留原文：
@@ -60,11 +60,11 @@ issue 是一次工作的工作单元，记录过程事实；长期文档记录�
 
 非平凡改动只有完成以下收口步骤后才能声称完成：
 
-1. 已有对应 Gitea issue，且 issue 记录了背景、目标、范围、验收标准、测试计划和文档影响。
+1. 已有对应 GitHub issue，且 issue 记录了背景、目标、范围、验收标准、测试计划和文档影响。
 2. 已按 TDD 要求补充失败测试（适用时），完成实现、回归测试和必要的人工验证。
 3. 已创建英文 conventional commit，提交信息包含 `#编号`；不能只修改工作区而不提交。
 4. 默认分支开发流程必须从 `main` 创建带 issue 编号的分支，推送 issue 分支、创建 PR，并在 PR 描述中填写 `Closes #编号`、改动摘要、根因或设计依据、测试证据、文档影响和人工验证例外。
-5. PR 合并后必须确认 issue 已自动关闭；如果 issue 仍为 open，必须使用 `tea issues close --repo kxn/my_ipkvm <issue编号>` 关闭，并读回确认状态为 `closed`。
+5. PR 合并后必须确认 issue 已自动关闭；如果 issue 仍为 open，必须使用 `gh issue close <issue编号> --repo kxn/MyKvm` 关闭，并读回确认状态为 `closed`。
 6. 只有在用户明确授权时才允许直接提交或推送 `main`。直接推送不会触发 PR 的 `Closes` 收口，推送成功后必须手动关闭 issue，并读回确认 issue 状态。
 7. 收口前必须核对本地 commit 与远端目标分支一致、PR/issue 状态正确、工作区没有误纳入的文件；必要时同步 `HANDOFF.md`、台账和长期文档。
 
@@ -194,13 +194,15 @@ Linux/macOS 使用：
 
 如果改动不涉及 Rust 代码，也应运行适合范围的检查，例如 Markdown 冲突标记扫描或模板渲染检查。
 
-## Gitea 平台约定
+## GitHub 平台约定
 
-本仓库使用 Gitea issue 和 PR 模板。Gitea 支持仓库内 issue/PR 模板，也支持在 issue、PR、commit 中使用 `#编号` 自动链接引用。
+本仓库日常开发在 GitHub 公开仓库 `kxn/MyKvm`（https://github.com/kxn/MyKvm）进行。GitHub 支持仓库内 issue/PR 模板（`.github/`），也支持在 issue、PR、commit 中使用 `#编号` 自动链接引用。
 
-当前没有经过确认并持续维护的 Gitea Actions runner，因此不启用远端 workflow，也不把远端检查状态作为合并依据。PR 必须记录本地 `.\scripts\verify.ps1` 的实际结果。以后部署可用 runner 时，应开独立 issue 设计运行环境、工具链版本、缓存、超时和维护责任，再恢复远端 CI。
+远端 CI 通过 `.github/workflows/verify.yml` 在 GitHub Actions 上运行（Windows runner，Rust 1.89，调用现有 `scripts/` 验证脚本）。稳定的检查项作为 main 分支保护的 required status check；真实浏览器门禁在 GitHub runner 上稳定跑绿前以 advisory 形式存在，不锁死合并。PR 仍需记录本地 `.\scripts\verify.ps1` 的实际结果作为补充证据。
+
+私有 Gitea 仅保留为代码备份和灾难恢复副本（远端 `private`），不在其上开新 Issue/PR。历史 Gitea Issue 编号（#1–#169 等）属私有 Gitea，与 GitHub 新编号无对应关系；历史 commit message 中的 `#编号` 指向 Gitea 旧 Issue。
 
 参考资料：
 
-- Gitea issue 和 PR 模板：https://docs.gitea.com/usage/issue-pull-request-templates
-- Gitea 自动链接引用：https://docs.gitea.com/usage/automatically-linked-references
+- GitHub issue 和 PR 模板：https://docs.github.com/communities/using-templates-to-encourage-useful-issues-and-pull-requests
+- GitHub 自动链接引用：https://docs.github.com/get-started/writing-on-github/working-with-advanced-formatting/autolinked-references-and-urls

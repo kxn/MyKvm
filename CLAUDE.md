@@ -10,7 +10,7 @@
 
 ## Windows PowerShell 编码
 
-在 Windows PowerShell 中处理中文文档、向 Python/其他子进程传递中文、或调用 Gitea API 写入中文内容前，必须显式设置 UTF-8 编码：
+在 Windows PowerShell 中处理中文文档、向 Python/其他子进程传递中文、或调用 GitHub API 写入中文内容前，必须显式设置 UTF-8 编码：
 
 ```powershell
 $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
@@ -28,27 +28,27 @@ Get-Content -Raw -Encoding UTF8 AGENTS.md
 
 - `Get-Content -Raw AGENTS.md` 可能把中文显示成乱码，但文件本身仍可能是正确的 UTF-8。
 - PowerShell here-string 通过管道传给 Python 或其他子进程时，如果没有先设置 `InputEncoding`、`OutputEncoding` 和 `$OutputEncoding`，中文可能在进入子进程前被转成 `?`。
-- 使用 `Invoke-RestMethod` 或脚本调用 Gitea API 写中文标题/正文时，必须确保 JSON 按 UTF-8 字节发送，并带 `Content-Type: application/json; charset=utf-8`。
+- 使用 `Invoke-RestMethod` 或脚本调用 GitHub API 写中文标题/正文时，必须确保 JSON 按 UTF-8 字节发送，并带 `Content-Type: application/json; charset=utf-8`。
 - 写入外部系统后要读回确认中文内容，不要只相信本地命令的显示结果。
 
-## Gitea 客户端（tea）
+## GitHub 客户端（gh）
 
-本仓库通过 Gitea 管理，命令行交互统一使用 `tea` 客户端，并且已在本机登录，直接使用即可：
+本仓库日常开发在 GitHub 公开仓库 `kxn/MyKvm`（https://github.com/kxn/MyKvm）进行，命令行交互统一使用 `gh` 客户端，并且已在本机登录，直接使用即可。私有 Gitea 仅保留为代码备份和灾难恢复副本，不再用于日常 Issue/PR。
 
-- 已保存登录：登录名 `srpg`，服务器 `http://10.10.10.5:3000`，用户 `kxn`，仓库 `kxn/my_ipkvm`。
-- 非交互模式提示 `no gitea login detected, falling back to login 'srpg'` 是回退到已保存登录的正常提示，不是错误。
-- 常用命令（推荐显式传 `--repo kxn/my_ipkvm`）：
-  - 列出 issue：`tea issues list --repo kxn/my_ipkvm`
-  - 查看 issue 详情：`tea issues 18 --repo kxn/my_ipkvm`
-  - 创建 issue：`tea issues create --repo kxn/my_ipkvm --title "..." --description "..."`
-  - 列出 PR：`tea pulls list --repo kxn/my_ipkvm`
-  - 创建 PR：`tea pulls create --repo kxn/my_ipkvm --base main --head <branch> --title "..." --description "..."`
-  - 合并 PR：`tea pulls merge --repo kxn/my_ipkvm <PR编号>`
-- 通过 `tea` 写入中文标题或正文前，先按上文设置 UTF-8 编码，并在写入后读回确认中文内容。
+- 已保存登录：GitHub 账号 `kxn`（通过 `gh auth status` 确认）。
+- 远端约定：`origin` 指向 GitHub（`https://github.com/kxn/MyKvm.git`），`private` 指向私有 Gitea 备份。
+- 常用命令：
+  - 列出 issue：`gh issue list --repo kxn/MyKvm`
+  - 查看 issue 详情：`gh issue view <编号> --repo kxn/MyKvm`
+  - 创建 issue：`gh issue create --repo kxn/MyKvm --title "..." --body-file <UTF-8 文件>`
+  - 列出 PR：`gh pr list --repo kxn/MyKvm`
+  - 创建 PR：`gh pr create --repo kxn/MyKvm --base main --head <branch> --title "..." --body-file <UTF-8 文件>`
+  - 合并 PR：`gh pr merge <PR编号> --repo kxn/MyKvm --squash`
+- 通过 `gh` 写入中文标题或正文时，用 `--body-file` 传 UTF-8 文件，并在写入后读回确认中文内容。
 
 ## 工作入口
 
-- 非平凡改动必须围绕 Gitea issue 开发。issue 是工作单元，记录背景、目标、范围、验收标准、测试计划和讨论。
+- 非平凡改动必须围绕 GitHub issue 开发。issue 是工作单元，记录背景、目标、范围、验收标准、测试计划和讨论。
 - 架构、协议、用户行为、开发流程、测试策略发生变化时，必须同步更新长期文档。
 - 文档是长期事实来源；issue 是一次工作的过程记录。PR 负责把两者收口并链接起来。
 
@@ -75,4 +75,4 @@ cargo test --workspace --all-features
 - 不要回滚用户或其他协作者的未提交改动，除非用户明确要求。
 - 提交信息使用简洁英文 conventional commit 风格，例如 `feat: ...`、`fix: ...`、`docs: ...`、`chore: ...`。
 - PR 描述必须包含关联 issue、改动摘要、测试证据、文档影响和人工验证例外。
-- Gitea issue、PR 和提交信息中使用 `#编号` 关联工作；合并 PR 时可使用 `Closes #编号` 收口。
+- GitHub issue、PR 和提交信息中使用 `#编号` 关联工作；合并 PR 时可使用 `Closes #编号` 收口。
