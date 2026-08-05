@@ -18,12 +18,12 @@ if any(package["name"] == "ipkvm-desktop-iced-spike" for package in metadata["pa
 ' <<< "$metadata"
 
 tree="$(cargo tree --workspace --all-features)"
-if printf '%s\n' "$tree" | rg -n '(^|[├└]── )(eframe|egui) v'; then
+if printf '%s\n' "$tree" | grep -nE '(^|[├└]── )(eframe|egui) v'; then
     echo "workspace dependency tree still contains egui" >&2
     exit 1
 fi
 
-if rg -n '^(eframe|wgpu)\s*=' crates/ipkvm-desktop/Cargo.toml; then
+if grep -nE '^(eframe|wgpu)[[:space:]]*=' crates/ipkvm-desktop/Cargo.toml; then
     echo "ipkvm-desktop still declares egui UI dependencies" >&2
     exit 1
 fi
@@ -41,7 +41,7 @@ test ! -e crates/ipkvm-desktop-iced-spike || {
     exit 1
 }
 
-rg -q '#!\[cfg_attr\(windows, windows_subsystem = "windows"\)\]' crates/ipkvm-desktop-iced/src/main.rs
+grep -qE '#!\[cfg_attr\(windows, windows_subsystem = "windows"\)\]' crates/ipkvm-desktop-iced/src/main.rs
 test -f crates/ipkvm-desktop-iced/assets/icon.ico
 test -f crates/ipkvm-desktop-iced/assets/icon.rc
 

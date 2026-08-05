@@ -14,11 +14,13 @@
 
 ## 测试结果
 
-请填写实际运行过的命令和结果。
+请填写实际运行过的命令和结果。合并前请运行全量门禁：
 
 ```powershell
-.\scripts\verify.ps1
+.\scripts\verify-full.ps1
 ```
+
+开发迭代期间可先运行快速门禁 `.\scripts\verify.ps1`（Linux/macOS 对应 `./scripts/verify.sh`、`./scripts/verify-full.sh`）。涉及 noVNC/前端改动时另运行 `.\scripts\verify-browser.ps1`；涉及发布/桌面 UI 时另运行 `.\scripts\verify-desktop-release.ps1`。
 
 ## 人工验证例外
 

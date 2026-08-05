@@ -4,6 +4,7 @@
 //!   p95 < 16ms 延迟（smoke；需要无其它鼠标干扰的环境）。
 //! - 非 Windows：stub 返回“未实现”，保证 trait 形状可编译（macOS 留口）。
 
+#[cfg(windows)]
 use std::time::{Duration, Instant};
 
 #[cfg(windows)]

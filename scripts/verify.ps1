@@ -1,3 +1,5 @@
+# 本机快速门禁（PowerShell 版本，对应 verify.sh）：静态检查，无全量编译，环境无关。
+# 提交前运行本脚本；合并前请运行 verify-full.ps1 完成全量门禁（test/clippy/doc）。
 [CmdletBinding()]
 param()
 
@@ -55,8 +57,6 @@ function Test-TrackedTextEncoding {
 }
 
 $repositoryRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
-$hadRustdocFlags = Test-Path Env:RUSTDOCFLAGS
-$previousRustdocFlags = $env:RUSTDOCFLAGS
 
 Push-Location $repositoryRoot
 try {
@@ -78,43 +78,21 @@ try {
     Invoke-CheckedCommand "Check iced M5 desktop retirement" {
         & (Join-Path $PSScriptRoot "test-iced-m5-retirement.ps1")
     }
+    Invoke-CheckedCommand "Check crate dependency boundaries" {
+        & (Join-Path $PSScriptRoot "test-crate-boundaries.ps1")
+    }
     Invoke-CheckedCommand "Check Rust formatting" {
         cargo fmt --all --check
     }
-    Invoke-CheckedCommand "Run workspace tests" {
-        cargo test --workspace --all-features
-    }
-    Invoke-CheckedCommand "Run Clippy" {
-        cargo clippy --workspace --all-targets --all-features -- -D warnings
-    }
-
-    try {
-        $env:RUSTDOCFLAGS = "-D warnings"
-        Invoke-CheckedCommand "Build Rust documentation" {
-            cargo doc --workspace --all-features --no-deps
-        }
-    }
-    finally {
-        if ($hadRustdocFlags) {
-            $env:RUSTDOCFLAGS = $previousRustdocFlags
-        }
-        else {
-            Remove-Item Env:RUSTDOCFLAGS -ErrorAction SilentlyContinue
-        }
-    }
-
     Invoke-CheckedCommand "Check working tree diff" {
         git diff --check
     }
     Invoke-CheckedCommand "Check staged diff" {
         git diff --cached --check
     }
-    Invoke-CheckedCommand "Run real browser verification" {
-        & (Join-Path $PSScriptRoot "verify-browser.ps1")
-    }
 }
 finally {
     Pop-Location
 }
 
-Write-Host "Local verification passed."
+Write-Host "Quick verification passed."

@@ -41,6 +41,7 @@ impl ClipRect {
     }
 }
 
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 fn screen_rect(origin: (i32, i32), scale: f32, clip: ClipRect) -> Option<(i32, i32, i32, i32)> {
     if !clip.is_valid() || !scale.is_finite() || scale <= 0.0 {
         return None;

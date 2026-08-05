@@ -61,36 +61,53 @@ cargo run -p ipkvm-desktop-iced --all-features
 
 ## 验证
 
-提交和 PR 的自动化验收在本机通过统一脚本执行（GitHub Actions 远端 CI 也调用同一组脚本）：
+验证门禁按反馈速度分两层，本机与远端 CI（GitHub Actions）调用同一组脚本。首次使用需固定安装 cargo-deny：
 
 ```powershell
 cargo install --locked --version 0.20.2 cargo-deny
+```
+
+**快速门禁**（提交前，秒级~十秒级，无全量编译）：检查文本 UTF-8 编码、noVNC 资源来源和逐文件哈希、浏览器依赖锁文件、许可证策略与锁定依赖图、iced M5 退役门禁、crate 依赖边界、Rust 格式和 Git 差异。
+
+```powershell
 .\scripts\verify.ps1
 ```
 
 Linux/macOS 使用对应的 sh 版本：
 
 ```bash
-cargo install --locked --version 0.20.2 cargo-deny
 ./scripts/verify.sh
 ```
 
-桌面端 M5 退役门禁也由上述统一脚本调用；Windows release 发布物启动冒烟需在构建后显式运行：
+**全量门禁**（合并前，分钟级）：在快速门禁基础上增加全工作区测试、Clippy 和 Rust 文档构建。
+
+```powershell
+.\scripts\verify-full.ps1
+```
+
+Linux/macOS：
+
+```bash
+./scripts/verify-full.sh
+```
+
+桌面端 M5 退役门禁由上述统一脚本调用；真实浏览器闭环不包含在默认门禁内，涉及 noVNC/前端改动时显式运行（首次通过 `npm ci` 安装锁定的 `playwright-core`，需要 Node.js 20 以上版本、npm、受支持的系统 Chrome 或 Edge 和 npm registry 网络访问）：
+
+```powershell
+.\scripts\verify-browser.ps1
+```
+
+Windows release 发布物启动冒烟在构建后显式运行，验证 release 进程持续存活并创建非零顶层窗口句柄，不读取窗口标题、About 文本或 `GIT_COMMIT`：
 
 ```powershell
 cargo build --release -p ipkvm-desktop-iced --bin ipkvm-desktop-iced
 .\scripts\verify-desktop-release.ps1
 ```
 
-启动冒烟验证 release 进程持续存活并创建非零顶层窗口句柄，不读取窗口标题、About 文本或 `GIT_COMMIT`。
-
-脚本会检查文本 UTF-8 编码、noVNC 资源来源和逐文件哈希、浏览器依赖锁文件，并用临时负向夹具验证许可证与资源门禁；随后检查当前锁定依赖图、Rust 格式、全工作区测试、Clippy、Rust 文档、Git 差异和真实浏览器闭环。首次浏览器验收通过 `npm ci` 安装锁定的 `playwright-core`，需要 Node.js 20 以上版本、npm、受支持的系统 Chrome 或 Edge 和 npm registry 网络访问。
-
-可独立运行静态资源或浏览器检查：
+可独立运行静态资源检查：
 
 ```powershell
 .\scripts\verify-web-assets.ps1
-.\scripts\verify-browser.ps1
 ```
 
 固定工具版本、许可证分级和非 Cargo 组件边界见 `docs/dependency-license-policy.md`。

@@ -51,11 +51,19 @@ pub fn ui_tick() {
     }
 }
 
-/// 诊断日志文件路径：`%TEMP%\ipkvm-iced-diag.log`。
+/// 诊断日志文件路径：Windows 用 `%TEMP%`（回退 `%TMP%`），Unix 用 `$TMPDIR`，
+/// 均未设置时 Windows 回退当前目录、Unix 回退 `/tmp`。
 pub fn log_path() -> PathBuf {
-    let dir = std::env::var_os("TEMP")
+    let dir = std::env::var_os("TMPDIR")
+        .or_else(|| std::env::var_os("TEMP"))
         .or_else(|| std::env::var_os("TMP"))
-        .unwrap_or_else(|| ".".into());
+        .unwrap_or_else(|| {
+            if cfg!(windows) {
+                std::ffi::OsString::from(".")
+            } else {
+                std::ffi::OsString::from("/tmp")
+            }
+        });
     PathBuf::from(dir).join("ipkvm-iced-diag.log")
 }
 

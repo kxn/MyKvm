@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# 本机一键自动化验证（sh 版本，对应 verify.ps1）
+# 本机快速门禁（sh 版本，对应 verify.ps1）：静态检查，无全量编译，环境无关。
+# 提交前运行本脚本；合并前请运行 ./scripts/verify-full.sh 完成全量门禁（test/clippy/doc）。
 
 set -euo pipefail
 
@@ -65,12 +66,9 @@ run_check "Check web assets and browser dependency lock" "$SCRIPT_DIR/verify-web
 run_check "Test dependency license policy" "$SCRIPT_DIR/test-license-policy.sh"
 run_check "Check dependency licenses and sources" "$SCRIPT_DIR/verify-licenses.sh"
 run_check "Check iced M5 desktop retirement" "$SCRIPT_DIR/test-iced-m5-retirement.sh"
+run_check "Check crate dependency boundaries" "$SCRIPT_DIR/test-crate-boundaries.sh"
 run_check "Check Rust formatting" cargo fmt --all --check
-run_check "Run workspace tests" cargo test --workspace --all-features
-run_check "Run Clippy" cargo clippy --workspace --all-targets --all-features -- -D warnings
-run_check "Build Rust documentation" env RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps
 run_check "Check working tree diff" git diff --check
 run_check "Check staged diff" git diff --cached --check
-run_check "Run real browser verification" "$SCRIPT_DIR/verify-browser.sh"
 
-echo "Local verification passed."
+echo "Quick verification passed."

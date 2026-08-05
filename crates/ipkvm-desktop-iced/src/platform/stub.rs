@@ -7,6 +7,12 @@ use crate::relative::{DeltaReceiver, RelativePointerSource};
 
 pub struct StubRawInput;
 
+impl Default for StubRawInput {
+    fn default() -> Self {
+        Self
+    }
+}
+
 impl StubRawInput {
     pub fn new() -> Self {
         Self

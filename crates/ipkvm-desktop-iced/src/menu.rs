@@ -189,6 +189,7 @@ where
     }
     #[cfg(not(windows))]
     {
+        let _ = has_frame;
         Item::new(
             button(text(t!("edit.save_screenshot_unsupported")).font(crate::fonts::ui_font()))
                 .width(Length::Fill)

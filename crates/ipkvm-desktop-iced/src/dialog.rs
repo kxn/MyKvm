@@ -2,6 +2,7 @@
 //! rfd 是阻塞调用，调用方必须放在 iced Task::perform 里（异步线程），
 //! 避免阻塞 UI 事件循环。非 Windows 返回 None（菜单项按不支持处理）。
 
+#[cfg(windows)]
 use rust_i18n::t;
 
 /// 弹出“保存截图”对话框，返回用户选择的路径（取消返回 None）。
