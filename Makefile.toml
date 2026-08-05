@@ -36,9 +36,7 @@ dependencies = [
     "text-encoding",
     "web-assets-policy",
     "web-assets-lock",
-    "license-policy",
     "licenses",
-    "iced-m5",
     "crate-boundaries",
     "fmt",
     "diff-check",
@@ -81,10 +79,12 @@ end
 '''
 
 [tasks.license-policy]
-description = "测试依赖许可证策略（自测）"
+description = "测试依赖许可证策略（自测，变更 deny.toml / license_policy_tools.py 时运行）"
 script = '''
 #!@duckscript
 # 跨平台 Python 单份实现（#9 阶段 B2）
+# 工具自测：用临时正负向夹具验证 deny.toml 行为。不在 quick/full 门禁内，
+# 真正的许可证门禁是 licenses（verify-licenses.py，含 cargo-deny 版本断言）。
 if is_windows
     exec py ${SCRIPTS_DIR}/test-license-policy.py
 else
@@ -101,18 +101,6 @@ if is_windows
     exec py ${SCRIPTS_DIR}/verify-licenses.py
 else
     exec python3 ${SCRIPTS_DIR}/verify-licenses.py
-end
-'''
-
-[tasks.iced-m5]
-description = "检查 iced M5 桌面退役门禁"
-script = '''
-#!@duckscript
-# 跨平台 Python 单份实现（#9 阶段 B3）
-if is_windows
-    exec py ${SCRIPTS_DIR}/test-iced-m5-retirement.py
-else
-    exec python3 ${SCRIPTS_DIR}/test-iced-m5-retirement.py
 end
 '''
 

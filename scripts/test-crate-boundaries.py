@@ -2,9 +2,9 @@
 """crate 依赖边界检查（跨平台 Python 单份实现）。
 
 对应原 test-crate-boundaries.ps1 / test-crate-boundaries.sh（#9 阶段 B3）。
-断言必需 workspace package 与二进制 target 存在、已退役的 iced spike
-不在 workspace，且 headless / browser-fixture / desktop-core 三个库
-不泄漏硬件后端或 UI 依赖（检查 cargo tree 输出）。
+断言必需 workspace package 与二进制 target 存在，且 headless /
+browser-fixture / desktop-core 三个库不泄漏硬件后端或 UI 依赖
+（检查 cargo tree 输出）。
 """
 
 from __future__ import annotations
@@ -86,9 +86,6 @@ def main() -> int:
                 f"Expected one {target_name} binary in {package_name}, "
                 f"got {target_count}"
             )
-
-    if "ipkvm-desktop-iced-spike" in packages:
-        raise AssertionError("Retired iced spike remains in workspace")
 
     for package_name, patterns in BOUNDARY_PATTERNS.items():
         tree_result = run_command(

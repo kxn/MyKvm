@@ -99,7 +99,7 @@ PR 描述必须说明是否修改文档。如果不修改文档，应写明原�
 
 1. 单元测试：协议帧、状态机、坐标换算、配置选择、错误处理。
 2. 集成测试：mock 视频源、fake serial、RFB 协议样例、headless 闭环。
-3. 命令级验证：通过 cargo-make 统一入口运行 `cargo make quick`（快速门禁，提交前）或 `cargo make full`（全量门禁，合并前），平台脚本自动选择。快速门禁检查许可证策略、锁定依赖来源、文本编码、crate 依赖边界、Rust 格式；全量门禁另含全工作区测试、Clippy 和 Rust 文档。粒度命令（`cargo make fmt`/`test`/`clippy`/`doc`）可单独运行。
+3. 命令级验证：通过 cargo-make 统一入口运行 `cargo make quick`（快速门禁，提交前）或 `cargo make full`（全量门禁，合并前），平台脚本自动选择。快速门禁检查文本编码、锁定依赖图许可证与来源、web 资产、crate 依赖边界、Rust 格式；全量门禁另含全工作区测试、Clippy 和 Rust 文档。粒度命令（`cargo make fmt`/`test`/`clippy`/`doc`）可单独运行。
 4. 人工验证：真实采集卡、真实 CH9329/CH340 线、BIOS 行为、操作系统全局快捷键、真实 VNC 客户端兼容性。
 
 人工验证只有在满足以下条件时才允许作为主要证据：
@@ -165,7 +165,7 @@ bug 修复必须优先定位根因。修复说明至少回答：
 cargo install --locked --version 0.20.2 cargo-deny
 ```
 
-许可证策略自测和当前依赖图审计已经接入 `cargo make quick`（快速门禁）与 `cargo make full`（全量门禁）。noVNC、Qt、FFmpeg、GStreamer、系统 SDK 和静态资源不由 Cargo 检查完整覆盖，必须在引入时单独记录版本、许可证文件和发布义务。
+当前依赖图审计已接入 `cargo make quick`（快速门禁）与 `cargo make full`（全量门禁）；许可证策略自测（`cargo make license-policy`）在变更 `deny.toml` 时手动运行。noVNC、Qt、FFmpeg、GStreamer、系统 SDK 和静态资源不由 Cargo 检查完整覆盖，必须在引入时单独记录版本、许可证文件和发布义务。
 
 ## PR 要求
 

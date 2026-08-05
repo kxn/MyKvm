@@ -10,7 +10,7 @@
 cargo install --locked --version 0.20.2 cargo-deny
 ```
 
-独立运行策略自测：
+独立运行策略自测（工具自测，变更 deny.toml 后运行）：
 
 ```powershell
 py .\scripts\test-license-policy.py
@@ -29,7 +29,7 @@ py .\scripts\test-web-assets.py
 py .\scripts\verify-web-assets.py
 ```
 
-统一验收 `cargo make quick`（快速门禁）与 `cargo make full`（全量门禁，合并前）已包含以上各项。工具缺失或版本不符时必须失败，不能自动安装或跳过。
+统一验收 `cargo make quick`（快速门禁）与 `cargo make full`（全量门禁，合并前）包含锁定依赖图许可证/来源审计（`licenses`）、web 资产与浏览器锁核验（`web-assets-lock`）、web 资产策略自测（`web-assets-policy`）；许可证策略自测（`license-policy`）不在门禁内，变更 `deny.toml` 后手动运行。工具缺失或版本不符时必须失败，不能自动安装或跳过。
 
 ## 许可证分级
 
@@ -141,7 +141,7 @@ LGPL Rust 代码不是绝对禁止，但普通 Cargo 依赖通常会静态链接
 2. 查阅 crate 元数据、上游许可证文件和必要的分发说明。
 3. 先判断是否属于全局自动允许范围。
 4. 条件许可证或非 crates.io 来源必须开独立审查记录。
-5. 修改依赖后运行 `py .\scripts\test-license-policy.py`。
+5. 修改 `deny.toml` 后运行 `py .\scripts\test-license-policy.py` 验证策略行为。
 6. 运行 `py .\scripts\verify-licenses.py` 检查实际锁定依赖图。
 7. 合并前运行 `cargo make full`。
 
