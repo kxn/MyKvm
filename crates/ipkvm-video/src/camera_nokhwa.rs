@@ -77,6 +77,7 @@ impl CameraSource {
                 // 失败回退 None（驱动自选），保证设备总能打开。
                 // macOS AVFoundation 帧率协商无效是已知限制，格式协商仍尝试。
                 let fps = frames_per_second.max(1) as u32;
+                let cam_index_fallback = cam_index.clone();
                 let mut camera = {
                     let closest = RequestedFormat::new::<RgbAFormat>(
                         RequestedFormatType::HighestFrameRate(fps),
@@ -87,7 +88,7 @@ impl CameraSource {
                             // 回退：驱动不支持请求的帧率/格式，用 None 让库自选。
                             let none =
                                 RequestedFormat::new::<RgbAFormat>(RequestedFormatType::None);
-                            match Camera::new(cam_index, none) {
+                            match Camera::new(cam_index_fallback, none) {
                                 Ok(c) => c,
                                 Err(e) => {
                                     let _ = init_tx.send(Err(format!("nokhwa open: {e}")));
