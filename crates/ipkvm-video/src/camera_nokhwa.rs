@@ -69,17 +69,32 @@ impl CameraSource {
         let task_stop = Arc::clone(&stop);
         let task_stats = Arc::clone(&stats);
         let init_name = name.clone();
+        let frames_per_second = frames_per_second;
         let handle = std::thread::Builder::new()
             .name("camera-nokhwa".into())
             .spawn(move || {
-                // 线程内创建相机：RequestedFormat::None 让驱动自选格式；RgbAFormat 仅用于
-                // 后续 decode 输出，不影响捕获协商。
-                let req = RequestedFormat::new::<RgbAFormat>(RequestedFormatType::None);
-                let mut camera = match Camera::new(cam_index, req) {
-                    Ok(c) => c,
-                    Err(e) => {
-                        let _ = init_tx.send(Err(format!("nokhwa open: {e}")));
-                        return;
+                // 格式/帧率协商（issue #20）：首选 Closest 指定帧率（best-effort），
+                // 失败回退 None（驱动自选），保证设备总能打开。
+                // macOS AVFoundation 帧率协商无效是已知限制，格式协商仍尝试。
+                let fps = frames_per_second.max(1) as u32;
+                let mut camera = {
+                    let closest = RequestedFormat::new::<RgbAFormat>(
+                        RequestedFormatType::HighestFrameRate(fps),
+                    );
+                    match Camera::new(cam_index, closest) {
+                        Ok(c) => c,
+                        Err(_) => {
+                            // 回退：驱动不支持请求的帧率/格式，用 None 让库自选。
+                            let none =
+                                RequestedFormat::new::<RgbAFormat>(RequestedFormatType::None);
+                            match Camera::new(cam_index, none) {
+                                Ok(c) => c,
+                                Err(e) => {
+                                    let _ = init_tx.send(Err(format!("nokhwa open: {e}")));
+                                    return;
+                                }
+                            }
+                        }
                     }
                 };
                 if let Err(e) = camera.open_stream() {

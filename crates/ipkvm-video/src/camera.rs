@@ -96,8 +96,7 @@ impl CameraSource {
         if frames_per_second == 0 {
             return Err(CameraSourceError::ZeroFramesPerSecond);
         }
-        let _ = frames_per_second;
-        Self::open_impl(device_id)
+        Self::open_impl(device_id, frames_per_second)
     }
 }
 
@@ -115,12 +114,12 @@ type InitResult = (
 
 #[cfg(windows)]
 impl CameraSource {
-    fn open_impl(device_id: &str) -> Result<Self, CameraSourceError> {
+    fn open_impl(device_id: &str, frames_per_second: u64) -> Result<Self, CameraSourceError> {
         use windows::Win32::Media::DirectShow::{
             IBaseFilter, ICaptureGraphBuilder2, IGraphBuilder, IMediaControl,
         };
         use windows::Win32::Media::MediaFoundation::{
-            CLSID_CaptureGraphBuilder2, CLSID_FilterGraph,
+            CLSID_CaptureGraphBuilder2, CLSID_FilterGraph, FORMAT_VideoInfo, VIDEOINFOHEADER,
         };
         use windows::Win32::System::Com::CLSCTX;
 
@@ -194,6 +193,32 @@ impl CameraSource {
                             )
                         },
                     )?;
+                    // Best-effort 帧率协商（issue #20）：在连接前找 capture pin 的
+                    // IAMStreamConfig，设 AvgTimePerFrame = 10_000_000 / fps。
+                    // 全程忽略错误——失败则用设备默认帧率继续。
+                    let _ = (|| -> windows::core::Result<()> {
+                        use windows::Win32::Media::DirectShow::IAMStreamConfig;
+                        let mut pins = [None; 1];
+                        unsafe { source.EnumPins()?.Next(&mut pins, None) }.ok()?;
+                        let Some(pin) = pins[0].as_ref() else {
+                            return Ok(());
+                        };
+                        let config: IAMStreamConfig = pin.cast()?;
+                        let mt_ptr = unsafe { config.GetFormat()? };
+                        if !mt_ptr.is_null() {
+                            let mt = unsafe { &mut *mt_ptr };
+                            if mt.formattype == FORMAT_VideoInfo && !mt.pbFormat.is_null() {
+                                let vih = unsafe { &mut *(mt.pbFormat as *mut VIDEOINFOHEADER) };
+                                vih.AvgTimePerFrame =
+                                    (10_000_000_i64 / frames_per_second.max(1) as i64).max(1);
+                                let _ = unsafe { config.SetFormat(mt) };
+                            }
+                            unsafe {
+                                windows::Win32::System::Com::CoTaskMemFree(Some(mt_ptr as *const _))
+                            };
+                        }
+                        Ok(())
+                    })();
                     // 纯 sink filter（FFmpeg 同款）：capture pin → sink filter 输入 pin。
                     let slot = SinkFrameSlot::new();
                     let sink_filter = windows::core::ComObject::new(SinkFilter::new(slot.clone()));
@@ -204,10 +229,11 @@ impl CameraSource {
                     // 把 filter 引用注入 pin：图管理器连接协商时调 pin.QueryPinInfo，
                     // 期望拿到所属 filter 的 AddRef 副本；返回 NULL 会导致崩溃。
                     sink_filter.get().attach_filter_reference(sink.clone());
-                    // RenderStream(NULL, NULL, source, NULL, sink) —— FFmpeg 同款：
-                    // 从 capture filter 的输出 pin 直接连到我们的 sink（无中间 filter）。
-                    // sink 的 ReceiveConnection 会校验并接受协商到的视频媒体类型。
-                    unsafe {
+                    // 两轮连接（issue #20）：
+                    // 第一轮：sink 只认 MJPEG + BGRA，让 DirectShow 插转换 filter 帮转 YUV
+                    //         （设备出 MJPEG→直通；出 YUY2→DS 转 BGRA）。
+                    // 第二轮兜底：第一轮失败→sink 认所有格式→设备原生格式直连→自己 convert。
+                    let render_first = unsafe {
                         builder.RenderStream(
                             None,
                             std::ptr::null(),
@@ -215,10 +241,25 @@ impl CameraSource {
                             None::<&windows::Win32::Media::DirectShow::IBaseFilter>,
                             &sink,
                         )
+                    };
+                    if render_first.is_err() {
+                        sink_filter.get().accept_all_formats();
+                        unsafe {
+                            builder.RenderStream(
+                                None,
+                                std::ptr::null(),
+                                &source,
+                                None::<&windows::Win32::Media::DirectShow::IBaseFilter>,
+                                &sink,
+                            )
+                        }
+                        .map_err(|e| {
+                            CameraSourceError::Open(
+                                device_id.to_owned(),
+                                format!("render stream (fallback): {e}"),
+                            )
+                        })?;
                     }
-                    .map_err(|e| {
-                        CameraSourceError::Open(device_id.to_owned(), format!("render stream: {e}"))
-                    })?;
                     let control: IMediaControl = graph.cast().map_err(|e| {
                         CameraSourceError::Open(device_id.to_owned(), format!("cast control: {e}"))
                     })?;
@@ -284,7 +325,7 @@ impl CameraSource {
                             media_type: mt,
                         } => {
                             task_stats.record_capture_wait(wait_start.elapsed());
-                            // 按协商到的真实 subtype 转 BGRA8888（NV12/YUY2/RGB24/ARGB32）。
+                            // 按协商到的真实格式转换：MJPEG 直通（原始字节），其余转 BGRA8888。
                             let convert_start = std::time::Instant::now();
                             let Some((w, h)) =
                                 convert_to_bgra_into(&raw_buf[..len], &mt, &mut bgra_buf)
@@ -298,13 +339,20 @@ impl CameraSource {
                                 Arc::from(std::mem::take(&mut bgra_buf).into_boxed_slice());
                             let capture_ns = crate::now_ns();
                             seq = seq.saturating_add(1);
+                            // MJPEG 直通时 pixel_format 标 Mjpeg（stride 无意义）；其余 BGRA。
+                            let (pixel_format, stride) = match mt.format {
+                                crate::dshow_sink::NegotiatedFormat::Mjpeg => {
+                                    (PixelFormat::Mjpeg, 0)
+                                }
+                                _ => (PixelFormat::Bgra8888, w * 4),
+                            };
                             let frame = VideoFrame::new(
                                 seq,
                                 MonotonicTimestamp::from_nanos(capture_ns),
                                 w,
                                 h,
-                                w * 4,
-                                PixelFormat::Bgra8888,
+                                stride,
+                                pixel_format,
                                 data,
                             );
                             let shared = Arc::new(frame);

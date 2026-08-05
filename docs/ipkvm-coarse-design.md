@@ -645,7 +645,7 @@ WebSocket 兼容：
 - **调研阶段 1：当前协议与依赖内可做**（低风险高收益）
   - 实施单 B：Raw 编码热路径清理（恒等 8bpc 跳过 scale 乘法、复用输出 buffer）+ TCP_NODELAY（**已完成 #18**）。依赖 A。
   - 实施单 C：BGRA buffer 复用（**已完成 #19**，SIMD 经分析跳过）。消除每帧 BGRA Vec 分配（Y4M/DirectShow/NV12/YUY2 路径通用 `*_into` 变体写 caller buffer + `mem::take` + `Arc::from`）。SIMD 跳过原因：Y4M 只是 demo 路径；ARM 走 nokhwa 内部解码，我们的 YUY2 标量只在 Windows x86 跑（核强非硬伤）；`std::simd` nightly-only 不可用。真实出路是 D（格式协商探出采集卡原生格式）+ E/F（脏区 + 编码压缩）。
-  - 实施单 D：采集 FPS 配置真正生效（DirectShow `IAMStreamConfig::SetFormat`、nokhwa `RequestedFormat` 带 FPS）。依赖 A。
+  - 实施单 D：采集格式/帧率协商生效（**已完成 #20**）。Windows 两轮连接（sink 先认 MJPEG+BGRA 让 DS 帮转 YUV，失败兜底认所有格式自己转）+ `IAMStreamConfig::SetFormat` 设帧率；nokhwa `HighestFrameRate` 协商 + None 回退。MJPEG 直通在 sink 层就绪，留 F 启用下游透传。
 
 - **调研阶段 2：RFB 编码升级**（中等风险，决定能不能上 ARM）
   - 实施单 E：脏区追踪 + 多矩形 update（`FramebufferUpdate` 支持多矩形、`incremental` 真正发差分）。依赖 A、B。
