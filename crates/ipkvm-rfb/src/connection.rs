@@ -1,8 +1,8 @@
 use crate::protocol::client::{ClientMessage, ClientMessageDecoder};
 use crate::protocol::server::{
     AUTH_FAILED_REASON, NONE_SECURITY_TYPES, PROTOCOL_VERSION, SECURITY_RESULT_FAILED,
-    SECURITY_RESULT_OK, VNC_SECURITY_TYPES, checked_output_len, encode_desktop_size_update,
-    encode_empty_update, encode_raw_update, encode_server_init,
+    SECURITY_RESULT_OK, VNC_SECURITY_TYPES, checked_output_len, checked_raw_message_len,
+    encode_desktop_size_update, encode_empty_update, encode_raw_update, encode_server_init,
 };
 use crate::security::{RfbSecurity, constant_time_eq, vnc_expected_response};
 use crate::{
@@ -337,11 +337,22 @@ impl RfbConnectionCore {
             self.queue_output(encode_empty_update())?;
             return Ok(FramebufferUpdateOutcome::EmptyQueued);
         };
+        // 容量检查前置：用预期 raw message 长度检查，避免 encode 写到一半才发现超限。
+        let additional = checked_raw_message_len(
+            usize::from(rectangle.width),
+            usize::from(rectangle.height),
+            self.pixel_format.bytes_per_pixel(),
+        )?;
+        let attempted = checked_output_len(self.output.len(), additional)?;
+        if attempted > self.config.limits.max_queued_output_bytes {
+            return Err(RfbEncodeError::OutputQueueFull {
+                attempted,
+                maximum: self.config.limits.max_queued_output_bytes,
+            });
+        }
         let encode_start = std::time::Instant::now();
-        let message = encode_raw_update(frame, rectangle, self.pixel_format)?;
-        self.encode_stats
-            .record(encode_start.elapsed(), message.len());
-        self.queue_output(message)?;
+        let written = encode_raw_update(frame, rectangle, self.pixel_format, &mut self.output)?;
+        self.encode_stats.record(encode_start.elapsed(), written);
         Ok(FramebufferUpdateOutcome::RawQueued { rectangle })
     }
 
@@ -1403,5 +1414,37 @@ mod tests {
             after_one.encoded_bytes_total * 2,
             "bytes should accumulate linearly"
         );
+    }
+
+    /// buffer 复用：连续两次 queue_raw_update 后 take_output 返回两帧完整数据
+    /// （encode 直接写进 self.output，不再有中间 buffer 拷贝）。见调研阶段 1.1。
+    #[test]
+    fn raw_updates_accumulate_in_single_output_buffer() {
+        let mut connection = completed_connection_with_size(2, 1);
+        let pixels = [1, 2, 3, 255, 4, 5, 6, 255];
+        let request = FramebufferUpdateRequest {
+            incremental: true,
+            rectangle: RfbRectangle {
+                x: 0,
+                y: 0,
+                width: 2,
+                height: 1,
+            },
+        };
+
+        let frame1 = BgraFrameView::new(RfbSize::new(2, 1).unwrap(), 8, &pixels).unwrap();
+        connection
+            .queue_framebuffer_update(frame1, request)
+            .unwrap();
+        let frame2 = BgraFrameView::new(RfbSize::new(2, 1).unwrap(), 8, &pixels).unwrap();
+        connection
+            .queue_framebuffer_update(frame2, request)
+            .unwrap();
+
+        let output = connection.take_output();
+        // 两帧 × (16B header + 2像素×4B)，全部在同一个 buffer 里。
+        assert_eq!(output.len(), 2 * (16 + 8));
+        // 第二帧的 header 也在（offset 24 处的 message-type/num-rect）。
+        assert_eq!(&output[24..28], &[0, 0, 0, 1]);
     }
 }
