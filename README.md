@@ -92,7 +92,7 @@ cargo install --locked cargo-make
 .\scripts\verify-web-assets.ps1
 ```
 
-固定工具版本、许可证分级和非 Cargo 组件边界见 `docs/dependency-license-policy.md`。Makefile.toml 是编排层，实现逻辑仍在 `scripts/` 下的 verify 脚本中。
+固定工具版本、许可证分级和非 Cargo 组件边界见 `docs/dependency-license-policy.md`。`Makefile.toml` 是唯一流程编排层，门禁链由任务依赖图直接定义，实现逻辑在 `scripts/` 下的原子脚本中（`check-text-encoding.py`、`test-*.ps1/sh` 等）。
 
 ## 运行无头后台进程
 

@@ -23,7 +23,7 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      # cargo make full 内部调用 verify-full.ps1，后者依赖 cargo-deny
+      # cargo make full 的 licenses 步骤依赖 cargo-deny
       - run: cargo install --locked --version 0.20.2 cargo-deny
       - run: cargo install --locked cargo-make
       - run: cargo make full

@@ -1,10 +1,12 @@
-# cargo-make 统一任务入口（#7）。
+# cargo-make 统一任务入口（#7，#9 阶段 A）。
 #
 # 安装：cargo install --locked cargo-make
 # 使用：cargo make <task>（无参数等价于 cargo make quick）
 #
-# 本文件是编排层——实现逻辑仍在 scripts/ 下的 verify 脚本中。
-# 平台脚本选择通过 DuckScript script 在运行时判定，避免 ps1/sh 重复定义。
+# 本文件是唯一流程编排层：quick/full 门禁链由任务依赖图直接定义，
+# 不再经由 verify.ps1 / verify.sh 壳脚本中转。平台差异（ps1/sh）由
+# 各任务内部按平台分支处理；实现逻辑仍在 scripts/ 下的原子脚本中
+# （#9 阶段 B 将把双版本逻辑统一为跨平台 Python 单份实现）。
 
 [config]
 # 不加载 cargo-make 内置默认任务（预设的 build/test/audit 等），
@@ -30,31 +32,119 @@ dependencies = ["quick"]
 
 [tasks.quick]
 description = "快速门禁（秒级~十秒级，无全量编译）"
+dependencies = [
+    "text-encoding",
+    "web-assets-policy",
+    "web-assets-lock",
+    "license-policy",
+    "licenses",
+    "iced-m5",
+    "crate-boundaries",
+    "fmt",
+    "diff-check",
+]
+
+[tasks.text-encoding]
+description = "检查跟踪文本文件均为无 BOM 的合法 UTF-8"
 script = '''
 #!@duckscript
-# 跨平台脚本路径选择：Windows 用 .ps1，其余用 .sh
+# Windows 用 py 启动器，其余平台用 python3（与既有脚本的解析模式一致）
 if is_windows
-    cm_run_task quick-windows
+    exec py ${SCRIPTS_DIR}/check-text-encoding.py
 else
-    cm_run_task quick-unix
+    exec python3 ${SCRIPTS_DIR}/check-text-encoding.py
 end
 '''
 
-[tasks.quick-windows]
-private = true
-condition = { platforms = ["windows"] }
+[tasks.web-assets-policy]
+description = "测试 noVNC 资产策略（自测）"
 script = '''
 #!@duckscript
-exec powershell -NoProfile -ExecutionPolicy Bypass -File ${SCRIPTS_DIR}/verify.ps1
+if is_windows
+    exec powershell -NoProfile -ExecutionPolicy Bypass -File ${SCRIPTS_DIR}/test-web-assets.ps1
+else
+    exec sh ${SCRIPTS_DIR}/test-web-assets.sh
+end
 '''
 
-[tasks.quick-unix]
-private = true
-condition = { platforms = ["linux", "mac"] }
+[tasks.web-assets-lock]
+description = "检查 web 资产与浏览器依赖锁"
 script = '''
 #!@duckscript
-exec sh ${SCRIPTS_DIR}/verify.sh
+if is_windows
+    exec powershell -NoProfile -ExecutionPolicy Bypass -File ${SCRIPTS_DIR}/verify-web-assets.ps1
+else
+    exec sh ${SCRIPTS_DIR}/verify-web-assets.sh
+end
 '''
+
+[tasks.license-policy]
+description = "测试依赖许可证策略（自测）"
+script = '''
+#!@duckscript
+if is_windows
+    exec powershell -NoProfile -ExecutionPolicy Bypass -File ${SCRIPTS_DIR}/test-license-policy.ps1
+else
+    exec sh ${SCRIPTS_DIR}/test-license-policy.sh
+end
+'''
+
+[tasks.licenses]
+description = "检查依赖许可证与来源（cargo-deny）"
+script = '''
+#!@duckscript
+if is_windows
+    exec powershell -NoProfile -ExecutionPolicy Bypass -File ${SCRIPTS_DIR}/verify-licenses.ps1
+else
+    exec sh ${SCRIPTS_DIR}/verify-licenses.sh
+end
+'''
+
+[tasks.iced-m5]
+description = "检查 iced M5 桌面退役门禁"
+script = '''
+#!@duckscript
+if is_windows
+    exec powershell -NoProfile -ExecutionPolicy Bypass -File ${SCRIPTS_DIR}/test-iced-m5-retirement.ps1
+else
+    exec sh ${SCRIPTS_DIR}/test-iced-m5-retirement.sh
+end
+'''
+
+[tasks.crate-boundaries]
+description = "检查 crate 依赖边界"
+script = '''
+#!@duckscript
+if is_windows
+    exec powershell -NoProfile -ExecutionPolicy Bypass -File ${SCRIPTS_DIR}/test-crate-boundaries.ps1
+else
+    exec sh ${SCRIPTS_DIR}/test-crate-boundaries.sh
+end
+'''
+
+[tasks.fmt]
+description = "检查 Rust 代码格式（只读）"
+command = "cargo"
+args = ["fmt", "--all", "--check"]
+
+[tasks.fmt-fix]
+description = "自动修复 Rust 代码格式"
+command = "cargo"
+args = ["fmt", "--all"]
+
+[tasks.diff-check]
+description = "检查工作树与暂存区 diff 空白错误"
+dependencies = ["diff-check-tree", "diff-check-staged"]
+
+[tasks.diff-check-tree]
+private = true
+command = "git"
+args = ["diff", "--check"]
+
+[tasks.diff-check-staged]
+private = true
+command = "git"
+args = ["diff", "--cached", "--check"]
 
 # ---------------------------------------------------------------------------
 # 全量门禁：快速门禁 + workspace test/clippy/doc
@@ -62,30 +152,7 @@ exec sh ${SCRIPTS_DIR}/verify.sh
 
 [tasks.full]
 description = "全量门禁（分钟级，含全量编译）"
-script = '''
-#!@duckscript
-if is_windows
-    cm_run_task full-windows
-else
-    cm_run_task full-unix
-end
-'''
-
-[tasks.full-windows]
-private = true
-condition = { platforms = ["windows"] }
-script = '''
-#!@duckscript
-exec powershell -NoProfile -ExecutionPolicy Bypass -File ${SCRIPTS_DIR}/verify-full.ps1
-'''
-
-[tasks.full-unix]
-private = true
-condition = { platforms = ["linux", "mac"] }
-script = '''
-#!@duckscript
-exec sh ${SCRIPTS_DIR}/verify-full.sh
-'''
+dependencies = ["quick", "test", "clippy", "doc"]
 
 # ---------------------------------------------------------------------------
 # 环境敏感步骤：浏览器闭环（仅 Windows）
@@ -121,16 +188,6 @@ args = ["build", "--release", "-p", "ipkvm-desktop-iced", "--bin", "ipkvm-deskto
 # ---------------------------------------------------------------------------
 # 粒度 cargo 命令（跨平台）
 # ---------------------------------------------------------------------------
-
-[tasks.fmt]
-description = "检查 Rust 代码格式（只读）"
-command = "cargo"
-args = ["fmt", "--all", "--check"]
-
-[tasks.fmt-fix]
-description = "自动修复 Rust 代码格式"
-command = "cargo"
-args = ["fmt", "--all"]
 
 [tasks.test]
 description = "全工作区测试（--all-features）"
