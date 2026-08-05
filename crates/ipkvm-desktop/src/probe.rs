@@ -170,7 +170,10 @@ fn probe_once(
                                 },
                             );
                         }
-                        Ok(Ch9329Response::Error { command, status }) if command == 0x01 => {
+                        Ok(Ch9329Response::Error {
+                            command: 0x01,
+                            status,
+                        }) => {
                             return ControlProbeStatus::NotCh9329(format!(
                                 "GetInfo rejected: {status:?}"
                             ));
@@ -211,6 +214,17 @@ fn probe_ch9329_once(path: &str, baud_rate: u32, timeout: Duration) -> ControlPr
     probe_once(&mut port, baud_rate, timeout)
 }
 
+pub fn resolve_connect_baud(
+    auto_baud: bool,
+    current_baud: u32,
+    control_status: &ControlProbeStatus,
+    control_id: &str,
+) -> u32 {
+    resolve_connect_baud_with(auto_baud, current_baud, control_status, || {
+        detect_baud_rate(control_id, BAUD_PROBE_TIMEOUT)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,15 +250,4 @@ mod tests {
             ProbeAction::FinalFailure
         );
     }
-}
-
-pub fn resolve_connect_baud(
-    auto_baud: bool,
-    current_baud: u32,
-    control_status: &ControlProbeStatus,
-    control_id: &str,
-) -> u32 {
-    resolve_connect_baud_with(auto_baud, current_baud, control_status, || {
-        detect_baud_rate(control_id, BAUD_PROBE_TIMEOUT)
-    })
 }

@@ -301,13 +301,7 @@ fn run_worker(
 
         if transport.kind != TransportStateKind::Recovering {
             if transport.kind == TransportStateKind::Ready {
-                receive_batches(
-                    &rx,
-                    &mut outbound,
-                    &mut transport,
-                    &health,
-                    &mut channel_closed,
-                );
+                receive_batches(&rx, &mut outbound, &transport, &health, &mut channel_closed);
             }
             if let Some(fault) = write_available(&mut port, &mut outbound, &mut transport, &health)
             {
@@ -750,10 +744,10 @@ mod tests {
             };
             let mut state = self.state.lock().expect("fake state lock");
             state.writes.push(buffer.to_vec());
-            if self.respond {
-                if let Some(response) = response {
-                    state.reads.push_back(response.as_bytes().to_vec());
-                }
+            if self.respond
+                && let Some(response) = response
+            {
+                state.reads.push_back(response.as_bytes().to_vec());
             }
             Ok(buffer.len())
         }
