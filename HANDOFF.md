@@ -12,7 +12,7 @@
 
 - 仓库：`D:\Work\my_ipkvm`（Windows 11 + PowerShell，Rust 1.89+）。
 - GitHub（日常开发主仓库）：`https://github.com/kxn/MyKvm`，用户 `kxn`，命令行统一用 `gh`（已登录）。远端 `origin` 指向 GitHub。
-- 私有 Gitea（仅备份/灾难恢复）：`http://10.10.10.5:3000`，仓库 `kxn/my_ipkvm`；远端 `private`。不再在 Gitea 开新 Issue/PR，历史 Gitea Issue（#1–#169 等）作为历史归档保留，旧编号与 GitHub 新编号无对应关系。
+- 私有 Gitea（仅备份/灾难恢复）：远端 `private`。具体内网地址、账号不入公开仓库（写在本地运维说明或 git remote 配置中）。不再在 Gitea 开新 Issue/PR，历史 Gitea Issue（#1–#169 等）作为历史归档保留，旧编号与 GitHub 新编号无对应关系。
 - 写中文到 GitHub 前必须设置 UTF-8（见 AGENTS.md）：`$OutputEncoding`、`[Console]::Input/OutputEncoding`；`gh` 用 `--body-file` 传 UTF-8 文件。
 - 当前正式基线为 `main`；每个非平凡改动按关联 issue 创建独立分支并通过 PR 收口。
 - 暂存区（stash）：`stash@{0}` = 「stale egui issue69 debug work」——旧 egui 子菜单调试的未提交改动（app.rs/menus.rs），**保留可恢复，勿删**（用户未决定去留）。
