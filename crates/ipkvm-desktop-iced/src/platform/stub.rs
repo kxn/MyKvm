@@ -15,7 +15,7 @@ impl Default for StubRawInput {
 
 impl StubRawInput {
     pub fn new() -> Self {
-        Self::default()
+        Self
     }
 }
 
