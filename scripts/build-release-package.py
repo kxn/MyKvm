@@ -32,8 +32,16 @@ BINARIES = {
 
 
 def run(cmd, **kwargs):
+    # Windows 上 text=True 默认用 locale 编码（cp1252），cargo metadata 的
+    # UTF-8 输出含非 ASCII 描述会解码失败，必须显式指定 UTF-8。
     return subprocess.run(
-        cmd, check=True, capture_output=True, text=True, **kwargs
+        cmd,
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        **kwargs,
     )
 
 
