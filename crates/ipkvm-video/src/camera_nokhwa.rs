@@ -36,6 +36,7 @@ pub struct CameraSource {
     name: String,
     stop: Arc<std::sync::atomic::AtomicBool>,
     _handle: Option<std::thread::JoinHandle<()>>,
+    stats: Arc<crate::SourceStats>,
 }
 
 impl CameraSource {
@@ -57,6 +58,7 @@ impl CameraSource {
         let latest = Arc::new(RwLock::new(None));
         let (sender, _receiver) = watch::channel(None);
         let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let stats = crate::SourceStats::new();
 
         // nokhwa 的 Camera 内部持 Box<dyn CaptureBackendTrait>（非 Send），不能跨线程 move，
         // 所以在采集线程内创建 + open_stream + 持续 frame()。用 sync_channel 把初始化结果
@@ -65,6 +67,7 @@ impl CameraSource {
         let task_latest = Arc::clone(&latest);
         let task_sender = sender.clone();
         let task_stop = Arc::clone(&stop);
+        let task_stats = Arc::clone(&stats);
         let init_name = name.clone();
         let handle = std::thread::Builder::new()
             .name("camera-nokhwa".into())
@@ -85,13 +88,13 @@ impl CameraSource {
                 }
                 // 初始化成功：通知 open 可以返回了。
                 let _ = init_tx.send(Ok(()));
-                let started = std::time::Instant::now();
                 let mut seq = 0_u64;
                 let mut rgba_buf: Vec<u8> = Vec::new();
                 loop {
                     if task_stop.load(std::sync::atomic::Ordering::Relaxed) {
                         break;
                     }
+                    let frame_wait_start = std::time::Instant::now();
                     let frame = match camera.frame() {
                         Ok(f) => f,
                         Err(_) => {
@@ -101,6 +104,8 @@ impl CameraSource {
                             continue;
                         }
                     };
+                    task_stats.record_capture_wait(frame_wait_start.elapsed());
+                    let convert_start = std::time::Instant::now();
                     let res = frame.resolution();
                     // 解码到复用缓冲（容量稳定后零分配）。
                     rgba_buf.clear();
@@ -117,12 +122,12 @@ impl CameraSource {
                         px.swap(0, 2);
                         px[3] = 255;
                     }
+                    task_stats.record_convert(convert_start.elapsed());
+                    let capture_ns = crate::now_ns();
                     seq = seq.saturating_add(1);
                     let video_frame = VideoFrame::new(
                         seq,
-                        MonotonicTimestamp::from_nanos(
-                            started.elapsed().as_nanos().try_into().unwrap_or(u64::MAX),
-                        ),
+                        MonotonicTimestamp::from_nanos(capture_ns),
                         res.width_x,
                         res.height_y,
                         res.width_x * 4,
@@ -130,6 +135,7 @@ impl CameraSource {
                         Arc::from(rgba_buf.as_slice()),
                     );
                     let shared = Arc::new(video_frame);
+                    task_stats.record_publish(seq, capture_ns);
                     *task_latest.write().expect("camera lock poisoned") = Some(Arc::clone(&shared));
                     task_sender.send_replace(Some(shared));
                 }
@@ -168,6 +174,7 @@ impl CameraSource {
             name,
             stop,
             _handle: Some(handle),
+            stats,
         })
     }
 }
@@ -198,6 +205,10 @@ impl FrameSource for CameraSource {
             device_name: self.name.clone(),
             is_loop: false,
         }
+    }
+
+    fn source_stats(&self) -> Option<crate::SourceStatsSnapshot> {
+        Some(self.stats.snapshot())
     }
 }
 

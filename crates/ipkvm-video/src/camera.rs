@@ -86,6 +86,8 @@ pub struct CameraSource {
     stop: Arc<AtomicBool>,
     /// 采集线程句柄。
     _handle: Option<std::thread::JoinHandle<()>>,
+    /// 源侧采集/转换统计（采集线程写，/api/status 读）。
+    stats: Arc<crate::SourceStats>,
 }
 
 #[cfg(windows)]
@@ -99,16 +101,16 @@ impl CameraSource {
     }
 }
 
-/// 初始化结果：CameraSource + 采集循环所需变量（slot/control/stop/started/latest/sender）。
+/// 初始化结果：CameraSource + 采集循环所需变量（slot/control/stop/latest/sender/stats）。
 #[cfg(windows)]
 type InitResult = (
     CameraSource,
     SinkFrameSlot,
     windows::Win32::Media::DirectShow::IMediaControl,
     Arc<AtomicBool>,
-    std::time::Instant,
     Arc<RwLock<Option<SharedVideoFrame>>>,
     watch::Sender<Option<SharedVideoFrame>>,
+    Arc<crate::SourceStats>,
 );
 
 #[cfg(windows)]
@@ -222,7 +224,7 @@ impl CameraSource {
                     })?;
                     let latest = Arc::new(RwLock::new(None));
                     let (sender, _receiver) = watch::channel(None);
-                    let started = std::time::Instant::now();
+                    let stats = crate::SourceStats::new();
                     let stop = Arc::new(AtomicBool::new(false));
                     // 启动图（采集设备在 paused 时不出帧，必须 Run）
                     unsafe { control.Run() }.map_err(|e| {
@@ -242,17 +244,19 @@ impl CameraSource {
                             slot: Some(slot.clone()),
                             stop: Arc::clone(&stop),
                             _handle: None,
+                            stats: Arc::clone(&stats),
                         },
                         slot,
                         control,
                         stop,
-                        started,
                         latest,
                         sender,
+                        stats,
                     ))
                 })();
                 // 初始化完成：把 CameraSource 发给主线程（open 返回），然后本线程跑采集循环。
-                let (source, slot, control, stop, started, task_latest, task_sender) = match init {
+                let (source, slot, control, stop, task_latest, task_sender, task_stats) = match init
+                {
                     Ok(v) => v,
                     Err(e) => {
                         // 错误路径：把错误转成字符串经 channel 送出（CameraSourceError 不 Clone）。
@@ -271,21 +275,24 @@ impl CameraSource {
                 loop {
                     // 等下一帧；长超时只是兜底（防极端情况下永远等不到帧的死锁），
                     // 正常路径由 Receive 的 notify_one 立即唤醒，drop 时 stop() 返回 Stopped。
+                    let wait_start = std::time::Instant::now();
                     match slot.next_frame_into(std::time::Duration::from_secs(1), &mut raw_buf) {
                         crate::dshow_sink::NextFrame::Frame {
                             len,
                             media_type: mt,
                         } => {
+                            task_stats.record_capture_wait(wait_start.elapsed());
                             // 按协商到的真实 subtype 转 BGRA8888（NV12/YUY2/RGB24/ARGB32）。
+                            let convert_start = std::time::Instant::now();
                             let Some((bgra, w, h)) = convert_to_bgra(&raw_buf[..len], &mt) else {
                                 continue;
                             };
+                            task_stats.record_convert(convert_start.elapsed());
+                            let capture_ns = crate::now_ns();
                             seq = seq.saturating_add(1);
                             let frame = VideoFrame::new(
                                 seq,
-                                MonotonicTimestamp::from_nanos(
-                                    started.elapsed().as_nanos().try_into().unwrap_or(u64::MAX),
-                                ),
+                                MonotonicTimestamp::from_nanos(capture_ns),
                                 w,
                                 h,
                                 w * 4,
@@ -293,6 +300,7 @@ impl CameraSource {
                                 Arc::from(bgra),
                             );
                             let shared = Arc::new(frame);
+                            task_stats.record_publish(seq, capture_ns);
                             *task_latest.write().expect("camera lock poisoned") =
                                 Some(Arc::clone(&shared));
                             task_sender.send_replace(Some(shared));
@@ -362,6 +370,10 @@ impl FrameSource for CameraSource {
             device_name: self.name.clone(),
             is_loop: false,
         }
+    }
+
+    fn source_stats(&self) -> Option<crate::SourceStatsSnapshot> {
+        Some(self.stats.snapshot())
     }
 }
 

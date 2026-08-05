@@ -62,6 +62,12 @@ pub enum RfbInputNotice {
         enable: bool,
         rectangle: RfbRectangle,
     },
+    /// 观察到一次 FramebufferUpdate 成功发送的统计通知（调研阶段 0 埋点）。
+    /// observe 闭包据此累计 updates_sent 并刷新 encode 统计快照。
+    FrameUpdateStatsObserved {
+        client_id: RfbClientId,
+        encode: ipkvm_rfb::RfbEncodeStatsSnapshot,
+    },
     PreHandshakeDisconnected {
         client_id: RfbClientId,
         peer_addr: SocketAddr,
@@ -428,6 +434,12 @@ impl<S: InputSink> RfbInputPump<S> {
                     client_id: *client_id,
                     enable: *enable,
                     rectangle: *rectangle,
+                })
+            }
+            RfbServerEvent::FrameUpdateSent { client_id, encode } => {
+                Ok(RfbInputNotice::FrameUpdateStatsObserved {
+                    client_id: *client_id,
+                    encode: *encode,
                 })
             }
             RfbServerEvent::Disconnected {

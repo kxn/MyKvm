@@ -637,9 +637,10 @@ WebSocket 兼容：
 
 **分阶段实施顺序**（每阶段拆成可独立验证、独立 PR 的实施单，依赖关系见各 issue）：
 
-- **调研阶段 0：指标埋点**（实施单 A）。采集/转换/分发/编码/传输各段加测量点；修正
-  `last_frame_ns` 语义为采集时间；`/api/status` 同时暴露 capture_ns 与 observe_ns。
-  **是所有后续优化的回归基线，必须最先做。** 依赖：无。
+- **调研阶段 0：指标埋点**（实施单 A，**已完成 #17**）。采集/转换/分发/编码/传输各段加测量点；
+  修正 `last_frame_ns` 语义为采集时间；`/api/status` 同时暴露 capture_ns 与 observe_ns。
+  统一进程时钟（`ipkvm-video::now_ns`，session 转发），使 capture_ns 与 observe_ns 同源可比。
+  实测基线见调研文档第 3 节。依赖：无。
 
 - **调研阶段 1：当前协议与依赖内可做**（低风险高收益）
   - 实施单 B：Raw 编码热路径清理（恒等 8bpc 跳过 scale 乘法、复用输出 buffer）+ TCP_NODELAY。依赖 A。

@@ -43,6 +43,10 @@ impl FrameSource for SwitchableFrameSource {
     fn source_info(&self) -> VideoSourceInfo {
         self.current().source_info()
     }
+
+    fn source_stats(&self) -> Option<ipkvm_video::SourceStatsSnapshot> {
+        self.current().source_stats()
+    }
 }
 
 /// 空帧源：会话重建期间用于释放旧独占设备。

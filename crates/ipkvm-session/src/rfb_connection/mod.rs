@@ -9,8 +9,8 @@ use std::{io::ErrorKind, net::SocketAddr, time::Duration};
 
 use ipkvm_core::MouseMode;
 use ipkvm_rfb::{
-    RfbConfigError, RfbEncodeError, RfbFramebufferError, RfbProtocolError, RfbProtocolLimits,
-    RfbRectangle, RfbSecurity, RfbSize,
+    RfbConfigError, RfbEncodeError, RfbEncodeStatsSnapshot, RfbFramebufferError, RfbProtocolError,
+    RfbProtocolLimits, RfbRectangle, RfbSecurity, RfbSize,
 };
 use ipkvm_video::PixelFormat;
 use thiserror::Error;
@@ -115,6 +115,12 @@ pub enum RfbServerEvent {
         client_id: RfbClientId,
         enable: bool,
         rectangle: RfbRectangle,
+    },
+    /// 一次 FramebufferUpdate 成功发送后的统计通知（updates/sec 与 encode 耗时/字节）。
+    /// 调研阶段 0 埋点，供 `/api/status` 聚合。
+    FrameUpdateSent {
+        client_id: RfbClientId,
+        encode: RfbEncodeStatsSnapshot,
     },
     Disconnected {
         client_id: RfbClientId,
