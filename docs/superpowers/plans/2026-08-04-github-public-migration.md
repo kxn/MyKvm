@@ -15,10 +15,11 @@
 - 本计划对应 Gitea issue #169；本计划的实现提交使用英文 conventional commit，并在提交信息中包含 #169；收口 PR 使用 Closes #169。
 - 不直接向 main 提交或推送。迁移计划文档从最新私有 origin/main 创建 issue 分支，并通过 Gitea PR 收口。
 - GitHub 对外公开前必须完成历史敏感信息扫描、第三方资料许可审查和工作树内容审查。任何疑似密钥或无权再分发资料都必须先停在公开切换前，不得用删除当前文件代替历史清理或许可判断。
-- 不为了修复历史提交中的 #编号 自动链接而重写整个提交历史；历史重写只允许在确认存在敏感信息、许可证风险或明确的法律要求时单独审批。
+- 不为了修复历史提交中的 #编号 自动链接而重写整个提交历史。历史重写是受控例外，仅在以下情况允许，且每次都必须先在私有 Gitea 保留原始历史备份、记录决策、重新基线化密钥扫描：(a) 确认存在敏感凭据需要清理；(b) 无再分发权的第三方资料需要从公开历史移除（见任务 3 步骤 2 路径 A）；(c) 明确的法律要求。任务 3 步骤 2 选定路径 A/B/C 是公开切换的前置决策。
 - GitHub 与 Gitea 不双向维护 Issue、PR、标签和开发分支。所有新工作从 GitHub Issue 开始，所有新 PR 在 GitHub 创建。
 - 代码改动或构建配置改动按仓库默认要求运行 cargo fmt --all --check 和 cargo test --workspace --all-features；仅文档或平台模板变更运行与其范围匹配的静态检查，并在 PR 中说明未运行 Rust 业务测试的原因。
-- 当前迁移计划分支从私有远端最新主线 f0e3892 开始。主工作树中的未跟踪 artifacts/ 不属于本计划，不得通过 git add . 纳入提交。
+- 当前迁移计划分支以**执行时**私有远端的最新主线为基线（计划撰写时基线为 f0e3892，但 origin/main 已继续前进，禁止回退到旧 hash 起分支）。每次执行任务 1 步骤 2 时必须用 `git rev-parse origin/main` 记录实际基线哈希并写入迁移记录，后续所有分支、推送、回滚都以该哈希为准。
+- artifacts/ 是本地构建输出目录，不属于本计划，永远不得通过 `git add .` 纳入提交。**本次迁移计划一并把 `/artifacts/` 写入 .gitignore**（见任务 2 步骤 3），避免任何后续 `git add .` 误纳入。
 
 ## 当前事实与迁移边界
 
@@ -105,24 +106,60 @@ git log --all --name-only --format='' | Where-Object { $_ -match '(?i)(\.env|sec
 
 如果扫描发现真实凭据，立即停止公开推送；先撤销/轮换凭据，再用 git filter-repo 或经过批准的等价工具清理历史，最后重新运行全历史扫描。不要仅删除当前文件。
 
-- [ ] **步骤 2：使用可用的历史扫描工具。**
+- [ ] **步骤 2：使用可用的历史扫描工具（公开切换的硬性 stop 条件，不可跳过）。**
 
-优先运行：
+本机优先运行：
 
 ~~~~powershell
 gitleaks detect --source . --redact --no-banner
 ~~~~
 
-如果本机没有 gitleaks，把“工具未安装”记录为验证缺口，不把 rg 结果当作完整密钥扫描替代品；在 GitHub 首次公开前使用 CI 或另一台干净机器完成一次正式扫描。
+本计划撰写时确认本机未安装 gitleaks，因此 rg 的正则扫描**不能**作为完整密钥扫描的替代品——它是辅助手段，不是放行依据。必须以下两条之一成立才能继续公开切换：
 
-- [ ] **步骤 3：确认未跟踪工件不会被提交。**
+- **（推荐）在 GitHub Actions 上跑 gitleaks。** 新增 `.github/workflows/secret-scan.yml`，在 `push` 到 main、`pull_request` 和 `workflow_dispatch` 时运行，使用固定版本避免供应链漂移。骨架如下，执行时把 `VERSION` 锁定到具体 tag：
 
-~~~~powershell
-git status --short
-git check-ignore -v artifacts/ artifacts/my_ipkvm-windows-f0e3892.zip
+  ~~~~yaml
+  name: secret-scan
+  on:
+    push:
+      branches: [main]
+    pull_request:
+    workflow_dispatch:
+  permissions:
+    contents: read
+  jobs:
+    gitleaks:
+      runs-on: ubuntu-latest
+      steps:
+        - uses: actions/checkout@v4
+          with: { fetch-depth: 0 }   # gitleaks 需要全历史
+        - uses: gitleaks/gitleaks-action@VERSION
+          env:
+            GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  ~~~~
+
+  该 workflow 在仓库转 Public 之前（Private 阶段）就应跑通至少一次绿，结果写入迁移记录。若 gitleaks 命中，先按步骤 1 的轮换+filter-repo 流程处理，**不得**用 `.gitleaksignore` 静默压制真实凭据（误报才允许加 ignore 并注明理由）。
+
+- **（备选）在另一台干净机器上手工跑一次** `gitleaks detect --source . --redact`，把命令、版本、退出码和命中清单写入迁移记录。
+
+无论哪种路径，"公开前密钥扫描"都是任务 14 回滚条件之一，没有绿结果就停在阶段 F 切换之前。
+
+- [ ] **步骤 3：把构建工件永久排除出 Git。**
+
+当前 `.gitignore` 尚未包含 `/artifacts/` 规则（撰写时已确认），而 `artifacts/` 是会持续生成 Windows 构建包的本地目录，任何一次 `git add .` 都会误纳入。**本次迁移计划直接修正此缺口**：在 `.gitignore` 增加
+
+~~~~
+/artifacts/
 ~~~~
 
-预期：构建包未被暂存；如果没有忽略规则，先决定是增加 /artifacts/ 忽略规则还是转入独立 Release 任务，再进行 git add。
+然后验证：
+
+~~~~powershell
+git check-ignore -v artifacts/
+git status --short        # artifacts/ 不再出现在未跟踪列表
+~~~~
+
+预期：`git check-ignore` 返回 `/artifacts/` 命中，`git status --short` 不再列出 artifacts/。二进制发布物只走任务 8 的 GitHub Release 流程，不进 Git 历史。
 
 验收：迁移 PR 记录扫描工具、扫描范围、结果、例外和处理动作；公开切换前没有未解释的内部地址、凭据或本地构建物。
 
@@ -144,9 +181,32 @@ git check-ignore -v artifacts/ artifacts/my_ipkvm-windows-f0e3892.zip
 
 逐项标记为“允许随项目分发”“仅用于本地研究”“需要保留许可证后才能分发”或“改为官方链接”。必须记录来源 URL、版本/提交、许可证文件路径、是否修改和公开分发义务。
 
-- [ ] **步骤 2：处理无明确再分发权的规范资料。**
+- [ ] **步骤 2：处理无明确再分发权的规范资料（核心矛盾，必须在任务 9 首次推送前决策）。**
 
-对 USB-IF/UVC/HID 和供应商数据手册，在没有明确再分发许可时，从公开主线移除原始 PDF/ZIP，只在 docs/references/README.md 保留中文用途、官方来源和获取说明。当前私有 Gitea 历史不重写，除非法律审计明确要求删除历史对象。
+涉及资料分两类，处置策略不同：
+
+- **可随项目分发（保留）**：`RFC6143-rfb-protocol.txt`（IETF 文档，RFC 再分发条款允许）、`rfbproto-community-spec.rst`（确认其许可证后保留）、noVNC 系列 .md/.txt（MPL-2.0 等，随 third_party 声明）。
+- **无明确再分发权（默认移除工作树，改官方链接）**：`CH9329-datasheet-akizuki-mirror.pdf`、`CH9329-serial-protocol-wch-20190508.pdf`（WCH/供应商数据手册）、`USB-HID-Usage-Tables-1.7.pdf`、`USB-Video-Class-1.5-document-set.zip`、`uvc-1.5/`（USB-IF 文档，使用条款禁止未经授权再分发）。
+
+这些资料**从仓库脚手架提交起就进入 Git 历史**，因此"从工作树移除"并不能让它们从公开历史消失——任何人都能 `git checkout` 历史提交拿到。计划原版"移除工作树但不重写历史"在公开场景下是无效的。必须在首次推送（任务 9）前从以下三条路径中明确选定一条，并把决策写入迁移记录：
+
+- **路径 A（推荐，彻底干净）：用 git filter-repo 重写公开历史移除这些路径。**
+  这是全局约束中"许可证风险"触发的合法重写例外。在私有 Gitea 备份保留原始历史的前提下，用一个干净 clone 执行：
+  ~~~~powershell
+  git filter-repo --invert-paths \
+    --path docs/references/CH9329-datasheet-akizuki-mirror.pdf \
+    --path docs/references/CH9329-serial-protocol-wch-20190508.pdf \
+    --path docs/references/USB-HID-Usage-Tables-1.7.pdf \
+    --path docs/references/USB-Video-Class-1.5-document-set.zip \
+    --path docs/references/uvc-1.5
+  ~~~~
+  重写后所有历史提交哈希变化，必须在任务 9 推送前用任务 2 步骤 2 的 gitleaks 全历史扫描重新基线化，并把"原 Gitea 历史保留在 private、公开历史为 filter-repo 后版本"写入 HANDOFF.md。注意：filter-repo 会改变所有 commit hash，因此 GitHub 上历史 commit message 里的 `#编号` 自动链接问题（任务 11 步骤 4）仍需独立处理。
+
+- **路径 B（不移除，逐项补全再分发依据后保留）：** 只在能拿到 USB-IF/WCH 书面再分发许可，或确认相关条款明确允许时才选这条。把许可依据逐条记录到 `docs/references/README.md` 和许可证策略文档，公开后接受这些资料留在历史和 HEAD 中。无依据时不得选 B。
+
+- **路径 C（不公开历史，公开仓库从全新基线开始）：** 公开仓库只放当前快照（`git commit-tree` 生成单根提交）或 squash 后的历史，原 Gitea 历史保留在 private 不公开。代价是丢失公开提交历史和 GitHub blame 粒度，仅在小项目可接受；本仓库已有几百条结构化提交，一般不推荐。
+
+无论选哪条，`docs/references/README.md` 都要把已移除资料的"中文用途 + 官方来源 URL + 获取说明"补全，使公开协作者不依赖仓库内 PDF 即可定位规范。选定路径后必须更新任务 9 的推送命令（路径 A 需先做 filter-repo 再 push，路径 C 需 push 单根提交），并在任务 14 回滚条件中加入"路径未选定或未执行完毕"。
 
 - [ ] **步骤 3：验证第三方代码声明。**
 
@@ -228,7 +288,19 @@ gh pr merge $GitHubPrNumber --repo $GitHubRepository --squash --delete-branch=fa
 
 - [ ] **步骤 3：迁移模板内容。**
 
-保留现有中文字段：背景、目标、不做范围、根因/设计依据、验收标准、自动化测试计划、人工验证例外、文档影响和相关资料。删除 tea、私有服务器地址和 Gitea 专属收口步骤。config.yml 明确是否允许空白 Issue；默认关闭空白 Issue，要求新工作至少包含背景和验收标准。
+保留现有中文字段：背景、目标、不做范围、根因/设计依据、验收标准、自动化测试计划、人工验证例外、文档影响和相关资料。删除 tea、私有服务器地址和 Gitea 专属收口步骤。
+
+`.github/ISSUE_TEMPLATE/config.yml` 具体内容如下，禁用空白 Issue 并把协作者引导到结构化模板：
+
+~~~~yaml
+blank_issues_enabled: false
+contact_links:
+  - name: 项目主页 / README
+    url: <最终 GitHub 仓库 URL>
+    about: 先阅读 README 的平台支持、硬件要求和已知限制再提 Issue。
+~~~~
+
+`blank_issues_enabled: false` 确保 GitHub 不允许跳过模板直接开空白 Issue，每个新工作至少经过开发任务或 bug 模板的背景/验收标准字段。
 
 - [ ] **步骤 4：区分历史文档和操作文档。**
 
@@ -272,9 +344,65 @@ Actions 默认 permissions: contents: read；只有发布 workflow 为创建 Rel
 - 新增 .github/workflows/verify.yml。
 - 如有需要，最小修改 scripts/verify.ps1、scripts/verify.sh 以支持无交互 CI；修改时必须补充对应本地验证。
 
-- [ ] **步骤 1：将现有本机门禁作为权威入口。**
+- [ ] **步骤 1：将现有本机门禁作为权威入口（必须显式拆 job，不能一句"调用 verify.ps1"带过）。**
 
-GitHub Actions 首个 workflow 使用 actions/checkout、Rust 1.89 工具链、Node.js 20 和固定版本 cargo-deny 0.20.2，然后调用现有 scripts/verify.ps1。如果 Windows runner 上的真实浏览器门禁不稳定，先把稳定的静态、许可证、格式、测试、Clippy 和文档检查拆为必需 job，把浏览器闭环作为明确命名的非阻塞 job；不能静默删除检查。
+现有 `scripts/verify.ps1` / `scripts/verify.sh` 是 PowerShell↔bash 双套并行实现互相调用，且**最后一步是无头真实浏览器门禁**（`verify-browser.ps1`，依赖 Chrome/Chromium）。直接在 runner 上 `./scripts/verify.ps1` 会立刻撞上三道墙：runner OS 选择、`.ps1` 在 Linux runner 无法运行、浏览器在 GitHub runner 上需要显式安装。因此 verify.yml 必须按下面的矩阵拆分，而不是整体调用单个脚本：
+
+**Runner OS 与脚本对应关系（确定项，二选一，不要混用）：**
+
+- **方案 windows-latest（推荐）**：直接复用 `scripts/verify.ps1` 和 `.ps1` 子脚本链，与本机验证完全一致；缺点是 Windows runner 分钟费率高、启动慢。browser job 用 `browser-actions/setup-chrome` 安装 Chrome。
+- **方案 ubuntu-latest**：改用 `scripts/verify.sh` 子脚本链（注意 `.sh` 版本与本机 Windows 语义需保持一致，已有验证脚本本身就是双套实现）；浏览器在 Linux runner 上用 `browser-actions/setup-chrome` 或 Playwright 的 `npx playwright install chromium`。需要确认 `.sh` 脚本在纯 Linux 下的 Python/工具依赖（`get_python3` 回退 `py` 启动器仅 Windows 有用）。
+
+**Job 拆分骨架（windows-latest 路径）：**
+
+~~~~yaml
+name: verify
+on:
+  push:
+    branches: [main]
+  pull_request:
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+permissions:
+  contents: read
+jobs:
+  # 必需 job：稳定、可作 required check
+  core:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.89
+        with: { components: rustfmt, clippy }
+      - uses: Swatinem/rust-cache@v2
+      - run: .\scripts\test-web-assets.ps1
+      - run: .\scripts\verify-web-assets.ps1
+      - run: .\scripts\test-license-policy.ps1
+      - run: .\scripts\verify-licenses.ps1
+      - run: .\scripts\test-iced-m5-retirement.ps1
+      - run: cargo fmt --all --check
+      - run: cargo test --workspace --all-features
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo doc --workspace --all-features --no-deps
+        env: { RUSTDOCFLAGS: "-D warnings" }
+  # 非阻塞 job：真实浏览器，可能不稳定
+  browser:
+    runs-on: windows-latest
+    continue-on-error: true     # 见下方说明，稳定后改为 false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.89
+      - uses: Swatinem/rust-cache@v2
+      - uses: browser-actions/setup-chrome@v1
+      - run: .\scripts\verify-browser.ps1
+~~~~
+
+**关键约定：**
+
+- `cargo-deny 0.20.2` 用固定版本（计划原约束保留），由 `verify-licenses.ps1` 链调用；workflow 里若单独跑 `cargo deny`，必须用 `--locked` 且版本与本机一致。
+- **浏览器门禁初始为 `continue-on-error: true` 且不设为 required check**，等它在 GitHub runner 上跑绿 N 次（建议 ≥5 次连续稳定）后再改为 `continue-on-error: false` 并纳入 required check。在此之前不能用 unstable 的 browser job 锁死分支保护。该降级状态必须在 README 或迁移记录中如实说明"浏览器门禁当前为 advisory"，不能静默删除检查。
+- 不得为绕过 CI 用 `git add .` 或修改测试适配坏实现（根因修复原则）。
+- 缓存用 `Swatinem/rust-cache@v2`；不缓存 target 目录到仓库（见全局约束，target-*/ 已在 .gitignore）。
 
 - [ ] **步骤 2：定义触发和权限。**
 
@@ -405,9 +533,16 @@ PR 合并后只从 GitHub 更新本地 main，再把同一个提交推到私有 
 git fetch origin main
 git switch main
 git pull --ff-only origin main
+# 防回退保护：只有 private/main 是 origin/main 的祖先时才推送，避免把旧 commit 覆盖回去
+git fetch private main
+if (-not (git merge-base --is-ancestor private/main origin/main)) {
+    throw "private/main 不是 origin/main 的祖先，可能 GitHub 回退或远端被改写，停止备份推送并人工排查"
+}
 git push private origin/main:refs/heads/main
 git push private --tags
 ~~~~
+
+`merge-base --is-ancestor` 检查确保 private/main 必须是 origin/main 的严格祖先（即 GitHub 主线领先或等于私有备份），任何非快进情况都停下来人工排查，而不是用 `--force` 覆盖。备份脚本（步骤 2）必须内嵌同样的保护，不允许 `--force`。
 
 - [ ] **步骤 2：实现非破坏性备份脚本。**
 
@@ -447,9 +582,17 @@ git push private --tags
 
 已合入 PR 保留在 Gitea 作为历史；未合入但仍需要的工作，从对应提交或干净分支重新创建 GitHub PR，重新运行 GitHub Actions，不把旧 PR 的审查结论当成新 PR 的 CI 证据。无价值的开放 PR 在 Gitea 留下迁移说明后关闭。
 
-- [ ] **步骤 4：处理旧编号自动链接风险。**
+- [ ] **步骤 4：处理旧编号自动链接风险（含 commit message 污染）。**
 
-不重写历史提交。GitHub 可能把历史提交中的 #151 链接到新的 GitHub Issue 151；公开文档中提及旧工作时使用“Gitea #151”或完整上下文，避免把旧编号写成当前 GitHub Issue 引用。
+GitHub 会把提交信息和文档里裸写的 `#151` 自动链接到 GitHub 自身的 Issue 151。本仓库已有数百条 commit message 形如 `feat: ... (#169)`、`fix: ... (#82)`，这些编号全部来自 Gitea，推到 GitHub 后会产生大量错误交叉引用（Gitea #82 ≠ GitHub Issue 82）。缓解分两处：
+
+- **公开文档（README、新 Issue/PR 正文、长期文档）：** 提及旧 Gitea 工作时一律写"Gitea #151"或给出完整上下文，避免裸写 `#151`。
+- **历史 commit message（无法在不重写历史的前提下逐条改）：** 给出明确处置策略，三选一并写入迁移记录：
+  1. **接受并说明（推荐，配合任务 3 路径 C 之外的所有路径）：** 不重写历史 commit。在公开仓库的 README 和置顶迁移 Issue 中加一段说明："本仓库早期在私有 Gitea 开发，历史 commit message 中的 `#编号` 指向 Gitea 旧 Issue，与 GitHub 当前 Issue 编号无关。" 同时建立 `docs/migration/github-issue-map.md` 把高频引用的旧编号映射清楚。这是成本最低、不碰历史的方案。
+  2. **filter-repo 批量改写 commit message（仅当已选任务 3 路径 A 重写历史时才顺手做）：** 用 `git filter-repo --message-callback` 把历史 message 里的 ` #(\d+)` 替换成 ` Gitea #\1`（注意避开新提交）。只有在已经要重写历史时才值得做，否则单独为编号改写几百条 commit 的 hash 得不偿失。
+  3. **从全新基线公开（任务 3 路径 C）：** 公开仓库不带旧历史，commit message 污染自然消失，但代价是失去 blame 历史。
+
+无论选哪条，都必须把"历史 commit 中的 #编号指向 Gitea 而非 GitHub"作为已知项写进公开 README，避免新协作者误以为 `(#82)` 是 GitHub Issue。
 
 - [ ] **步骤 5：完成平台切换通知。**
 
@@ -512,7 +655,7 @@ cargo test --workspace --all-features
 - [ ] GitHub 与私有 Gitea 的 main 和发布标签提交一致。
 - [ ] 从 GitHub 和 Gitea 各做一次干净 clone，能读取源码、许可证和计划文档；恢复演练已记录。
 - [ ] artifacts/、内部分支、私有资料和未许可 PDF/ZIP 没有误入公开仓库。
-- [ ] Gitea #169 已通过包含 Closes #169 的 PR 合并并读回为 closed；若自动关闭未生效，使用 tea issues close --repo kxn/my_ipkvm 169 后读回确认。
+- [ ] Gitea #169 已通过包含 Closes #169 的 PR 合并并读回为 closed。**注意：本计划自身的收口 PR #171 已出现过"Closes 关键字写了但 Gitea 未自动关闭、issue 仍 open"的情况**——说明"PR 合并即收口"在本仓库 Gitea 配置下不可靠。因此强制流程是：PR 合并后立即 `tea issues 169 --repo kxn/my_ipkvm` 读回状态，若仍为 open 则 `tea issues close --repo kxn/my_ipkvm 169` 并再次读回确认为 closed。**读回状态为 closed 是收口的硬性判据，不是可选兜底。** 迁移到 GitHub 后同理验证 GitHub 的 auto-close 是否真生效。
 
 **人工验证例外：** GitHub 可见性、分支保护、Actions 权限、Secrets、未登录页面和真实 Release 下载不能完全由本地测试替代，必须记录操作者、时间、步骤、预期结果和实际结果；代码、文档、Git 对象和双远端提交比对优先自动化完成。
 
@@ -539,3 +682,11 @@ cargo test --workspace --all-features
 - [ ] 计划没有要求整体 git push --all origin 或无条件 git push --mirror。
 - [ ] 文档变更、代码变更、平台配置变更和人工验证的测试证据边界明确。
 - [ ] 迁移计划提交使用英文 conventional commit 并包含 #169；Gitea PR 使用 Closes #169。
+- [ ] 基线使用执行时的 origin/main 哈希，未回退到撰写时的 f0e3892（任务 1 步骤 2 记录实际哈希）。
+- [ ] `.gitignore` 已加入 `/artifacts/` 规则，`git check-ignore artifacts/` 命中（任务 2 步骤 3）。
+- [ ] 任务 2 步骤 2 的 gitleaks 扫描在 GitHub Actions 或干净机器上有一次绿结果，写入迁移记录，未用 rg 正则替代放行。
+- [ ] 任务 3 步骤 2 已明确选定路径 A/B/C，并据此更新任务 9 推送命令；无再分发权的 PDF/ZIP 处置已闭环。
+- [ ] 任务 7 的 verify.yml 已显式拆 core（必需）和 browser（初始 continue-on-error）job，runner OS、缓存、浏览器安装、cargo-deny 版本都已落实，未整体调用单个脚本。
+- [ ] 任务 10 的备份命令和脚本内嵌 `merge-base --is-ancestor` 防回退保护，禁止 `--force`。
+- [ ] 任务 11 步骤 4 已选定历史 commit `#编号` 处置策略（接受并说明 / filter-repo 改写 / 全新基线），并在公开 README 加已知项说明。
+- [ ] 任务 13 的 issue 收口判据是"读回状态为 closed"，本 issue #169 在 PR #171 合并后已确认 closed（或已手动关闭并读回）。
