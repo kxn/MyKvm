@@ -69,7 +69,6 @@ impl CameraSource {
         let task_stop = Arc::clone(&stop);
         let task_stats = Arc::clone(&stats);
         let init_name = name.clone();
-        let frames_per_second = frames_per_second;
         let handle = std::thread::Builder::new()
             .name("camera-nokhwa".into())
             .spawn(move || {
