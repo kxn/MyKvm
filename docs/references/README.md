@@ -7,7 +7,7 @@
 - noVNC 兼容目标固定为 1.7.0 提交 `63107bd06d9e1f6136ff21aeda8cd62cbf0d433e`。经常阅读的上游文件是 [WebSocket 字节队列实现](https://github.com/novnc/noVNC/blob/63107bd06d9e1f6136ff21aeda8cd62cbf0d433e/core/websock.js)、[RFB 初始化与消息处理](https://github.com/novnc/noVNC/blob/63107bd06d9e1f6136ff21aeda8cd62cbf0d433e/core/rfb.js) 和 [编码常量](https://github.com/novnc/noVNC/blob/63107bd06d9e1f6136ff21aeda8cd62cbf0d433e/core/encodings.js)。仓库在 `third_party/novnc/1.7.0` 保存完整 npm 发布包，并以固定元数据和逐文件 SHA-256 清单验证来源与内容。
 - 生产 WebSocket 路由使用 [axum 0.8.9 WebSocket 模块](https://docs.rs/axum/0.8.9/axum/extract/ws/) 与 [WebSocketUpgrade](https://docs.rs/axum/0.8.9/axum/extract/ws/struct.WebSocketUpgrade.html)。`axum` 仅启用 `http1`、`tokio`、`ws` 功能开关；锁文件版本为 0.8.9。
 - 测试客户端直接使用 [tokio-tungstenite 0.29.0](https://docs.rs/tokio-tungstenite/0.29.0/tokio_tungstenite/) 和 [futures-util 0.3.33](https://docs.rs/futures-util/0.3.33/futures_util/)；两者在 `ipkvm-headless` 中声明为直接开发依赖。前者由 axum 的 `ws` 功能引入正常生产依赖树，后者是 axum 的正常依赖并且还经 tower 进入。
-- `scripts/verify-web-assets.ps1` 离线核验固定资源、许可证和浏览器锁文件；`scripts/update-novnc.ps1` 是需要显式联网的升级入口，升级时必须重新审查固定信任值。
+- `scripts/verify-web-assets.py` 离线核验固定资源、许可证和浏览器锁文件；`scripts/update-novnc.ps1` 是需要显式联网的升级入口，升级时必须重新审查固定信任值。
 
 ## 已下载资料
 

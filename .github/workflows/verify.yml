@@ -23,7 +23,7 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      # cargo make full 的 licenses 步骤依赖 cargo-deny
+      # cargo make full 的 licenses 步骤依赖 cargo-deny；Makefile.toml 自动选平台脚本
       - run: cargo install --locked --version 0.20.2 cargo-deny
       - run: cargo install --locked cargo-make
       - run: cargo make full
@@ -54,4 +54,5 @@ jobs:
         with:
           node-version: "20"
       - uses: browser-actions/setup-chrome@v1
-      - run: .\scripts\verify-browser.ps1
+      - run: cargo install --locked cargo-make
+      - run: cargo make browser
