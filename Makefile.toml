@@ -1,0 +1,149 @@
+# cargo-make 统一任务入口（#7）。
+#
+# 安装：cargo install --locked cargo-make
+# 使用：cargo make <task>（无参数等价于 cargo make quick）
+#
+# 本文件是编排层——实现逻辑仍在 scripts/ 下的 verify 脚本中。
+# 平台脚本选择通过 DuckScript script 在运行时判定，避免 ps1/sh 重复定义。
+
+[config]
+# 不加载 cargo-make 内置默认任务（预设的 build/test/audit 等），
+# 避免与项目自定义任务名冲突。
+skip_core_tasks = true
+# 任务在 workspace 根目录运行，不向下分发到各 member crate。
+default_to_workspace = false
+
+[env]
+# 仓库根目录（DuckScript 的 CARGO_MAKE_WORKING_DIRECTORY 在 workspace 根运行时即为根）。
+SCRIPTS_DIR = "${CARGO_MAKE_WORKING_DIRECTORY}/scripts"
+
+# ---------------------------------------------------------------------------
+# 默认任务：cargo make（无参数）→ 快速门禁
+# ---------------------------------------------------------------------------
+
+[tasks.default]
+dependencies = ["quick"]
+
+# ---------------------------------------------------------------------------
+# 快速门禁：编码/资产/许可/crate 边界/fmt/git diff，无全量编译
+# ---------------------------------------------------------------------------
+
+[tasks.quick]
+description = "快速门禁（秒级~十秒级，无全量编译）"
+script = '''
+#!@duckscript
+# 跨平台脚本路径选择：Windows 用 .ps1，其余用 .sh
+if is_windows
+    cm_run_task quick-windows
+else
+    cm_run_task quick-unix
+end
+'''
+
+[tasks.quick-windows]
+private = true
+condition = { platforms = ["windows"] }
+script = '''
+#!@duckscript
+exec powershell -NoProfile -ExecutionPolicy Bypass -File ${SCRIPTS_DIR}/verify.ps1
+'''
+
+[tasks.quick-unix]
+private = true
+condition = { platforms = ["linux", "mac"] }
+script = '''
+#!@duckscript
+exec sh ${SCRIPTS_DIR}/verify.sh
+'''
+
+# ---------------------------------------------------------------------------
+# 全量门禁：快速门禁 + workspace test/clippy/doc
+# ---------------------------------------------------------------------------
+
+[tasks.full]
+description = "全量门禁（分钟级，含全量编译）"
+script = '''
+#!@duckscript
+if is_windows
+    cm_run_task full-windows
+else
+    cm_run_task full-unix
+end
+'''
+
+[tasks.full-windows]
+private = true
+condition = { platforms = ["windows"] }
+script = '''
+#!@duckscript
+exec powershell -NoProfile -ExecutionPolicy Bypass -File ${SCRIPTS_DIR}/verify-full.ps1
+'''
+
+[tasks.full-unix]
+private = true
+condition = { platforms = ["linux", "mac"] }
+script = '''
+#!@duckscript
+exec sh ${SCRIPTS_DIR}/verify-full.sh
+'''
+
+# ---------------------------------------------------------------------------
+# 环境敏感步骤：浏览器闭环（仅 Windows）
+# ---------------------------------------------------------------------------
+
+[tasks.browser]
+description = "真实浏览器闭环（需要 Node 20+、Chrome/Edge、npm 联网）"
+condition = { platforms = ["windows"] }
+script = '''
+#!@duckscript
+exec powershell -NoProfile -ExecutionPolicy Bypass -File ${SCRIPTS_DIR}/verify-browser.ps1
+'''
+
+# ---------------------------------------------------------------------------
+# 桌面 release 构建与启动冒烟（仅 Windows）
+# ---------------------------------------------------------------------------
+
+[tasks.desktop-release]
+description = "构建 iced desktop release 并启动冒烟"
+condition = { platforms = ["windows"] }
+dependencies = ["build-desktop-release"]
+script = '''
+#!@duckscript
+exec powershell -NoProfile -ExecutionPolicy Bypass -File ${SCRIPTS_DIR}/verify-desktop-release.ps1
+'''
+
+[tasks.build-desktop-release]
+private = true
+condition = { platforms = ["windows"] }
+command = "cargo"
+args = ["build", "--release", "-p", "ipkvm-desktop-iced", "--bin", "ipkvm-desktop-iced"]
+
+# ---------------------------------------------------------------------------
+# 粒度 cargo 命令（跨平台）
+# ---------------------------------------------------------------------------
+
+[tasks.fmt]
+description = "检查 Rust 代码格式（只读）"
+command = "cargo"
+args = ["fmt", "--all", "--check"]
+
+[tasks.fmt-fix]
+description = "自动修复 Rust 代码格式"
+command = "cargo"
+args = ["fmt", "--all"]
+
+[tasks.test]
+description = "全工作区测试（--all-features）"
+command = "cargo"
+args = ["test", "--workspace", "--all-features"]
+
+[tasks.clippy]
+description = "Clippy 检查（--all-targets --all-features -D warnings）"
+command = "cargo"
+args = ["clippy", "--workspace", "--all-targets", "--all-features", "--", "-D", "warnings"]
+
+[tasks.doc]
+description = "构建 Rust 文档（--all-features -D warnings）"
+env = { RUSTDOCFLAGS = "-D warnings" }
+command = "cargo"
+args = ["doc", "--workspace", "--all-features", "--no-deps"]

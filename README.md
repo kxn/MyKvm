@@ -61,48 +61,30 @@ cargo run -p ipkvm-desktop-iced --all-features
 
 ## 验证
 
-验证门禁按反馈速度分两层，本机与远端 CI（GitHub Actions）调用同一组脚本。首次使用需固定安装 cargo-deny：
+验证门禁按反馈速度分两层，通过 [cargo-make](https://github.com/sagiegurari/cargo-make) 统一入口调用，平台脚本自动选择。首次使用需固定安装依赖工具：
 
 ```powershell
 cargo install --locked --version 0.20.2 cargo-deny
+cargo install --locked cargo-make
 ```
 
-**快速门禁**（提交前，秒级~十秒级，无全量编译）：检查文本 UTF-8 编码、noVNC 资源来源和逐文件哈希、浏览器依赖锁文件、许可证策略与锁定依赖图、iced M5 退役门禁、crate 依赖边界、Rust 格式和 Git 差异。
+安装后即可在任意平台使用统一命令：
 
-```powershell
-.\scripts\verify.ps1
-```
+| 命令 | 作用 | 耗时 |
+|---|---|---|
+| `cargo make` / `cargo make quick` | 快速门禁（提交前） | 秒级~十秒级 |
+| `cargo make full` | 全量门禁（合并前） | 分钟级 |
+| `cargo make fmt` | 仅检查 Rust 格式 | 秒级 |
+| `cargo make fmt-fix` | 自动修复 Rust 格式 | 秒级 |
+| `cargo make test` | 全工作区测试 | 分钟级 |
+| `cargo make clippy` | Clippy 检查 | 分钟级 |
+| `cargo make doc` | 构建 Rust 文档 | 分钟级 |
+| `cargo make browser` | 浏览器闭环（仅 Windows） | 分钟级 |
+| `cargo make desktop-release` | release 构建 + 启动冒烟（仅 Windows） | 分钟级 |
 
-Linux/macOS 使用对应的 sh 版本：
+**快速门禁**检查文本 UTF-8 编码、noVNC 资产来源和逐文件哈希、浏览器依赖锁文件、许可证策略与锁定依赖图、iced M5 退役门禁、crate 依赖边界、Rust 格式和 Git 差异。**全量门禁**在快速门禁基础上增加全工作区测试、Clippy 和 Rust 文档构建。
 
-```bash
-./scripts/verify.sh
-```
-
-**全量门禁**（合并前，分钟级）：在快速门禁基础上增加全工作区测试、Clippy 和 Rust 文档构建。
-
-```powershell
-.\scripts\verify-full.ps1
-```
-
-Linux/macOS：
-
-```bash
-./scripts/verify-full.sh
-```
-
-桌面端 M5 退役门禁由上述统一脚本调用；真实浏览器闭环不包含在默认门禁内，涉及 noVNC/前端改动时显式运行（首次通过 `npm ci` 安装锁定的 `playwright-core`，需要 Node.js 20 以上版本、npm、受支持的系统 Chrome 或 Edge 和 npm registry 网络访问）：
-
-```powershell
-.\scripts\verify-browser.ps1
-```
-
-Windows release 发布物启动冒烟在构建后显式运行，验证 release 进程持续存活并创建非零顶层窗口句柄，不读取窗口标题、About 文本或 `GIT_COMMIT`：
-
-```powershell
-cargo build --release -p ipkvm-desktop-iced --bin ipkvm-desktop-iced
-.\scripts\verify-desktop-release.ps1
-```
+真实浏览器闭环不包含在默认门禁内，涉及 noVNC/前端改动时运行 `cargo make browser`（首次通过 `npm ci` 安装锁定的 `playwright-core`，需要 Node.js 20 以上版本、npm、受支持的系统 Chrome 或 Edge 和 npm registry 网络访问）。Windows release 发布物启动冒烟通过 `cargo make desktop-release` 一键完成构建和验证（验证 release 进程持续存活并创建非零顶层窗口句柄，不读取窗口标题、About 文本或 `GIT_COMMIT`）。
 
 可独立运行静态资源检查：
 
@@ -110,7 +92,7 @@ cargo build --release -p ipkvm-desktop-iced --bin ipkvm-desktop-iced
 .\scripts\verify-web-assets.ps1
 ```
 
-固定工具版本、许可证分级和非 Cargo 组件边界见 `docs/dependency-license-policy.md`。
+固定工具版本、许可证分级和非 Cargo 组件边界见 `docs/dependency-license-policy.md`。Makefile.toml 是编排层，实现逻辑仍在 `scripts/` 下的 verify 脚本中。
 
 ## 运行无头后台进程
 
