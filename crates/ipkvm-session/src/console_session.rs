@@ -37,7 +37,15 @@ pub struct SessionStats {
     /// 串口批次/帧统计（`record_serial_stats` 从 `CommandQueue::stats` 映射）。
     pub serial: Option<crate::serial_stats::SerialStats>,
     /// 最后观察到帧的时间（`observe_frame` 写入；None 表示从未出帧）。
+    /// 语义为 observe（观察）时间，与 `capture_ns` 区分。
     pub last_frame_ns: Option<u64>,
+    /// 最后观察到帧的采集时间（来自 `frame.timestamp`，统一时钟）。
+    /// 与 `last_frame_ns`（observe 时间）同源可比，差值即端到端延迟。
+    pub capture_ns: Option<u64>,
+    /// RFB 编码统计快照（encode 耗时与字节累计，由装配层从连接 core 快照填入）。
+    pub encode: Option<ipkvm_rfb::RfbEncodeStatsSnapshot>,
+    /// RFB 成功发送的 FramebufferUpdate 累计次数（updates/sec 的分子）。
+    pub updates_sent: u64,
     /// 输入泵失败离线信息（串口写失败等）；恢复/重启后清空。
     pub input_offline: Option<InputOfflineInfo>,
     /// 上次观察的帧 seq（丢帧检测内部状态）。
@@ -61,6 +69,16 @@ impl SessionStats {
             _ => {}
         }
         self.last_seq = Some(seq);
+    }
+
+    /// 记录 RFB 编码统计快照（由装配层从 `RfbConnectionCore::encode_stats_snapshot` 填入）。
+    pub fn record_encode_stats(&mut self, snapshot: ipkvm_rfb::RfbEncodeStatsSnapshot) {
+        self.encode = Some(snapshot);
+    }
+
+    /// 记录一次成功的 FramebufferUpdate 发送（updates/sec 的分子）。
+    pub fn record_update_sent(&mut self) {
+        self.updates_sent = self.updates_sent.saturating_add(1);
     }
 }
 
@@ -184,10 +202,13 @@ impl<S: InputSink + Clone + Send + 'static> ConsoleSession<S> {
     /// 观察帧源最新帧：seq 跳跃计入丢帧（真实丢帧检测，非延时/采样）。
     ///
     /// 由调用方显式调用（桌面渲染循环或 headless 快照前），不在内部自动轮询。
+    /// 同时记录采集时间（`capture_ns`，来自 frame.timestamp）与观察时间
+    /// （`last_frame_ns`），两者同源可比。
     pub fn observe_frame(&mut self) {
         if let Some(frame) = self.frame_source.latest_frame() {
             let mut stats = self.stats.lock().unwrap();
             stats.observe_frame_seq(frame.seq);
+            stats.capture_ns = Some(frame.timestamp.nanos);
             stats.last_frame_ns = Some(crate::now_ns());
         }
     }
@@ -244,11 +265,16 @@ impl<S: InputSink + Clone + Send + 'static> ConsoleSession<S> {
         let task = tokio::spawn(async move {
             let result = pump
                 .run_until_stopped(&mut event_rx, stop_rx, |notice: &RfbInputNotice| {
-                    if matches!(
-                        notice,
-                        RfbInputNotice::Keyboard { .. } | RfbInputNotice::Pointer { .. }
-                    ) {
-                        stats.lock().unwrap().observe_input();
+                    match notice {
+                        RfbInputNotice::Keyboard { .. } | RfbInputNotice::Pointer { .. } => {
+                            stats.lock().unwrap().observe_input();
+                        }
+                        RfbInputNotice::FrameUpdateStatsObserved { encode, .. } => {
+                            let mut s = stats.lock().unwrap();
+                            s.record_update_sent();
+                            s.record_encode_stats(*encode);
+                        }
+                        _ => {}
                     }
                     if let Some(tx) = &notice_mirror {
                         let _ = tx.send(notice.clone());
@@ -827,6 +853,47 @@ mod tests {
         mock.publish_frame(frame(3));
         session.observe_frame();
         assert_eq!(session.stats().dropped_frames, 1);
+    }
+
+    /// observe_frame 同时记录 capture_ns（来自 frame.timestamp，统一时钟）与
+    /// last_frame_ns（observe 时间），且 capture <= observe（端到端延迟非负）。
+    #[test]
+    fn observe_frame_records_capture_and_observe_times() {
+        let mock = Arc::new(MockFrameSource::new());
+        let frame_source: Arc<dyn FrameSource> = mock.clone();
+        let (event_publisher, _) = watch::channel(None);
+        let mut session = ConsoleSession::new(
+            frame_source,
+            RecordingSink::default(),
+            RfbConnectionGate::new(),
+            event_publisher,
+        );
+
+        // 用统一时钟填 timestamp，模拟真实采集时间。
+        let expected_capture = ipkvm_video::now_ns();
+        let frame = Arc::new(VideoFrame::new(
+            1,
+            MonotonicTimestamp::from_nanos(expected_capture),
+            2,
+            1,
+            8,
+            PixelFormat::Bgra8888,
+            Arc::new([0u8; 8]),
+        ));
+        mock.publish_frame(frame);
+        session.observe_frame();
+
+        let stats = session.stats();
+        let capture = stats.capture_ns.expect("capture_ns 应被记录");
+        let observe = stats.last_frame_ns.expect("last_frame_ns 应被记录");
+        assert_eq!(
+            capture, expected_capture,
+            "capture_ns 应等于 frame.timestamp"
+        );
+        assert!(
+            observe >= capture,
+            "observe ({observe}) 应 >= capture ({capture})：统一时钟下端到端延迟非负"
+        );
     }
 
     /// 串口统计：record_serial_stats 从 QueueStats 映射填入 SessionStats.serial。

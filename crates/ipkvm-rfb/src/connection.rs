@@ -79,6 +79,49 @@ pub enum RfbEncodeError {
     DesktopSizeNotNegotiated { announced: RfbSize, actual: RfbSize },
 }
 
+/// RFB 编码统计快照（只读）。
+///
+/// 累计值为连接生命周期内的累计，供 `/api/status` 与实施单 B/F 优化前后对比。
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RfbEncodeStatsSnapshot {
+    /// `encode_raw_update` 累计耗时（纳秒）。
+    pub encode_ns_total: u64,
+    /// `encode_raw_update` 调用次数。
+    pub encode_count: u64,
+    /// 编码产出的字节累计（编码层输出，未含握手等）。
+    pub encoded_bytes_total: u64,
+}
+
+/// RFB 编码统计：`encode_raw_update` 耗时与产出字节数。
+///
+/// 设计目标：为实施单 B（Raw 编码热路径清理）等优化提供回归基线。
+#[derive(Debug, Default)]
+pub struct RfbEncodeStats {
+    encode_ns_total: u64,
+    encode_count: u64,
+    encoded_bytes_total: u64,
+}
+
+impl RfbEncodeStats {
+    /// 记录一次编码：耗时与产出字节数。
+    pub fn record(&mut self, duration: std::time::Duration, bytes: usize) {
+        self.encode_ns_total = self
+            .encode_ns_total
+            .saturating_add(duration.as_nanos() as u64);
+        self.encode_count = self.encode_count.saturating_add(1);
+        self.encoded_bytes_total = self.encoded_bytes_total.saturating_add(bytes as u64);
+    }
+
+    /// 取只读快照。
+    pub fn snapshot(&self) -> RfbEncodeStatsSnapshot {
+        RfbEncodeStatsSnapshot {
+            encode_ns_total: self.encode_ns_total,
+            encode_count: self.encode_count,
+            encoded_bytes_total: self.encoded_bytes_total,
+        }
+    }
+}
+
 pub struct RfbConnectionCore {
     config: RfbConnectionConfig,
     state: RfbConnectionState,
@@ -92,6 +135,7 @@ pub struct RfbConnectionCore {
     announced_size: RfbSize,
     input_coordinate_size: RfbSize,
     pending_input_size: Option<RfbSize>,
+    encode_stats: RfbEncodeStats,
 }
 
 impl RfbConnectionCore {
@@ -117,6 +161,7 @@ impl RfbConnectionCore {
             announced_size,
             input_coordinate_size,
             pending_input_size: None,
+            encode_stats: RfbEncodeStats::default(),
         })
     }
 
@@ -250,6 +295,11 @@ impl RfbConnectionCore {
         self.encoding_preferences.contains(&-223)
     }
 
+    /// 取 RFB 编码统计快照（encode 耗时与字节数）。
+    pub fn encode_stats_snapshot(&self) -> RfbEncodeStatsSnapshot {
+        self.encode_stats.snapshot()
+    }
+
     pub fn queue_framebuffer_update(
         &mut self,
         frame: BgraFrameView<'_>,
@@ -287,7 +337,10 @@ impl RfbConnectionCore {
             self.queue_output(encode_empty_update())?;
             return Ok(FramebufferUpdateOutcome::EmptyQueued);
         };
+        let encode_start = std::time::Instant::now();
         let message = encode_raw_update(frame, rectangle, self.pixel_format)?;
+        self.encode_stats
+            .record(encode_start.elapsed(), message.len());
         self.queue_output(message)?;
         Ok(FramebufferUpdateOutcome::RawQueued { rectangle })
     }
@@ -1306,5 +1359,49 @@ mod tests {
 
             prop_assert!(queue_full_frame(&mut connection, frame).is_ok());
         }
+    }
+
+    #[test]
+    fn encode_stats_empty_before_any_update() {
+        let connection = completed_connection_with_size(2, 2);
+        let snap = connection.encode_stats_snapshot();
+        assert_eq!(snap, RfbEncodeStatsSnapshot::default());
+    }
+
+    #[test]
+    fn encode_stats_counts_raw_update_duration_and_bytes() {
+        let mut connection = completed_connection_with_size(2, 2);
+        let pixels = [1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255, 10, 11, 12, 255];
+        let frame = BgraFrameView::new(RfbSize::new(2, 2).unwrap(), 8, &pixels).unwrap();
+        let request = FramebufferUpdateRequest {
+            incremental: true,
+            rectangle: RfbRectangle {
+                x: 0,
+                y: 0,
+                width: 2,
+                height: 2,
+            },
+        };
+
+        connection.queue_framebuffer_update(frame, request).unwrap();
+        let after_one = connection.encode_stats_snapshot();
+        assert_eq!(after_one.encode_count, 1);
+        assert!(
+            after_one.encoded_bytes_total > 0,
+            "raw update must produce bytes"
+        );
+
+        // 第二帧（重建 frame view，借用已结束）。
+        let frame2 = BgraFrameView::new(RfbSize::new(2, 2).unwrap(), 8, &pixels).unwrap();
+        connection
+            .queue_framebuffer_update(frame2, request)
+            .unwrap();
+        let after_two = connection.encode_stats_snapshot();
+        assert_eq!(after_two.encode_count, 2);
+        assert_eq!(
+            after_two.encoded_bytes_total,
+            after_one.encoded_bytes_total * 2,
+            "bytes should accumulate linearly"
+        );
     }
 }

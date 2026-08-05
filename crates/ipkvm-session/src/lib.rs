@@ -9,15 +9,13 @@ pub mod session_manager;
 use ipkvm_core::MouseMode;
 use ipkvm_video::{PixelFormat, VideoFormat};
 
-/// 单调时钟纳秒（`std::time::Instant::now()` 的时间差）——用于「最后输入
-/// 时间」这类相对时间戳。零点为进程启动，不可跨进程比较；`Instant` 不可
-/// 直接序列化，此函数供 `/api/status` 计算相对时长。
+/// 单调时钟纳秒——转发到 `ipkvm-video::now_ns()`，全工作区共享同一个进程时钟。
+///
+/// 这是「统一到单一进程时钟」决策的落点：`frame.timestamp`（采集时间）与本函数
+/// 返回值（观察时间）同源可比，`/api/status` 可正确计算端到端延迟。见调研
+/// `docs/superpowers/specs/2026-08-04-video-pipeline-performance-research.md` 阶段 0。
 pub fn now_ns() -> u64 {
-    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-    START
-        .get_or_init(std::time::Instant::now)
-        .elapsed()
-        .as_nanos() as u64
+    ipkvm_video::now_ns()
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
