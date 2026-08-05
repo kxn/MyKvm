@@ -29,7 +29,7 @@ cargo install --locked --version 0.20.2 cargo-deny
 .\scripts\verify-web-assets.ps1
 ```
 
-统一验收 `.\scripts\verify.ps1` 已包含以上各项。工具缺失或版本不符时必须失败，不能自动安装或跳过。
+统一验收 `.\scripts\verify.ps1`（快速门禁）与 `.\scripts\verify-full.ps1`（全量门禁，合并前）已包含以上各项。工具缺失或版本不符时必须失败，不能自动安装或跳过。
 
 ## 许可证分级
 
@@ -143,7 +143,7 @@ LGPL Rust 代码不是绝对禁止，但普通 Cargo 依赖通常会静态链接
 4. 条件许可证或非 crates.io 来源必须开独立审查记录。
 5. 修改依赖后运行 `.\scripts\test-license-policy.ps1`。
 6. 运行 `.\scripts\verify-licenses.ps1` 检查实际锁定依赖图。
-7. 合并前运行 `.\scripts\verify.ps1`。
+7. 合并前运行 `.\scripts\verify-full.ps1`。
 
 禁止通过以下方式绕过审查：
 

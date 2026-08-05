@@ -99,9 +99,9 @@ PR 描述必须说明是否修改文档。如果不修改文档，应写明原�
 
 1. 单元测试：协议帧、状态机、坐标换算、配置选择、错误处理。
 2. 集成测试：mock 视频源、fake serial、RFB 协议样例、headless 闭环。
-3. 命令级验证：运行 `.\scripts\verify.ps1`，统一检查许可证策略、锁定依赖来源、文本编码、Rust 格式、全工作区测试、Clippy、Rust 文档和 Git 差异。
-   - Windows PowerShell：`.\scripts\verify.ps1`
-   - Linux/macOS：`./scripts/verify.sh`（与 PowerShell 版本逻辑一致）
+3. 命令级验证：运行 `.\scripts\verify.ps1`（快速门禁，提交前）或 `.\scripts\verify-full.ps1`（全量门禁，合并前），统一检查许可证策略、锁定依赖来源、文本编码、crate 依赖边界、Rust 格式，全量门禁另含全工作区测试、Clippy 和 Rust 文档。
+   - Windows PowerShell：`.\scripts\verify.ps1`（快速）、`.\scripts\verify-full.ps1`（全量）
+   - Linux/macOS：`./scripts/verify.sh`（快速）、`./scripts/verify-full.sh`（全量）（与 PowerShell 版本逻辑一致）
 4. 人工验证：真实采集卡、真实 CH9329/CH340 线、BIOS 行为、操作系统全局快捷键、真实 VNC 客户端兼容性。
 
 人工验证只有在满足以下条件时才允许作为主要证据：
@@ -167,7 +167,7 @@ bug 修复必须优先定位根因。修复说明至少回答：
 cargo install --locked --version 0.20.2 cargo-deny
 ```
 
-许可证策略自测和当前依赖图审计已经接入 `.\scripts\verify.ps1`。noVNC、Qt、FFmpeg、GStreamer、系统 SDK 和静态资源不由 Cargo 检查完整覆盖，必须在引入时单独记录版本、许可证文件和发布义务。
+许可证策略自测和当前依赖图审计已经接入 `.\scripts\verify.ps1`（快速门禁）与 `.\scripts\verify-full.ps1`（全量门禁）。noVNC、Qt、FFmpeg、GStreamer、系统 SDK 和静态资源不由 Cargo 检查完整覆盖，必须在引入时单独记录版本、许可证文件和发布义务。
 
 ## PR 要求
 
@@ -183,14 +183,16 @@ PR 描述必须包含：
 合并前最低检查：
 
 ```powershell
-.\scripts\verify.ps1
+.\scripts\verify-full.ps1
 ```
 
 Linux/macOS 使用：
 
 ```bash
-./scripts/verify.sh
+./scripts/verify-full.sh
 ```
+
+开发迭代期间（提交前）可先运行快速门禁 `.\scripts\verify.ps1` / `./scripts/verify.sh` 获得秒级反馈；真实浏览器闭环（`verify-browser`）与 Windows release 启动冒烟（`verify-desktop-release`）不包含在门禁链内，涉及对应改动时显式运行。
 
 如果改动不涉及 Rust 代码，也应运行适合范围的检查，例如 Markdown 冲突标记扫描或模板渲染检查。
 
@@ -198,7 +200,7 @@ Linux/macOS 使用：
 
 本仓库日常开发在 GitHub 公开仓库 `kxn/MyKvm`（https://github.com/kxn/MyKvm）进行。GitHub 支持仓库内 issue/PR 模板（`.github/`），也支持在 issue、PR、commit 中使用 `#编号` 自动链接引用。
 
-远端 CI 通过 `.github/workflows/verify.yml` 在 GitHub Actions 上运行（Windows runner，Rust 1.89，调用现有 `scripts/` 验证脚本）。稳定的检查项作为 main 分支保护的 required status check；真实浏览器门禁在 GitHub runner 上稳定跑绿前以 advisory 形式存在，不锁死合并。PR 仍需记录本地 `.\scripts\verify.ps1` 的实际结果作为补充证据。
+远端 CI 通过 `.github/workflows/verify.yml` 在 GitHub Actions 上运行（Windows 与 Linux 两个 core job，Rust 1.89，调用现有 `scripts/` 验证脚本）。两个 core job 分别运行 `verify-full.ps1` / `verify-full.sh`，覆盖跨平台编译与静态检查，作为 main 分支保护的 required status check；真实浏览器门禁在 GitHub runner 上稳定跑绿前以 advisory 形式存在（continue-on-error），不锁死合并。PR 仍需记录本地 `.\scripts\verify-full.ps1` 的实际结果作为补充证据。
 
 私有 Gitea 仅保留为代码备份和灾难恢复副本（远端 `private`），不在其上开新 Issue/PR。历史 Gitea Issue 编号（#1–#169 等）属私有 Gitea，与 GitHub 新编号无对应关系；历史 commit message 中的 `#编号` 指向 Gitea 旧 Issue。
 
