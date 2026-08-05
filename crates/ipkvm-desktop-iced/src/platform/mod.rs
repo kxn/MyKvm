@@ -77,7 +77,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn windows_url_argument_is_null_terminated_for_shell_execute() {
-        let url = "http://10.10.10.5:3000/kxn/my_ipkvm?from=menu";
+        let url = "https://github.com/kxn/MyKvm?from=menu";
         let encoded = super::windows_url_argument(url);
 
         assert_eq!(encoded.last(), Some(&0));

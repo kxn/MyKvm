@@ -35,6 +35,32 @@ $script:PlaywrightIntegrity = (
     "7kLnZsOlFruFJB4Hi/rhDMjXGqHewDZ68nYZVw=="
 )
 
+function ConvertFrom-JsonToHashtable {
+    # Parse JSON text into a Hashtable, compatible with PowerShell 5.1 and 7+.
+    # Callers can then use [] indexing, Keys and ContainsKey (needed for package-lock
+    # entries whose key is the empty string, e.g. the lockfile root).
+    # - PS7+: ConvertFrom-Json -AsHashtable returns a Hashtable directly and handles
+    #   empty keys. This is what GitHub Actions runners (pwsh 7) use.
+    # - PS5.1: ConvertFrom-Json cannot represent empty-string keys (throws), so fall
+    #   back to System.Web.Script.Serialization.JavaScriptSerializer, which is
+    #   available on .NET Framework / Windows PowerShell and returns a Hashtable.
+    #   System.Web is NOT available on PS7/.NET Core, which is exactly why the PS7
+    #   branch avoids it.
+    param(
+        [Parameter(Mandatory)]
+        [string]$Json
+    )
+
+    if ($PSVersionTable.PSVersion.Major -ge 6) {
+        return $Json | ConvertFrom-Json -AsHashtable
+    }
+
+    Add-Type -AssemblyName System.Web.Extensions
+    $serializer = [System.Web.Script.Serialization.JavaScriptSerializer]::new()
+    $serializer.MaxJsonLength = [int]::MaxValue
+    return $serializer.DeserializeObject($Json)
+}
+
 function Get-PathPrefix {
     param(
         [Parameter(Mandatory)]
@@ -412,12 +438,8 @@ function Assert-BrowserPackageLock {
         throw "Browser package must pin only playwright-core 1.62.1"
     }
 
-    Add-Type -AssemblyName System.Web.Extensions
-    $serializer = [System.Web.Script.Serialization.JavaScriptSerializer]::new()
-    $serializer.MaxJsonLength = [int]::MaxValue
-    $lock = $serializer.DeserializeObject(
+    $lock = ConvertFrom-JsonToHashtable `
         (Get-Content -Raw -Encoding utf8 -LiteralPath $PackageLockPath)
-    )
     Assert-JsonPropertyEquals `
         $lock["lockfileVersion"] `
         3 `

@@ -12,6 +12,10 @@ allow = [
     "ISC",
     "Zlib",
     "Unicode-3.0",
+    # NCSA（University of Illinois/NCSA Open Source License）：OSI 批准的宽松许可证，
+    # 实质等价 BSD-3-Clause 加归属要求。由 libfuzzer-sys（经 image→ravif→rav1e 传递引入）
+    # 声明为 (MIT OR Apache-2.0) AND NCSA，NCSA 部分源自 LLVM 衍生代码的归属要求。
+    "NCSA",
 ]
 confidence-threshold = 0.93
 include-dev = true

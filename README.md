@@ -56,12 +56,12 @@ cargo run -p ipkvm-desktop-iced --all-features
 
 - `AGENTS.md`
 - `docs/development-guidelines.md`
-- `.gitea/ISSUE_TEMPLATE/`
-- `.gitea/PULL_REQUEST_TEMPLATE.md`
+- `.github/ISSUE_TEMPLATE/`
+- `.github/PULL_REQUEST_TEMPLATE.md`
 
 ## 验证
 
-当前不依赖 Gitea Actions runner。提交和 PR 的自动化验收在本机通过统一脚本执行：
+提交和 PR 的自动化验收在本机通过统一脚本执行（GitHub Actions 远端 CI 也调用同一组脚本）：
 
 ```powershell
 cargo install --locked --version 0.20.2 cargo-deny

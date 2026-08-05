@@ -60,8 +60,8 @@ const UI_TICK_INTERVAL: Duration = Duration::from_millis(33);
 /// 指针最小发送间隔（#102 限频，避免高频移动刷爆串口）。
 const POINTER_MIN_INTERVAL: Duration = Duration::from_millis(33);
 
-/// 项目主页（实际仓库为内网 Gitea）。
-pub const PROJECT_URL: &str = "http://10.10.10.5:3000/kxn/my_ipkvm";
+/// 项目主页（GitHub 公开仓库）。
+pub const PROJECT_URL: &str = "https://github.com/kxn/MyKvm";
 
 /// 记录型 sink：测试与 mock 连接用。
 /// 相对指针发送记录（mask, dx, dy, wheel）。

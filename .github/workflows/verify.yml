@@ -1,0 +1,52 @@
+name: verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # 必需 job：稳定检查，作 main 分支保护 required status check
+  core:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.89
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      # verify-licenses.ps1 依赖 cargo-deny；与本机一致锁版本
+      - run: cargo install --locked --version 0.20.2 cargo-deny
+      # 依次调用现有 scripts/ 验证脚本链（与 verify.ps1 的稳定部分一致）
+      - run: .\scripts\test-web-assets.ps1
+      - run: .\scripts\verify-web-assets.ps1
+      - run: .\scripts\test-license-policy.ps1
+      - run: .\scripts\verify-licenses.ps1
+      - run: .\scripts\test-iced-m5-retirement.ps1
+      - run: cargo fmt --all --check
+      - run: cargo test --workspace --all-features
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo doc --workspace --all-features --no-deps
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+
+  # 非阻塞 job：真实浏览器闭环，在 GitHub runner 上稳定跑绿后再改为必需
+  browser:
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.89
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: browser-actions/setup-chrome@v1
+      - run: .\scripts\verify-browser.ps1

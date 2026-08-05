@@ -11,8 +11,9 @@
 ## 1. 仓库与环境
 
 - 仓库：`D:\Work\my_ipkvm`（Windows 11 + PowerShell，Rust 1.89+）。
-- Gitea：`http://10.10.10.5:3000`，用户 `kxn`，仓库 `kxn/my_ipkvm`；命令行统一用 `tea`（已登录，登录名 `srpg`）。
-- 写中文到 Gitea 前必须设置 UTF-8（见 AGENTS.md）：`$OutputEncoding`、`[Console]::Input/OutputEncoding`。
+- GitHub（日常开发主仓库）：`https://github.com/kxn/MyKvm`，用户 `kxn`，命令行统一用 `gh`（已登录）。远端 `origin` 指向 GitHub。
+- 私有 Gitea（仅备份/灾难恢复）：`http://10.10.10.5:3000`，仓库 `kxn/my_ipkvm`；远端 `private`。不再在 Gitea 开新 Issue/PR，历史 Gitea Issue（#1–#169 等）作为历史归档保留，旧编号与 GitHub 新编号无对应关系。
+- 写中文到 GitHub 前必须设置 UTF-8（见 AGENTS.md）：`$OutputEncoding`、`[Console]::Input/OutputEncoding`；`gh` 用 `--body-file` 传 UTF-8 文件。
 - 当前正式基线为 `main`；每个非平凡改动按关联 issue 创建独立分支并通过 PR 收口。
 - 暂存区（stash）：`stash@{0}` = 「stale egui issue69 debug work」——旧 egui 子菜单调试的未提交改动（app.rs/menus.rs），**保留可恢复，勿删**（用户未决定去留）。
 - `%TEMP%\ipkvm-stale-debug-files\`：`tmck.txt`、`tsg*.txt`（旧调试输出，共 6 个），保留可恢复。
@@ -27,7 +28,7 @@
 2. 迁移完成后**直接删除 egui 桌面端**；macOS 打包/签名/notarization **后置**。
 3. 迁移单按 **M0→M5** 拆分实施；每阶段**必须新增测试**（先红后绿），禁止只靠既有测试变绿。
 
-## 4. Gitea 单据一览
+## 4. 历史 Gitea 单据一览（迁移前归档，编号属私有 Gitea，与 GitHub 新编号无对应）
 
 | 编号 | 内容 | 状态 |
 |---|---|---|
@@ -152,15 +153,15 @@
 ## 13. 常用命令
 
 ```powershell
-# tea 写中文前（AGENTS.md 强制）
+# gh 写中文前用 --body-file 传 UTF-8 文件（AGENTS.md 强制）
 $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 [Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 
-tea issues list --repo kxn/my_ipkvm
-tea issues 75 --repo kxn/my_ipkvm
-tea pulls create --repo kxn/my_ipkvm --base main --head <branch> --title "..." --description "..."
-tea pulls merge --repo kxn/my_ipkvm <PR号>
+gh issue list --repo kxn/MyKvm
+gh issue view <编号> --repo kxn/MyKvm
+gh pr create --repo kxn/MyKvm --base main --head <branch> --title "..." --body-file <UTF-8 文件>
+gh pr merge <PR号> --repo kxn/MyKvm --squash
 
 # 门禁（每单合入前必须全过）
 cargo fmt --all --check

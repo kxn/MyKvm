@@ -24,7 +24,7 @@ iced_aw = { path = "third_party/iced_aw" }
 [workspace.package]
 edition = "2024"
 license = "MIT"
-repository = "http://10.10.10.5:3000/kxn/my_ipkvm"
+repository = "https://github.com/kxn/MyKvm"
 rust-version = "1.89"
 
 [workspace.dependencies]

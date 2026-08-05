@@ -1631,7 +1631,7 @@ mod tests {
         .expect("a later pointer-lock event must switch the sink back to relative");
 
         assert!(
-            queue.accepted_batches().len() >= 1,
+            !queue.accepted_batches().is_empty(),
             "a later relative pointer event must reach CH9329"
         );
         assert!(
