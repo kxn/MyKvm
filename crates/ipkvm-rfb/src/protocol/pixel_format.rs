@@ -155,6 +155,24 @@ impl RfbPixelFormat {
         usize::from(self.bits_per_pixel / 8)
     }
 
+    /// 是否为源 BGRA8888（小端 BGRX8888）的恒等编码格式。
+    ///
+    /// 当目标格式与 `default_bgrx8888()` 完全一致时（32bpp、24bit depth、小端、
+    /// 三通道 max=255、blue_shift=0/green_shift=8/red_shift=16），`write_bgr` 的
+    /// `scale_channel` 是恒等的（`(v*255+127)/255 == v`），可直接走 fast path
+    /// 跳过逐像素乘法，让编译器 autovectorize。见调研阶段 1.1（issue #18）。
+    pub(crate) fn is_bgrx8888_le_identity(self) -> bool {
+        self.bits_per_pixel == 32
+            && self.depth == 24
+            && !self.big_endian
+            && self.red_max == 255
+            && self.green_max == 255
+            && self.blue_max == 255
+            && self.blue_shift == 0
+            && self.green_shift == 8
+            && self.red_shift == 16
+    }
+
     pub(crate) fn from_wire(bytes: &[u8; 16]) -> Result<Self, RfbPixelFormatError> {
         if bytes[3] == 0 {
             return Err(RfbPixelFormatError::ColorMapUnsupported);

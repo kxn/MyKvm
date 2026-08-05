@@ -643,7 +643,7 @@ WebSocket 兼容：
   实测基线见调研文档第 3 节。依赖：无。
 
 - **调研阶段 1：当前协议与依赖内可做**（低风险高收益）
-  - 实施单 B：Raw 编码热路径清理（恒等 8bpc 跳过 scale 乘法、复用输出 buffer）+ TCP_NODELAY。依赖 A。
+  - 实施单 B：Raw 编码热路径清理（恒等 8bpc 跳过 scale 乘法、复用输出 buffer）+ TCP_NODELAY（**已完成 #18**）。依赖 A。
   - 实施单 C：YUV→BGRA 可移植 SIMD（`std::simd`/`wide`，x86 SSE + ARM NEON 通用）+ buffer 池化（消除每帧 Arc wrap）。依赖 A。ARM 收益最大。
   - 实施单 D：采集 FPS 配置真正生效（DirectShow `IAMStreamConfig::SetFormat`、nokhwa `RequestedFormat` 带 FPS）。依赖 A。
 
