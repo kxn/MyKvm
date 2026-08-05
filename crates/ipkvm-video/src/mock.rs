@@ -2,12 +2,16 @@ use std::sync::{Arc, RwLock};
 
 use tokio::sync::watch;
 
-use crate::{FrameReceiver, FrameSource, SharedVideoFrame, VideoSourceInfo, VideoSourceKind};
+use crate::{
+    FrameReceiver, FrameSource, SharedVideoFrame, SourceStats, SourceStatsSnapshot,
+    VideoSourceInfo, VideoSourceKind,
+};
 
 #[derive(Debug)]
 pub struct MockFrameSource {
     latest: Arc<RwLock<Option<SharedVideoFrame>>>,
     sender: watch::Sender<Option<SharedVideoFrame>>,
+    stats: Arc<SourceStats>,
 }
 
 impl MockFrameSource {
@@ -16,10 +20,12 @@ impl MockFrameSource {
         Self {
             latest: Arc::new(RwLock::new(None)),
             sender,
+            stats: SourceStats::new(),
         }
     }
 
     pub fn publish_frame(&self, frame: SharedVideoFrame) {
+        self.stats.record_publish(frame.seq, frame.timestamp.nanos);
         *self.latest.write().expect("mock frame lock poisoned") = Some(Arc::clone(&frame));
         self.sender.send_replace(Some(frame));
     }
@@ -50,5 +56,9 @@ impl FrameSource for MockFrameSource {
             device_name: "mock".into(),
             is_loop: false,
         }
+    }
+
+    fn source_stats(&self) -> Option<SourceStatsSnapshot> {
+        Some(self.stats.snapshot())
     }
 }

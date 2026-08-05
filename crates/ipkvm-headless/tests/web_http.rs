@@ -21,8 +21,8 @@ use ipkvm_headless::{
     web::{HeadlessWebService, HeadlessWebServiceError, SessionFactory, SessionSelection},
 };
 use ipkvm_video::{
-    FrameReceiver, FrameSource, MonotonicTimestamp, PixelFormat, SharedVideoFrame, VideoFrame,
-    VideoSourceInfo, VideoSourceKind, mock::MockFrameSource,
+    FrameReceiver, FrameSource, MonotonicTimestamp, PixelFormat, SharedVideoFrame,
+    SourceStatsSnapshot, VideoFrame, VideoSourceInfo, VideoSourceKind, mock::MockFrameSource,
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -109,6 +109,10 @@ impl FrameSource for NamedFrameSource {
             device_name: self.name.clone(),
             is_loop: false,
         }
+    }
+
+    fn source_stats(&self) -> Option<SourceStatsSnapshot> {
+        self.inner.source_stats()
     }
 }
 
@@ -696,6 +700,26 @@ async fn api_status_reports_video_and_controller() {
     assert_eq!(status["video"]["frame"]["seq"], 1);
     assert_eq!(status["video"]["stalled"], false);
     assert!(status["video"]["frame"]["last_frame_ns"].is_number());
+    // capture_ns（采集时间，统一时钟）应存在且 <= observe 时间（last_frame_ns）。
+    assert!(
+        status["video"]["frame"]["capture_ns"].is_number(),
+        "capture_ns 应序列化为数字"
+    );
+    let capture_ns = status["video"]["frame"]["capture_ns"].as_u64().unwrap();
+    let observe_ns = status["video"]["frame"]["last_frame_ns"].as_u64().unwrap();
+    assert!(
+        capture_ns <= observe_ns,
+        "capture_ns ({capture_ns}) 不应晚于 observe 时间 ({observe_ns})"
+    );
+    // 源侧采集/转换统计：MockFrameSource 支持，应输出 published_frames 等。
+    assert!(
+        status["video"]["source_stats"]["published_frames"].is_number(),
+        "source_stats.published_frames 应序列化为数字"
+    );
+    assert!(
+        status["video"]["source_stats"]["convert_count"].is_number(),
+        "source_stats.convert_count 应序列化为数字"
+    );
     assert_eq!(status["controller"]["active"], false);
     assert!(status["controller"]["client_id"].is_null());
     assert!(status["controller"]["transport"].is_null());
@@ -706,6 +730,12 @@ async fn api_status_reports_video_and_controller() {
     assert_eq!(status["session"]["state"], "running");
     assert_eq!(status["session"]["input_events"], 0);
     assert_eq!(status["session"]["dropped_frames"], 0);
+    // updates_sent 恒序列化（无连接时为 0）；encode 无连接时因 skip 不出现。
+    assert_eq!(status["session"]["updates_sent"], 0);
+    assert!(
+        status["session"].get("encode").is_none(),
+        "无活动 RFB 连接时 encode 不应序列化"
+    );
     assert!(
         status["session"].get("last_input_ns").is_none(),
         "无输入时 last_input_ns 不应序列化"

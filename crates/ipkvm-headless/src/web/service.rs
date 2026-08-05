@@ -260,6 +260,9 @@ struct VideoStatus {
     source: SourceStatus,
     frame: Option<FrameStatus>,
     stalled: bool,
+    /// 源侧采集/转换统计（仅支持统计的源才输出）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    source_stats: Option<SourceStatsDto>,
 }
 
 #[derive(serde::Serialize)]
@@ -275,6 +278,10 @@ struct FrameStatus {
     height: u32,
     pixel_format: &'static str,
     seq: u64,
+    /// 采集时间（统一时钟，来自 frame.timestamp）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    capture_ns: Option<u64>,
+    /// 观察时间（统一时钟，/api/status 读到的时刻）。
     #[serde(skip_serializing_if = "Option::is_none")]
     last_frame_ns: Option<u64>,
 }
@@ -304,6 +311,11 @@ struct SessionStatus {
     input_offline: Option<InputOfflineDto>,
     mouse_profile: &'static str,
     mouse_mode: &'static str,
+    /// RFB 编码统计快照（encode 耗时与字节累计；仅活动连接存在后才有值）。
+    #[serde(skip_serializing_if = "Option::is_none")]
+    encode: Option<RfbEncodeStatsDto>,
+    /// RFB 成功发送的 FramebufferUpdate 累计次数。
+    updates_sent: u64,
 }
 
 #[derive(serde::Serialize)]
@@ -316,6 +328,51 @@ struct SerialStatsDto {
 struct InputOfflineDto {
     reason: String,
     since_ns: u64,
+}
+
+/// 源侧采集/转换统计 DTO（从 `ipkvm_video::SourceStatsSnapshot` 映射）。
+#[derive(serde::Serialize)]
+struct SourceStatsDto {
+    published_frames: u64,
+    dropped_frames: u64,
+    convert_ns_total: u64,
+    convert_count: u64,
+    capture_wait_ns_total: u64,
+    capture_wait_count: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    last_capture_ns: Option<u64>,
+}
+
+impl From<ipkvm_video::SourceStatsSnapshot> for SourceStatsDto {
+    fn from(s: ipkvm_video::SourceStatsSnapshot) -> Self {
+        Self {
+            published_frames: s.published_frames,
+            dropped_frames: s.dropped_frames,
+            convert_ns_total: s.convert_ns_total,
+            convert_count: s.convert_count,
+            capture_wait_ns_total: s.capture_wait_ns_total,
+            capture_wait_count: s.capture_wait_count,
+            last_capture_ns: s.last_capture_ns,
+        }
+    }
+}
+
+/// RFB 编码统计 DTO（从 `ipkvm_rfb::RfbEncodeStatsSnapshot` 映射）。
+#[derive(serde::Serialize)]
+struct RfbEncodeStatsDto {
+    encode_ns_total: u64,
+    encode_count: u64,
+    encoded_bytes_total: u64,
+}
+
+impl From<ipkvm_rfb::RfbEncodeStatsSnapshot> for RfbEncodeStatsDto {
+    fn from(s: ipkvm_rfb::RfbEncodeStatsSnapshot) -> Self {
+        Self {
+            encode_ns_total: s.encode_ns_total,
+            encode_count: s.encode_count,
+            encoded_bytes_total: s.encoded_bytes_total,
+        }
+    }
 }
 
 impl From<&InputOfflineInfo> for InputOfflineDto {
@@ -366,27 +423,39 @@ async fn api_status<I: InputSink + Clone + Send + 'static>(
         dropped_frames,
         serial,
         last_frame_ns,
+        encode,
+        updates_sent,
         input_offline,
         actual_mouse_mode,
     ) = {
         let mut manager = state.manager.lock().await;
         manager.refresh_stats();
         let state_name = session_state_name(manager.state());
-        let (input_events, last_input_ns, dropped_frames, serial, last_frame_ns, input_offline) =
-            match manager.session() {
-                Some(session) => {
-                    let stats = session.stats();
-                    (
-                        stats.input_events,
-                        stats.last_input_ns,
-                        stats.dropped_frames,
-                        stats.serial.map(SerialStatsDto::from),
-                        stats.last_frame_ns,
-                        stats.input_offline.as_ref().map(InputOfflineDto::from),
-                    )
-                }
-                None => (0, None, 0, None, None, None),
-            };
+        let (
+            input_events,
+            last_input_ns,
+            dropped_frames,
+            serial,
+            last_frame_ns,
+            encode,
+            updates_sent,
+            input_offline,
+        ) = match manager.session() {
+            Some(session) => {
+                let stats = session.stats();
+                (
+                    stats.input_events,
+                    stats.last_input_ns,
+                    stats.dropped_frames,
+                    stats.serial.map(SerialStatsDto::from),
+                    stats.last_frame_ns,
+                    stats.encode.map(RfbEncodeStatsDto::from),
+                    stats.updates_sent,
+                    stats.input_offline.as_ref().map(InputOfflineDto::from),
+                )
+            }
+            None => (0, None, 0, None, None, None, 0, None),
+        };
         let actual_mouse_mode = manager
             .session()
             .and_then(|session| *session.mouse_mode().borrow());
@@ -397,6 +466,8 @@ async fn api_status<I: InputSink + Clone + Send + 'static>(
             dropped_frames,
             serial,
             last_frame_ns,
+            encode,
+            updates_sent,
             input_offline,
             actual_mouse_mode,
         )
@@ -434,9 +505,11 @@ async fn api_status<I: InputSink + Clone + Send + 'static>(
                 height: frame.height,
                 pixel_format: pixel_format_name(frame.pixel_format),
                 seq: frame.seq,
+                capture_ns: Some(frame.timestamp.nanos),
                 last_frame_ns,
             }),
             stalled,
+            source_stats: frame_source.source_stats().map(SourceStatsDto::from),
         },
         controller,
         session: SessionStatus {
@@ -449,6 +522,8 @@ async fn api_status<I: InputSink + Clone + Send + 'static>(
             input_offline,
             mouse_profile,
             mouse_mode: mouse_mode_name(mouse_mode),
+            encode,
+            updates_sent,
         },
     };
     json_response(&status)

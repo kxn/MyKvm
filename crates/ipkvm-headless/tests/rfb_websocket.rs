@@ -151,11 +151,15 @@ impl TestWebSocketServer {
     }
 
     async fn expect_disconnected(&mut self) -> (RfbClientId, RfbDisconnectReason) {
-        match self.events.recv().await.unwrap() {
-            RfbServerEvent::Disconnected {
-                client_id, reason, ..
-            } => (client_id, reason),
-            event => panic!("expected disconnected event, got {event:?}"),
+        loop {
+            match self.events.recv().await.unwrap() {
+                // 跳过统计通知事件（调研阶段 0 埋点），等到真正的 Disconnected。
+                RfbServerEvent::FrameUpdateSent { .. } => continue,
+                RfbServerEvent::Disconnected {
+                    client_id, reason, ..
+                } => return (client_id, reason),
+                event => panic!("expected disconnected event, got {event:?}"),
+            }
         }
     }
 

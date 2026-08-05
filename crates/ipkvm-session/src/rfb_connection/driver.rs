@@ -180,7 +180,7 @@ async fn drive_connection<T: RfbTransport>(
             }
             changed = state.frame_rx.changed(), if state.pending.get().is_some() => {
                 changed.map_err(|_| RfbFrameError::FrameUnavailable)?;
-                state.handle_frame_change(transport).await?;
+                state.handle_frame_change(transport, &event_tx).await?;
             }
             _ = wait_for_shutdown(&mut shutdown) => {
                 return Ok(ConnectionEnd::ServerShutdown);
@@ -218,7 +218,8 @@ impl ConnectionState {
                     shared,
                 },
                 RfbEvent::FramebufferUpdateRequested(request) => {
-                    self.handle_update_request(transport, request).await?;
+                    self.handle_update_request(transport, event_tx, request)
+                        .await?;
                     continue;
                 }
                 RfbEvent::Key { down, keysym } => RfbServerEvent::Key {
@@ -270,6 +271,7 @@ impl ConnectionState {
     async fn handle_update_request(
         &mut self,
         transport: &mut impl RfbTransport,
+        event_tx: &mpsc::Sender<RfbServerEvent>,
         request: FramebufferUpdateRequest,
     ) -> Result<(), RfbConnectionError> {
         let frame = self.latest_frame()?;
@@ -283,6 +285,7 @@ impl ConnectionState {
         if should_send && let Some(request) = self.pending.take() {
             let outcome = queue_and_write_frame(transport, &mut self.core, &frame, request).await?;
             update_last_sent_sequence(&mut self.last_sent_seq, frame.seq, outcome);
+            emit_frame_update_sent(event_tx, self.client_id, &self.core)?;
         }
         Ok(())
     }
@@ -290,7 +293,13 @@ impl ConnectionState {
     async fn handle_frame_change(
         &mut self,
         transport: &mut impl RfbTransport,
+        _event_tx: &mpsc::Sender<RfbServerEvent>,
     ) -> Result<(), RfbConnectionError> {
+        // 注意：此处不调 emit_frame_update_sent。该分支由 frame_rx.changed() 在高频
+        // 帧源（如 1000fps demo）下持续触发，同步的 try_send 后无 await 让出点，
+        // 会饿死 select! 循环的 TCP read 分支，导致客户端请求永远不被处理。
+        // updates_sent / encode 统计仅在 handle_update_request（客户端请求驱动，
+        // 频率受控）中上报；累计值仍能反映真实更新速率。
         let frame = self.latest_frame()?;
         if self.last_sent_seq != Some(frame.seq)
             && let Some(request) = self.pending.take()
@@ -358,6 +367,24 @@ async fn send_event(
         .send(event)
         .await
         .map_err(|_| RfbConnectionError::EventChannelClosed)
+}
+
+/// 成功发送一次 FramebufferUpdate 后，把 encode 统计快照通知给上层（updates/sec
+/// 与 encode 耗时/字节），供 `/api/status` 聚合。调研阶段 0 埋点。
+///
+/// 用 `try_send`：统计通知是 best-effort，channel 满时丢弃，绝不阻塞驱动循环
+/// （统计精度优先级低于核心路径活性）。返回值恒为 `Ok`，仅保留 `Result` 签名
+/// 以与调用点的 `?` 一致。
+fn emit_frame_update_sent(
+    sender: &mpsc::Sender<RfbServerEvent>,
+    client_id: RfbClientId,
+    core: &RfbConnectionCore,
+) -> Result<(), RfbConnectionError> {
+    let _ = sender.try_send(RfbServerEvent::FrameUpdateSent {
+        client_id,
+        encode: core.encode_stats_snapshot(),
+    });
+    Ok(())
 }
 
 fn shutdown_is_requested(shutdown: &watch::Receiver<bool>) -> bool {
@@ -678,6 +705,20 @@ mod tests {
         })
         .await
         .expect("server did not send a framebuffer update")
+    }
+
+    /// 排掉伴随 framebuffer update 产生的 `FrameUpdateSent` 统计事件（调研阶段 0 埋点）。
+    /// driver 每成功发送一次 update 就会发一个，测试在断言后续输入事件前需先排掉。
+    async fn drain_frame_update_sent(events: &mut mpsc::Receiver<RfbServerEvent>, count: usize) {
+        for _ in 0..count {
+            assert!(
+                matches!(
+                    events.recv().await,
+                    Some(RfbServerEvent::FrameUpdateSent { .. })
+                ),
+                "expected a FrameUpdateSent event to drain"
+            );
+        }
     }
 
     async fn send_update_request(
@@ -1031,6 +1072,7 @@ mod tests {
         .await;
         send_update_request(&mut client, false, 0, 0, 2, 1).await;
         read_update(&mut client, 8).await;
+        drain_frame_update_sent(&mut events, 1).await;
 
         send_update_request(&mut client, true, 0, 0, 2, 1).await;
         send_key(&mut client, true, 0x41).await;
@@ -1064,6 +1106,7 @@ mod tests {
         .await;
         send_update_request(&mut client, false, 0, 0, 2, 1).await;
         read_update(&mut client, 8).await;
+        drain_frame_update_sent(&mut events, 1).await;
 
         send_update_request(&mut client, true, 0, 0, 1, 1).await;
         send_update_request(&mut client, true, 1, 0, 1, 1).await;
@@ -1138,6 +1181,7 @@ mod tests {
         messages.extend_from_slice(&[5, 0, 0, 1, 0, 0]);
         client.write_all(&messages).await.unwrap();
 
+        drain_frame_update_sent(&mut events, 1).await;
         assert_eq!(
             events.recv().await,
             Some(RfbServerEvent::Pointer {

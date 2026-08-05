@@ -7,8 +7,8 @@ use thiserror::Error;
 use tokio::sync::watch;
 
 use crate::{
-    FrameReceiver, FrameSource, MonotonicTimestamp, PixelFormat, SharedVideoFrame, VideoFrame,
-    VideoSourceInfo, VideoSourceKind, y4m::Y4mAsset,
+    FrameReceiver, FrameSource, MonotonicTimestamp, PixelFormat, SharedVideoFrame, SourceStats,
+    SourceStatsSnapshot, VideoFrame, VideoSourceInfo, VideoSourceKind, now_ns, y4m::Y4mAsset,
 };
 
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
@@ -23,6 +23,7 @@ pub enum FileSourceError {
 pub struct FileVideoSource {
     latest: Arc<RwLock<Option<SharedVideoFrame>>>,
     sender: watch::Sender<Option<SharedVideoFrame>>,
+    stats: Arc<SourceStats>,
 }
 
 impl FileVideoSource {
@@ -36,25 +37,27 @@ impl FileVideoSource {
 
         let (sender, _receiver) = watch::channel(None);
         let latest = Arc::new(RwLock::new(None));
+        let stats = SourceStats::new();
         let task_latest = Arc::clone(&latest);
         let task_sender = sender.clone();
+        let task_stats = Arc::clone(&stats);
 
         tokio::spawn(async move {
             let interval = Duration::from_nanos((1_000_000_000 / frames_per_second).max(1));
-            let started = Instant::now();
             let mut seq = 0_u64;
             loop {
                 for asset in &assets {
                     for index in 0..asset.frame_count() {
+                        let convert_start = Instant::now();
                         let Some(pixels) = asset.frame_bgra(index) else {
                             continue;
                         };
+                        task_stats.record_convert(convert_start.elapsed());
+                        let capture_ns = now_ns();
                         seq = seq.saturating_add(1);
                         let frame = VideoFrame::new(
                             seq,
-                            MonotonicTimestamp::from_nanos(
-                                started.elapsed().as_nanos().try_into().unwrap_or(u64::MAX),
-                            ),
+                            MonotonicTimestamp::from_nanos(capture_ns),
                             asset.width(),
                             asset.height(),
                             asset.width() * 4,
@@ -62,6 +65,7 @@ impl FileVideoSource {
                             Arc::from(pixels.into_boxed_slice()),
                         );
                         let shared = Arc::new(frame);
+                        task_stats.record_publish(seq, capture_ns);
                         *task_latest.write().expect("file source lock poisoned") =
                             Some(Arc::clone(&shared));
                         task_sender.send_replace(Some(shared));
@@ -71,7 +75,11 @@ impl FileVideoSource {
             }
         });
 
-        Ok(Self { latest, sender })
+        Ok(Self {
+            latest,
+            sender,
+            stats,
+        })
     }
 }
 
@@ -92,6 +100,9 @@ impl FrameSource for FileVideoSource {
             device_name: "video file".into(),
             is_loop: true,
         }
+    }
+    fn source_stats(&self) -> Option<SourceStatsSnapshot> {
+        Some(self.stats.snapshot())
     }
 }
 
