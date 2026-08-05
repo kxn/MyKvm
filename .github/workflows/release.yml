@@ -1,0 +1,156 @@
+# 正式发版：workflow_dispatch（对助手说"发版"即可触发）或 push v* tag。
+# 构建多平台产物、生成校验和与 changelog，发布到 GitHub Release（#12）。
+name: release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "版本标签，如 v0.2.0；留空自动取 Cargo.toml 版本"
+        required: false
+        default: ""
+      prerelease:
+        description: "标记为预发布"
+        type: boolean
+        required: false
+        default: false
+      notes:
+        description: "发布说明；留空自动生成 changelog"
+        required: false
+        default: ""
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    name: Quick gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.89
+      - run: cargo install --locked cargo-make
+      - run: cargo make quick
+
+  resolve:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: version
+        run: |
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+          else
+            INPUT="${{ github.event.inputs.version }}"
+            if [[ -z "$INPUT" ]]; then
+              INPUT="$(python3 -c "import tomllib; print(tomllib.load(open('crates/ipkvm-headless-app/Cargo.toml','rb'))['package']['version'])")"
+            fi
+            TAG="v${INPUT#v}"
+          fi
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            echo "invalid version tag: $TAG (expected vX.Y.Z)" >&2
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: build (${{ matrix.os }})
+    needs: [gate, resolve]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            runner_os: Windows
+            python: python
+          - os: ubuntu-latest
+            runner_os: Linux
+            python: python3
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.89
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Linux system deps (iced/winit runtime libs)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev
+      - name: Build release binaries
+        run: >-
+          cargo build --release
+          -p ipkvm-headless-app --bin ipkvm-headless
+          -p ipkvm-headless-demo --bin ipkvm-demo
+          -p ipkvm-desktop-iced --bin ipkvm-desktop-iced
+      - name: Package
+        run: ${{ matrix.python }} scripts/build-release-package.py --os ${{ matrix.runner_os }} --version ${{ needs.resolve.outputs.tag }} --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ipkvm-${{ needs.resolve.outputs.tag }}-${{ matrix.runner_os }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish release
+    needs: [build, resolve]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Checksums
+        run: |
+          find artifacts -type f -name 'ipkvm-*' | sort | xargs sha256sum > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+      - name: Prepare release notes
+        run: |
+          TAG="${{ needs.resolve.outputs.tag }}"
+          PREV="$(git describe --tags --abbrev=0 --exclude "$TAG" 2>/dev/null || true)"
+          if [[ -n "$PREV" ]]; then
+            CHANGELOG="$(git log --oneline --no-decorate "$PREV"..HEAD)"
+          else
+            CHANGELOG="$(git log --oneline --no-decorate -30)"
+          fi
+          {
+            echo "## $TAG"
+            echo
+            if [[ -n "${{ github.event.inputs.notes }}" ]]; then
+              echo "${{ github.event.inputs.notes }}"
+            else
+              echo "### Changelog"
+              echo
+              echo '```'
+              echo "$CHANGELOG"
+              echo '```'
+            fi
+            echo
+            echo "### 产物"
+            echo
+            grep -o 'ipkvm-[^ ]*' SHA256SUMS.txt | sort | sed 's/^/- /'
+            echo
+            echo "每包内含 ipkvm-headless / ipkvm-demo / ipkvm-desktop-iced 与 README、LICENSE、THIRD_PARTY_LICENSES.txt；校验和见 SHA256SUMS.txt。"
+            echo
+            echo "发布义务核对清单见 docs/dependency-license-policy.md（发布责任章节）。"
+          } > notes.md
+      - name: Create release and upload
+        run: |
+          TAG="${{ needs.resolve.outputs.tag }}"
+          ARGS=(--target "$GITHUB_SHA" --title "$TAG" --notes-file notes.md)
+          if [[ "${{ github.event.inputs.prerelease }}" == "true" ]]; then
+            ARGS+=(--prerelease)
+          fi
+          gh release create "$TAG" "${ARGS[@]}"
+          gh release upload "$TAG" artifacts/*/* SHA256SUMS.txt --clobber

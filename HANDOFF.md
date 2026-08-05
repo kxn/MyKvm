@@ -7,6 +7,12 @@
 > #159 边界更新：headless app/demo/browser fixture 已拆为独立 package，`ipkvm-device`
 > 提供设备 provider，`ipkvm-desktop-core` 提供无硬件桌面逻辑；实现、验证、PR 和 issue
 > 收口完成前，不要把旧的 `cargo run -p ipkvm-headless --features demo` 命令当作现行入口。
+>
+> 发布更新（#12）：发布全部由 GitHub Actions 完成——main 上 verify CI 全绿后 `dev-release`
+> workflow 自动更新固定 `dev` 预发布（Windows/Linux 产物）；正式发版用 `release` workflow
+> （`gh workflow run release.yml -f version=vX.Y.Z` 或 push `v*` tag）。产物为
+> `ipkvm-headless`/`ipkvm-demo`/`ipkvm-desktop-iced` 三二进制 + README + LICENSE +
+> 自动生成的 `THIRD_PARTY_LICENSES.txt` + `SHA256SUMS.txt`。
 
 ## 1. 仓库与环境
 
