@@ -32,6 +32,7 @@ windows-implement = { version = "0.60.2", optional = true }
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 nokhwa = { version = "0.10", optional = true, default-features = false, features = [
     "input-v4l",
+    "decoding",
 ] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
