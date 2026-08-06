@@ -173,8 +173,13 @@ fn build_source(
     {
         (Some(directory), _) => {
             let assets = load_assets(directory)?;
+            let tile = if options.dirty_rects {
+                Some(options.dirty_rect_tile_size.unwrap_or(32))
+            } else {
+                None
+            };
             std::sync::Arc::new(
-                FileVideoSource::new(assets, frames_per_second)
+                FileVideoSource::new_with_dirty_rects(assets, frames_per_second, tile)
                     .map_err(|error| format!("无法启动文件视频源：{error}"))?,
             )
         }
@@ -217,6 +222,8 @@ mod tests {
             jpeg_quality: None,
             token: None,
             vnc_password: None,
+            dirty_rects: false,
+            dirty_rect_tile_size: None,
         }
     }
 

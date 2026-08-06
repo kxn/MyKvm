@@ -16,3 +16,4 @@ __pycache__/
 !.env.example
 /.zcode/
 video_1080p.stats.json
+.tmp/
