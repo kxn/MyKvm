@@ -28,6 +28,7 @@ pub(crate) fn encode_server_init(
     Ok(output)
 }
 
+#[cfg(test)]
 pub(crate) fn checked_raw_message_len(
     width: usize,
     height: usize,
@@ -69,6 +70,7 @@ pub(crate) fn encode_desktop_size_update(size: RfbSize) -> Vec<u8> {
 ///
 /// 调用方负责在调用前用 `checked_raw_message_len` 的结果做容量检查（见
 /// `queue_framebuffer_update`）。本函数不重复容量检查。
+#[cfg(test)]
 pub(crate) fn encode_raw_update(
     frame: BgraFrameView<'_>,
     rectangle: RfbRectangle,

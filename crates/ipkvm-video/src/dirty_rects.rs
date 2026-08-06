@@ -29,6 +29,7 @@ impl DirtyRectDetector {
     /// - 尺寸变化 → 返回单个全帧矩形（重置缓存）。
     /// - 完全相同 → 返回空 Vec。
     /// - 部分变化 → 返回合并后的脏矩形列表。
+    ///
     /// 调用后更新内部缓存为当前帧。
     pub fn detect(&mut self, frame: &VideoFrame) -> Vec<Rect> {
         // MJPEG 帧不做检测。
