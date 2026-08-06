@@ -77,7 +77,7 @@ jobs:
             echo
             grep -o 'ipkvm-dev-[^ ]*' SHA256SUMS.txt | sort | sed 's/^/- /'
             echo
-            echo "每包内含 ipkvm-headless / ipkvm-demo / ipkvm-desktop-iced 与 README、LICENSE、THIRD_PARTY_LICENSES.txt；校验和见 SHA256SUMS.txt。"
+            echo "每包内含 ipkvm-headless / ipkvm-desktop-iced 与 README、LICENSE、THIRD_PARTY_LICENSES.txt；校验和见 SHA256SUMS.txt。"
             echo
             echo "### 最新提交"
             echo

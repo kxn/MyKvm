@@ -2454,16 +2454,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ipkvm-headless-demo"
-version = "0.1.0"
-dependencies = [
- "ipkvm-core",
- "ipkvm-headless",
- "ipkvm-video",
- "tokio",
-]
-
-[[package]]
 name = "ipkvm-rfb"
 version = "0.1.0"
 dependencies = [

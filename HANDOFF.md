@@ -11,7 +11,7 @@
 > 发布更新（#12）：发布全部由 GitHub Actions 完成——main 上 verify CI 全绿后 `dev-release`
 > workflow 自动更新固定 `dev` 预发布（Windows/Linux 产物）；正式发版用 `release` workflow
 > （`gh workflow run release.yml -f version=vX.Y.Z` 或 push `v*` tag）。产物为
-> `ipkvm-headless`/`ipkvm-demo`/`ipkvm-desktop-iced` 三二进制 + README + LICENSE +
+> `ipkvm-headless`/`ipkvm-desktop-iced` 二进制 + README + LICENSE +
 > 自动生成的 `THIRD_PARTY_LICENSES.txt` + `SHA256SUMS.txt`。
 
 ## 1. 仓库与环境
@@ -131,7 +131,7 @@
 ## 11. #159 crate 边界与现行入口
 
 - 正式后台：`cargo run -p ipkvm-headless-app --bin ipkvm-headless`。
-- Y4M 演示：`cargo run -p ipkvm-headless-demo --bin ipkvm-demo`。
+- Y4M 演示：`cargo run -p ipkvm-headless-app --bin ipkvm-headless --assets <目录>`。
 - 浏览器夹具：`cargo build -p ipkvm-browser-fixture --bin ipkvm-browser-fixture`。
 - 无硬件边界检查：`python3 scripts/test-crate-boundaries.py`。
 - 生产体积测量按 app、demo、fixture 和 iced 四个实际 binary 分别记录，不能把 library 或旧

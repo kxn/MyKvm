@@ -19,7 +19,7 @@ my_ipkvm 是一个软件 IPKVM 项目：主控机通过 USB HDMI 采集卡读取
 - `ipkvm-desktop`：桌面 production adapter（真实相机、CH9329、设备 provider、系统剪贴板），并保留旧共享类型路径的兼容 re-export。
 - `ipkvm-desktop-iced`：正式桌面图形界面和唯一桌面发布入口（设备选择、视频控制台、本地键鼠直通、特殊键/粘贴/截图、状态栏与硬件异常状态）。
 - `ipkvm-headless`：无硬件 RFB TCP/WebSocket 与内嵌中文 noVNC HTTP library（含 `/api/devices`、`/api/session`、`/api/status`、`/api/screenshot`）。
-- `ipkvm-headless-app`：正式 `ipkvm-headless` 后台 binary，负责真实 camera/serial 组装；`ipkvm-headless-demo` 提供 `ipkvm-demo`，`ipkvm-browser-fixture` 提供 deterministic noVNC 自动化夹具。TLS 尚未实现。
+- `ipkvm-headless-app`：正式 `ipkvm-headless` 后台 binary，负责真实 camera/serial 组装；`ipkvm-browser-fixture` 提供 deterministic noVNC 自动化夹具。TLS 尚未实现。
 
 `ipkvm-session` 当前默认按 CH9329 出厂波特率 9600 配置串口。硬件到货前不自动改写芯片参数，也不假定成品线支持 115200。
 
@@ -115,7 +115,7 @@ py .\scripts\verify-web-assets.py
 main 分支 verify CI 全绿后，`dev-release` workflow 自动构建 Windows/Linux 产物并覆盖更新固定的 `dev` 预发布（GitHub Releases 页面），方便随时下载测试：
 
 - `ipkvm-dev-windows-x86_64.zip` / `ipkvm-dev-linux-x86_64.tar.gz`
-- 每包内含 `ipkvm-headless`、`ipkvm-demo`、`ipkvm-desktop-iced` 与 README、LICENSE、`THIRD_PARTY_LICENSES.txt`（由 `cargo metadata` 自动生成）；Release 页附 `SHA256SUMS.txt` 校验和。
+- 每包内含 `ipkvm-headless`、`ipkvm-desktop-iced` 与 README、LICENSE、`THIRD_PARTY_LICENSES.txt`（由 `cargo metadata` 自动生成）；Release 页附 `SHA256SUMS.txt` 校验和。
 
 ### 正式发版
 
@@ -198,21 +198,14 @@ vnc_password = "abc12345"        # 可选；RFB VNC 密码（1-8 个 ASCII 字�
 - `--vnc-password` / `[auth] vnc_password`：RFB TCP 入口的 VNC 密码挑战，长度 1-8 个 ASCII 字符（RFC 6143 密码上限 8 字节）。标准 VNC 客户端（含 vncdotool）用该密码连接。
 - 未配置 token 时 HTTP/WS 仅放行本机来源（防默认暴露）；未配置 vnc_password 时 RFB TCP 仅允许本机连接。两个入口都支持通过 `--bind` 扩大监听范围，但鉴权凭证是独立维度。
 
-## 演示：双分辨率视频 mock 源
+## 演示：Y4M 视频源
 
-不依赖真实采集卡，可以用真实视频文件验证 RFB 画面与动态分辨率切换：
-
-```bash
-./scripts/fetch-demo-assets.sh   # 下载并转换 640x360 与 1280x720 两个 Y4M 素材
-cargo run -p ipkvm-headless-demo --bin ipkvm-demo \
-    --assets .cache/demo-assets --tcp 5900 --fps 10
-```
-
-素材按文件名排序循环播放，切换分辨率时已连接客户端会收到 `DesktopSize` 更新。用独立的 vncdotool 客户端验证：
+不依赖真实采集卡，可以用 Y4M 视频文件验证 RFB 画面：
 
 ```bash
-python3 -m venv .venv && .venv/bin/pip install vncdotool
-.venv/bin/python scripts/vnc-dynamic-resolution-check.py --port 5900
+./scripts/fetch-demo-assets.sh   # 下载并转换 Y4M 素材
+cargo run -p ipkvm-headless-app --bin ipkvm-headless \
+    --assets .cache/demo-assets --http 8080 --fps 10
 ```
 
-仓库内自动化测试已覆盖同一条路径：`rfb_dynamic_resolution` 通过真实 TCP 连接断言 `DesktopSize` 与切换后的 Raw 帧。
+素材按文件名排序循环播放。仓库内自动化测试已覆盖同一条路径：`rfb_dynamic_resolution` 通过真实 TCP 连接断言 `DesktopSize` 与切换后的 Raw 帧。

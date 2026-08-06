@@ -8,7 +8,6 @@ members = [
     "crates/ipkvm-rfb",
     "crates/ipkvm-headless",
     "crates/ipkvm-headless-app",
-    "crates/ipkvm-headless-demo",
     "crates/ipkvm-browser-fixture",
     "crates/ipkvm-desktop",
     "crates/ipkvm-desktop-core",
