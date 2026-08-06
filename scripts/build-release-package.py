@@ -26,7 +26,6 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 # 用户可用发布产物：(crate, bin 名)。browser-fixture 是测试工具，不发版。
 BINARIES = {
     "ipkvm-headless": ("ipkvm-headless-app", "ipkvm-headless"),
-    "ipkvm-demo": ("ipkvm-headless-demo", "ipkvm-demo"),
     "ipkvm-desktop-iced": ("ipkvm-desktop-iced", "ipkvm-desktop-iced"),
 }
 
