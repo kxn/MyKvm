@@ -37,7 +37,7 @@ cargo run -p ipkvm-desktop-iced --all-features
 
 Linux 桌面端说明：
 
-- 视频采集走 Linux V4L2 后端（nokhwa），UVC 采集卡即插即用；`--list-cameras` 可枚举设备（无真实采集卡时可配合 `--assets` 使用 Y4M 文件伪设备）。
+- 视频采集走 Linux V4L2 后端（nokhwa），UVC 采集卡即插即用，可在应用内设备列表选择；无真实采集卡时无法验证实际捕捉（桌面端无 CLI 伪设备参数，演示/验证可运行 headless 的 Y4M 伪设备）。
 - 键鼠注入走真实 CH9329 串口 `/dev/ttyUSBn`（CH340 驱动，默认 9600 8N1）。
 - iced/wgpu 渲染依赖系统图形库 `libxkbcommon`（X11 键盘映射）；缺失时应用无法创建窗口，需先安装（如 Debian/Ubuntu 的 `libxkbcommon0` 及 `libxkbcommon-x11-0`）。
 
@@ -47,7 +47,7 @@ Linux 桌面端说明：
 - 控制菜单可发送 Ctrl+Alt+Del、Esc、F1-F12、Insert/Delete/Home/End/PageUp/PageDown、方向键，粘贴剪贴板文本，释放所有按键，截图复制到剪贴板（Windows 还可保存 JPEG）。
 - 重新选择设备或停止连接不退出 app；切换设备采用会话级停旧启新。
 - 底部状态栏显示控制设备、键盘输入、鼠标坐标和视频状态（无信号/断流/分辨率）。
-- 视频断流连续 2 秒显示「无信号」，app 不退出；CH9329 掉线后输入进入「控制设备离线」，刷新检测重新探测后可手动重新连接（自动恢复见 issue #37）。
+- 视频断流连续 2 秒显示「无信号」，app 不退出；CH9329 掉线后输入进入「控制设备离线」，刷新检测重新探测后可手动重新连接。
 
 ## 设计文档
 
