@@ -133,10 +133,17 @@ async fn drive_connection<T: RfbTransport>(
         .borrow()
         .clone()
         .ok_or(RfbFrameError::FrameUnavailable)?;
-    let initial_view = frame_view(&initial_frame)?;
+    // MJPEG 透传：握手时只需要尺寸，不需要 BGRA 像素数据。
+    // 直接从帧元数据获取尺寸，避免 MJPEG 帧被 frame_view 拒绝。
+    let initial_width = u16::try_from(initial_frame.width)
+        .map_err(|_| RfbFrameError::WidthOutOfRange(initial_frame.width))?;
+    let initial_height = u16::try_from(initial_frame.height)
+        .map_err(|_| RfbFrameError::HeightOutOfRange(initial_frame.height))?;
+    let initial_size = ipkvm_rfb::RfbSize::new(initial_width, initial_height)
+        .map_err(RfbFrameError::from)?;
     let mut core = RfbConnectionCore::new(RfbConnectionConfig {
         desktop_name: settings.desktop_name.clone(),
-        initial_size: initial_view.size(),
+        initial_size,
         limits: settings.protocol_limits,
         security: settings.security.clone(),
         preferred_encoding: settings.preferred_encoding,
