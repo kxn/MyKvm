@@ -29,6 +29,18 @@ my_ipkvm 是一个软件 IPKVM 项目：主控机通过 USB HDMI 采集卡读取
 cargo run -p ipkvm-desktop-iced --all-features
 ```
 
+Linux 下使用相同命令（需要可用的图形会话，X11 或 Wayland 均可）：
+
+```bash
+cargo run -p ipkvm-desktop-iced --all-features
+```
+
+Linux 桌面端说明：
+
+- 视频采集走 Linux V4L2 后端（nokhwa），UVC 采集卡即插即用；`--list-cameras` 可枚举设备（无真实采集卡时可配合 `--assets` 使用 Y4M 文件伪设备）。
+- 键鼠注入走真实 CH9329 串口 `/dev/ttyUSBn`（CH340 驱动，默认 9600 8N1）。
+- iced/wgpu 渲染依赖系统图形库 `libxkbcommon`（X11 键盘映射）；缺失时应用无法创建窗口，需先安装（如 Debian/Ubuntu 的 `libxkbcommon0` 及 `libxkbcommon-x11-0`）。
+
 启动后选择视频设备和控制设备；控制设备必须探测为合法 CH9329 后「连接」按钮才会启用。连接后：
 
 - 点击视频区域获得焦点后可发送本地键盘/鼠标（绝对坐标按目标画面缩放换算）。
@@ -80,11 +92,11 @@ cargo install --locked cargo-make
 | `cargo make clippy` | Clippy 检查 | 分钟级 |
 | `cargo make doc` | 构建 Rust 文档 | 分钟级 |
 | `cargo make browser` | 浏览器闭环（仅 Windows） | 分钟级 |
-| `cargo make desktop-release` | release 构建 + 启动冒烟（仅 Windows） | 分钟级 |
+| `cargo make desktop-release` | release 构建 + 启动冒烟（Windows/Linux） | 分钟级 |
 
 **快速门禁**检查文本 UTF-8 编码、noVNC 资产来源和逐文件哈希、浏览器依赖锁文件、锁定依赖图许可证与来源、crate 依赖边界、Rust 格式和 Git 差异。**全量门禁**在快速门禁基础上增加全工作区测试、Clippy 和 Rust 文档构建。
 
-真实浏览器闭环不包含在本地默认门禁内（需 Node 20+、Chrome/Edge、npm 联网），涉及 noVNC/前端改动时运行 `cargo make browser`（首次通过 `npm ci` 安装锁定的 `playwright-core`）；CI 的 `browser` job 为必需检查，失败会标红 workflow。Windows release 发布物启动冒烟通过 `cargo make desktop-release` 一键完成构建和验证（验证 release 进程持续存活并创建非零顶层窗口句柄，不读取窗口标题、About 文本或 `GIT_COMMIT`）。
+真实浏览器闭环不包含在本地默认门禁内（需 Node 20+、Chrome/Edge、npm 联网），涉及 noVNC/前端改动时运行 `cargo make browser`（首次通过 `npm ci` 安装锁定的 `playwright-core`）；CI 的 `browser` job 为必需检查，失败会标红 workflow。release 发布物启动冒烟通过 `cargo make desktop-release` 一键完成构建和验证（Windows 走 `scripts/verify-desktop-release.ps1`，验证 release 进程持续存活并创建非零顶层窗口句柄；Linux 走 `scripts/verify-desktop-release.sh`，验证进程存活并创建标题为 `my_ipkvm iced` 的顶层窗口，均不读取 About 文本或 `GIT_COMMIT`）。Linux 冒烟依赖：窗口检测优先 `xdotool`（回退 `xwininfo`/`xlsclients`），无图形会话时自动经 `xvfb-run -a` 在虚拟显示上启动；三者全缺时降级为进程存活检查并输出警告。
 
 可独立运行静态资源检查：
 
@@ -92,7 +104,7 @@ cargo install --locked cargo-make
 py .\scripts\verify-web-assets.py
 ```
 
-固定工具版本、许可证分级和非 Cargo 组件边界见 `docs/dependency-license-policy.md`。`Makefile.toml` 是唯一流程编排层，门禁链由任务依赖图直接定义；检查逻辑全部为 `scripts/` 下跨平台 Python 单份实现（`check-text-encoding.py`、`test-*.py`、`web_assets_tools.py` 等），仅 `verify-desktop-release.ps1`（Windows 窗口句柄 P/Invoke）与维护工具 `update-novnc.ps1` 保留平台脚本。
+固定工具版本、许可证分级和非 Cargo 组件边界见 `docs/dependency-license-policy.md`。`Makefile.toml` 是唯一流程编排层，门禁链由任务依赖图直接定义；检查逻辑全部为 `scripts/` 下跨平台 Python 单份实现（`check-text-encoding.py`、`test-*.py`、`web_assets_tools.py` 等），仅 `verify-desktop-release.ps1`（Windows 窗口句柄 P/Invoke）、`verify-desktop-release.sh`（Linux 顶层窗口检测）与维护工具 `update-novnc.ps1` 保留平台脚本。
 
 ## 发布
 

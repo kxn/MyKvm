@@ -518,6 +518,7 @@ WebSocket 兼容：
    - 机房服务器常见。
    - V4L2 对 UVC 采集卡最直接。
    - 适合后台进程部署。
+   - iced 桌面端已支持 Linux：V4L2 采集、`/dev/ttyUSBn` 注入；release 启动冒烟见 `cargo make desktop-release`（#37）。
 
 4. macOS 主控机
    - 支持价值较低，可后置。
@@ -613,6 +614,7 @@ WebSocket 兼容：
 - Linux V4L2 采集。
 - 复用阶段 2 的 RFB/noVNC 入口。
 - systemd 服务草案。
+- iced 桌面端 Linux 可编译、可运行并纳入 release 启动冒烟（#37 已完成）。
 
 ### 阶段 4：性能优化
 

@@ -184,7 +184,7 @@ PR 描述必须包含：
 cargo make full
 ```
 
-开发迭代期间（提交前）可先运行 `cargo make quick` 获得秒级反馈；真实浏览器闭环（`cargo make browser`）与 Windows release 启动冒烟（`cargo make desktop-release`）不包含在门禁链内，涉及对应改动时显式运行。
+开发迭代期间（提交前）可先运行 `cargo make quick` 获得秒级反馈；真实浏览器闭环（`cargo make browser`）与 release 启动冒烟（`cargo make desktop-release`，Windows 走 ps1、Linux 走 sh）不包含在门禁链内，涉及对应改动时显式运行。
 
 如果改动不涉及 Rust 代码，也应运行适合范围的检查，例如 Markdown 冲突标记扫描或模板渲染检查。
 

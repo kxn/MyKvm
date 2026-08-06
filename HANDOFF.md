@@ -4,6 +4,10 @@
 >
 > 更新（2026-08-04）：**M1–M5 已全部合入（PR #83/#84/#85/#86/#161），#82 正在依据各阶段证据收口**；正式 iced 桌面端接管发布入口，旧 UI 和迁移 spike 已退役。
 >
+> 更新（2026-08-06）：**issue #37 Linux 桌面支持**——`desktop-release`/`build-desktop-release` 放开为
+> Windows/Linux 双平台，新增 Linux 冒烟脚本 `scripts/verify-desktop-release.sh`（窗口检测优先 xdotool、
+> 回退 xwininfo/xlsclients，无 DISPLAY 自动 xvfb-run -a，工具全缺降级进程存活检查并警告）；Windows ps1 行为不变。
+>
 > #159 边界更新：headless app/demo/browser fixture 已拆为独立 package，`ipkvm-device`
 > 提供设备 provider，`ipkvm-desktop-core` 提供无硬件桌面逻辑；实现、验证、PR 和 issue
 > 收口完成前，不要把旧的 `cargo run -p ipkvm-headless --features demo` 命令当作现行入口。
@@ -70,7 +74,7 @@
 - spike 计划与实测数据（历史记录）：`docs/superpowers/plans/2026-08-03-iced-spike.md`
 - M1/M2/M3/M4 实施计划（已执行，含执行记录）：`docs/superpowers/plans/2026-08-03-iced-migration-m{1,2,3,4}.md`
 - M5 设计与实施计划：`docs/superpowers/specs/2026-08-04-iced-m5-packaging-design.md`、`docs/superpowers/plans/2026-08-04-iced-m5-packaging.md`
-- M5 发布冒烟：`scripts/verify-desktop-release.ps1`（`cargo make desktop-release`）
+- M5 发布冒烟：`scripts/verify-desktop-release.ps1`（Windows，窗口句柄）/ `scripts/verify-desktop-release.sh`（Linux，#37，顶层窗口检测，`cargo make desktop-release` 双平台入口）
 - M2 观感截图：`docs/superpowers/artifacts/m2-screenshots/m2-connection-page.png`
 - M4 观感截图：`docs/superpowers/artifacts/m4-screenshots/m4-themed-connection-page.png`
 - 正式迁移 crate：`crates/ipkvm-desktop-iced/`（M0 壳：lib.rs/main.rs）
