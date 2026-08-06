@@ -434,7 +434,6 @@ impl RfbConnectionCore {
         }
         let client_supports_tight = self.encoding_preferences.contains(&ENCODING_TIGHT);
         if !client_supports_tight {
-            // 客户端不支持 Tight，无法透传 JPEG——调用方应拒绝 MJPEG 帧或回退。
             return Err(RfbEncodeError::HandshakeNotComplete);
         }
         // 容量检查：FramebufferUpdate header(4) + rect header(12) + 控制字节(1)

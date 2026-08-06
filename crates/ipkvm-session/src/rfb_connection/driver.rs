@@ -111,8 +111,12 @@ pub(crate) async fn run_connection<T: RfbTransport>(
     transport.close().await;
 
     match result {
-        Ok(end) => end,
-        Err(error) => ConnectionEnd::Failed(error),
+        Ok(end) => {
+            end
+        }
+        Err(error) => {
+            ConnectionEnd::Failed(error)
+        }
     }
 }
 
@@ -284,7 +288,13 @@ impl ConnectionState {
         request: FramebufferUpdateRequest,
     ) -> Result<(), RfbConnectionError> {
         let frame = self.latest_frame()?;
-        let size = frame_view(&frame)?.size();
+        // MJPEG 透传：从帧元数据获取尺寸，跳过 frame_view（它要求 BGRA）。
+        let w = u16::try_from(frame.width)
+            .map_err(|_| RfbFrameError::WidthOutOfRange(frame.width))?;
+        let h = u16::try_from(frame.height)
+            .map_err(|_| RfbFrameError::HeightOutOfRange(frame.height))?;
+        let size = ipkvm_rfb::RfbSize::new(w, h)
+            .map_err(RfbFrameError::from)?;
         self.pending.merge(request, size);
 
         let should_send = self

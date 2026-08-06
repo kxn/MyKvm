@@ -126,7 +126,15 @@ impl CameraSource {
                     // MJPEG 透传：采集卡输出 MJPEG 时直接传递原始 JPEG 字节，
                     // 跳过"MJPEG 解码→RGBA→BGRA→再 JPEG 编码"的双重浪费。
                     // RFB 层用 encode_tight_mjpeg_passthrough 直接发送。
-                    if frame.source_frame_format() == nokhwa::utils::FrameFormat::MJPEG {
+                    //
+                    // 判断依据：检查数据是否以 JPEG SOI 标记 (0xFF 0xD8) 开头，
+                    // 且大小远小于原始像素数据（MJPG 通常 < 100KB，YUYV 1080p = 4MB）。
+                    let raw_buf = frame.buffer();
+                    let is_real_mjpeg = raw_buf.len() >= 2
+                        && raw_buf[0] == 0xFF
+                        && raw_buf[1] == 0xD8
+                        && raw_buf.len() < (res.width_x as usize) * (res.height_y as usize);
+                    if is_real_mjpeg {
                         let jpeg_data = frame.buffer_bytes();
                         seq = seq.saturating_add(1);
                         let video_frame = VideoFrame::new(
