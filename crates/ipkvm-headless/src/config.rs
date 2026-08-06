@@ -28,6 +28,8 @@ pub const USAGE: &str = "\
   --token <token>  [auth] HTTP/WS 鉴权 token（非空，仅含字母数字与 - _ . ~）；未配置时仅允许本机访问
   --vnc-password <密码>
                    [auth] RFB VNC 密码（1-8 个 ASCII 字符）；未配置时 TCP 仅允许本机连接
+  --encoding <模式> RFB 编码：raw（无压缩）/ tight（Tight+JPEG）/ auto（默认，客户端支持则 Tight）
+  --jpeg-quality <N> Tight+JPEG 质量 1-100，默认 85（仅 --encoding tight/auto 时生效）
 ";
 
 /// CLI 参数（全部可选：`None`/`false` 表示未显式指定，不覆盖文件字段）。
@@ -45,6 +47,8 @@ pub struct CliOptions {
     pub config_path: Option<PathBuf>,
     pub token: Option<String>,
     pub vnc_password: Option<String>,
+    pub encoding: Option<String>,
+    pub jpeg_quality: Option<u8>,
 }
 
 /// 合并后的最终配置（CLI > 文件 > 运行时设置 > 默认）。`assets_dir`/
@@ -64,6 +68,8 @@ pub struct Options {
     pub frames_per_second: Option<u64>,
     pub token: Option<String>,
     pub vnc_password: Option<String>,
+    pub encoding: Option<String>,
+    pub jpeg_quality: Option<u8>,
 }
 
 /// 配置文件顶层。`deny_unknown_fields` 保证未知字段确定性报错。
@@ -90,6 +96,8 @@ pub struct VideoSection {
     pub camera: Option<String>,
     pub assets: Option<PathBuf>,
     pub fps: Option<u64>,
+    pub encoding: Option<String>,
+    pub jpeg_quality: Option<u8>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -182,6 +190,12 @@ pub fn resolve(cli: CliOptions, file: Option<FileConfig>) -> Result<Options, Str
             .http_port
             .unwrap_or_else(|| server.and_then(|s| s.http_port).unwrap_or(6080)),
         frames_per_second: cli.frames_per_second.or_else(|| video.and_then(|v| v.fps)),
+        encoding: cli
+            .encoding
+            .or_else(|| video.and_then(|v| v.encoding.clone())),
+        jpeg_quality: cli
+            .jpeg_quality
+            .or_else(|| video.and_then(|v| v.jpeg_quality)),
         token,
         vnc_password,
     })
@@ -197,6 +211,16 @@ pub fn vnc_security(vnc_password: Option<&str>) -> RfbSecurity {
             RfbSecurity::Vnc { password: derived }
         }
         None => RfbSecurity::None,
+    }
+}
+
+/// 把 encoding 字符串（"raw"/"tight"/"auto"）转成 EncodingPreference。
+/// None 或无法识别时返回 Auto（默认）。
+pub fn parse_encoding(encoding: Option<&str>) -> ipkvm_rfb::EncodingPreference {
+    match encoding.map(|s| s.to_lowercase()).as_deref() {
+        Some("raw") => ipkvm_rfb::EncodingPreference::Raw,
+        Some("tight") => ipkvm_rfb::EncodingPreference::TightJpeg,
+        _ => ipkvm_rfb::EncodingPreference::Auto,
     }
 }
 
@@ -261,6 +285,23 @@ fn parse_cli_from<S: AsRef<str>>(args: &[S]) -> Result<CliOptions, String> {
                         .as_ref()
                         .parse()
                         .map_err(|error| format!("无效帧率：{error}"))?,
+                );
+            }
+            "--encoding" => {
+                options.encoding = Some(
+                    args.next()
+                        .ok_or_else(|| "--encoding 需要一个参数（raw/tight/auto）".to_string())?
+                        .as_ref()
+                        .to_string(),
+                );
+            }
+            "--jpeg-quality" => {
+                options.jpeg_quality = Some(
+                    args.next()
+                        .ok_or_else(|| "--jpeg-quality 需要一个 1-100 的参数".to_string())?
+                        .as_ref()
+                        .parse()
+                        .map_err(|error| format!("无效 jpeg-quality：{error}"))?,
                 );
             }
             "--serial" => {
@@ -407,6 +448,8 @@ vnc_password = "filepass"
             config_path: None,
             token: None,
             vnc_password: Some("clipass".to_string()),
+            encoding: None,
+            jpeg_quality: None,
         };
         let options = resolve(cli, Some(file)).unwrap();
         assert_eq!(options.bind_address, "10.0.0.1");
