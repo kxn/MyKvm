@@ -269,26 +269,14 @@ async fn missing_initial_frame_disconnects_then_valid_frame_reconnects() {
 }
 
 #[tokio::test]
-async fn invalid_initial_frame_disconnects_then_valid_frame_reconnects() {
-    let invalid = frame(1, 1, 1, PixelFormat::Mjpeg, &[0; 4]);
-    let mut fixture = ServerFixture::start(16, Some(invalid)).await;
-    let mut first = TestRfbClient::connect(fixture.address).await;
-    assert_eq!(
-        first.read_banner().await.unwrap_err().kind(),
-        io::ErrorKind::UnexpectedEof
-    );
-    let reason = match fixture.events.recv().await.unwrap() {
-        RfbServerEvent::Disconnected { reason, .. } => reason,
-        event => panic!("expected disconnected event, got {event:?}"),
-    };
-    assert!(matches!(
-        reason,
-        RfbDisconnectReason::Frame(RfbFrameError::UnsupportedPixelFormat(PixelFormat::Mjpeg))
-    ));
-
-    fixture.source.publish_frame(default_frame());
-    let mut second = TestRfbClient::connect(fixture.address).await;
-    assert_eq!(second.handshake(true).await.width, 2);
+async fn mjpeg_initial_frame_handshake_succeeds() {
+    // MJPEG 帧现在可以用于握手（从元数据获取尺寸，跳过 frame_view）。
+    let mjpeg = frame(1, 2, 2, PixelFormat::Mjpeg, &[0xFF, 0xD8, 0x00, 0x00]);
+    let mut fixture = ServerFixture::start(16, Some(mjpeg)).await;
+    let mut client = TestRfbClient::connect(fixture.address).await;
+    let init = client.handshake(true).await;
+    assert_eq!(init.width, 2);
+    assert_eq!(init.height, 2);
     fixture.expect_connected().await;
     fixture.stop().await.unwrap();
 }
