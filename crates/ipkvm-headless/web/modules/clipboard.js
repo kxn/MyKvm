@@ -31,8 +31,26 @@ export async function jpegToPngBlob(jpegBlob) {
 
 export async function copyJpegToClipboard(jpegBlob) {
   const pngBlob = await jpegToPngBlob(jpegBlob);
-  if (typeof navigator.clipboard?.write !== "function" || typeof ClipboardItem === "undefined") {
-    throw new Error("clipboard-write unavailable");
+  // 优先使用 Clipboard API（需要 HTTPS 或 localhost）
+  if (typeof navigator.clipboard?.write === "function" && typeof ClipboardItem !== "undefined") {
+    await navigator.clipboard.write([new ClipboardItem({ "image/png": pngBlob })]);
+    return;
   }
-  await navigator.clipboard.write([new ClipboardItem({ "image/png": pngBlob })]);
+  // Fallback：使用 document.execCommand('copy')（HTTP 环境可用）
+  const url = URL.createObjectURL(pngBlob);
+  try {
+    const img = document.createElement("img");
+    img.src = url;
+    document.body.appendChild(img);
+    const range = document.createRange();
+    range.selectNode(img);
+    const selection = window.getSelection();
+    selection.removeAllRanges();
+    selection.addRange(range);
+    document.execCommand("copy");
+    selection.removeAllRanges();
+    document.body.removeChild(img);
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
