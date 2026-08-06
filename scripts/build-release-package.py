@@ -79,58 +79,69 @@ def main() -> int:
     arch = "x86_64"
 
     release_dir = REPO_ROOT / "target" / "release"
-    pkg_name = f"ipkvm-{args.version}-{args.os.lower()}-{arch}"
     out_dir = Path(args.out)
-    staging = out_dir / "stage"
-    if staging.exists():
-        shutil.rmtree(staging)
-    bin_dir = staging / "bin"
-    bin_dir.mkdir(parents=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    # 1. 收集 release 二进制
+    # commit 与日期（写入说明文件）
+    commit = run(["git", "rev-parse", "HEAD"], cwd=REPO_ROOT).stdout.strip()
+    short_commit = commit[:8]
+    date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+    # 第三方依赖清单（所有包共用）
+    licenses_content = None
+
+    # 为每个可执行文件单独打包
     for bin_name in BINARIES:
         src = release_dir / f"{bin_name}{exe}"
         if not src.exists():
             print(f"Error: missing release binary: {src}", file=sys.stderr)
             return 1
-        shutil.copy2(src, bin_dir / f"{bin_name}{exe}")
 
-    # 2. commit 与日期（写入说明文件）
-    commit = run(["git", "rev-parse", "HEAD"], cwd=REPO_ROOT).stdout.strip()
-    short_commit = commit[:8]
-    date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        pkg_name = f"{bin_name}-{args.version}-{args.os.lower()}-{arch}"
+        staging = out_dir / f"stage-{bin_name}"
+        if staging.exists():
+            shutil.rmtree(staging)
+        staging.mkdir(parents=True)
 
-    # 3. 第三方依赖清单
-    collect_third_party_licenses(staging, commit)
+        # 1. 收集 release 二进制
+        shutil.copy2(src, staging / f"{bin_name}{exe}")
 
-    # 4. 说明文件与许可证
-    readme_template = (REPO_ROOT / "release" / "package-readme.md").read_text(
-        encoding="utf-8"
-    )
-    readme = (
-        readme_template.replace("{version}", args.version)
-        .replace("{commit}", short_commit)
-        .replace("{date}", date)
-    )
-    (staging / "README.txt").write_text(readme, encoding="utf-8")
-    shutil.copy2(REPO_ROOT / "LICENSE", staging / "LICENSE")
+        # 2. 第三方依赖清单
+        if licenses_content is None:
+            collect_third_party_licenses(staging, commit)
+            licenses_content = (staging / "THIRD_PARTY_LICENSES.txt").read_text(encoding="utf-8")
+        else:
+            (staging / "THIRD_PARTY_LICENSES.txt").write_text(licenses_content, encoding="utf-8")
 
-    # 5. 压缩
-    out_dir.mkdir(parents=True, exist_ok=True)
-    files = sorted(f for f in staging.rglob("*") if f.is_file())
-    if is_windows:
-        out_path = out_dir / f"{pkg_name}.zip"
-        with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as archive:
-            for f in files:
-                archive.write(f, f.relative_to(staging))
-    else:
-        out_path = out_dir / f"{pkg_name}.tar.gz"
-        with tarfile.open(out_path, "w:gz") as archive:
-            for f in files:
-                archive.add(f, arcname=f.relative_to(staging))
+        # 3. 说明文件与许可证
+        readme_template = (REPO_ROOT / "release" / "package-readme.md").read_text(
+            encoding="utf-8"
+        )
+        readme = (
+            readme_template.replace("{version}", args.version)
+            .replace("{commit}", short_commit)
+            .replace("{date}", date)
+            .replace("{binary}", bin_name)
+        )
+        (staging / "README.txt").write_text(readme, encoding="utf-8")
+        shutil.copy2(REPO_ROOT / "LICENSE", staging / "LICENSE")
 
-    shutil.rmtree(staging)
-    print(out_path.resolve())
+        # 4. 压缩
+        files = sorted(f for f in staging.rglob("*") if f.is_file())
+        if is_windows:
+            out_path = out_dir / f"{pkg_name}.zip"
+            with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as archive:
+                for f in files:
+                    archive.write(f, f.relative_to(staging))
+        else:
+            out_path = out_dir / f"{pkg_name}.tar.gz"
+            with tarfile.open(out_path, "w:gz") as archive:
+                for f in files:
+                    archive.add(f, arcname=f.relative_to(staging))
+
+        shutil.rmtree(staging)
+        print(out_path.resolve())
+
     return 0
 
 

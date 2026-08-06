@@ -1,11 +1,10 @@
-# MyKvm {version}
+# MyKvm {version} — {binary}
 
-本包由 GitHub Actions 自动构建（commit `{commit}`，{date}），包含两个用户可用程序：
+本包由 GitHub Actions 自动构建（commit `{commit}`，{date}）。
 
 | 程序 | 说明 |
 |---|---|
-| `bin/ipkvm-headless` | 正式无头后台：RFB TCP（标准 VNC 客户端）+ 嵌入式 noVNC 网页与 RFB WebSocket（浏览器），单活动控制者连接闸门 |
-| `bin/ipkvm-desktop-iced` | 桌面图形界面：设备选择、视频控制台、本地键鼠直通、特殊键/粘贴/截图 |
+| `{binary}` | 见下方说明 |
 
 ## 快速开始（headless）
 

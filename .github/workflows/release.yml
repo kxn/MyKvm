@@ -146,7 +146,7 @@ jobs:
             echo
             grep -o 'ipkvm-[^ ]*' SHA256SUMS.txt | sort | sed 's/^/- /'
             echo
-            echo "每包内含 ipkvm-headless / ipkvm-desktop-iced 与 README、LICENSE、THIRD_PARTY_LICENSES.txt；校验和见 SHA256SUMS.txt。"
+            echo "每个可执行文件单独打包，内含 README、LICENSE、THIRD_PARTY_LICENSES.txt；校验和见 SHA256SUMS.txt。"
             echo
             echo "发布义务核对清单见 docs/dependency-license-policy.md（发布责任章节）。"
           } > notes.md
