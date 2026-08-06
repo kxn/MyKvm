@@ -120,25 +120,46 @@ impl CameraSource {
                         }
                     };
                     task_stats.record_capture_wait(frame_wait_start.elapsed());
-                    let convert_start = std::time::Instant::now();
+                    let capture_ns = crate::now_ns();
                     let res = frame.resolution();
-                    // 解码到复用缓冲（容量稳定后零分配）。
+
+                    // MJPEG 透传：采集卡输出 MJPEG 时直接传递原始 JPEG 字节，
+                    // 跳过"MJPEG 解码→RGBA→BGRA→再 JPEG 编码"的双重浪费。
+                    // RFB 层用 encode_tight_mjpeg_passthrough 直接发送。
+                    if frame.source_frame_format() == nokhwa::utils::FrameFormat::MJPEG {
+                        let jpeg_data = frame.buffer_bytes();
+                        seq = seq.saturating_add(1);
+                        let video_frame = VideoFrame::new(
+                            seq,
+                            MonotonicTimestamp::from_nanos(capture_ns),
+                            res.width_x,
+                            res.height_y,
+                            0, // MJPEG 无 stride 概念
+                            PixelFormat::Mjpeg,
+                            Arc::from(jpeg_data.as_ref()),
+                        );
+                        let shared = Arc::new(video_frame);
+                        task_stats.record_publish(seq, capture_ns);
+                        *task_latest.write().expect("camera lock poisoned") = Some(Arc::clone(&shared));
+                        task_sender.send_replace(Some(shared));
+                        continue;
+                    }
+
+                    // 非 MJPEG 格式：解码到 RGBA 再转 BGRA（兼容旧路径）。
+                    let convert_start = std::time::Instant::now();
                     rgba_buf.clear();
                     rgba_buf.resize((res.width_x as usize) * (res.height_y as usize) * 4, 0);
                     if frame
                         .decode_image_to_buffer::<RgbAFormat>(&mut rgba_buf)
                         .is_err()
                     {
-                        // 解码失败（罕见，如不支持的源格式）：丢弃这一帧。
                         continue;
                     }
-                    // RGBA -> BGRA8888（R↔B 交换），alpha 保持 255。
                     for px in rgba_buf.chunks_exact_mut(4) {
                         px.swap(0, 2);
                         px[3] = 255;
                     }
                     task_stats.record_convert(convert_start.elapsed());
-                    let capture_ns = crate::now_ns();
                     seq = seq.saturating_add(1);
                     let video_frame = VideoFrame::new(
                         seq,
