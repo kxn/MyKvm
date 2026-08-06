@@ -268,6 +268,10 @@ async function waitForVideoView(page) {
 }
 
 async function assertFramePixels(page) {
+  // 此验证覆盖 Tight+JPEG 端到端路径（FU-3，issue #35）：
+  // browser-fixture 默认 EncodingPreference::Auto，noVNC 连上后声明 Tight(7)，
+  // 服务端自动走 Tight+JPEG 编码。如果像素颜色正确，证明 noVNC TightDecoder
+  // 成功解码了我们的 Tight JPEG 帧。
   await page.waitForFunction(() => {
     const canvas = document.querySelector("#screen canvas");
     if (!(canvas instanceof HTMLCanvasElement)) {
