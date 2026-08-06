@@ -344,7 +344,20 @@ async fn queue_and_write_frame<T: RfbTransport>(
     frame: &SharedVideoFrame,
     request: FramebufferUpdateRequest,
 ) -> Result<FramebufferUpdateOutcome, RfbConnectionError> {
-    let outcome = core.queue_framebuffer_update(frame_view(frame)?, request)?;
+    let dirty_rects = frame.dirty_rects.as_deref();
+    let dirty_rfb: Option<Vec<ipkvm_rfb::RfbRectangle>> = dirty_rects.map(|rects| {
+        rects
+            .iter()
+            .map(|r| ipkvm_rfb::RfbRectangle {
+                x: r.x as u16,
+                y: r.y as u16,
+                width: r.width as u16,
+                height: r.height as u16,
+            })
+            .collect()
+    });
+    let outcome =
+        core.queue_framebuffer_update(frame_view(frame)?, request, dirty_rfb.as_deref())?;
     write_core_output(transport, core).await?;
     Ok(outcome)
 }

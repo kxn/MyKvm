@@ -1,5 +1,7 @@
 //! 视频采集抽象。
 
+pub mod dirty_rects;
+
 #[cfg(feature = "camera")]
 pub mod camera;
 // Linux/macOS nokhwa 后端（Windows 不编译，Windows 用 DirectShow sink filter）。
@@ -80,6 +82,18 @@ pub struct VideoFrame {
     pub stride: u32,
     pub pixel_format: PixelFormat,
     pub data: Arc<[u8]>,
+    /// 变化区域（dirty rects），由帧源的 DirtyRectDetector 填充（可开关，默认 None）。
+    /// None 表示无差分信息（发全帧）；Some(空 Vec) 表示无变化（静态画面）。
+    pub dirty_rects: Option<Vec<Rect>>,
+}
+
+/// 矩形区域（帧内坐标）。对应 RFB 的 RfbRectangle，但定义在 video crate（不依赖 rfb）。
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Rect {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
 }
 
 impl VideoFrame {
@@ -100,6 +114,7 @@ impl VideoFrame {
             stride,
             pixel_format,
             data,
+            dirty_rects: None,
         }
     }
 }
