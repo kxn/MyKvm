@@ -35,13 +35,14 @@ pub enum MouseMode {
 ///
 /// Profile 身份与解析后的 `MouseMode` 分开保存：即使两个预设当前使用相同
 /// 模式（例如 Windows 与 BIOS），后续仍可独立调整映射。
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum MouseProfile {
     Windows,
     Linux,
     Bios,
     Android,
     MacOs,
+    #[default]
     RawAbsolute,
     RawRelative,
 }
@@ -89,12 +90,6 @@ impl MouseProfile {
                 MouseMode::Absolute
             }
         }
-    }
-}
-
-impl Default for MouseProfile {
-    fn default() -> Self {
-        Self::RawAbsolute
     }
 }
 

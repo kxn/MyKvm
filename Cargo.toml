@@ -16,6 +16,11 @@ members = [
 ]
 exclude = ["third_party/iced_aw"]
 
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+
 [patch.crates-io]
 # iced_aw 0.14.1 vendored + 本地最小补丁（嵌套子菜单树状态 bug，见
 # third_party/iced_aw/PATCHES.md）。0.15 正式版发布后重新评估。

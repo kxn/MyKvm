@@ -13,18 +13,13 @@ use serde::{Deserialize, Serialize};
 pub const SETTINGS_FILE: &str = "headless-settings.toml";
 
 /// 视频缩放模式（前端 noVNC 渲染用）。
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ScaleMode {
+    #[default]
     FitWindow,
     ActualSize,
     ResizeToVideo,
-}
-
-impl Default for ScaleMode {
-    fn default() -> Self {
-        Self::FitWindow
-    }
 }
 
 /// 运行时设置（冻结契约，供前端 #140 并行开发）。

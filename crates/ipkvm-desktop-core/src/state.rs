@@ -20,8 +20,9 @@ pub struct ControlInfo {
     pub baud: u32,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub enum VideoProbeStatus {
+    #[default]
     NotSelected,
     Checking,
     Ready(PreviewInfo),
@@ -30,14 +31,9 @@ pub enum VideoProbeStatus {
     Disconnected,
 }
 
-impl Default for VideoProbeStatus {
-    fn default() -> Self {
-        Self::NotSelected
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub enum ControlProbeStatus {
+    #[default]
     NotSelected,
     Checking,
     Ready(ControlInfo),
@@ -47,23 +43,12 @@ pub enum ControlProbeStatus {
     Disconnected,
 }
 
-impl Default for ControlProbeStatus {
-    fn default() -> Self {
-        Self::NotSelected
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum VideoScaleMode {
+    #[default]
     FitWindow,
     ActualSize,
     ResizeWindowToVideo,
-}
-
-impl Default for VideoScaleMode {
-    fn default() -> Self {
-        Self::FitWindow
-    }
 }
 
 #[derive(Clone, Debug, Default)]

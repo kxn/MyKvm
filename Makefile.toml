@@ -164,21 +164,26 @@ end
 '''
 
 # ---------------------------------------------------------------------------
-# 桌面 release 构建与启动冒烟（仅 Windows）
+# 桌面 release 构建与启动冒烟（Windows/Linux，issue #37）
 # ---------------------------------------------------------------------------
 
 [tasks.desktop-release]
 description = "构建 iced desktop release 并启动冒烟"
-condition = { platforms = ["windows"] }
+condition = { platforms = ["windows", "linux"] }
 dependencies = ["build-desktop-release"]
 script = '''
 #!@duckscript
-exec powershell -NoProfile -ExecutionPolicy Bypass -File ${SCRIPTS_DIR}/verify-desktop-release.ps1
+# Windows 走 ps1（窗口句柄 P/Invoke），Linux 走 sh（xdotool/xwininfo/xlsclients）。
+if is_windows
+    exec powershell -NoProfile -ExecutionPolicy Bypass -File ${SCRIPTS_DIR}/verify-desktop-release.ps1
+else
+    exec bash ${SCRIPTS_DIR}/verify-desktop-release.sh
+end
 '''
 
 [tasks.build-desktop-release]
 private = true
-condition = { platforms = ["windows"] }
+condition = { platforms = ["windows", "linux"] }
 command = "cargo"
 args = ["build", "--release", "-p", "ipkvm-desktop-iced", "--bin", "ipkvm-desktop-iced"]
 

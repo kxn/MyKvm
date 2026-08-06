@@ -46,7 +46,7 @@ pub fn ui_tick() {
         return;
     }
     let count = UI_TICK_COUNT.fetch_add(1, Ordering::Relaxed) + 1;
-    if count % 60 == 0 {
+    if count.is_multiple_of(60) {
         log(format!("UiTick aggregate={count}"));
     }
 }

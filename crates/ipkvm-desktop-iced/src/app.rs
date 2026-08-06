@@ -1253,28 +1253,28 @@ where
                     self.send_relative_control();
                 }
             }
-            iced::Event::Mouse(iced::mouse::Event::WheelScrolled { delta }) => {
-                if self.remote_input {
-                    if self.connection.mouse_mode == MouseMode::Relative {
-                        self.poll_relative();
-                        self.flush_relative_pending_with_mask(self.pointer_mask);
+            iced::Event::Mouse(iced::mouse::Event::WheelScrolled { delta })
+                if self.remote_input =>
+            {
+                if self.connection.mouse_mode == MouseMode::Relative {
+                    self.poll_relative();
+                    self.flush_relative_pending_with_mask(self.pointer_mask);
+                }
+                self.relative_wheel = self.relative_wheel.saturating_add(wheel_steps(delta));
+                if self.connection.mouse_mode == MouseMode::Relative {
+                    let wheel = std::mem::take(&mut self.relative_wheel);
+                    if wheel != 0 {
+                        let _ = self.controller.send_pointer_relative(
+                            self.pointer_mask,
+                            0,
+                            0,
+                            wheel,
+                        );
                     }
-                    self.relative_wheel = self.relative_wheel.saturating_add(wheel_steps(delta));
-                    if self.connection.mouse_mode == MouseMode::Relative {
-                        let wheel = std::mem::take(&mut self.relative_wheel);
-                        if wheel != 0 {
-                            let _ = self.controller.send_pointer_relative(
-                                self.pointer_mask,
-                                0,
-                                0,
-                                wheel,
-                            );
-                        }
-                    } else if self.connection.mouse_mode == MouseMode::Absolute
-                        && let Some(cursor) = self.last_cursor
-                    {
-                        self.send_absolute(cursor);
-                    }
+                } else if self.connection.mouse_mode == MouseMode::Absolute
+                    && let Some(cursor) = self.last_cursor
+                {
+                    self.send_absolute(cursor);
                 }
             }
             _ => {}
