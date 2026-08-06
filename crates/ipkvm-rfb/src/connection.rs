@@ -3,7 +3,7 @@ use crate::protocol::server::{
     AUTH_FAILED_REASON, ENCODING_TIGHT, NONE_SECURITY_TYPES, PROTOCOL_VERSION,
     SECURITY_RESULT_FAILED, SECURITY_RESULT_OK, VNC_SECURITY_TYPES, checked_output_len,
     encode_desktop_size_update, encode_empty_update, encode_raw_update_multi, encode_server_init,
-    encode_tight_jpeg_update,
+    encode_tight_jpeg_update, encode_tight_mjpeg_passthrough,
 };
 use crate::security::{RfbSecurity, constant_time_eq, vnc_expected_response};
 use crate::{
@@ -418,6 +418,45 @@ impl RfbConnectionCore {
             }
         };
         Ok(outcome)
+    }
+
+    /// MJPEG 透传：把原始 JPEG 字节作为 Tight JPEG 矩形发送（不重新编码）。
+    /// 仅在客户端支持 Tight(7) 时使用；否则返回错误（调用方应回退或拒绝 MJPEG 帧）。
+    /// 见 FU-1（issue #35）。
+    pub fn queue_mjpeg_passthrough(
+        &mut self,
+        jpeg_data: &[u8],
+        width: u16,
+        height: u16,
+    ) -> Result<FramebufferUpdateOutcome, RfbEncodeError> {
+        if self.state != RfbConnectionState::Normal {
+            return Err(RfbEncodeError::HandshakeNotComplete);
+        }
+        let client_supports_tight = self.encoding_preferences.contains(&ENCODING_TIGHT);
+        if !client_supports_tight {
+            // 客户端不支持 Tight，无法透传 JPEG——调用方应拒绝 MJPEG 帧或回退。
+            return Err(RfbEncodeError::HandshakeNotComplete);
+        }
+        // 容量检查：FramebufferUpdate header(4) + rect header(12) + 控制字节(1)
+        // + 长度前缀(≤4) + JPEG 数据。
+        let additional = 4 + 12 + 1 + 4 + jpeg_data.len();
+        let attempted = checked_output_len(self.output.len(), additional)?;
+        if attempted > self.config.limits.max_queued_output_bytes {
+            return Err(RfbEncodeError::OutputQueueFull {
+                attempted,
+                maximum: self.config.limits.max_queued_output_bytes,
+            });
+        }
+        let encode_start = std::time::Instant::now();
+        let written = encode_tight_mjpeg_passthrough(jpeg_data, width, height, &mut self.output);
+        self.encode_stats.record(encode_start.elapsed(), written);
+        let rect = RfbRectangle {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        };
+        Ok(FramebufferUpdateOutcome::TightJpegQueued { rectangle: rect })
     }
 
     fn push_normal_input(&mut self, bytes: &[u8]) -> Vec<Result<RfbEvent, RfbProtocolError>> {

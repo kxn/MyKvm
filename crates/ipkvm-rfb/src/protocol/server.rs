@@ -226,6 +226,34 @@ fn write_tight_length(output: &mut Vec<u8>, mut value: usize) {
     }
 }
 
+/// MJPEG 透传：把原始 JPEG 字节作为单个 Tight JPEG 矩形编码（不重新 JPEG 编码）。
+///
+/// 采集卡输出 MJPEG 时（D 的 sink 直通），frame.data 已经是完整 JPEG 字节流。
+/// 直接作为 Tight JPEG 矩形 payload 送网络，跳过"MJPEG 解码→BGRA→再 JPEG 编码"
+/// 的双重浪费。见 FU-1（issue #35）。
+pub(crate) fn encode_tight_mjpeg_passthrough(
+    jpeg_data: &[u8],
+    width: u16,
+    height: u16,
+    output: &mut Vec<u8>,
+) -> usize {
+    let start = output.len();
+    // FramebufferUpdate header: message-type=0, num-rectangles=1。
+    output.extend_from_slice(&[0, 0, 0, 1]);
+    // 单矩形：x=0, y=0, w, h, encoding=Tight(7)。
+    write_u16(output, 0);
+    write_u16(output, 0);
+    write_u16(output, width);
+    write_u16(output, height);
+    write_i32(output, ENCODING_TIGHT);
+    // 压缩控制：0x90（高半字节 0x09=JPEG 子编码）。
+    output.push(0x90);
+    // Tight 变长长度前缀 + 原始 JPEG 字节。
+    write_tight_length(output, jpeg_data.len());
+    output.extend_from_slice(jpeg_data);
+    output.len() - start
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -415,5 +443,33 @@ mod tests {
         buf.clear();
         write_tight_length(&mut buf, 16384);
         assert_eq!(buf, &[0x80, 0x80, 1]);
+    }
+
+    /// MJPEG 透传：原始 JPEG 字节直接作为 Tight JPEG 矩形 payload（逐字节对比）。
+    #[test]
+    fn mjpeg_passthrough_preserves_jpeg_bytes_in_tight_rect() {
+        // 构造一个假的 JPEG 字节流（SOI + 数据 + EOI）。
+        let jpeg_data = vec![0xFF, 0xD8, 0xDE, 0xAD, 0xBE, 0xEF, 0xFF, 0xD9];
+        let mut output = Vec::new();
+        let written = encode_tight_mjpeg_passthrough(&jpeg_data, 640, 480, &mut output);
+        assert_eq!(written, output.len());
+
+        // FramebufferUpdate header。
+        assert_eq!(&output[..4], &[0, 0, 0, 1]);
+        // rect: x=0, y=0, w=640, h=480, encoding=7。
+        assert_eq!(&output[4..6], &[0, 0]);
+        assert_eq!(&output[6..8], &[0, 0]);
+        assert_eq!(&output[8..10], &[0x02, 0x80]); // 640 BE
+        assert_eq!(&output[10..12], &[0x01, 0xE0]); // 480 BE
+        assert_eq!(
+            i32::from_be_bytes([output[12], output[13], output[14], output[15]]),
+            ENCODING_TIGHT
+        );
+        // 压缩控制 0x90。
+        assert_eq!(output[16], 0x90);
+        // 长度前缀（jpeg_data.len()=8，单字节）。
+        assert_eq!(output[17], 8);
+        // JPEG payload 逐字节对比。
+        assert_eq!(&output[18..], &jpeg_data[..]);
     }
 }

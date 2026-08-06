@@ -4,7 +4,7 @@ use ipkvm_rfb::{
     FramebufferUpdateOutcome, FramebufferUpdateRequest, RfbConfigError, RfbConnectionConfig,
     RfbConnectionCore, RfbConnectionState, RfbEncodeError, RfbEvent, RfbProtocolError,
 };
-use ipkvm_video::{FrameReceiver, SharedVideoFrame};
+use ipkvm_video::{FrameReceiver, PixelFormat, SharedVideoFrame};
 use thiserror::Error;
 use tokio::{
     sync::{mpsc, watch},
@@ -346,6 +346,19 @@ async fn queue_and_write_frame<T: RfbTransport>(
     frame: &SharedVideoFrame,
     request: FramebufferUpdateRequest,
 ) -> Result<FramebufferUpdateOutcome, RfbConnectionError> {
+    // MJPEG 透传：原始 JPEG 字节直接作为 Tight JPEG 矩形发送（FU-1，issue #35）。
+    // 跳过 frame_view（它要求 BGRA）和重新 JPEG 编码。
+    if frame.pixel_format == PixelFormat::Mjpeg {
+        let width = u16::try_from(frame.width)
+            .map_err(|_| RfbConnectionError::Frame(RfbFrameError::WidthOutOfRange(frame.width)))?;
+        let height = u16::try_from(frame.height).map_err(|_| {
+            RfbConnectionError::Frame(RfbFrameError::HeightOutOfRange(frame.height))
+        })?;
+        let outcome = core.queue_mjpeg_passthrough(&frame.data, width, height)?;
+        write_core_output(transport, core).await?;
+        return Ok(outcome);
+    }
+
     let dirty_rects = frame.dirty_rects.as_deref();
     let dirty_rfb: Option<Vec<ipkvm_rfb::RfbRectangle>> = dirty_rects.map(|rects| {
         rects
