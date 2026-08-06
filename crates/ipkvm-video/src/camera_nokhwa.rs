@@ -27,6 +27,17 @@ use crate::{
     FrameReceiver, FrameSource, MonotonicTimestamp, PixelFormat, SharedVideoFrame, VideoFrame,
 };
 
+/// 视频采集模式：根据设备输出格式选择最优处理路径。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CaptureMode {
+    /// MJPEG 直接透传：零解码零编码，最优性能。
+    MjpegPassthrough,
+    /// YUYV 直接转 RGB：省掉 RGBA 中间格式，省内存。
+    YuyvToRgb,
+    /// 通用路径：nokhwa 解码 RGBA → 转 BGRA，兼容所有格式。
+    DecodeToBgra,
+}
+
 /// YUYV 4:2:2 → RGB 直接转换（跳过 RGBA 中间格式）。
 ///
 /// 每 4 字节 (Y1, U, Y2, V) 转换为 2 个 RGB 像素（6 字节）。
@@ -146,13 +157,20 @@ impl CameraSource {
                 let _ = init_tx.send(Ok(()));
                 let mut seq = 0_u64;
                 let mut rgb_buf: Vec<u8> = Vec::new();
-                // 检查设备是否输出 MJPEG。如果 frame_format 返回 MJPEG，
-                // 用 frame_raw() 获取原始 JPEG 字节直接透传，避免解码再编码。
-                let use_mjpeg_passthrough =
-                    camera.frame_format() == nokhwa::utils::FrameFormat::MJPEG;
+                let mut rgba_buf: Vec<u8> = Vec::new();
+                // 检测设备输出格式，选择最优处理路径：
+                // 1. MJPEG → 直接透传（零解码零编码）
+                // 2. YUYV → 直接转 RGB（省 25% 内存，跳过 RGBA 中间格式）
+                // 3. 其他格式 → nokhwa 解码 RGBA → 转 BGRA（兼容性最好）
+                let device_format = camera.frame_format();
+                let capture_mode = match device_format {
+                    nokhwa::utils::FrameFormat::MJPEG => CaptureMode::MjpegPassthrough,
+                    nokhwa::utils::FrameFormat::YUYV => CaptureMode::YuyvToRgb,
+                    _ => CaptureMode::DecodeToBgra,
+                };
                 // MJPEG 透传时 frame_raw() 不含分辨率，先调用 frame() 获取并缓存。
                 // （会消耗一帧，但分辨率在整个会话期间不变。）
-                let cached_resolution = if use_mjpeg_passthrough {
+                let cached_resolution = if matches!(capture_mode, CaptureMode::MjpegPassthrough) {
                     camera.frame().ok().map(|f| {
                         let r = f.resolution();
                         (r.width_x, r.height_y)
@@ -166,101 +184,147 @@ impl CameraSource {
                     }
                     let frame_wait_start = std::time::Instant::now();
 
-                    if use_mjpeg_passthrough {
-                        // MJPEG 透传：frame_raw() 返回原始 JPEG 字节，直接作为
-                        // RFB Tight JPEG 矩形发送，跳过解码→转换→再编码。
-                        match camera.frame_raw() {
-                            Ok(raw) => {
-                                task_stats.record_capture_wait(frame_wait_start.elapsed());
-                                let capture_ns = crate::now_ns();
-                                // V4L2 buffer 可能大于实际 JPEG 数据大小。
-                                // 裁剪到 JPEG EOI (0xFF 0xD9) 为止。
-                                let jpeg_end = raw
-                                    .windows(2)
-                                    .position(|w| w == [0xFF, 0xD9])
-                                    .map(|p| p + 2)
-                                    .unwrap_or(raw.len());
-                                let jpeg_data: Vec<u8> = raw[..jpeg_end].to_vec();
-                                // 获取分辨率：优先用缓存，否则调用 frame() 获取。
-                                let (w, h) = if let Some(r) = cached_resolution {
-                                    r
-                                } else {
-                                    match camera.frame() {
+                    match capture_mode {
+                        CaptureMode::MjpegPassthrough => {
+                            // MJPEG 透传：frame_raw() 返回原始 JPEG 字节，直接作为
+                            // RFB Tight JPEG 矩形发送，跳过解码→转换→再编码。
+                            match camera.frame_raw() {
+                                Ok(raw) => {
+                                    task_stats.record_capture_wait(frame_wait_start.elapsed());
+                                    let capture_ns = crate::now_ns();
+                                    // V4L2 buffer 可能大于实际 JPEG 数据大小。
+                                    // 裁剪到 JPEG EOI (0xFF 0xD9) 为止。
+                                    let jpeg_end = raw
+                                        .windows(2)
+                                        .position(|w| w == [0xFF, 0xD9])
+                                        .map(|p| p + 2)
+                                        .unwrap_or(raw.len());
+                                    let jpeg_data: Vec<u8> = raw[..jpeg_end].to_vec();
+                                    // 获取分辨率：优先用缓存，否则调用 frame() 获取。
+                                    let (w, h) = if let Some(r) = cached_resolution {
+                                        r
+                                    } else {
+                                        match camera.frame() {
+                                            Ok(f) => {
+                                                let r = f.resolution();
+                                                (r.width_x, r.height_y)
+                                            }
+                                            Err(_) => continue,
+                                        }
+                                    };
+                                    seq = seq.saturating_add(1);
+                                    let video_frame = VideoFrame::new(
+                                        seq,
+                                        MonotonicTimestamp::from_nanos(capture_ns),
+                                        w,
+                                        h,
+                                        0,
+                                        PixelFormat::Mjpeg,
+                                        Arc::from(jpeg_data),
+                                    );
+                                    let shared = Arc::new(video_frame);
+                                    task_stats.record_publish(seq, capture_ns);
+                                    *task_latest.write().expect("camera lock poisoned") =
+                                        Some(Arc::clone(&shared));
+                                    task_sender.send_replace(Some(shared));
+                                }
+                                Err(_) => {
+                                    std::thread::sleep(std::time::Duration::from_millis(50));
+                                }
+                            }
+                        }
+                        CaptureMode::YuyvToRgb => {
+                            // YUYV 直接转 RGB：frame_raw() 获取原始数据，直接转换为 RGB。
+                            // 跳过 nokhwa 的 RGBA 解码，省掉 alpha 通道（JPEG 不支持透明）。
+                            match camera.frame_raw() {
+                                Ok(raw) => {
+                                    task_stats.record_capture_wait(frame_wait_start.elapsed());
+                                    let capture_ns = crate::now_ns();
+                                    let convert_start = std::time::Instant::now();
+                                    // 复制 raw 数据，释放对 camera 的借用。
+                                    let raw_data: Vec<u8> = raw.into_owned();
+                                    // 获取分辨率
+                                    let (w, h) = match camera.frame() {
                                         Ok(f) => {
                                             let r = f.resolution();
                                             (r.width_x, r.height_y)
                                         }
                                         Err(_) => continue,
+                                    };
+                                    // YUYV 4:2:2：每 4 字节 = 2 像素
+                                    // RGB：每像素 3 字节
+                                    let expected_yuyv = (w * h * 2) as usize;
+                                    let expected_rgb = (w * h * 3) as usize;
+                                    if raw_data.len() < expected_yuyv {
+                                        continue;
                                     }
-                                };
-                                seq = seq.saturating_add(1);
-                                let video_frame = VideoFrame::new(
-                                    seq,
-                                    MonotonicTimestamp::from_nanos(capture_ns),
-                                    w,
-                                    h,
-                                    0,
-                                    PixelFormat::Mjpeg,
-                                    Arc::from(jpeg_data),
-                                );
-                                let shared = Arc::new(video_frame);
-                                task_stats.record_publish(seq, capture_ns);
-                                *task_latest.write().expect("camera lock poisoned") =
-                                    Some(Arc::clone(&shared));
-                                task_sender.send_replace(Some(shared));
-                            }
-                            Err(_) => {
-                                std::thread::sleep(std::time::Duration::from_millis(50));
+                                    rgb_buf.clear();
+                                    rgb_buf.resize(expected_rgb, 0);
+                                    convert_yuyv_to_rgb(&raw_data[..expected_yuyv], &mut rgb_buf);
+                                    task_stats.record_convert(convert_start.elapsed());
+                                    seq = seq.saturating_add(1);
+                                    let video_frame = VideoFrame::new(
+                                        seq,
+                                        MonotonicTimestamp::from_nanos(capture_ns),
+                                        w,
+                                        h,
+                                        w * 3, // stride = width * 3 (RGB)
+                                        PixelFormat::Rgb888,
+                                        Arc::from(rgb_buf.as_slice()),
+                                    );
+                                    let shared = Arc::new(video_frame);
+                                    task_stats.record_publish(seq, capture_ns);
+                                    *task_latest.write().expect("camera lock poisoned") =
+                                        Some(Arc::clone(&shared));
+                                    task_sender.send_replace(Some(shared));
+                                }
+                                Err(_) => {
+                                    std::thread::sleep(std::time::Duration::from_millis(50));
+                                }
                             }
                         }
-                    } else {
-                        // 非 MJPEG（YUYV 等）：frame_raw() 获取原始数据，直接转换为 RGB。
-                        // 跳过 nokhwa 的 RGBA 解码，省掉 alpha 通道（JPEG 不支持透明）。
-                        match camera.frame_raw() {
-                            Ok(raw) => {
-                                task_stats.record_capture_wait(frame_wait_start.elapsed());
-                                let capture_ns = crate::now_ns();
-                                let convert_start = std::time::Instant::now();
-                                // 复制 raw 数据，释放对 camera 的借用。
-                                let raw_data: Vec<u8> = raw.into_owned();
-                                // 获取分辨率
-                                let (w, h) = match camera.frame() {
-                                    Ok(f) => {
-                                        let r = f.resolution();
-                                        (r.width_x, r.height_y)
-                                    }
-                                    Err(_) => continue,
-                                };
-                                // YUYV 4:2:2：每 4 字节 = 2 像素
-                                // RGB：每像素 3 字节
-                                let expected_yuyv = (w * h * 2) as usize;
-                                let expected_rgb = (w * h * 3) as usize;
-                                if raw_data.len() < expected_yuyv {
+                        CaptureMode::DecodeToBgra => {
+                            // 通用路径：nokhwa 解码 RGBA → 转 BGRA。
+                            // 适用于 NV12、GRAY、RAWRGB、RAWBGR 等格式。
+                            let frame = match camera.frame() {
+                                Ok(f) => f,
+                                Err(_) => {
+                                    std::thread::sleep(std::time::Duration::from_millis(50));
                                     continue;
                                 }
-                                rgb_buf.clear();
-                                rgb_buf.resize(expected_rgb, 0);
-                                convert_yuyv_to_rgb(&raw_data[..expected_yuyv], &mut rgb_buf);
-                                task_stats.record_convert(convert_start.elapsed());
-                                seq = seq.saturating_add(1);
-                                let video_frame = VideoFrame::new(
-                                    seq,
-                                    MonotonicTimestamp::from_nanos(capture_ns),
-                                    w,
-                                    h,
-                                    w * 3, // stride = width * 3 (RGB)
-                                    PixelFormat::Rgb888,
-                                    Arc::from(rgb_buf.as_slice()),
-                                );
-                                let shared = Arc::new(video_frame);
-                                task_stats.record_publish(seq, capture_ns);
-                                *task_latest.write().expect("camera lock poisoned") =
-                                    Some(Arc::clone(&shared));
-                                task_sender.send_replace(Some(shared));
+                            };
+                            task_stats.record_capture_wait(frame_wait_start.elapsed());
+                            let capture_ns = crate::now_ns();
+                            let convert_start = std::time::Instant::now();
+                            let res = frame.resolution();
+                            rgba_buf.clear();
+                            rgba_buf.resize((res.width_x as usize) * (res.height_y as usize) * 4, 0);
+                            if frame
+                                .decode_image_to_buffer::<RgbAFormat>(&mut rgba_buf)
+                                .is_err()
+                            {
+                                continue;
                             }
-                            Err(_) => {
-                                std::thread::sleep(std::time::Duration::from_millis(50));
+                            for px in rgba_buf.chunks_exact_mut(4) {
+                                px.swap(0, 2);
+                                px[3] = 255;
                             }
+                            task_stats.record_convert(convert_start.elapsed());
+                            seq = seq.saturating_add(1);
+                            let video_frame = VideoFrame::new(
+                                seq,
+                                MonotonicTimestamp::from_nanos(capture_ns),
+                                res.width_x,
+                                res.height_y,
+                                res.width_x * 4,
+                                PixelFormat::Bgra8888,
+                                Arc::from(rgba_buf.as_slice()),
+                            );
+                            let shared = Arc::new(video_frame);
+                            task_stats.record_publish(seq, capture_ns);
+                            *task_latest.write().expect("camera lock poisoned") =
+                                Some(Arc::clone(&shared));
+                            task_sender.send_replace(Some(shared));
                         }
                     }
                 }
