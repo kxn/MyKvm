@@ -1,8 +1,9 @@
 use crate::protocol::client::{ClientMessage, ClientMessageDecoder};
 use crate::protocol::server::{
-    AUTH_FAILED_REASON, NONE_SECURITY_TYPES, PROTOCOL_VERSION, SECURITY_RESULT_FAILED,
-    SECURITY_RESULT_OK, VNC_SECURITY_TYPES, checked_output_len, encode_desktop_size_update,
-    encode_empty_update, encode_raw_update_multi, encode_server_init,
+    AUTH_FAILED_REASON, ENCODING_TIGHT, NONE_SECURITY_TYPES, PROTOCOL_VERSION,
+    SECURITY_RESULT_FAILED, SECURITY_RESULT_OK, VNC_SECURITY_TYPES, checked_output_len,
+    encode_desktop_size_update, encode_empty_update, encode_raw_update_multi, encode_server_init,
+    encode_tight_jpeg_update,
 };
 use crate::security::{RfbSecurity, constant_time_eq, vnc_expected_response};
 use crate::{
@@ -11,12 +12,28 @@ use crate::{
 };
 use thiserror::Error;
 
+/// 编码偏好（issue #22）。决定 FramebufferUpdate 用哪种编码。
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
+pub enum EncodingPreference {
+    /// 自动：客户端声明 Tight→走 Tight+JPEG，否则走 Raw。
+    #[default]
+    Auto,
+    /// 强制 Raw（无压缩）。
+    Raw,
+    /// 强制 Tight+JPEG（客户端不支持时回退 Raw）。
+    TightJpeg,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RfbConnectionConfig {
     pub desktop_name: String,
     pub initial_size: RfbSize,
     pub limits: RfbProtocolLimits,
     pub security: RfbSecurity,
+    /// 编码偏好（默认 Auto）。见 EncodingPreference。
+    pub preferred_encoding: EncodingPreference,
+    /// JPEG 编码质量（1-100，默认 85）。仅 Tight+JPEG 路径使用。
+    pub jpeg_quality: u8,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -61,6 +78,7 @@ pub enum RfbEvent {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FramebufferUpdateOutcome {
     RawQueued { rectangle: RfbRectangle },
+    TightJpegQueued { rectangle: RfbRectangle },
     EmptyQueued,
     ResizeAnnounced { size: RfbSize },
 }
@@ -353,7 +371,7 @@ impl RfbConnectionCore {
             return Ok(FramebufferUpdateOutcome::EmptyQueued);
         }
 
-        // 容量检查：update header(4) + 每矩形 rect header(12) + 像素数据。
+        // 容量检查：用未压缩（Raw）大小作上界（JPEG 一定更小）。
         let bpp = self.pixel_format.bytes_per_pixel();
         let additional: usize = 4 + rects
             .iter()
@@ -371,12 +389,35 @@ impl RfbConnectionCore {
                 maximum: self.config.limits.max_queued_output_bytes,
             });
         }
+
+        // 编码选择（issue #22）：
+        // - Auto + 客户端声明 Tight(7) → Tight+JPEG
+        // - TightJpeg + 客户端声明 Tight(7) → Tight+JPEG
+        // - 其他情况 → Raw（兼容回退）
+        let client_supports_tight = self.encoding_preferences.contains(&ENCODING_TIGHT);
+        let use_tight = match self.config.preferred_encoding {
+            EncodingPreference::Auto => client_supports_tight,
+            EncodingPreference::TightJpeg => client_supports_tight,
+            EncodingPreference::Raw => false,
+        };
+
         let encode_start = std::time::Instant::now();
-        let written = encode_raw_update_multi(frame, &rects, self.pixel_format, &mut self.output)?;
+        let written = if use_tight {
+            encode_tight_jpeg_update(frame, &rects, self.config.jpeg_quality, &mut self.output)?
+        } else {
+            encode_raw_update_multi(frame, &rects, self.pixel_format, &mut self.output)?
+        };
         self.encode_stats.record(encode_start.elapsed(), written);
-        Ok(FramebufferUpdateOutcome::RawQueued {
-            rectangle: request_rect,
-        })
+        let outcome = if use_tight {
+            FramebufferUpdateOutcome::TightJpegQueued {
+                rectangle: request_rect,
+            }
+        } else {
+            FramebufferUpdateOutcome::RawQueued {
+                rectangle: request_rect,
+            }
+        };
+        Ok(outcome)
     }
 
     fn push_normal_input(&mut self, bytes: &[u8]) -> Vec<Result<RfbEvent, RfbProtocolError>> {
@@ -584,6 +625,8 @@ mod tests {
             initial_size: RfbSize::new(640, 480).unwrap(),
             limits: RfbProtocolLimits::default(),
             security,
+            preferred_encoding: EncodingPreference::default(),
+            jpeg_quality: 85,
         }
     }
 
@@ -806,6 +849,8 @@ mod tests {
             initial_size: RfbSize::new(width, height).unwrap(),
             limits: RfbProtocolLimits::default(),
             security: RfbSecurity::None,
+            preferred_encoding: EncodingPreference::default(),
+            jpeg_quality: 85,
         }
     }
 
@@ -1496,5 +1541,69 @@ mod tests {
         assert_eq!(output.len(), 2 * (16 + 8));
         // 第二帧的 header 也在（offset 24 处的 message-type/num-rect）。
         assert_eq!(&output[24..28], &[0, 0, 0, 1]);
+    }
+
+    /// 编码选择：Auto + 客户端声明 Tight(7) → 走 Tight+JPEG。
+    #[test]
+    fn auto_encoding_uses_tight_when_client_declares_it() {
+        let mut connection = completed_connection_with_size(2, 2);
+        // 模拟客户端声明 Tight(7)。格式：[msg-type=2][pad][count=1 u16 BE][encoding=7 i32 BE]。
+        let encodings_msg = {
+            let mut msg = vec![2u8, 0u8]; // SetEncodings + padding
+            msg.extend_from_slice(&1u16.to_be_bytes()); // count=1
+            msg.extend_from_slice(&7i32.to_be_bytes()); // Tight
+            msg
+        };
+        connection.push_input(&encodings_msg);
+        let pixels = [1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255, 10, 11, 12, 255];
+        let frame = BgraFrameView::new(RfbSize::new(2, 2).unwrap(), 8, &pixels).unwrap();
+        let request = FramebufferUpdateRequest {
+            incremental: false,
+            rectangle: RfbRectangle {
+                x: 0,
+                y: 0,
+                width: 2,
+                height: 2,
+            },
+        };
+        let outcome = connection
+            .queue_framebuffer_update(frame, request, None)
+            .unwrap();
+        assert!(
+            matches!(outcome, FramebufferUpdateOutcome::TightJpegQueued { .. }),
+            "Auto + Tight 声明应走 Tight+JPEG"
+        );
+    }
+
+    /// 编码选择：Auto + 客户端未声明 Tight → 走 Raw（兼容回退）。
+    #[test]
+    fn auto_encoding_falls_back_to_raw_without_tight() {
+        let mut connection = completed_connection_with_size(2, 2);
+        // 客户端只声明 Raw(0)。格式同上。
+        let encodings_msg = {
+            let mut msg = vec![2u8, 0u8];
+            msg.extend_from_slice(&1u16.to_be_bytes());
+            msg.extend_from_slice(&0i32.to_be_bytes()); // Raw
+            msg
+        };
+        connection.push_input(&encodings_msg);
+        let pixels = [1, 2, 3, 255, 4, 5, 6, 255, 7, 8, 9, 255, 10, 11, 12, 255];
+        let frame = BgraFrameView::new(RfbSize::new(2, 2).unwrap(), 8, &pixels).unwrap();
+        let request = FramebufferUpdateRequest {
+            incremental: false,
+            rectangle: RfbRectangle {
+                x: 0,
+                y: 0,
+                width: 2,
+                height: 2,
+            },
+        };
+        let outcome = connection
+            .queue_framebuffer_update(frame, request, None)
+            .unwrap();
+        assert!(
+            matches!(outcome, FramebufferUpdateOutcome::RawQueued { .. }),
+            "Auto + 无 Tight 声明应回退 Raw"
+        );
     }
 }

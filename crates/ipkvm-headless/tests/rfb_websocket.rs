@@ -311,7 +311,14 @@ fn assert_empty_rejection(response: &Response<Option<Vec<u8>>>, expected: Status
 
 #[tokio::test]
 async fn novnc_1_7_without_h264_receives_initial_and_incremental_raw_updates() {
-    let mut server = TestWebSocketServer::start().await;
+    // 此测试验证 Raw 编码路径：服务端强制 Raw（即使客户端声明了 Tight）。
+    let config = RfbWebSocketConfig {
+        connection: RfbConnectionSettings {
+            preferred_encoding: ipkvm_rfb::EncodingPreference::Raw,
+            ..RfbConnectionSettings::default()
+        },
+    };
+    let mut server = TestWebSocketServer::start_with_config(config).await;
     server
         .source
         .publish_frame(bgra_frame(2, [30, 20, 10, 255]));

@@ -9,6 +9,10 @@ pub(crate) const SECURITY_RESULT_OK: [u8; 4] = [0, 0, 0, 0];
 pub(crate) const SECURITY_RESULT_FAILED: [u8; 4] = [0, 0, 0, 1];
 pub(crate) const AUTH_FAILED_REASON: &[u8] = b"authentication failed";
 
+/// RFB 编码号（RFC 6143）。
+pub(crate) const ENCODING_RAW: i32 = 0;
+pub(crate) const ENCODING_TIGHT: i32 = 7;
+
 pub(crate) fn encode_server_init(
     size: RfbSize,
     pixel_format: RfbPixelFormat,
@@ -111,7 +115,7 @@ pub(crate) fn encode_raw_update_multi(
         write_u16(output, rectangle.y);
         write_u16(output, rectangle.width);
         write_u16(output, rectangle.height);
-        write_i32(output, 0);
+        write_i32(output, ENCODING_RAW);
 
         let end_y = rectangle
             .y
@@ -140,6 +144,86 @@ pub(crate) fn encode_raw_update_multi(
         }
     }
     Ok(output.len() - start)
+}
+
+/// 把一帧 BGRA8888 像素的多个矩形编码为单条 Tight+JPEG FramebufferUpdate 消息。
+///
+/// 每矩形：encoding=7（Tight），1 字节压缩控制（高半字节 0x09=JPEG 子编码），
+/// Tight 变长长度前缀（JPEG 字节数），JPEG 字节流。
+/// noVNC 的 TightDecoder 原生支持解码。见调研阶段 2.2（issue #22）。
+pub(crate) fn encode_tight_jpeg_update(
+    frame: BgraFrameView<'_>,
+    rectangles: &[RfbRectangle],
+    jpeg_quality: u8,
+    output: &mut Vec<u8>,
+) -> Result<usize, RfbEncodeError> {
+    if rectangles.is_empty() {
+        return Err(RfbEncodeError::LengthOverflow);
+    }
+    let num_rects = u16::try_from(rectangles.len()).map_err(|_| RfbEncodeError::LengthOverflow)?;
+    let start = output.len();
+    output.extend_from_slice(&[0, 0]);
+    output.extend_from_slice(&num_rects.to_be_bytes());
+
+    let mut jpeg_buf = Vec::new();
+    let mut packed = Vec::new();
+    for rectangle in rectangles {
+        write_u16(output, rectangle.x);
+        write_u16(output, rectangle.y);
+        write_u16(output, rectangle.width);
+        write_u16(output, rectangle.height);
+        write_i32(output, ENCODING_TIGHT);
+
+        let w = usize::from(rectangle.width);
+        let h = usize::from(rectangle.height);
+        let end_y = rectangle
+            .y
+            .checked_add(rectangle.height)
+            .ok_or(RfbEncodeError::LengthOverflow)?;
+        let start_x = usize::from(rectangle.x)
+            .checked_mul(4)
+            .ok_or(RfbEncodeError::LengthOverflow)?;
+        let end_x = usize::from(rectangle.width)
+            .checked_mul(4)
+            .and_then(|width| start_x.checked_add(width))
+            .ok_or(RfbEncodeError::LengthOverflow)?;
+
+        // 紧凑拷贝矩形像素（处理 stride）。
+        packed.clear();
+        packed.reserve(w * h * 4);
+        for y in rectangle.y..end_y {
+            packed.extend_from_slice(&frame.row(y)[start_x..end_x]);
+        }
+
+        // JPEG 编码（BGRA 输入）。
+        jpeg_buf.clear();
+        jpeg_encoder::Encoder::new(&mut jpeg_buf, jpeg_quality)
+            .encode(&packed, w as u16, h as u16, jpeg_encoder::ColorType::Bgra)
+            .map_err(|_| RfbEncodeError::LengthOverflow)?;
+
+        // 压缩控制字节：高半字节 0x09=JPEG 子编码，低半字节 0x00（无 zlib reset）。
+        // 0x09 << 4 = 0x90。
+        output.push(0x90);
+        // Tight 变长长度前缀（7-bit 分段）。
+        write_tight_length(output, jpeg_buf.len());
+        output.extend_from_slice(&jpeg_buf);
+    }
+    Ok(output.len() - start)
+}
+
+/// Tight 变长长度编码：7-bit 分段，高位 0x80 表示继续，最多 4 字节。
+fn write_tight_length(output: &mut Vec<u8>, mut value: usize) {
+    loop {
+        let mut byte = (value & 0x7f) as u8;
+        value >>= 7;
+        if value > 0 {
+            byte |= 0x80;
+        }
+        output.push(byte);
+        if value == 0 {
+            break;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -258,5 +342,78 @@ mod tests {
             &[0x00, 0xF8, 0x00, 0xF8],
             "rgb565 非恒等路径应走 scale_channel"
         );
+    }
+
+    /// Tight+JPEG 编码：验证 wire 格式（encoding=7、压缩控制 0x90、长度前缀、JPEG 可解码）。
+    #[test]
+    fn tight_jpeg_update_produces_valid_wire_format() {
+        use crate::framebuffer::BgraFrameView;
+        use crate::framebuffer::RfbRectangle;
+
+        let pixels = [
+            10, 20, 30, 255, 40, 50, 60, 255, 70, 80, 90, 255, 100, 110, 120, 255,
+        ];
+        let frame = BgraFrameView::new(RfbSize::new(2, 2).unwrap(), 8, &pixels).unwrap();
+        let rectangle = RfbRectangle {
+            x: 0,
+            y: 0,
+            width: 2,
+            height: 2,
+        };
+        let mut output = Vec::new();
+        let written = encode_tight_jpeg_update(frame, &[rectangle], 85, &mut output).unwrap();
+        assert_eq!(written, output.len());
+
+        // FramebufferUpdate header: message-type=0, num-rectangles=1。
+        assert_eq!(&output[..4], &[0, 0, 0, 1]);
+        // rect header: x=0, y=0, w=2, h=2, encoding=7 (Tight)。
+        assert_eq!(&output[4..6], &[0, 0]); // x
+        assert_eq!(&output[6..8], &[0, 0]); // y
+        assert_eq!(&output[8..10], &[0, 2]); // width
+        assert_eq!(&output[10..12], &[0, 2]); // height
+        assert_eq!(
+            i32::from_be_bytes([output[12], output[13], output[14], output[15]]),
+            ENCODING_TIGHT
+        );
+        // 压缩控制字节：0x90（高半字节 0x09=JPEG）。
+        assert_eq!(output[16], 0x90);
+        // 长度前缀后是 JPEG 数据。JPEG 数据应以 SOI marker (0xFF 0xD8) 开头。
+        // 长度前缀是变长的——读第一个长度字节。
+        let len_byte = output[17];
+        let jpeg_len = if len_byte & 0x80 != 0 {
+            // 多字节长度：读第二个字节。
+            ((len_byte & 0x7f) as usize) | (((output[18] & 0x7f) as usize) << 7)
+        } else {
+            (len_byte & 0x7f) as usize
+        };
+        let jpeg_start = if len_byte & 0x80 != 0 { 19 } else { 18 };
+        let jpeg_data = &output[jpeg_start..];
+        assert_eq!(jpeg_data.len(), jpeg_len);
+        // JPEG SOI marker。
+        assert_eq!(
+            &jpeg_data[..2],
+            &[0xFF, 0xD8],
+            "JPEG data must start with SOI"
+        );
+    }
+
+    /// Tight 变长长度编码。
+    #[test]
+    fn tight_length_encoding_handles_various_sizes() {
+        let mut buf = Vec::new();
+        write_tight_length(&mut buf, 0);
+        assert_eq!(buf, &[0]);
+
+        buf.clear();
+        write_tight_length(&mut buf, 127);
+        assert_eq!(buf, &[127]);
+
+        buf.clear();
+        write_tight_length(&mut buf, 128);
+        assert_eq!(buf, &[0x80, 1]);
+
+        buf.clear();
+        write_tight_length(&mut buf, 16384);
+        assert_eq!(buf, &[0x80, 0x80, 1]);
     }
 }

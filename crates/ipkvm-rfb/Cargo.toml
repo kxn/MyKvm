@@ -9,6 +9,7 @@ rust-version.workspace = true
 [dependencies]
 cipher.workspace = true
 des.workspace = true
+jpeg-encoder.workspace = true
 rand.workspace = true
 thiserror.workspace = true
 

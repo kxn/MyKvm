@@ -1,6 +1,6 @@
 use ipkvm_rfb::{
-    BgraFrameView, FramebufferUpdateRequest, RfbConnectionConfig, RfbConnectionCore, RfbEvent,
-    RfbProtocolLimits, RfbRectangle, RfbSecurity, RfbSize,
+    BgraFrameView, EncodingPreference, FramebufferUpdateRequest, RfbConnectionConfig,
+    RfbConnectionCore, RfbEvent, RfbProtocolLimits, RfbRectangle, RfbSecurity, RfbSize,
 };
 
 #[test]
@@ -11,6 +11,8 @@ fn completes_handshake_negotiation_request_and_raw_update() {
         initial_size: size,
         limits: RfbProtocolLimits::default(),
         security: RfbSecurity::None,
+        preferred_encoding: EncodingPreference::default(),
+        jpeg_quality: 85,
     };
     let mut connection = RfbConnectionCore::new(config).unwrap();
 
