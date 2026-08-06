@@ -105,83 +105,112 @@ impl CameraSource {
                 let _ = init_tx.send(Ok(()));
                 let mut seq = 0_u64;
                 let mut rgba_buf: Vec<u8> = Vec::new();
+                // 检查设备是否输出 MJPEG。如果 frame_format 返回 MJPEG，
+                // 用 frame_raw() 获取原始 JPEG 字节直接透传，避免解码再编码。
+                let use_mjpeg_passthrough = camera.frame_format()
+                    == nokhwa::utils::FrameFormat::MJPEG;
+                // MJPEG 透传时 frame_raw() 不含分辨率，先调用 frame() 获取并缓存。
+                // （会消耗一帧，但分辨率在整个会话期间不变。）
+                let cached_resolution = if use_mjpeg_passthrough {
+                    camera.frame().ok().map(|f| {
+                        let r = f.resolution();
+                        (r.width_x, r.height_y)
+                    })
+                } else {
+                    None
+                };
                 loop {
                     if task_stop.load(std::sync::atomic::Ordering::Relaxed) {
                         break;
                     }
                     let frame_wait_start = std::time::Instant::now();
-                    let frame = match camera.frame() {
-                        Ok(f) => f,
-                        Err(_) => {
-                            // 读帧错误（设备断开等）：短暂退避后重试，避免忙转；
-                            // 持续失败由上层「长时间无新帧」感知。
-                            std::thread::sleep(std::time::Duration::from_millis(50));
+
+                    if use_mjpeg_passthrough {
+                        // MJPEG 透传：frame_raw() 返回原始 JPEG 字节，直接作为
+                        // RFB Tight JPEG 矩形发送，跳过解码→转换→再编码。
+                        match camera.frame_raw() {
+                            Ok(raw) => {
+                                task_stats.record_capture_wait(frame_wait_start.elapsed());
+                                let capture_ns = crate::now_ns();
+                                // V4L2 buffer 可能大于实际 JPEG 数据大小。
+                                // 裁剪到 JPEG EOI (0xFF 0xD9) 为止。
+                                let jpeg_end = raw.windows(2)
+                                    .position(|w| w == [0xFF, 0xD9])
+                                    .map(|p| p + 2)
+                                    .unwrap_or(raw.len());
+                                let jpeg_data: Vec<u8> = raw[..jpeg_end].to_vec();
+                                // 获取分辨率：优先用缓存，否则调用 frame() 获取。
+                                let (w, h) = if let Some(r) = cached_resolution {
+                                    r
+                                } else {
+                                    match camera.frame() {
+                                        Ok(f) => {
+                                            let r = f.resolution();
+                                            (r.width_x, r.height_y)
+                                        }
+                                        Err(_) => continue,
+                                    }
+                                };
+                                seq = seq.saturating_add(1);
+                                let video_frame = VideoFrame::new(
+                                    seq,
+                                    MonotonicTimestamp::from_nanos(capture_ns),
+                                    w,
+                                    h,
+                                    0,
+                                    PixelFormat::Mjpeg,
+                                    Arc::from(jpeg_data),
+                                );
+                                let shared = Arc::new(video_frame);
+                                task_stats.record_publish(seq, capture_ns);
+                                *task_latest.write().expect("camera lock poisoned") = Some(Arc::clone(&shared));
+                                task_sender.send_replace(Some(shared));
+                            }
+                            Err(_) => {
+                                std::thread::sleep(std::time::Duration::from_millis(50));
+                            }
+                        }
+                    } else {
+                        // 非 MJPEG：用 frame() 解码到 RGBA 再转 BGRA。
+                        let frame = match camera.frame() {
+                            Ok(f) => f,
+                            Err(_) => {
+                                std::thread::sleep(std::time::Duration::from_millis(50));
+                                continue;
+                            }
+                        };
+                        task_stats.record_capture_wait(frame_wait_start.elapsed());
+                        let capture_ns = crate::now_ns();
+                        let convert_start = std::time::Instant::now();
+                        let res = frame.resolution();
+                        rgba_buf.clear();
+                        rgba_buf.resize((res.width_x as usize) * (res.height_y as usize) * 4, 0);
+                        if frame
+                            .decode_image_to_buffer::<RgbAFormat>(&mut rgba_buf)
+                            .is_err()
+                        {
                             continue;
                         }
-                    };
-                    task_stats.record_capture_wait(frame_wait_start.elapsed());
-                    let capture_ns = crate::now_ns();
-                    let res = frame.resolution();
-
-                    // MJPEG 透传：采集卡输出 MJPEG 时直接传递原始 JPEG 字节，
-                    // 跳过"MJPEG 解码→RGBA→BGRA→再 JPEG 编码"的双重浪费。
-                    // RFB 层用 encode_tight_mjpeg_passthrough 直接发送。
-                    //
-                    // 判断依据：检查数据是否以 JPEG SOI 标记 (0xFF 0xD8) 开头，
-                    // 且大小远小于原始像素数据（MJPG 通常 < 100KB，YUYV 1080p = 4MB）。
-                    let raw_buf = frame.buffer();
-                    let is_real_mjpeg = raw_buf.len() >= 2
-                        && raw_buf[0] == 0xFF
-                        && raw_buf[1] == 0xD8
-                        && raw_buf.len() < (res.width_x as usize) * (res.height_y as usize);
-                    if is_real_mjpeg {
-                        let jpeg_data = frame.buffer_bytes();
+                        for px in rgba_buf.chunks_exact_mut(4) {
+                            px.swap(0, 2);
+                            px[3] = 255;
+                        }
+                        task_stats.record_convert(convert_start.elapsed());
                         seq = seq.saturating_add(1);
                         let video_frame = VideoFrame::new(
                             seq,
                             MonotonicTimestamp::from_nanos(capture_ns),
                             res.width_x,
                             res.height_y,
-                            0, // MJPEG 无 stride 概念
-                            PixelFormat::Mjpeg,
-                            Arc::from(jpeg_data.as_ref()),
+                            res.width_x * 4,
+                            PixelFormat::Bgra8888,
+                            Arc::from(rgba_buf.as_slice()),
                         );
                         let shared = Arc::new(video_frame);
                         task_stats.record_publish(seq, capture_ns);
                         *task_latest.write().expect("camera lock poisoned") = Some(Arc::clone(&shared));
                         task_sender.send_replace(Some(shared));
-                        continue;
                     }
-
-                    // 非 MJPEG 格式：解码到 RGBA 再转 BGRA（兼容旧路径）。
-                    let convert_start = std::time::Instant::now();
-                    rgba_buf.clear();
-                    rgba_buf.resize((res.width_x as usize) * (res.height_y as usize) * 4, 0);
-                    if frame
-                        .decode_image_to_buffer::<RgbAFormat>(&mut rgba_buf)
-                        .is_err()
-                    {
-                        continue;
-                    }
-                    for px in rgba_buf.chunks_exact_mut(4) {
-                        px.swap(0, 2);
-                        px[3] = 255;
-                    }
-                    task_stats.record_convert(convert_start.elapsed());
-                    seq = seq.saturating_add(1);
-                    let video_frame = VideoFrame::new(
-                        seq,
-                        MonotonicTimestamp::from_nanos(capture_ns),
-                        res.width_x,
-                        res.height_y,
-                        res.width_x * 4,
-                        PixelFormat::Bgra8888,
-                        Arc::from(rgba_buf.as_slice()),
-                    );
-                    let shared = Arc::new(video_frame);
-                    task_stats.record_publish(seq, capture_ns);
-                    *task_latest.write().expect("camera lock poisoned") = Some(Arc::clone(&shared));
-                    task_sender.send_replace(Some(shared));
                 }
             })
             .map_err(|e| CameraSourceError::Open(name.clone(), format!("spawn: {e}")))?;
