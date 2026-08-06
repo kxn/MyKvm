@@ -709,25 +709,40 @@ async fn api_screenshot<I: InputSink + Clone + Send + 'static>(
             .expect("screenshot response headers are valid");
     }
 
-    // BGRA：编码为 JPEG。
-    if frame.pixel_format != PixelFormat::Bgra8888 {
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    }
+    // RGB 或 BGRA：编码为 JPEG。
     let Ok(width) = u16::try_from(frame.width) else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
     let Ok(height) = u16::try_from(frame.height) else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
-    let Some(bgra) = packed_bgra(&frame) else {
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    };
+
     let mut jpeg = Vec::new();
-    if jpeg_encoder::Encoder::new(&mut jpeg, JPEG_QUALITY)
-        .encode(&bgra, width, height, jpeg_encoder::ColorType::Bgra)
-        .is_err()
-    {
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    match frame.pixel_format {
+        PixelFormat::Rgb888 => {
+            // RGB 直接编码为 JPEG。
+            if jpeg_encoder::Encoder::new(&mut jpeg, JPEG_QUALITY)
+                .encode(&frame.data, width, height, jpeg_encoder::ColorType::Rgb)
+                .is_err()
+            {
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+        }
+        PixelFormat::Bgra8888 => {
+            // BGRA 编码为 JPEG。
+            let Some(bgra) = packed_bgra(&frame) else {
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            };
+            if jpeg_encoder::Encoder::new(&mut jpeg, JPEG_QUALITY)
+                .encode(&bgra, width, height, jpeg_encoder::ColorType::Bgra)
+                .is_err()
+            {
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+        }
+        _ => {
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        }
     }
     Response::builder()
         .status(StatusCode::OK)
