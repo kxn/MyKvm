@@ -6,8 +6,8 @@ mod protocol;
 mod security;
 
 pub use connection::{
-    FramebufferUpdateOutcome, RfbConfigError, RfbConnectionConfig, RfbConnectionCore,
-    RfbConnectionState, RfbEncodeError, RfbEncodeStatsSnapshot, RfbEvent,
+    EncodingPreference, FramebufferUpdateOutcome, RfbConfigError, RfbConnectionConfig,
+    RfbConnectionCore, RfbConnectionState, RfbEncodeError, RfbEncodeStatsSnapshot, RfbEvent,
 };
 pub use framebuffer::{BgraFrameView, RfbFramebufferError, RfbRectangle, RfbSize};
 pub use protocol::client::{FramebufferUpdateRequest, RfbProtocolError};

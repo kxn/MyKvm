@@ -649,7 +649,7 @@ WebSocket 兼容：
 
 - **调研阶段 2：RFB 编码升级**（中等风险，决定能不能上 ARM）
   - 实施单 E：脏区追踪 + 多矩形 update（**已完成 #21**）。`encode_raw_update_multi` 多矩形编码 + `queue_framebuffer_update` dirty_rects 参数；`DirtyRectDetector`（tile=32×32 可配置，BGRA 帧逐 tile memcmp + 连通合并）；`VideoFrame.dirty_rects` 字段；driver 串联（Rect→RfbRectangle）。MJPEG 帧跳过检测。默认 dirty_rects=None（发全帧，零开销），帧源开启后填充。
-  - 实施单 F：Tight + JPEG 子编码（noVNC 原生支持，`jpeg-encoder` 已是 workspace 依赖；ARM 硬件编码的天然落点）。依赖 A、E。**ARM 可用性硬前提。**
+  - 实施单 F：Tight + JPEG 子编码（**已完成 #22**）。`encode_tight_jpeg_update`（encoding=7，JPEG 子编码 0x09，Tight 变长长度前缀，jpeg-encoder BGRA 编码）+ `EncodingPreference`（Auto/Raw/TightJpeg）+ `queue_framebuffer_update` 编码选择（查 `encoding_preferences` 含 Tight(7) → 走 Tight，否则 Raw 兼容）。noVNC 原生支持解码。CLI `--encoding`/`--jpeg-quality` 留 follow-up（默认 Auto，noVNC 连上来自动走 Tight+JPEG）。
 
 - **调研阶段 3：架构级**（超 issue #3/#162 范围，单独立项）
   - 实施单 G：硬件视频编码后端（MJPEG 透传 / H.264，通用 aarch64 + 平台最优后端 trait 分流）。依赖 F；需先确认目标 SoC。

@@ -2463,6 +2463,7 @@ version = "0.1.0"
 dependencies = [
  "cipher",
  "des",
+ "jpeg-encoder",
  "proptest",
  "rand",
  "thiserror 2.0.19",

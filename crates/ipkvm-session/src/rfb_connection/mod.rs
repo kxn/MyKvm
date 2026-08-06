@@ -30,6 +30,8 @@ pub struct RfbConnectionSettings {
     pub handshake_timeout: Duration,
     pub protocol_limits: RfbProtocolLimits,
     pub security: RfbSecurity,
+    pub preferred_encoding: ipkvm_rfb::EncodingPreference,
+    pub jpeg_quality: u8,
 }
 
 impl RfbConnectionSettings {
@@ -48,6 +50,8 @@ impl Default for RfbConnectionSettings {
             handshake_timeout: Duration::from_secs(10),
             protocol_limits: RfbProtocolLimits::default(),
             security: RfbSecurity::None,
+            preferred_encoding: ipkvm_rfb::EncodingPreference::default(),
+            jpeg_quality: 85,
         }
     }
 }

@@ -139,6 +139,8 @@ async fn drive_connection<T: RfbTransport>(
         initial_size: initial_view.size(),
         limits: settings.protocol_limits,
         security: settings.security.clone(),
+        preferred_encoding: settings.preferred_encoding,
+        jpeg_quality: settings.jpeg_quality,
     })?;
     write_core_output(transport, &mut core).await?;
 
