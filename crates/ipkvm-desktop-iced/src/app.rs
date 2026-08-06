@@ -1264,12 +1264,9 @@ where
                 if self.connection.mouse_mode == MouseMode::Relative {
                     let wheel = std::mem::take(&mut self.relative_wheel);
                     if wheel != 0 {
-                        let _ = self.controller.send_pointer_relative(
-                            self.pointer_mask,
-                            0,
-                            0,
-                            wheel,
-                        );
+                        let _ =
+                            self.controller
+                                .send_pointer_relative(self.pointer_mask, 0, 0, wheel);
                     }
                 } else if self.connection.mouse_mode == MouseMode::Absolute
                     && let Some(cursor) = self.last_cursor
