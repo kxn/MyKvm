@@ -16,9 +16,9 @@ use std::sync::{Arc, RwLock};
 
 use nokhwa::{
     Camera,
-    pixel_format::RgbAFormat,
+    pixel_format::{RgbAFormat, RgbFormat},
     query,
-    utils::{ApiBackend, CameraIndex, RequestedFormat, RequestedFormatType},
+    utils::{ApiBackend, CameraIndex, FrameFormat, RequestedFormat, RequestedFormatType},
 };
 use tokio::sync::watch;
 
@@ -32,49 +32,10 @@ use crate::{
 enum CaptureMode {
     /// MJPEG 直接透传：零解码零编码，最优性能。
     MjpegPassthrough,
-    /// YUYV 直接转 RGB：省掉 RGBA 中间格式，省内存。
-    YuyvToRgb,
-    /// 通用路径：nokhwa 解码 RGBA → 转 BGRA，兼容所有格式。
-    DecodeToBgra,
-}
-
-/// YUYV 4:2:2 → RGB 直接转换（跳过 RGBA 中间格式）。
-///
-/// 每 4 字节 (Y1, U, Y2, V) 转换为 2 个 RGB 像素（6 字节）。
-/// 使用标准 YCbCr→RGB 公式，直接输出 RGB 顺序。
-/// JPEG 不支持透明通道，RGB 比 RGBA 省 25% 内存。
-#[inline]
-fn yuyv_to_rgb(y: i32, u: i32, v: i32) -> [u8; 3] {
-    let c298 = (y - 16) * 298;
-    let d = u - 128;
-    let e = v - 128;
-    let r = ((c298 + 409 * e + 128) >> 8).clamp(0, 255) as u8;
-    let g = ((c298 - 100 * d - 208 * e + 128) >> 8).clamp(0, 255) as u8;
-    let b = ((c298 + 516 * d + 128) >> 8).clamp(0, 255) as u8;
-    [r, g, b]
-}
-
-/// 将 YUYV 4:2:2 数据直接转换为 RGB 格式。
-///
-/// 输入：YUYV 数据（每 4 字节 = 2 像素）
-/// 输出：RGB 数据（每 3 字节 = 1 像素）
-fn convert_yuyv_to_rgb(src: &[u8], dst: &mut [u8]) {
-    for (chunk, pixels) in src.chunks_exact(4).zip(dst.chunks_exact_mut(6)) {
-        let y1 = chunk[0] as i32;
-        let u = chunk[1] as i32;
-        let y2 = chunk[2] as i32;
-        let v = chunk[3] as i32;
-
-        let [r1, g1, b1] = yuyv_to_rgb(y1, u, v);
-        let [r2, g2, b2] = yuyv_to_rgb(y2, u, v);
-
-        pixels[0] = r1;
-        pixels[1] = g1;
-        pixels[2] = b1;
-        pixels[3] = r2;
-        pixels[4] = g2;
-        pixels[5] = b2;
-    }
+    /// 其他格式：nokhwa 解码 RGB，统一路径。
+    /// 支持 YUYV、NV12、GRAY、RAWRGB、RAWBGR 等所有格式。
+    /// 直接写入目标 buffer，无中间 RGBA 分配。
+    DecodeToRgb,
 }
 
 /// nokhwa 相机帧源。`open` 成功后由后台采集线程持续发布帧。
@@ -157,16 +118,13 @@ impl CameraSource {
                 let _ = init_tx.send(Ok(()));
                 let mut seq = 0_u64;
                 let mut rgb_buf: Vec<u8> = Vec::new();
-                let mut rgba_buf: Vec<u8> = Vec::new();
                 // 检测设备输出格式，选择最优处理路径：
                 // 1. MJPEG → 直接透传（零解码零编码）
-                // 2. YUYV → 直接转 RGB（省 25% 内存，跳过 RGBA 中间格式）
-                // 3. 其他格式 → nokhwa 解码 RGBA → 转 BGRA（兼容性最好）
+                // 2. 其他格式 → nokhwa 解码 RGB（统一路径，无中间 RGBA 分配）
                 let device_format = camera.frame_format();
                 let capture_mode = match device_format {
-                    nokhwa::utils::FrameFormat::MJPEG => CaptureMode::MjpegPassthrough,
-                    nokhwa::utils::FrameFormat::YUYV => CaptureMode::YuyvToRgb,
-                    _ => CaptureMode::DecodeToBgra,
+                    FrameFormat::MJPEG => CaptureMode::MjpegPassthrough,
+                    _ => CaptureMode::DecodeToRgb,
                 };
                 // MJPEG 透传时 frame_raw() 不含分辨率，先调用 frame() 获取并缓存。
                 // （会消耗一帧，但分辨率在整个会话期间不变。）
@@ -233,59 +191,10 @@ impl CameraSource {
                                 }
                             }
                         }
-                        CaptureMode::YuyvToRgb => {
-                            // YUYV 直接转 RGB：frame_raw() 获取原始数据，直接转换为 RGB。
-                            // 跳过 nokhwa 的 RGBA 解码，省掉 alpha 通道（JPEG 不支持透明）。
-                            match camera.frame_raw() {
-                                Ok(raw) => {
-                                    task_stats.record_capture_wait(frame_wait_start.elapsed());
-                                    let capture_ns = crate::now_ns();
-                                    let convert_start = std::time::Instant::now();
-                                    // 复制 raw 数据，释放对 camera 的借用。
-                                    let raw_data: Vec<u8> = raw.into_owned();
-                                    // 获取分辨率
-                                    let (w, h) = match camera.frame() {
-                                        Ok(f) => {
-                                            let r = f.resolution();
-                                            (r.width_x, r.height_y)
-                                        }
-                                        Err(_) => continue,
-                                    };
-                                    // YUYV 4:2:2：每 4 字节 = 2 像素
-                                    // RGB：每像素 3 字节
-                                    let expected_yuyv = (w * h * 2) as usize;
-                                    let expected_rgb = (w * h * 3) as usize;
-                                    if raw_data.len() < expected_yuyv {
-                                        continue;
-                                    }
-                                    rgb_buf.clear();
-                                    rgb_buf.resize(expected_rgb, 0);
-                                    convert_yuyv_to_rgb(&raw_data[..expected_yuyv], &mut rgb_buf);
-                                    task_stats.record_convert(convert_start.elapsed());
-                                    seq = seq.saturating_add(1);
-                                    let video_frame = VideoFrame::new(
-                                        seq,
-                                        MonotonicTimestamp::from_nanos(capture_ns),
-                                        w,
-                                        h,
-                                        w * 3, // stride = width * 3 (RGB)
-                                        PixelFormat::Rgb888,
-                                        Arc::from(rgb_buf.as_slice()),
-                                    );
-                                    let shared = Arc::new(video_frame);
-                                    task_stats.record_publish(seq, capture_ns);
-                                    *task_latest.write().expect("camera lock poisoned") =
-                                        Some(Arc::clone(&shared));
-                                    task_sender.send_replace(Some(shared));
-                                }
-                                Err(_) => {
-                                    std::thread::sleep(std::time::Duration::from_millis(50));
-                                }
-                            }
-                        }
-                        CaptureMode::DecodeToBgra => {
-                            // 通用路径：nokhwa 解码 RGBA → 转 BGRA。
-                            // 适用于 NV12、GRAY、RAWRGB、RAWBGR 等格式。
+                        CaptureMode::DecodeToRgb => {
+                            // 通用路径：nokhwa 解码 RGB。
+                            // 支持 YUYV、NV12、GRAY、RAWRGB、RAWBGR 等所有格式。
+                            // 直接写入目标 buffer，无中间 RGBA 分配。
                             let frame = match camera.frame() {
                                 Ok(f) => f,
                                 Err(_) => {
@@ -297,17 +206,14 @@ impl CameraSource {
                             let capture_ns = crate::now_ns();
                             let convert_start = std::time::Instant::now();
                             let res = frame.resolution();
-                            rgba_buf.clear();
-                            rgba_buf.resize((res.width_x as usize) * (res.height_y as usize) * 4, 0);
+                            let expected_rgb = (res.width_x as usize) * (res.height_y as usize) * 3;
+                            rgb_buf.clear();
+                            rgb_buf.resize(expected_rgb, 0);
                             if frame
-                                .decode_image_to_buffer::<RgbAFormat>(&mut rgba_buf)
+                                .decode_image_to_buffer::<RgbFormat>(&mut rgb_buf)
                                 .is_err()
                             {
                                 continue;
-                            }
-                            for px in rgba_buf.chunks_exact_mut(4) {
-                                px.swap(0, 2);
-                                px[3] = 255;
                             }
                             task_stats.record_convert(convert_start.elapsed());
                             seq = seq.saturating_add(1);
@@ -316,9 +222,9 @@ impl CameraSource {
                                 MonotonicTimestamp::from_nanos(capture_ns),
                                 res.width_x,
                                 res.height_y,
-                                res.width_x * 4,
-                                PixelFormat::Bgra8888,
-                                Arc::from(rgba_buf.as_slice()),
+                                res.width_x * 3, // stride = width * 3 (RGB)
+                                PixelFormat::Rgb888,
+                                Arc::from(rgb_buf.as_slice()),
                             );
                             let shared = Arc::new(video_frame);
                             task_stats.record_publish(seq, capture_ns);
@@ -457,54 +363,5 @@ mod tests {
             panic!("expected String");
         };
         assert_eq!(s, "not-a-number");
-    }
-
-    #[test]
-    fn yuyv_to_rgb_converts_correctly() {
-        // 测试 YUYV→RGB 转换
-        // YUYV 格式：每 4 字节 (Y1, U, Y2, V) 转换为 2 个 RGB 像素
-        // 使用标准 YCbCr→RGB 公式，Y 有 -16 的偏移
-        let y1 = 128i32;
-        let u = 128i32;
-        let y2 = 128i32;
-        let v = 128i32;
-
-        let [r, g, b] = yuyv_to_rgb(y1, u, v);
-        // 当 Y=128, U=128, V=128 时，由于 Y-16 偏移，应该是 (130, 130, 130)
-        // C298 = (128-16) * 298 = 33376
-        // R = (33376 + 128) >> 8 = 130
-        assert_eq!(r, 130);
-        assert_eq!(g, 130);
-        assert_eq!(b, 130);
-    }
-
-    #[test]
-    fn convert_yuyv_to_rgb_produces_correct_size() {
-        // 2x2 像素的 YUYV 数据：4 字节 (Y1, U, Y2, V) = 2 像素
-        // 需要 2 个这样的块来表示 2x2 图像
-        let yuyv_data = vec![128u8; 8]; // 2x2 像素，每像素 2 字节 YUYV
-        let mut rgb_buf = vec![0u8; 12]; // 2x2 像素，每像素 3 字节 RGB
-
-        convert_yuyv_to_rgb(&yuyv_data, &mut rgb_buf);
-
-        // 验证输出大小正确
-        assert_eq!(rgb_buf.len(), 12);
-    }
-
-    #[test]
-    fn convert_yuyv_to_rgb_handles_white() {
-        // 白色：Y=255, U=128, V=128
-        let yuyv_data = vec![255, 128, 255, 128]; // 1 个 YUYV 块 = 2 像素
-        let mut rgb_buf = vec![0u8; 6]; // 2 像素 * 3 字节
-
-        convert_yuyv_to_rgb(&yuyv_data, &mut rgb_buf);
-
-        // 白色应该是 (255, 255, 255)
-        assert_eq!(rgb_buf[0], 255); // R1
-        assert_eq!(rgb_buf[1], 255); // G1
-        assert_eq!(rgb_buf[2], 255); // B1
-        assert_eq!(rgb_buf[3], 255); // R2
-        assert_eq!(rgb_buf[4], 255); // G2
-        assert_eq!(rgb_buf[5], 255); // B2
     }
 }
