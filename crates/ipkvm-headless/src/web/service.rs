@@ -698,6 +698,18 @@ async fn api_screenshot<I: InputSink + Clone + Send + 'static>(
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
     state.manager.lock().await.refresh_stats();
+
+    // MJPEG 透传：帧已经是 JPEG，直接返回。
+    if frame.pixel_format == PixelFormat::Mjpeg {
+        return Response::builder()
+            .status(StatusCode::OK)
+            .header(CONTENT_TYPE, HeaderValue::from_static("image/jpeg"))
+            .header(CACHE_CONTROL, HeaderValue::from_static("no-store"))
+            .body(Body::from(frame.data.to_vec()))
+            .expect("screenshot response headers are valid");
+    }
+
+    // BGRA：编码为 JPEG。
     if frame.pixel_format != PixelFormat::Bgra8888 {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
