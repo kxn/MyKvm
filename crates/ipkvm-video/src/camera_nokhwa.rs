@@ -16,7 +16,7 @@ use nokhwa::{
     Camera,
     pixel_format::RgbAFormat,
     query,
-    utils::{ApiBackend, CameraIndex, RequestedFormat, RequestedFormatType},
+    utils::{ApiBackend, CameraIndex, FrameFormat, RequestedFormat, RequestedFormatType},
 };
 use tokio::sync::watch;
 
@@ -299,15 +299,22 @@ fn parse_camera_index(id: &str) -> CameraIndex {
 pub fn list_cameras() -> Result<Vec<CameraDeviceInfo>, CameraSourceError> {
     let devices = query(ApiBackend::Auto)
         .map_err(|e| CameraSourceError::Enumerate(format!("nokhwa query: {e}")))?;
-    Ok(devices
-        .into_iter()
-        .enumerate()
-        .map(|(i, info)| CameraDeviceInfo {
-            // id 复用 Windows 后端的 "{index}:{name}" 约定，便于 open 时回查。
-            id: format!("{i}:{}", info.human_name()),
-            display_name: info.human_name(),
-        })
-        .collect())
+    // 过滤掉元数据设备（UVC 设备的 metadata 接口不支持视频捕获）。
+    // 尝试打开设备并检查是否支持视频格式，如果不支持则跳过。
+    let mut result = Vec::new();
+    for (i, info) in devices.into_iter().enumerate() {
+        let index = CameraIndex::Index(i as u32);
+        // 尝试用 None 格式打开设备，如果失败则跳过
+        let fmt = RequestedFormat::new::<RgbAFormat>(RequestedFormatType::None);
+        if Camera::new(index, fmt).is_ok() {
+            // 设备可以打开，认为是有效的视频设备
+            result.push(CameraDeviceInfo {
+                id: format!("{i}:{}", info.human_name()),
+                display_name: info.human_name(),
+            });
+        }
+    }
+    Ok(result)
 }
 
 #[cfg(test)]
