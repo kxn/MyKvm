@@ -88,8 +88,17 @@ export class ScreenshotController {
   async copy() {
     try {
       const blob = await this.fetchScreenshot();
-      await copyJpegToClipboard(blob);
-      this.message(t("screenshot.copyOk"), "ok");
+      try {
+        await copyJpegToClipboard(blob);
+        this.message(t("screenshot.copyOk"), "ok");
+      } catch (error) {
+        // 剪贴板不可用时，fallback 已下载截图
+        if (error.message === "clipboard unavailable, downloaded instead") {
+          this.message(t("screenshot.downloadedFallback"), "ok");
+        } else {
+          throw error;
+        }
+      }
     } catch (error) {
       this.message(t("screenshot.copyFail", { detail: errorText(error) }), "error");
     }

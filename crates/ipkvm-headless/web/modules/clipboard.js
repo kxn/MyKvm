@@ -36,21 +36,15 @@ export async function copyJpegToClipboard(jpegBlob) {
     await navigator.clipboard.write([new ClipboardItem({ "image/png": pngBlob })]);
     return;
   }
-  // Fallback：使用 document.execCommand('copy')（HTTP 环境可用）
+  // Fallback：创建临时下载链接，提示用户手动复制
+  // （document.execCommand('copy') 在 HTTP 环境下不可靠）
   const url = URL.createObjectURL(pngBlob);
-  try {
-    const img = document.createElement("img");
-    img.src = url;
-    document.body.appendChild(img);
-    const range = document.createRange();
-    range.selectNode(img);
-    const selection = window.getSelection();
-    selection.removeAllRanges();
-    selection.addRange(range);
-    document.execCommand("copy");
-    selection.removeAllRanges();
-    document.body.removeChild(img);
-  } finally {
-    URL.revokeObjectURL(url);
-  }
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `ipkvm-screenshot-${new Date().toISOString().replace(/[:.]/g, "-")}.png`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  throw new Error("clipboard unavailable, downloaded instead");
 }
