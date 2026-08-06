@@ -58,6 +58,7 @@ fn completes_handshake_negotiation_request_and_raw_update() {
                     height: 1,
                 },
             },
+            None,
         )
         .unwrap();
     assert_eq!(

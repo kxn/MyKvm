@@ -1,8 +1,8 @@
 use crate::protocol::client::{ClientMessage, ClientMessageDecoder};
 use crate::protocol::server::{
     AUTH_FAILED_REASON, NONE_SECURITY_TYPES, PROTOCOL_VERSION, SECURITY_RESULT_FAILED,
-    SECURITY_RESULT_OK, VNC_SECURITY_TYPES, checked_output_len, checked_raw_message_len,
-    encode_desktop_size_update, encode_empty_update, encode_raw_update, encode_server_init,
+    SECURITY_RESULT_OK, VNC_SECURITY_TYPES, checked_output_len, encode_desktop_size_update,
+    encode_empty_update, encode_raw_update_multi, encode_server_init,
 };
 use crate::security::{RfbSecurity, constant_time_eq, vnc_expected_response};
 use crate::{
@@ -304,6 +304,7 @@ impl RfbConnectionCore {
         &mut self,
         frame: BgraFrameView<'_>,
         request: FramebufferUpdateRequest,
+        dirty_rects: Option<&[RfbRectangle]>,
     ) -> Result<FramebufferUpdateOutcome, RfbEncodeError> {
         if self.state != RfbConnectionState::Normal {
             return Err(RfbEncodeError::HandshakeNotComplete);
@@ -333,16 +334,36 @@ impl RfbConnectionCore {
             return Ok(FramebufferUpdateOutcome::ResizeAnnounced { size });
         }
 
-        let Some(rectangle) = request.rectangle.intersection(frame.size()) else {
+        let Some(request_rect) = request.rectangle.intersection(frame.size()) else {
             self.queue_output(encode_empty_update())?;
             return Ok(FramebufferUpdateOutcome::EmptyQueued);
         };
-        // 容量检查前置：用预期 raw message 长度检查，避免 encode 写到一半才发现超限。
-        let additional = checked_raw_message_len(
-            usize::from(rectangle.width),
-            usize::from(rectangle.height),
-            self.pixel_format.bytes_per_pixel(),
-        )?;
+
+        // 有 dirty rects 时：裁剪到请求区域交集，多矩形编码（差分）。
+        // 无 dirty rects 时：单矩形全请求区域（现有行为）。
+        let rects: Vec<RfbRectangle> = match dirty_rects {
+            Some(dirty) if !dirty.is_empty() => dirty
+                .iter()
+                .filter_map(|r| clip_rect_to_rect(*r, request_rect))
+                .collect(),
+            _ => vec![request_rect],
+        };
+        if rects.is_empty() {
+            self.queue_output(encode_empty_update())?;
+            return Ok(FramebufferUpdateOutcome::EmptyQueued);
+        }
+
+        // 容量检查：update header(4) + 每矩形 rect header(12) + 像素数据。
+        let bpp = self.pixel_format.bytes_per_pixel();
+        let additional: usize = 4 + rects
+            .iter()
+            .map(|r| {
+                12 + usize::from(r.width)
+                    .checked_mul(usize::from(r.height))
+                    .and_then(|px| px.checked_mul(bpp))
+                    .unwrap_or(0)
+            })
+            .sum::<usize>();
         let attempted = checked_output_len(self.output.len(), additional)?;
         if attempted > self.config.limits.max_queued_output_bytes {
             return Err(RfbEncodeError::OutputQueueFull {
@@ -351,9 +372,11 @@ impl RfbConnectionCore {
             });
         }
         let encode_start = std::time::Instant::now();
-        let written = encode_raw_update(frame, rectangle, self.pixel_format, &mut self.output)?;
+        let written = encode_raw_update_multi(frame, &rects, self.pixel_format, &mut self.output)?;
         self.encode_stats.record(encode_start.elapsed(), written);
-        Ok(FramebufferUpdateOutcome::RawQueued { rectangle })
+        Ok(FramebufferUpdateOutcome::RawQueued {
+            rectangle: request_rect,
+        })
     }
 
     fn push_normal_input(&mut self, bytes: &[u8]) -> Vec<Result<RfbEvent, RfbProtocolError>> {
@@ -433,6 +456,27 @@ impl RfbConnectionCore {
         self.output.extend_from_slice(&message);
         Ok(())
     }
+}
+
+/// 把 `inner` 矩形裁剪到 `clip` 矩形内，返回交集（无交集返回 None）。
+fn clip_rect_to_rect(inner: RfbRectangle, clip: RfbRectangle) -> Option<RfbRectangle> {
+    let x0 = inner.x.max(clip.x);
+    let y0 = inner.y.max(clip.y);
+    let inner_x1 = u32::from(inner.x).checked_add(u32::from(inner.width))?;
+    let inner_y1 = u32::from(inner.y).checked_add(u32::from(inner.height))?;
+    let clip_x1 = u32::from(clip.x).checked_add(u32::from(clip.width))?;
+    let clip_y1 = u32::from(clip.y).checked_add(u32::from(clip.height))?;
+    let x1 = inner_x1.min(clip_x1);
+    let y1 = inner_y1.min(clip_y1);
+    if x1 <= u32::from(x0) || y1 <= u32::from(y0) {
+        return None;
+    }
+    Some(RfbRectangle {
+        x: x0,
+        y: y0,
+        width: (x1 - u32::from(x0)) as u16,
+        height: (y1 - u32::from(y0)) as u16,
+    })
 }
 
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
@@ -800,6 +844,7 @@ mod tests {
                     height: size.height(),
                 },
             },
+            None,
         )
     }
 
@@ -1019,6 +1064,7 @@ mod tests {
                         height: 2,
                     },
                 },
+                None,
             ),
             Ok(FramebufferUpdateOutcome::RawQueued {
                 rectangle: RfbRectangle {
@@ -1072,6 +1118,7 @@ mod tests {
                         height: 1,
                     },
                 },
+                None,
             )
             .unwrap();
 
@@ -1276,6 +1323,7 @@ mod tests {
                         height: 1,
                     },
                 },
+                None,
             )
             .unwrap();
 
@@ -1394,7 +1442,9 @@ mod tests {
             },
         };
 
-        connection.queue_framebuffer_update(frame, request).unwrap();
+        connection
+            .queue_framebuffer_update(frame, request, None)
+            .unwrap();
         let after_one = connection.encode_stats_snapshot();
         assert_eq!(after_one.encode_count, 1);
         assert!(
@@ -1405,7 +1455,7 @@ mod tests {
         // 第二帧（重建 frame view，借用已结束）。
         let frame2 = BgraFrameView::new(RfbSize::new(2, 2).unwrap(), 8, &pixels).unwrap();
         connection
-            .queue_framebuffer_update(frame2, request)
+            .queue_framebuffer_update(frame2, request, None)
             .unwrap();
         let after_two = connection.encode_stats_snapshot();
         assert_eq!(after_two.encode_count, 2);
@@ -1434,11 +1484,11 @@ mod tests {
 
         let frame1 = BgraFrameView::new(RfbSize::new(2, 1).unwrap(), 8, &pixels).unwrap();
         connection
-            .queue_framebuffer_update(frame1, request)
+            .queue_framebuffer_update(frame1, request, None)
             .unwrap();
         let frame2 = BgraFrameView::new(RfbSize::new(2, 1).unwrap(), 8, &pixels).unwrap();
         connection
-            .queue_framebuffer_update(frame2, request)
+            .queue_framebuffer_update(frame2, request, None)
             .unwrap();
 
         let output = connection.take_output();

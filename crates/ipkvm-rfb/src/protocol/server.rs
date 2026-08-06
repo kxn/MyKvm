@@ -75,51 +75,69 @@ pub(crate) fn encode_raw_update(
     pixel_format: RfbPixelFormat,
     output: &mut Vec<u8>,
 ) -> Result<usize, RfbEncodeError> {
-    let length = checked_raw_message_len(
-        usize::from(rectangle.width),
-        usize::from(rectangle.height),
-        pixel_format.bytes_per_pixel(),
-    )?;
+    encode_raw_update_multi(
+        frame,
+        std::slice::from_ref(&rectangle),
+        pixel_format,
+        output,
+    )
+}
+
+/// 把一帧 BGRA8888 像素的多个矩形编码为单条 RFB Raw FramebufferUpdate 消息
+///（多矩形，num-rectangles = rectangles.len()），追加写入 `output`。
+/// 返回追加的字节数。见调研阶段 2.1（issue #21）。
+///
+/// 调用方负责容量检查。空 rectangles 切片返回错误。
+pub(crate) fn encode_raw_update_multi(
+    frame: BgraFrameView<'_>,
+    rectangles: &[RfbRectangle],
+    pixel_format: RfbPixelFormat,
+    output: &mut Vec<u8>,
+) -> Result<usize, RfbEncodeError> {
+    if rectangles.is_empty() {
+        return Err(RfbEncodeError::LengthOverflow);
+    }
+    let num_rects = u16::try_from(rectangles.len()).map_err(|_| RfbEncodeError::LengthOverflow)?;
     let start = output.len();
-    output.reserve(length);
-    output.extend_from_slice(&[0, 0, 0, 1]);
-    write_u16(output, rectangle.x);
-    write_u16(output, rectangle.y);
-    write_u16(output, rectangle.width);
-    write_u16(output, rectangle.height);
-    write_i32(output, 0);
+    // FramebufferUpdate header: message-type=0, num-rectangles=u16 BE。
+    output.extend_from_slice(&[0, 0]);
+    output.extend_from_slice(&num_rects.to_be_bytes());
 
-    let end_y = rectangle
-        .y
-        .checked_add(rectangle.height)
-        .ok_or(RfbEncodeError::LengthOverflow)?;
-    let start_x = usize::from(rectangle.x)
-        .checked_mul(4)
-        .ok_or(RfbEncodeError::LengthOverflow)?;
-    let end_x = usize::from(rectangle.width)
-        .checked_mul(4)
-        .and_then(|width| start_x.checked_add(width))
-        .ok_or(RfbEncodeError::LengthOverflow)?;
+    for rectangle in rectangles {
+        // 每矩形 header: x, y, width, height (u16 BE), encoding=0 (Raw, i32 BE)。
+        write_u16(output, rectangle.x);
+        write_u16(output, rectangle.y);
+        write_u16(output, rectangle.width);
+        write_u16(output, rectangle.height);
+        write_i32(output, 0);
 
-    if pixel_format.is_bgrx8888_le_identity() {
-        // Fast path：目标格式与源 BGRA8888 恒等（default_bgrx8888 LE）。
-        // scale_channel 是恒等的，直接逐像素拷 BGR + 写 alpha=0（write_bgr 丢弃 alpha）。
-        // 无乘法、无分支，编译器可 autovectorize。见调研阶段 1.1（issue #18）。
-        for y in rectangle.y..end_y {
-            for pixel in frame.row(y)[start_x..end_x].chunks_exact(4) {
-                output.extend_from_slice(&[pixel[0], pixel[1], pixel[2], 0]);
+        let end_y = rectangle
+            .y
+            .checked_add(rectangle.height)
+            .ok_or(RfbEncodeError::LengthOverflow)?;
+        let start_x = usize::from(rectangle.x)
+            .checked_mul(4)
+            .ok_or(RfbEncodeError::LengthOverflow)?;
+        let end_x = usize::from(rectangle.width)
+            .checked_mul(4)
+            .and_then(|width| start_x.checked_add(width))
+            .ok_or(RfbEncodeError::LengthOverflow)?;
+
+        if pixel_format.is_bgrx8888_le_identity() {
+            for y in rectangle.y..end_y {
+                for pixel in frame.row(y)[start_x..end_x].chunks_exact(4) {
+                    output.extend_from_slice(&[pixel[0], pixel[1], pixel[2], 0]);
+                }
             }
-        }
-    } else {
-        for y in rectangle.y..end_y {
-            for pixel in frame.row(y)[start_x..end_x].chunks_exact(4) {
-                pixel_format.write_bgr(output, pixel[0], pixel[1], pixel[2]);
+        } else {
+            for y in rectangle.y..end_y {
+                for pixel in frame.row(y)[start_x..end_x].chunks_exact(4) {
+                    pixel_format.write_bgr(output, pixel[0], pixel[1], pixel[2]);
+                }
             }
         }
     }
-    let written = output.len() - start;
-    debug_assert_eq!(written, length);
-    Ok(written)
+    Ok(output.len() - start)
 }
 
 #[cfg(test)]

@@ -648,7 +648,7 @@ WebSocket 兼容：
   - 实施单 D：采集格式/帧率协商生效（**已完成 #20**）。Windows 两轮连接（sink 先认 MJPEG+BGRA 让 DS 帮转 YUV，失败兜底认所有格式自己转）+ `IAMStreamConfig::SetFormat` 设帧率；nokhwa `HighestFrameRate` 协商 + None 回退。MJPEG 直通在 sink 层就绪，留 F 启用下游透传。
 
 - **调研阶段 2：RFB 编码升级**（中等风险，决定能不能上 ARM）
-  - 实施单 E：脏区追踪 + 多矩形 update（`FramebufferUpdate` 支持多矩形、`incremental` 真正发差分）。依赖 A、B。
+  - 实施单 E：脏区追踪 + 多矩形 update（**已完成 #21**）。`encode_raw_update_multi` 多矩形编码 + `queue_framebuffer_update` dirty_rects 参数；`DirtyRectDetector`（tile=32×32 可配置，BGRA 帧逐 tile memcmp + 连通合并）；`VideoFrame.dirty_rects` 字段；driver 串联（Rect→RfbRectangle）。MJPEG 帧跳过检测。默认 dirty_rects=None（发全帧，零开销），帧源开启后填充。
   - 实施单 F：Tight + JPEG 子编码（noVNC 原生支持，`jpeg-encoder` 已是 workspace 依赖；ARM 硬件编码的天然落点）。依赖 A、E。**ARM 可用性硬前提。**
 
 - **调研阶段 3：架构级**（超 issue #3/#162 范围，单独立项）
