@@ -28,6 +28,16 @@ pub struct FileVideoSource {
 
 impl FileVideoSource {
     pub fn new(assets: Vec<Y4mAsset>, frames_per_second: u64) -> Result<Self, FileSourceError> {
+        Self::new_with_dirty_rects(assets, frames_per_second, None)
+    }
+
+    /// 创建文件帧源，可选开启 dirty rects 检测（FU-4，issue #35）。
+    /// `dirty_rect_tile_size` 为 None 时关闭；Some(32) 等开启。
+    pub fn new_with_dirty_rects(
+        assets: Vec<Y4mAsset>,
+        frames_per_second: u64,
+        dirty_rect_tile_size: Option<u32>,
+    ) -> Result<Self, FileSourceError> {
         if assets.is_empty() {
             return Err(FileSourceError::EmptyAssets);
         }
@@ -47,6 +57,8 @@ impl FileVideoSource {
             let mut seq = 0_u64;
             // BGRA 输出 buffer 复用：消除每帧 Vec 分配（调研阶段 1.2，#19）。
             let mut bgra_buf: Vec<u8> = Vec::new();
+            // Dirty rects 检测器（FU-4，issue #35）。
+            let mut detector = dirty_rect_tile_size.map(crate::dirty_rects::DirtyRectDetector::new);
             loop {
                 for asset in &assets {
                     for index in 0..asset.frame_count() {
@@ -59,7 +71,7 @@ impl FileVideoSource {
                             Arc::from(std::mem::take(&mut bgra_buf).into_boxed_slice());
                         let capture_ns = now_ns();
                         seq = seq.saturating_add(1);
-                        let frame = VideoFrame::new(
+                        let mut frame = VideoFrame::new(
                             seq,
                             MonotonicTimestamp::from_nanos(capture_ns),
                             asset.width(),
@@ -68,6 +80,9 @@ impl FileVideoSource {
                             PixelFormat::Bgra8888,
                             data,
                         );
+                        if let Some(d) = &mut detector {
+                            frame.dirty_rects = Some(d.detect(&frame));
+                        }
                         let shared = Arc::new(frame);
                         task_stats.record_publish(seq, capture_ns);
                         *task_latest.write().expect("file source lock poisoned") =

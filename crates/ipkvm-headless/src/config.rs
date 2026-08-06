@@ -49,6 +49,8 @@ pub struct CliOptions {
     pub vnc_password: Option<String>,
     pub encoding: Option<String>,
     pub jpeg_quality: Option<u8>,
+    pub dirty_rects: bool,
+    pub dirty_rect_tile_size: Option<u32>,
 }
 
 /// 合并后的最终配置（CLI > 文件 > 运行时设置 > 默认）。`assets_dir`/
@@ -70,6 +72,8 @@ pub struct Options {
     pub vnc_password: Option<String>,
     pub encoding: Option<String>,
     pub jpeg_quality: Option<u8>,
+    pub dirty_rects: bool,
+    pub dirty_rect_tile_size: Option<u32>,
 }
 
 /// 配置文件顶层。`deny_unknown_fields` 保证未知字段确定性报错。
@@ -98,6 +102,8 @@ pub struct VideoSection {
     pub fps: Option<u64>,
     pub encoding: Option<String>,
     pub jpeg_quality: Option<u8>,
+    pub dirty_rects: Option<bool>,
+    pub dirty_rect_tile_size: Option<u32>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -196,6 +202,10 @@ pub fn resolve(cli: CliOptions, file: Option<FileConfig>) -> Result<Options, Str
         jpeg_quality: cli
             .jpeg_quality
             .or_else(|| video.and_then(|v| v.jpeg_quality)),
+        dirty_rects: cli.dirty_rects || video.and_then(|v| v.dirty_rects).unwrap_or(false),
+        dirty_rect_tile_size: cli
+            .dirty_rect_tile_size
+            .or_else(|| video.and_then(|v| v.dirty_rect_tile_size)),
         token,
         vnc_password,
     })
@@ -302,6 +312,18 @@ fn parse_cli_from<S: AsRef<str>>(args: &[S]) -> Result<CliOptions, String> {
                         .as_ref()
                         .parse()
                         .map_err(|error| format!("无效 jpeg-quality：{error}"))?,
+                );
+            }
+            "--dirty-rects" => {
+                options.dirty_rects = true;
+            }
+            "--dirty-rect-tile-size" => {
+                options.dirty_rect_tile_size = Some(
+                    args.next()
+                        .ok_or_else(|| "--dirty-rect-tile-size 需要一个参数".to_string())?
+                        .as_ref()
+                        .parse()
+                        .map_err(|error| format!("无效 tile size：{error}"))?,
                 );
             }
             "--serial" => {
@@ -450,6 +472,8 @@ vnc_password = "filepass"
             vnc_password: Some("clipass".to_string()),
             encoding: None,
             jpeg_quality: None,
+            dirty_rects: false,
+            dirty_rect_tile_size: None,
         };
         let options = resolve(cli, Some(file)).unwrap();
         assert_eq!(options.bind_address, "10.0.0.1");
