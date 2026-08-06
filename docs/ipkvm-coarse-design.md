@@ -554,7 +554,7 @@ WebSocket 兼容：
 - 完成 RFB 指针输入坐标时期：动态尺寸和跨半包输入使用客户端已公告尺寸，不读取最新视频尺寸补算。
 - 完成单活动 RFB 控制者事件泵，覆盖输入拒绝、生命周期错误、原事件返还、断线和事件源关闭释放。
 - 使用真实回环 TCP、模拟 BGRA 帧和 `Ch9329InputSink<FakeCommandQueue>` 自动验证键盘、指针与最终释放闭环。
-- 完成双分辨率 Y4M 循环播放 mock 帧源（`ipkvm-video` 的 `mock` 功能）与 `ipkvm-demo` 演示二进制，并用独立第三方 VNC 客户端 vncdotool 1.3.0 验证 RFB TCP 画面和 `DesktopSize` 动态分辨率切换；自动化回归测试见 `crates/ipkvm-headless/tests/rfb_dynamic_resolution.rs`。
+- 完成双分辨率 Y4M 循环播放 mock 帧源（`ipkvm-video` 的 `mock` 功能），并用独立第三方 VNC 客户端 vncdotool 1.3.0 验证 RFB TCP 画面和 `DesktopSize` 动态分辨率切换；自动化回归测试见 `crates/ipkvm-headless/tests/rfb_dynamic_resolution.rs`。
 - 完成 RFB WebSocket 传输：axum `/rfb` 入口、可选 `binary` 子协议、锁定 noVNC 1.7.0 提交的线级初始化样本、TCP/WS 跨传输互斥与取消安全连接闸门。
 - 完成嵌入式 HTTP 服务，固定并分发 noVNC 1.7.0 资源。
 - 使用真实 Chrome 自动验证 noVNC 页面、模拟帧像素、两种视口等比缩放、键盘、绝对指针、按钮、释放和重连闭环。
@@ -803,9 +803,8 @@ WebSocket 兼容：
 - `ipkvm-device` 只提供设备描述和 `DeviceInventoryProvider`；枚举 provider 与打开硬件的
   session factory 分离，Web/iced 通过不透明 id 传递选择。
 - `ipkvm-session` 只负责 RFB 连接、输入泵和会话生命周期，不再负责设备枚举。
-- `ipkvm-headless` 是无硬件 Web/RFB library；正式 `ipkvm-headless` binary、`ipkvm-demo`
-  和 `ipkvm-browser-fixture` 分别位于 `ipkvm-headless-app`、`ipkvm-headless-demo` 和
-  `ipkvm-browser-fixture` package。
+- `ipkvm-headless` 是无硬件 Web/RFB library；正式 `ipkvm-headless` binary
+  和 `ipkvm-browser-fixture` 分别位于 `ipkvm-headless-app` 和 `ipkvm-browser-fixture` package。
 - `ipkvm-desktop-core` 承载 UI 无关配置、探测抽象、泛型会话控制器和帧转换；
   `ipkvm-desktop` 只负责真实 camera/CH9329/clipboard adapter 与兼容 re-export。
 - `scripts/test-crate-boundaries.py` 检查正式 binary、fixture、headless library

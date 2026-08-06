@@ -197,7 +197,7 @@ CI 发布（`dev-release`/`release` workflow，见 README「发布」章节）�
 `serialport`、平台 camera backend 和 `arboard` 只由 `ipkvm-desktop` 或
 `ipkvm-headless-app` 等 production package 引入；`ipkvm-browser-fixture` 和 headless
 library 的依赖树不包含这些硬件依赖。发布体积和许可证清单必须分别以
-`ipkvm-headless-app`、`ipkvm-headless-demo`、`ipkvm-browser-fixture`、
+`ipkvm-headless-app`、`ipkvm-browser-fixture`、
 `ipkvm-desktop-iced` 的实际 release 依赖树为准，不能继续使用旧的
 `cargo build -p ipkvm-headless --features demo` 口径。
 
