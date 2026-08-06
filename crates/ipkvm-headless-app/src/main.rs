@@ -213,6 +213,8 @@ mod tests {
             tcp_port: 5900,
             http_port: 6080,
             frames_per_second: None,
+            encoding: None,
+            jpeg_quality: None,
             token: None,
             vnc_password: None,
         }
@@ -460,9 +462,13 @@ async fn run(
     // 鉴权注入：VNC 密码（若有）同时作用于 TCP 与 WS 两条 RFB 传输，
     // 未配置时保持 RfbSecurity::None（连接闸门侧按本机回环限制来源）。
     let security = config::vnc_security(options.vnc_password.as_deref());
+    let preferred_encoding = config::parse_encoding(options.encoding.as_deref());
+    let jpeg_quality = options.jpeg_quality.unwrap_or(85);
     let tcp_config = RfbTcpConfig {
         connection: RfbConnectionSettings {
             security: security.clone(),
+            preferred_encoding,
+            jpeg_quality,
             ..RfbConnectionSettings::default()
         },
         ..RfbTcpConfig::default()
@@ -470,6 +476,8 @@ async fn run(
     let ws_config = RfbWebSocketConfig {
         connection: RfbConnectionSettings {
             security,
+            preferred_encoding,
+            jpeg_quality,
             ..RfbConnectionSettings::default()
         },
     };
