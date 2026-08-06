@@ -35,6 +35,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.89
+        with:
+          components: rustfmt, clippy
       # cargo make quick 的 licenses 任务依赖 cargo-deny（与 verify.yml 对齐）
       - run: cargo install --locked --version 0.20.2 cargo-deny
       - run: cargo install --locked cargo-make
