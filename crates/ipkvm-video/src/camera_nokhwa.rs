@@ -16,7 +16,7 @@ use nokhwa::{
     Camera,
     pixel_format::RgbAFormat,
     query,
-    utils::{ApiBackend, CameraIndex, FrameFormat, RequestedFormat, RequestedFormatType},
+    utils::{ApiBackend, CameraIndex, RequestedFormat, RequestedFormatType},
 };
 use tokio::sync::watch;
 
@@ -107,8 +107,8 @@ impl CameraSource {
                 let mut rgba_buf: Vec<u8> = Vec::new();
                 // 检查设备是否输出 MJPEG。如果 frame_format 返回 MJPEG，
                 // 用 frame_raw() 获取原始 JPEG 字节直接透传，避免解码再编码。
-                let use_mjpeg_passthrough = camera.frame_format()
-                    == nokhwa::utils::FrameFormat::MJPEG;
+                let use_mjpeg_passthrough =
+                    camera.frame_format() == nokhwa::utils::FrameFormat::MJPEG;
                 // MJPEG 透传时 frame_raw() 不含分辨率，先调用 frame() 获取并缓存。
                 // （会消耗一帧，但分辨率在整个会话期间不变。）
                 let cached_resolution = if use_mjpeg_passthrough {
@@ -134,7 +134,8 @@ impl CameraSource {
                                 let capture_ns = crate::now_ns();
                                 // V4L2 buffer 可能大于实际 JPEG 数据大小。
                                 // 裁剪到 JPEG EOI (0xFF 0xD9) 为止。
-                                let jpeg_end = raw.windows(2)
+                                let jpeg_end = raw
+                                    .windows(2)
                                     .position(|w| w == [0xFF, 0xD9])
                                     .map(|p| p + 2)
                                     .unwrap_or(raw.len());
@@ -163,7 +164,8 @@ impl CameraSource {
                                 );
                                 let shared = Arc::new(video_frame);
                                 task_stats.record_publish(seq, capture_ns);
-                                *task_latest.write().expect("camera lock poisoned") = Some(Arc::clone(&shared));
+                                *task_latest.write().expect("camera lock poisoned") =
+                                    Some(Arc::clone(&shared));
                                 task_sender.send_replace(Some(shared));
                             }
                             Err(_) => {
@@ -208,7 +210,8 @@ impl CameraSource {
                         );
                         let shared = Arc::new(video_frame);
                         task_stats.record_publish(seq, capture_ns);
-                        *task_latest.write().expect("camera lock poisoned") = Some(Arc::clone(&shared));
+                        *task_latest.write().expect("camera lock poisoned") =
+                            Some(Arc::clone(&shared));
                         task_sender.send_replace(Some(shared));
                     }
                 }

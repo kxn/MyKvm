@@ -111,12 +111,8 @@ pub(crate) async fn run_connection<T: RfbTransport>(
     transport.close().await;
 
     match result {
-        Ok(end) => {
-            end
-        }
-        Err(error) => {
-            ConnectionEnd::Failed(error)
-        }
+        Ok(end) => end,
+        Err(error) => ConnectionEnd::Failed(error),
     }
 }
 
@@ -143,8 +139,8 @@ async fn drive_connection<T: RfbTransport>(
         .map_err(|_| RfbFrameError::WidthOutOfRange(initial_frame.width))?;
     let initial_height = u16::try_from(initial_frame.height)
         .map_err(|_| RfbFrameError::HeightOutOfRange(initial_frame.height))?;
-    let initial_size = ipkvm_rfb::RfbSize::new(initial_width, initial_height)
-        .map_err(RfbFrameError::from)?;
+    let initial_size =
+        ipkvm_rfb::RfbSize::new(initial_width, initial_height).map_err(RfbFrameError::from)?;
     let mut core = RfbConnectionCore::new(RfbConnectionConfig {
         desktop_name: settings.desktop_name.clone(),
         initial_size,
@@ -289,12 +285,11 @@ impl ConnectionState {
     ) -> Result<(), RfbConnectionError> {
         let frame = self.latest_frame()?;
         // MJPEG 透传：从帧元数据获取尺寸，跳过 frame_view（它要求 BGRA）。
-        let w = u16::try_from(frame.width)
-            .map_err(|_| RfbFrameError::WidthOutOfRange(frame.width))?;
+        let w =
+            u16::try_from(frame.width).map_err(|_| RfbFrameError::WidthOutOfRange(frame.width))?;
         let h = u16::try_from(frame.height)
             .map_err(|_| RfbFrameError::HeightOutOfRange(frame.height))?;
-        let size = ipkvm_rfb::RfbSize::new(w, h)
-            .map_err(RfbFrameError::from)?;
+        let size = ipkvm_rfb::RfbSize::new(w, h).map_err(RfbFrameError::from)?;
         self.pending.merge(request, size);
 
         let should_send = self
