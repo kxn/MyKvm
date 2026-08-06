@@ -1077,6 +1077,7 @@ fn pixel_format_name(pixel_format: PixelFormat) -> &'static str {
     match pixel_format {
         PixelFormat::Yuy2 => "yuy2",
         PixelFormat::Nv12 => "nv12",
+        PixelFormat::Rgb888 => "rgb888",
         PixelFormat::Bgra8888 => "bgra8888",
         PixelFormat::Mjpeg => "mjpeg",
         PixelFormat::H264 => "h264",

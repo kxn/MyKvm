@@ -40,6 +40,7 @@ pub fn now_ns() -> u64 {
 pub enum PixelFormat {
     Yuy2,
     Nv12,
+    Rgb888,
     Bgra8888,
     Mjpeg,
     H264,

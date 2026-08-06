@@ -3,7 +3,7 @@ use crate::protocol::server::{
     AUTH_FAILED_REASON, ENCODING_TIGHT, NONE_SECURITY_TYPES, PROTOCOL_VERSION,
     SECURITY_RESULT_FAILED, SECURITY_RESULT_OK, VNC_SECURITY_TYPES, checked_output_len,
     encode_desktop_size_update, encode_empty_update, encode_raw_update_multi, encode_server_init,
-    encode_tight_jpeg_update, encode_tight_mjpeg_passthrough,
+    encode_tight_jpeg_update, encode_tight_jpeg_update_rgb, encode_tight_mjpeg_passthrough,
 };
 use crate::security::{RfbSecurity, constant_time_eq, vnc_expected_response};
 use crate::{
@@ -406,6 +406,101 @@ impl RfbConnectionCore {
             encode_tight_jpeg_update(frame, &rects, self.config.jpeg_quality, &mut self.output)?
         } else {
             encode_raw_update_multi(frame, &rects, self.pixel_format, &mut self.output)?
+        };
+        self.encode_stats.record(encode_start.elapsed(), written);
+        let outcome = if use_tight {
+            FramebufferUpdateOutcome::TightJpegQueued {
+                rectangle: request_rect,
+            }
+        } else {
+            FramebufferUpdateOutcome::RawQueued {
+                rectangle: request_rect,
+            }
+        };
+        Ok(outcome)
+    }
+
+    /// RGB 帧的 FramebufferUpdate 编码（3 字节/像素，无 alpha 通道）。
+    ///
+    /// 用于 YUYV→RGB 直接转换路径，比 BGRA 省 25% 内存。
+    pub fn queue_framebuffer_update_rgb(
+        &mut self,
+        frame: crate::framebuffer::RgbFrameView<'_>,
+        request: FramebufferUpdateRequest,
+        dirty_rects: Option<&[RfbRectangle]>,
+    ) -> Result<FramebufferUpdateOutcome, RfbEncodeError> {
+        if self.state != RfbConnectionState::Normal {
+            return Err(RfbEncodeError::HandshakeNotComplete);
+        }
+        if frame.size() != self.announced_size {
+            if !self.supports_desktop_size() {
+                return Err(RfbEncodeError::DesktopSizeNotNegotiated {
+                    announced: self.announced_size,
+                    actual: frame.size(),
+                });
+            }
+            let size = frame.size();
+            self.queue_output(encode_desktop_size_update(size))?;
+            self.announced_size = size;
+            if self.client_decoder.is_idle() {
+                self.input_coordinate_size = size;
+                self.pending_input_size = None;
+            } else {
+                self.pending_input_size = Some(size);
+            }
+            return Ok(FramebufferUpdateOutcome::ResizeAnnounced { size });
+        }
+
+        let Some(request_rect) = request.rectangle.intersection(frame.size()) else {
+            self.queue_output(encode_empty_update())?;
+            return Ok(FramebufferUpdateOutcome::EmptyQueued);
+        };
+
+        let rects: Vec<RfbRectangle> = match dirty_rects {
+            Some(dirty) if !dirty.is_empty() => dirty
+                .iter()
+                .filter_map(|r| clip_rect_to_rect(*r, request_rect))
+                .collect(),
+            _ => vec![request_rect],
+        };
+        if rects.is_empty() {
+            self.queue_output(encode_empty_update())?;
+            return Ok(FramebufferUpdateOutcome::EmptyQueued);
+        }
+
+        // 容量检查：用未压缩（Raw）大小作上界（JPEG 一定更小）。
+        let bpp = 3; // RGB = 3 bytes per pixel
+        let additional: usize = 4 + rects
+            .iter()
+            .map(|r| {
+                12 + usize::from(r.width)
+                    .checked_mul(usize::from(r.height))
+                    .and_then(|px| px.checked_mul(bpp))
+                    .unwrap_or(0)
+            })
+            .sum::<usize>();
+        let attempted = checked_output_len(self.output.len(), additional)?;
+        if attempted > self.config.limits.max_queued_output_bytes {
+            return Err(RfbEncodeError::OutputQueueFull {
+                attempted,
+                maximum: self.config.limits.max_queued_output_bytes,
+            });
+        }
+
+        let client_supports_tight = self.encoding_preferences.contains(&ENCODING_TIGHT);
+        let use_tight = match self.config.preferred_encoding {
+            EncodingPreference::Auto => client_supports_tight,
+            EncodingPreference::TightJpeg => client_supports_tight,
+            EncodingPreference::Raw => false,
+        };
+
+        let encode_start = std::time::Instant::now();
+        let written = if use_tight {
+            encode_tight_jpeg_update_rgb(frame, &rects, self.config.jpeg_quality, &mut self.output)?
+        } else {
+            // Raw 编码暂不支持 RGB，回退到空更新
+            self.queue_output(encode_empty_update())?;
+            0
         };
         self.encode_stats.record(encode_start.elapsed(), written);
         let outcome = if use_tight {

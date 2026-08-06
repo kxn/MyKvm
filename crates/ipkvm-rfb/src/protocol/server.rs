@@ -1,6 +1,6 @@
 use super::pixel_format::RfbPixelFormat;
 use super::wire::{write_i32, write_u16, write_u32};
-use crate::{BgraFrameView, RfbConfigError, RfbEncodeError, RfbRectangle, RfbSize};
+use crate::{BgraFrameView, RfbConfigError, RfbEncodeError, RfbRectangle, RfbSize, RgbFrameView};
 
 pub(crate) const PROTOCOL_VERSION: &[u8; 12] = b"RFB 003.008\n";
 pub(crate) const NONE_SECURITY_TYPES: [u8; 2] = [1, 1];
@@ -199,6 +199,69 @@ pub(crate) fn encode_tight_jpeg_update(
         jpeg_buf.clear();
         jpeg_encoder::Encoder::new(&mut jpeg_buf, jpeg_quality)
             .encode(&packed, w as u16, h as u16, jpeg_encoder::ColorType::Bgra)
+            .map_err(|_| RfbEncodeError::LengthOverflow)?;
+
+        // 压缩控制字节：高半字节 0x09=JPEG 子编码，低半字节 0x00（无 zlib reset）。
+        // 0x09 << 4 = 0x90。
+        output.push(0x90);
+        // Tight 变长长度前缀（7-bit 分段）。
+        write_tight_length(output, jpeg_buf.len());
+        output.extend_from_slice(&jpeg_buf);
+    }
+    Ok(output.len() - start)
+}
+
+/// RGB 帧的 Tight+JPEG 编码（3 字节/像素，无 alpha 通道）。
+///
+/// 用于 YUYV→RGB 直接转换路径，比 BGRA 省 25% 内存。
+pub(crate) fn encode_tight_jpeg_update_rgb(
+    frame: RgbFrameView<'_>,
+    rectangles: &[RfbRectangle],
+    jpeg_quality: u8,
+    output: &mut Vec<u8>,
+) -> Result<usize, RfbEncodeError> {
+    if rectangles.is_empty() {
+        return Err(RfbEncodeError::LengthOverflow);
+    }
+    let num_rects = u16::try_from(rectangles.len()).map_err(|_| RfbEncodeError::LengthOverflow)?;
+    let start = output.len();
+    output.extend_from_slice(&[0, 0]);
+    output.extend_from_slice(&num_rects.to_be_bytes());
+
+    let mut jpeg_buf = Vec::new();
+    let mut packed = Vec::new();
+    for rectangle in rectangles {
+        write_u16(output, rectangle.x);
+        write_u16(output, rectangle.y);
+        write_u16(output, rectangle.width);
+        write_u16(output, rectangle.height);
+        write_i32(output, ENCODING_TIGHT);
+
+        let w = usize::from(rectangle.width);
+        let h = usize::from(rectangle.height);
+        let end_y = rectangle
+            .y
+            .checked_add(rectangle.height)
+            .ok_or(RfbEncodeError::LengthOverflow)?;
+        let start_x = usize::from(rectangle.x)
+            .checked_mul(3)
+            .ok_or(RfbEncodeError::LengthOverflow)?;
+        let end_x = usize::from(rectangle.width)
+            .checked_mul(3)
+            .and_then(|width| start_x.checked_add(width))
+            .ok_or(RfbEncodeError::LengthOverflow)?;
+
+        // 紧凑拷贝矩形像素（处理 stride）。
+        packed.clear();
+        packed.reserve(w * h * 3);
+        for y in rectangle.y..end_y {
+            packed.extend_from_slice(&frame.row(y)[start_x..end_x]);
+        }
+
+        // JPEG 编码（RGB 输入）。
+        jpeg_buf.clear();
+        jpeg_encoder::Encoder::new(&mut jpeg_buf, jpeg_quality)
+            .encode(&packed, w as u16, h as u16, jpeg_encoder::ColorType::Rgb)
             .map_err(|_| RfbEncodeError::LengthOverflow)?;
 
         // 压缩控制字节：高半字节 0x09=JPEG 子编码，低半字节 0x00（无 zlib reset）。

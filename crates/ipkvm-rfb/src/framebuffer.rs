@@ -121,6 +121,70 @@ impl<'a> BgraFrameView<'a> {
     }
 }
 
+/// RGB 帧视图（3 字节/像素，无 alpha 通道）。
+///
+/// 用于 YUYV→RGB 直接转换路径，省掉 alpha 通道（JPEG 不支持透明）。
+/// 比 BGRA 省 25% 内存。
+pub struct RgbFrameView<'a> {
+    size: RfbSize,
+    stride: usize,
+    pixels: &'a [u8],
+}
+
+impl<'a> RgbFrameView<'a> {
+    pub fn new(
+        size: RfbSize,
+        stride: usize,
+        pixels: &'a [u8],
+    ) -> Result<Self, RfbFramebufferError> {
+        if size.width == 0 || size.height == 0 {
+            return Err(RfbFramebufferError::ZeroSize {
+                width: size.width,
+                height: size.height,
+            });
+        }
+        let line_bytes = usize::from(size.width)
+            .checked_mul(3)
+            .ok_or(RfbFramebufferError::SizeOverflow)?;
+        if stride < line_bytes {
+            return Err(RfbFramebufferError::StrideTooSmall {
+                minimum: line_bytes,
+                actual: stride,
+            });
+        }
+        let byte_span = usize::from(size.height - 1)
+            .checked_mul(stride)
+            .and_then(|prefix| prefix.checked_add(line_bytes))
+            .ok_or(RfbFramebufferError::SizeOverflow)?;
+        if pixels.len() < byte_span {
+            return Err(RfbFramebufferError::PixelDataTooShort {
+                required: byte_span,
+                actual: pixels.len(),
+            });
+        }
+        Ok(Self {
+            size,
+            stride,
+            pixels,
+        })
+    }
+
+    pub fn size(&self) -> RfbSize {
+        self.size
+    }
+
+    pub fn stride(&self) -> usize {
+        self.stride
+    }
+
+    pub(crate) fn row(&self, y: u16) -> &'a [u8] {
+        debug_assert!(y < self.size.height);
+        let start = usize::from(y) * self.stride;
+        let end = start + usize::from(self.size.width) * 3;
+        &self.pixels[start..end]
+    }
+}
+
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum RfbFramebufferError {
     #[error("framebuffer size must be non-zero, got {width}x{height}")]

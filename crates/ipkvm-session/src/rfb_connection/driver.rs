@@ -371,6 +371,36 @@ async fn queue_and_write_frame<T: RfbTransport>(
         return Ok(outcome);
     }
 
+    // RGB 直接编码：YUYV→RGB 路径，省掉 alpha 通道（JPEG 不支持透明）。
+    if frame.pixel_format == PixelFormat::Rgb888 {
+        let width = u16::try_from(frame.width)
+            .map_err(|_| RfbConnectionError::Frame(RfbFrameError::WidthOutOfRange(frame.width)))?;
+        let height = u16::try_from(frame.height).map_err(|_| {
+            RfbConnectionError::Frame(RfbFrameError::HeightOutOfRange(frame.height))
+        })?;
+        let size = ipkvm_rfb::RfbSize::new(width, height).map_err(RfbFrameError::from)?;
+        let rgb_frame = ipkvm_rfb::RgbFrameView::new(size, frame.stride as usize, &frame.data)
+            .map_err(RfbFrameError::from)?;
+
+        let dirty_rects = frame.dirty_rects.as_deref();
+        let dirty_rfb: Option<Vec<ipkvm_rfb::RfbRectangle>> = dirty_rects.map(|rects| {
+            rects
+                .iter()
+                .map(|r| ipkvm_rfb::RfbRectangle {
+                    x: r.x as u16,
+                    y: r.y as u16,
+                    width: r.width as u16,
+                    height: r.height as u16,
+                })
+                .collect()
+        });
+        let outcome =
+            core.queue_framebuffer_update_rgb(rgb_frame, request, dirty_rfb.as_deref())?;
+        write_core_output(transport, core).await?;
+        return Ok(outcome);
+    }
+
+    // BGRA 路径：传统方式。
     let dirty_rects = frame.dirty_rects.as_deref();
     let dirty_rfb: Option<Vec<ipkvm_rfb::RfbRectangle>> = dirty_rects.map(|rects| {
         rects
