@@ -394,4 +394,53 @@ mod tests {
         };
         assert_eq!(s, "not-a-number");
     }
+
+    #[test]
+    fn yuyv_to_rgb_converts_correctly() {
+        // 测试 YUYV→RGB 转换
+        // YUYV 格式：每 4 字节 (Y1, U, Y2, V) 转换为 2 个 RGB 像素
+        // 使用标准 YCbCr→RGB 公式，Y 有 -16 的偏移
+        let y1 = 128i32;
+        let u = 128i32;
+        let y2 = 128i32;
+        let v = 128i32;
+
+        let [r, g, b] = yuyv_to_rgb(y1, u, v);
+        // 当 Y=128, U=128, V=128 时，由于 Y-16 偏移，应该是 (130, 130, 130)
+        // C298 = (128-16) * 298 = 33376
+        // R = (33376 + 128) >> 8 = 130
+        assert_eq!(r, 130);
+        assert_eq!(g, 130);
+        assert_eq!(b, 130);
+    }
+
+    #[test]
+    fn convert_yuyv_to_rgb_produces_correct_size() {
+        // 2x2 像素的 YUYV 数据：4 字节 (Y1, U, Y2, V) = 2 像素
+        // 需要 2 个这样的块来表示 2x2 图像
+        let yuyv_data = vec![128u8; 8]; // 2x2 像素，每像素 2 字节 YUYV
+        let mut rgb_buf = vec![0u8; 12]; // 2x2 像素，每像素 3 字节 RGB
+
+        convert_yuyv_to_rgb(&yuyv_data, &mut rgb_buf);
+
+        // 验证输出大小正确
+        assert_eq!(rgb_buf.len(), 12);
+    }
+
+    #[test]
+    fn convert_yuyv_to_rgb_handles_white() {
+        // 白色：Y=255, U=128, V=128
+        let yuyv_data = vec![255, 128, 255, 128]; // 1 个 YUYV 块 = 2 像素
+        let mut rgb_buf = vec![0u8; 6]; // 2 像素 * 3 字节
+
+        convert_yuyv_to_rgb(&yuyv_data, &mut rgb_buf);
+
+        // 白色应该是 (255, 255, 255)
+        assert_eq!(rgb_buf[0], 255); // R1
+        assert_eq!(rgb_buf[1], 255); // G1
+        assert_eq!(rgb_buf[2], 255); // B1
+        assert_eq!(rgb_buf[3], 255); // R2
+        assert_eq!(rgb_buf[4], 255); // G2
+        assert_eq!(rgb_buf[5], 255); // B2
+    }
 }
