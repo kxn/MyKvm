@@ -40,11 +40,11 @@ pub const VIDEO_ASPECT: f32 = 16.0 / 9.0;
 
 /// 视频区之外的窗口 chrome（菜单栏 + 状态栏）估算高度（逻辑 px）。
 ///
-/// 菜单栏 root_label padding \[4,8\] + 状态栏 container padding(6) + PickList/文本，
-/// 合计约 72。这是估算常量：菜单/状态栏高度结构变化时需同步更新（有单测断言）。
-/// 初始窗口按"视频区 16:9 + CHROME_H"计算，chrome 估算误差只影响几 px 的
-/// letterbox 分布，不影响视频画面比例（画面恒 contain，不压扁）。
-pub const CHROME_H: f32 = 72.0;
+/// 菜单栏 root_label padding \[4,8\] + 字体行高约 16 + 状态栏 container padding(6)
+/// + PickList 约 22，合计约 48。这是估算常量：菜单/状态栏高度结构变化时需同步
+/// 更新（有单测断言）。初始窗口按"视频区 16:9 + CHROME_H"计算，chrome 估算
+/// 误差只影响几 px 的 letterbox 分布，不影响视频画面比例（画面恒 contain，不压扁）。
+pub const CHROME_H: f32 = 48.0;
 
 /// 适中基准视频区：1280×720（720p，16:9）。
 ///
@@ -403,7 +403,7 @@ mod tests {
         // 窗口元数据走常量，标题变化时此处会强制更新。
         assert_eq!(WINDOW_TITLE, "my_ipkvm iced");
         assert_eq!(VIDEO_ASPECT, 16.0 / 9.0);
-        assert_eq!(CHROME_H, 72.0);
+        assert_eq!(CHROME_H, 48.0);
     }
 
     #[test]

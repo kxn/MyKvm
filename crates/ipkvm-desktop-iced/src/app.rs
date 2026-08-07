@@ -1831,6 +1831,7 @@ where
             .padding(12);
         container(content)
             .width(Length::Fill)
+            .height(Length::Fill)
             .padding(16)
             .style(|theme: &iced::Theme| container::Style {
                 background: Some(crate::theme::surface(theme.palette()).into()),
