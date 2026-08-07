@@ -280,6 +280,11 @@ impl Drop for CameraSource {
     fn drop(&mut self) {
         // 置位停止标志；采集线程在 frame() 返回后检测到并退出，释放设备句柄。
         self.stop.store(true, std::sync::atomic::Ordering::Release);
+        // 同步等待采集线程退出，确保 nokhwa Camera（非 Send，在线程内创建/释放）已 drop、
+        // 设备句柄已释放，之后可安全重开同一设备（#46：与 Windows 分支对齐）。
+        if let Some(handle) = self._handle.take() {
+            let _ = handle.join();
+        }
     }
 }
 

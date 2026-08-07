@@ -83,6 +83,8 @@ pub struct RecordingSink {
     relative_mask: Arc<std::sync::Mutex<u8>>,
     /// release_all 调用次数。
     pub releases: Arc<std::sync::Mutex<usize>>,
+    /// 测试用：置位后下一次 handle_key_batch 返回错误，模拟串口写失败让泵退出。
+    pub fail_next_key: Arc<std::sync::Mutex<bool>>,
 }
 
 impl InputSink for RecordingSink {
@@ -91,6 +93,10 @@ impl InputSink for RecordingSink {
     }
 
     fn handle_key_batch(&mut self, _events: &[KeyEvent]) -> Result<(), InputError> {
+        if *self.fail_next_key.lock().unwrap() {
+            *self.fail_next_key.lock().unwrap() = false;
+            return Err(InputError::RolloverLimitExceeded);
+        }
         *self.key_batches.lock().unwrap() += 1;
         let mut recorded = self.key_events.lock().unwrap();
         for event in _events {
@@ -265,6 +271,13 @@ where
     last_preview_seq: Option<u64>,
     /// 诊断用：上一次记录的在线状态（检测整页切换抖动）。
     last_diag_online: Option<bool>,
+    /// 僵尸会话是否已自动销毁（#46）。
+    ///
+    /// 输入泵因串口等错误退出时 `is_control_online()` 变 false、`input_offline_reason()`
+    /// 为 Some，但此时尚未释放摄像头/串口句柄（只有用户主动 Disconnect 才 stop）。
+    /// `sync_status` 检测到此情形会自动 `controller.stop()` 销毁僵尸会话，并置此标志，
+    /// 避免后续每个 UiTick 重复触发。在 connect/disconnect 时重置为 false。
+    auto_destroyed: bool,
     store: ipkvm_desktop_core::config::ProfileStore,
     active_profile: Option<String>,
     status_message: Option<String>,
@@ -338,6 +351,7 @@ impl App<RecordingSink, MockFactory> {
             preview_handle: None,
             last_preview_seq: None,
             last_diag_online: None,
+            auto_destroyed: false,
             store: ipkvm_desktop_core::config::ProfileStore::new(
                 std::env::temp_dir()
                     .join(format!("my-ipkvm-iced-mock-{}-{seq}", std::process::id())),
@@ -407,6 +421,7 @@ impl App<Ch9329InputSink<SerialCommandQueue>, ProductionSessionFactory> {
             preview_handle: None,
             last_preview_seq: None,
             last_diag_online: None,
+            auto_destroyed: false,
             store,
             active_profile: None,
             status_message: None,
@@ -688,6 +703,8 @@ where
                     Ok(()) => {
                         diag::log("connect ok");
                         self.status_message = None;
+                        // 新连接开始，重置僵尸会话自动销毁标志（#46）。
+                        self.auto_destroyed = false;
                         self.sync_status();
                         if let Some(name) = self.active_profile.clone() {
                             if let Err(error) = self.store.add_recent_profile(&name) {
@@ -1562,6 +1579,8 @@ where
     fn disconnect(&mut self) {
         diag::log("disconnect");
         let _ = self.controller.stop();
+        // 用户主动断开：重置僵尸会话自动销毁标志（#46）。
+        self.auto_destroyed = false;
         self.sync_status();
         // 保留已探测状态：Connect 立即恢复可点，
         // 预览源保持常驻，由 PreviewTick 继续出帧。
@@ -1998,6 +2017,19 @@ where
     }
 
     pub fn sync_status(&mut self) {
+        let online = self.controller.is_control_online();
+        // #46：输入泵因串口等错误退出（非用户主动 Disconnect）→ 离线且有 input_offline
+        // 原因，但会话资源（摄像头/串口句柄）尚未释放（只有 stop() 才真正销毁）。
+        // 此时自动调用 controller.stop() 销毁僵尸会话，释放设备句柄，使用户回到连接
+        // 界面后能立即重新打开摄像头、重新连接，而不必重启客户端。auto_destroyed 标志
+        // 保证每次僵尸会话只销毁一次（用户主动 disconnect 走另一条路径，且 stop 后
+        // input_offline_reason() 变 None，不会重复触发）。
+        if !online && !self.auto_destroyed && self.controller.input_offline_reason().is_some() {
+            diag::log("auto-destroy zombie session after pump error");
+            let _ = self.controller.stop();
+            self.auto_destroyed = true;
+        }
+        // stop 后重新读取在线状态与离线原因（销毁僵尸会话后两者都变 false/None）。
         let online = self.controller.is_control_online();
         if !online && self.remote_input {
             self.exit_remote_input();
@@ -2583,6 +2615,87 @@ mod tests {
         app.controller.stop().unwrap();
         app.sync_status();
         assert_eq!(app.status(), &ConnectionStatus::Disconnected);
+    }
+
+    /// #46：输入泵因错误退出（模拟串口写失败）后，sync_status 应自动销毁僵尸会话，
+    /// 释放摄像头/串口句柄，使用户回到连接界面后能立即重连。
+    #[test]
+    fn pump_error_triggers_auto_destroy_on_sync_status() {
+        let (mut app, _) = MockApp::new_mock();
+        assert!(app.controller.is_control_online(), "mock 连接后应在线");
+        // 让下一次按键触发 sink 错误 → 泵退出 → input_offline 被设置。
+        *app.recording_sink()
+            .expect("recording sink")
+            .fail_next_key
+            .lock()
+            .unwrap() = true;
+        app.controller
+            .send_key(true, 0x61)
+            .expect("send_key queues event");
+
+        // 泵跑在 controller 的 tokio runtime 里，异步处理。轮询等待它退出。
+        let waited = poll_until(Duration::from_secs(2), || {
+            !app.controller.is_control_online()
+        });
+        assert!(waited, "泵错误后应离线");
+        // 确认是泵错误（非用户断开）：input_offline 应有原因。
+        assert!(
+            app.controller.input_offline_reason().is_some(),
+            "泵错误退出必须记录 input_offline"
+        );
+
+        // sync_status 应自动销毁僵尸会话。
+        app.sync_status();
+        assert!(app.auto_destroyed, "僵尸会话应被自动销毁");
+        // 销毁后 input_offline_reason 变 None（session 已 destroy）。
+        assert!(
+            app.controller.input_offline_reason().is_none(),
+            "自动销毁后 input_offline 应清除"
+        );
+    }
+
+    /// #46：自动销毁只触发一次——后续 sync_status 不重复调用 controller.stop()。
+    #[test]
+    fn auto_destroy_does_not_repeat_on_subsequent_ticks() {
+        let (mut app, _) = MockApp::new_mock();
+        // 直接模拟「泵已错误退出、尚未自动销毁」的状态。
+        // 先 stop 让会话进入已销毁状态，再手动置 input_offline 语义不现实；
+        // 改为走真实路径：触发泵错误后连续两次 sync_status，验证只销毁一次。
+        *app.recording_sink()
+            .expect("recording sink")
+            .fail_next_key
+            .lock()
+            .unwrap() = true;
+        app.controller.send_key(true, 0x61).unwrap();
+        assert!(poll_until(Duration::from_secs(2), || {
+            !app.controller.is_control_online()
+        }));
+        app.sync_status();
+        assert!(app.auto_destroyed);
+        // 第二次 sync_status：auto_destroyed 已置位，不应重复触发。
+        app.sync_status();
+        assert!(app.auto_destroyed);
+    }
+
+    /// #46：用户主动 Disconnect 不触发 auto_destroyed（disconnect 路径已 stop 且重置标志）。
+    #[test]
+    fn user_disconnect_does_not_set_auto_destroyed() {
+        let (mut app, _) = MockApp::new_mock();
+        let _ = app.update(Message::Disconnect);
+        assert!(!app.auto_destroyed, "用户主动断开不应标记 auto_destroyed");
+        assert_eq!(app.status(), &ConnectionStatus::Disconnected);
+    }
+
+    /// 轮询辅助：每 5ms 检查一次 cond，最多等 timeout。返回是否在超时前满足。
+    fn poll_until(timeout: Duration, mut cond: impl FnMut() -> bool) -> bool {
+        let deadline = Instant::now() + timeout;
+        while Instant::now() < deadline {
+            if cond() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        cond()
     }
 
     #[test]
