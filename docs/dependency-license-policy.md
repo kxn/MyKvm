@@ -78,6 +78,20 @@ LGPL Rust 代码不是绝对禁止，但普通 Cargo 依赖通常会静态链接
   4. 发布义务：发布清单需附 MIT 与 Apache-2.0 许可证文本，并因 IJG 条款在产品文档中致谢使用 IJG 代码（「Conditions of distribution and use」要求 acknowledgment）。
   5. 重新审查条件：升级到 0.7.x 或更高、或上游修改许可证表达式/源码来源时重新审查（0.7 已切换 edition 2024 与 rust-version 1.87，行为差异需另行核对）。
 
+- `mozjpeg` 0.10.x（`deny.toml` 例外 `allow = ["IJG"]`）：
+  1. 引入目的：`nokhwa-core`（nokhwa 相机库的核心 crate）的固定 JPEG 解码依赖。nokhwa 是 `ipkvm-video` 选定的 Linux（V4L2）/macOS（AVFoundation）相机后端，MJPEG 采集流的解码路径经 nokhwa-core 必然引入 mozjpeg，无同质量替代。
+  2. 上游声明：IJG（Independent JPEG Group）许可证，宽松许可证；「Conditions of distribution and use」要求分发时在产品文档中致谢使用了 IJG 代码。
+  3. 链接方式：纯 Rust + mozjpeg-sys 的 C 源码静态链接进 `ipkvm-video`（`camera` feature）及其消费二进制（`ipkvm-headless`、`ipkvm-desktop-iced`）。
+  4. 发布义务：发布清单需在产品文档/NOTICE 中致谢 IJG 代码（与 `jpeg-encoder` 同一义务来源）；依赖清单 `THIRD_PARTY_LICENSES.txt` 自动生成。
+  5. 重新审查条件：升级到 0.11.x 或更高、或上游修改许可证表达式/源码来源时重新审查。
+
+- `mozjpeg-sys` 2.2.x（`deny.toml` 例外 `allow = ["IJG", "Zlib", "BSD-3-Clause"]`）：
+  1. 引入目的：`mozjpeg` 的 FFI 绑定，通过 `cc` 编译 libjpeg-turbo/mozjpeg C 源码，是 mozjpeg 的固定依赖。
+  2. 上游声明：许可证表达式 `IJG AND Zlib AND BSD-3-Clause`（libjpeg-turbo 混合）；IJG 要求产品文档致谢，Zlib 与 BSD-3-Clause 均为宽松许可证，保留版权与许可声明即可。
+  3. 链接方式：C 源码经 `cc` 编译静态链接进 `ipkvm-video`（同 `mozjpeg`）。
+  4. 发布义务：同 `mozjpeg`（IJG 致谢）；依赖清单自动生成。
+  5. 重新审查条件：升级到 3.x 或更高、或上游修改许可证表达式/源码来源时重新审查。
+
 - `serialport` 4.9.x（`deny.toml` 例外 `allow = ["MPL-2.0"]`）：
   1. 引入目的：CH9329 串口转 USB-HID 芯片的通信后端（`ipkvm-core` 的 `serial` feature，`SerialCommandQueue` 把键鼠命令写入串口）。备选的 `serial`/`mio-serial` 维护停滞或跨平台支持弱，`serialport` 是维护活跃、跨 Windows/Linux/macOS 的事实标准。
   2. 上游声明：MPL-2.0（文件级弱 copyleft，类 LGPL 的弱传染：仅修改过的源文件需开源，链接不传染）。
