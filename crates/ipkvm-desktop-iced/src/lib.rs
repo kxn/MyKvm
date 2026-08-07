@@ -34,19 +34,52 @@ pub mod video_area;
 
 /// 稳定窗口标题；构建 short hash 仅在 About/诊断信息中展示。
 pub const WINDOW_TITLE: &str = "my_ipkvm iced";
-/// 默认窗口尺寸。
-pub const DEFAULT_WINDOW_SIZE: Size = Size::new(1024.0, 640.0);
 
-/// 初始窗口尺寸收敛：取 min(默认, 工作区 90%)，下限 640x480，避免状态栏出屏。
-pub fn fit_initial_size(default: Size, work_area: Size) -> Size {
-    Size::new(
-        default.width.min(work_area.width * 0.9).max(640.0),
-        default.height.min(work_area.height * 0.9).max(480.0),
-    )
+/// 视频画布宽高比：初始窗口的视频区域固定 16:9（之后窗口可自由拖动 resize）。
+pub const VIDEO_ASPECT: f32 = 16.0 / 9.0;
+
+/// 视频区之外的窗口 chrome（菜单栏 + 状态栏）估算高度（逻辑 px）。
+///
+/// 菜单栏 root_label padding [4,8] + 状态栏 container padding(6) + PickList/文本，
+/// 合计约 72。这是估算常量：菜单/状态栏高度结构变化时需同步更新（有单测断言）。
+/// 初始窗口按"视频区 16:9 + CHROME_H"计算，chrome 估算误差只影响几 px 的
+/// letterbox 分布，不影响视频画面比例（画面恒 contain，不压扁）。
+pub const CHROME_H: f32 = 72.0;
+
+/// 适中基准视频区：1280×720（720p，16:9）。
+///
+/// 1080p 屏上约占 2/3 高度，4K 屏不夸张；小屏（1366×768 等）自动等比缩小。
+const BASE_VIDEO_SIZE: Size = Size::new(1280.0, 720.0);
+
+/// 把 `target` 等比缩小（不放大）到能放进 `max`，保持宽高比。
+fn fit_keep_aspect(target: Size, max: Size) -> Size {
+    let scale = (max.width / target.width)
+        .min(max.height / target.height)
+        .min(1.0);
+    Size::new(target.width * scale, target.height * scale)
+}
+
+/// 初始窗口尺寸：视频区域严格 16:9，窗口 = 视频区 + CHROME_H。
+///
+/// 目标视频区 1280×720，等比缩放到能放进工作区（宽 90%，高 90% 再扣 CHROME_H），
+/// 不放大；下限 640×360（可用空间够大时生效，仍保持 16:9 且不超可用空间）。
+/// 之后窗口可自由拖动 resize，本函数只决定启动时的初始尺寸。
+pub fn initial_window_size(work_area: Size) -> Size {
+    let max_video = Size::new(
+        work_area.width * 0.9,
+        (work_area.height * 0.9 - CHROME_H).max(1.0),
+    );
+    let mut video = fit_keep_aspect(BASE_VIDEO_SIZE, max_video);
+    // 下限 640×360：fit_keep_aspect 保证 min_video 不超可用空间且保持 16:9。
+    let min_video = fit_keep_aspect(Size::new(640.0, 360.0), max_video);
+    if video.width < min_video.width {
+        video = min_video;
+    }
+    Size::new(video.width, video.height + CHROME_H)
 }
 
 /// 桌面工作区（逻辑点）。Windows 读 SPI_GETWORKAREA 并按系统 DPI 换算；
-/// 失败/非 Windows 返回足够大的兜底（1920x1080），使 fit 结果=默认值。
+/// 失败/兜底返回足够大的值（1920x1080），使初始窗口 = 720p 适中窗口。
 #[cfg(windows)]
 pub fn desktop_work_area() -> Size {
     unsafe {
@@ -75,8 +108,16 @@ pub fn desktop_work_area() -> Size {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
 pub fn desktop_work_area() -> Size {
+    // TODO(macos): 用 NSScreen.main.visibleFrame 换算逻辑尺寸。
+    // 当前兜底 1920×1080 → 初始 720p 适中窗口；回头补独立实现即可。
+    Size::new(1920.0, 1080.0)
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+pub fn desktop_work_area() -> Size {
+    // Linux 桌面使用概率低，兜底 1920×1080 → 初始 720p 适中窗口。
     Size::new(1920.0, 1080.0)
 }
 
@@ -361,24 +402,42 @@ mod tests {
     fn window_title_and_size_are_stable() {
         // 窗口元数据走常量，标题变化时此处会强制更新。
         assert_eq!(WINDOW_TITLE, "my_ipkvm iced");
-        assert_eq!(DEFAULT_WINDOW_SIZE, Size::new(1024.0, 640.0));
+        assert_eq!(VIDEO_ASPECT, 16.0 / 9.0);
+        assert_eq!(CHROME_H, 72.0);
     }
 
     #[test]
-    fn fit_initial_size_clamps_to_work_area() {
-        let default = Size::new(1024.0, 640.0);
-        assert_eq!(
-            fit_initial_size(default, Size::new(800.0, 600.0)),
-            Size::new(720.0, 540.0)
-        );
-        assert_eq!(
-            fit_initial_size(default, Size::new(1920.0, 1080.0)),
-            default
-        );
-        assert_eq!(
-            fit_initial_size(default, Size::new(100.0, 100.0)),
-            Size::new(640.0, 480.0)
-        );
+    fn initial_window_size_keeps_16_9_video_area() {
+        // 1080p 工作区：初始视频区恰好 1280×720（720p），窗口 = 视频区 + CHROME_H。
+        let win = initial_window_size(Size::new(1920.0, 1080.0));
+        assert_eq!(win, Size::new(1280.0, 720.0 + CHROME_H));
+        assert!(((win.height - CHROME_H) / win.width - 9.0 / 16.0).abs() < 1e-3);
+
+        // 1366×768 笔记本：等比缩小，视频区仍严格 16:9。
+        let win = initial_window_size(Size::new(1366.0, 768.0));
+        let video_h = win.height - CHROME_H;
+        assert!((win.width / video_h - 16.0 / 9.0).abs() < 1e-3);
+        assert!(win.width <= 1366.0 * 0.9 + 1.0);
+        assert!(win.height <= 768.0 * 0.9 + 1.0);
+
+        // 极窄工作区：不超可用空间，仍保持 16:9。
+        let win = initial_window_size(Size::new(640.0, 480.0));
+        let video_h = win.height - CHROME_H;
+        assert!((win.width / video_h - 16.0 / 9.0).abs() < 1e-3);
+        assert!(win.width <= 640.0 * 0.9 + 1.0);
+        assert!(win.height <= 480.0 * 0.9 + 1.0);
+    }
+
+    #[test]
+    fn initial_window_size_has_usable_floor() {
+        // 可用空间够大时至少 640×360 视频区（保持 16:9）。
+        let win = initial_window_size(Size::new(1920.0, 1080.0));
+        assert!(win.width >= 640.0);
+        assert!(win.height - CHROME_H >= 360.0);
+
+        // 超大屏不放大：仍是 720p 适中基准。
+        let win = initial_window_size(Size::new(3840.0, 2160.0));
+        assert_eq!(win, Size::new(1280.0, 720.0 + CHROME_H));
     }
 
     #[test]

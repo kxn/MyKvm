@@ -21,6 +21,7 @@ use ipkvm_video::mock::MockFrameSource;
 use ipkvm_video::{FrameSource, VideoFrame};
 use rust_i18n::t;
 
+use crate::WINDOW_TITLE;
 use crate::clipboard::{ClipboardReader, SystemClipboard};
 use crate::connect::{
     CameraPreviewFactory, ConnectionSettings, ControlProbeStatus, DeviceSelectionState,
@@ -48,7 +49,6 @@ use crate::relative::{
 use crate::scale::{FrameSize, ScaleMode};
 use crate::status::{ConnectionStatus, derive_status};
 use crate::video::handle_from_frame;
-use crate::{DEFAULT_WINDOW_SIZE, WINDOW_TITLE};
 
 /// mock 实例序号：每个 new_mock 用独立临时目录，避免测试并行互踩。
 static MOCK_STORE_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -2115,10 +2115,13 @@ impl PreviewSourceFactory for MockPreviewFactory {
 }
 
 /// ResizeWindowToVideo 模式的期望窗口尺寸；其余模式返回 None。
+///
+/// 窗口 = 帧尺寸（视频区保持帧宽高比）+ CHROME_H（菜单栏+状态栏），
+/// 避免视频区被 chrome 压扁导致画面二次 letterbox。
 pub fn desired_window_size(frame: Option<FrameSize>, mode: ScaleMode) -> Option<Size> {
     match (mode, frame) {
         (ScaleMode::ResizeWindowToVideo, Some(f)) => {
-            Some(Size::new(f.width as f32, f.height as f32))
+            Some(Size::new(f.width as f32, f.height as f32 + crate::CHROME_H))
         }
         _ => None,
     }
@@ -2180,10 +2183,7 @@ pub fn run() -> iced::Result {
         .subscription(App::subscription)
         .theme(App::theme)
         .title(WINDOW_TITLE)
-        .window_size(crate::fit_initial_size(
-            DEFAULT_WINDOW_SIZE,
-            crate::desktop_work_area(),
-        ))
+        .window_size(crate::initial_window_size(crate::desktop_work_area()))
         .default_font(crate::fonts::ui_font());
 
     if let Some(icon) = icon {
@@ -2598,9 +2598,10 @@ mod tests {
             width: 1920,
             height: 1080,
         });
+        // 窗口 = 帧尺寸 + chrome，视频区保持帧宽高比，不被压扁。
         assert_eq!(
             desired_window_size(frame, ScaleMode::ResizeWindowToVideo),
-            Some(Size::new(1920.0, 1080.0))
+            Some(Size::new(1920.0, 1080.0 + crate::CHROME_H))
         );
         assert_eq!(desired_window_size(frame, ScaleMode::FitWindow), None);
         assert_eq!(
