@@ -38,12 +38,12 @@ pub const WINDOW_TITLE: &str = "my_ipkvm iced";
 /// 视频画布宽高比：初始窗口的视频区域固定 16:9（之后窗口可自由拖动 resize）。
 pub const VIDEO_ASPECT: f32 = 16.0 / 9.0;
 
-/// 视频区之外的窗口 chrome（菜单栏 + 状态栏）估算高度（逻辑 px）。
+/// 视频区之外的窗口 chrome（菜单栏 + 状态栏）兜底高度（逻辑 px）。
 ///
-/// 菜单栏 root_label padding \[4,8\] + 字体行高约 16 + 状态栏 container padding(6)
-/// + PickList 约 22，合计约 48。这是估算常量：菜单/状态栏高度结构变化时需同步
-/// 更新（有单测断言）。初始窗口按"视频区 16:9 + CHROME_H"计算，chrome 估算
-/// 误差只影响几 px 的 letterbox 分布，不影响视频画面比例（画面恒 contain，不压扁）。
+/// **不再用于精确窗口尺寸**：启动窗口尺寸由 [`measure_chrome_height`] 离屏实测
+/// 真实 chrome 高度后传入 [`initial_window_size`] 计算，本常量仅作为离屏测量失败时
+/// 的兜底（不应发生），以及 [`app::desired_window_size`]（ResizeWindowToVideo 模式）
+/// 的输入。保留它是为了不破坏那些不常见路径，但精确窗口尺寸的事实来源是实测。
 pub const CHROME_H: f32 = 48.0;
 
 /// 适中基准视频区：1280×720（720p，16:9）。
@@ -59,15 +59,16 @@ fn fit_keep_aspect(target: Size, max: Size) -> Size {
     Size::new(target.width * scale, target.height * scale)
 }
 
-/// 初始窗口尺寸：视频区域严格 16:9，窗口 = 视频区 + CHROME_H。
+/// 初始窗口尺寸：视频区域严格 16:9，窗口 = 视频区 + chrome。
 ///
-/// 目标视频区 1280×720，等比缩放到能放进工作区（宽 90%，高 90% 再扣 CHROME_H），
-/// 不放大；下限 640×360（可用空间够大时生效，仍保持 16:9 且不超可用空间）。
-/// 之后窗口可自由拖动 resize，本函数只决定启动时的初始尺寸。
-pub fn initial_window_size(work_area: Size) -> Size {
+/// `chrome_h` 是菜单栏 + 状态栏的**实测**逻辑高度（由 [`measure_chrome_height`] 离屏
+/// 渲染得到），不再用估算常量 [`CHROME_H`]。目标视频区 1280×720，等比缩放到能放进
+/// 工作区（宽 90%，高 90% 再扣 chrome_h），不放大；下限 640×360（可用空间够大时生效，
+/// 仍保持 16:9 且不超可用空间）。之后窗口可自由拖动 resize，本函数只决定启动初始尺寸。
+pub fn initial_window_size(work_area: Size, chrome_h: f32) -> Size {
     let max_video = Size::new(
         work_area.width * 0.9,
-        (work_area.height * 0.9 - CHROME_H).max(1.0),
+        (work_area.height * 0.9 - chrome_h).max(1.0),
     );
     let mut video = fit_keep_aspect(BASE_VIDEO_SIZE, max_video);
     // 下限 640×360：fit_keep_aspect 保证 min_video 不超可用空间且保持 16:9。
@@ -75,7 +76,116 @@ pub fn initial_window_size(work_area: Size) -> Size {
     if video.width < min_video.width {
         video = min_video;
     }
-    Size::new(video.width, video.height + CHROME_H)
+    Size::new(video.width, video.height + chrome_h)
+}
+
+/// 启动时离屏实测菜单栏 + 状态栏的 chrome 逻辑高度（用于 [`initial_window_size`]）。
+///
+/// 用 `iced_tiny_skia::Renderer` 渲染一次复刻 `App::view` 顶/底结构的布局
+/// （`menu_bar` + Fill 占位 + 等价 `status_line` 骨架），通过 [`video_area::BoundsRecorder`]
+/// 读出 Fill 占位的真实 bounds，`chrome = 画布高 - 占位高`。这是确定性的、与系统 DPI
+/// 无关的逻辑点测量：只要菜单/状态栏的 widget 结构不变，返回值稳定；字体或控件结构
+/// 变化时会自动反映（无需手动同步常量）。
+///
+/// `work_area_width` 为画布宽度（取桌面工作区宽度，保证菜单/状态栏单行不换行）。
+/// `font` 必须与运行时 UI 字体一致（菜单/状态栏文字行高依赖字体）。
+pub fn measure_chrome_height(work_area_width: f32, font: iced::Font) -> f32 {
+    use iced::advanced::clipboard::Null;
+    use iced::advanced::graphics::Viewport;
+    use iced::advanced::mouse;
+    use iced::widget::{PickList, column, container, row, text};
+    use iced::{Length, Point, Rectangle};
+    use iced_runtime::user_interface::{self, UserInterface};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use crate::video_area::BoundsRecorder;
+
+    // 画布：宽度取工作区宽度（菜单/状态栏单行），高度给足让 Fill 占位能撑开。
+    // 宽度有下限，避免极窄工作区导致 PickList/text 换行扭曲测量。
+    let canvas_w = work_area_width.max(640.0);
+    let canvas_h = 600.0;
+    let cell: Rc<RefCell<Option<Rectangle>>> = Rc::new(RefCell::new(None));
+
+    // 菜单栏：直接复用真实 menu_bar（零漂移）。语言用系统默认即可，不影响高度。
+    // 显式指定 Renderer 为 iced_tiny_skia::Renderer，与占位/状态栏类型一致。
+    let menu: iced::Element<'_, crate::menu::MenuAction, iced::Theme, iced_tiny_skia::Renderer> =
+        crate::menu::menu_bar(&[], false, crate::locale::AppLanguage::System, true, true);
+
+    // Fill 占位（包 BoundsRecorder）：模拟视频区，撑满菜单与状态栏之间。
+    let placeholder: iced::Element<'_, (), iced::Theme, iced_tiny_skia::Renderer> =
+        container(text(""))
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .into();
+    let placeholder: iced::Element<'_, (), iced::Theme, iced_tiny_skia::Renderer> =
+        BoundsRecorder::new(cell.clone(), placeholder).into();
+
+    // 状态栏骨架：复刻 App::status_line 的 widget 结构（高度由结构与字体决定，
+    // 与运行时值无关）。row 含 5 个 ui_font 文本 + 一个 width=150 的 PickList，
+    // 外层 container padding(6)，无 align_y（与真实 status_line 一致）。
+    // PickList options 内容不影响高度，用单元素占位即可。
+    let options = vec!["profile".to_string()];
+    let status_row = row![
+        text("control").font(font),
+        text("keyboard").font(font),
+        text("pointer").font(font),
+        PickList::new(options.clone(), Some(options[0].clone()), |_| ())
+            .width(Length::Fixed(150.0)),
+        text("video").font(font),
+    ]
+    .spacing(16);
+    let status: iced::Element<'_, (), iced::Theme, iced_tiny_skia::Renderer> =
+        container(status_row).width(Length::Fill).padding(6).into();
+
+    let view: iced::Element<'_, (), iced::Theme, iced_tiny_skia::Renderer> =
+        column![menu.map(|_| ()), placeholder, status].into();
+
+    let mut renderer = iced_tiny_skia::Renderer::new(font, 16.0.into());
+    let mut ui = UserInterface::build(
+        view,
+        iced::Size::new(canvas_w, canvas_h),
+        user_interface::Cache::new(),
+        &mut renderer,
+    );
+
+    let mut messages = Vec::new();
+    let mut clipboard = Null;
+    let _ = ui.update(
+        &[],
+        mouse::Cursor::Available(Point::ORIGIN),
+        &mut renderer,
+        &mut clipboard,
+        &mut messages,
+    );
+
+    let theme = iced::Theme::Light;
+    let style = iced::advanced::renderer::Style {
+        text_color: theme.palette().text,
+    };
+    ui.draw(
+        &mut renderer,
+        &theme,
+        &style,
+        mouse::Cursor::Available(Point::ORIGIN),
+    );
+    // draw 后 BoundsRecorder 已把占位 bounds 写入 cell；无需真正光栅化像素。
+    // 但 tiny_skia 的 draw 接口需要 pixmap，这里用一个小画布满足签名即可
+    // （BoundsRecorder 在 ui.draw 阶段已完成记录）。
+    let mut pixmap = tiny_skia::Pixmap::new(2, 2).expect("2x2 pixmap");
+    let mut mask = tiny_skia::Mask::new(2, 2).expect("2x2 mask");
+    renderer.draw(
+        &mut pixmap.as_mut(),
+        &mut mask,
+        &Viewport::with_physical_size(iced::Size::new(2, 2), 1.0),
+        &[Rectangle::with_size(iced::Size::new(canvas_w, canvas_h))],
+        iced::Color::WHITE,
+    );
+
+    match *cell.borrow() {
+        Some(rect) => (canvas_h - rect.height).max(0.0),
+        None => CHROME_H, // 离屏测量失败的兜底（不应发生）。
+    }
 }
 
 /// 桌面工作区（逻辑点）。Windows 读 SPI_GETWORKAREA 并按系统 DPI 换算；
@@ -408,36 +518,83 @@ mod tests {
 
     #[test]
     fn initial_window_size_keeps_16_9_video_area() {
-        // 1080p 工作区：初始视频区恰好 1280×720（720p），窗口 = 视频区 + CHROME_H。
-        let win = initial_window_size(Size::new(1920.0, 1080.0));
-        assert_eq!(win, Size::new(1280.0, 720.0 + CHROME_H));
-        assert!(((win.height - CHROME_H) / win.width - 9.0 / 16.0).abs() < 1e-3);
+        // 用一组典型 chrome 值验证：给定实测 chrome，视频区严格 16:9。
+        let chrome = 72.0;
+        // 1080p 工作区：初始视频区恰好 1280×720（720p），窗口 = 视频区 + chrome。
+        let win = initial_window_size(Size::new(1920.0, 1080.0), chrome);
+        assert_eq!(win, Size::new(1280.0, 720.0 + chrome));
+        assert!(((win.height - chrome) / win.width - 9.0 / 16.0).abs() < 1e-3);
 
         // 1366×768 笔记本：等比缩小，视频区仍严格 16:9。
-        let win = initial_window_size(Size::new(1366.0, 768.0));
-        let video_h = win.height - CHROME_H;
+        let win = initial_window_size(Size::new(1366.0, 768.0), chrome);
+        let video_h = win.height - chrome;
         assert!((win.width / video_h - 16.0 / 9.0).abs() < 1e-3);
         assert!(win.width <= 1366.0 * 0.9 + 1.0);
         assert!(win.height <= 768.0 * 0.9 + 1.0);
 
         // 极窄工作区：不超可用空间，仍保持 16:9。
-        let win = initial_window_size(Size::new(640.0, 480.0));
-        let video_h = win.height - CHROME_H;
+        let win = initial_window_size(Size::new(640.0, 480.0), chrome);
+        let video_h = win.height - chrome;
         assert!((win.width / video_h - 16.0 / 9.0).abs() < 1e-3);
         assert!(win.width <= 640.0 * 0.9 + 1.0);
         assert!(win.height <= 480.0 * 0.9 + 1.0);
     }
 
     #[test]
+    fn initial_window_size_scales_with_measured_chrome() {
+        // 关键回归：chrome 越大窗口越高，但视频区始终严格 16:9（不被 chrome 压扁）。
+        // 这是原 bug 的核心——旧实现把 CHROME_H 写死，无论真实 chrome 多大都用 48，
+        // 导致视频区比例失准。新签名把 chrome 作为参数，调用方传实测值。
+        for chrome in [48.0_f32, 72.0, 100.0] {
+            let win = initial_window_size(Size::new(1920.0, 1080.0), chrome);
+            let video_h = win.height - chrome;
+            assert!(
+                (win.width / video_h - 16.0 / 9.0).abs() < 1e-3,
+                "chrome={chrome} 时视频区必须严格 16:9，实际 {:.4}",
+                win.width / video_h
+            );
+        }
+    }
+
+    #[test]
     fn initial_window_size_has_usable_floor() {
         // 可用空间够大时至少 640×360 视频区（保持 16:9）。
-        let win = initial_window_size(Size::new(1920.0, 1080.0));
+        let chrome = 72.0;
+        let win = initial_window_size(Size::new(1920.0, 1080.0), chrome);
         assert!(win.width >= 640.0);
-        assert!(win.height - CHROME_H >= 360.0);
+        assert!(win.height - chrome >= 360.0);
 
         // 超大屏不放大：仍是 720p 适中基准。
-        let win = initial_window_size(Size::new(3840.0, 2160.0));
-        assert_eq!(win, Size::new(1280.0, 720.0 + CHROME_H));
+        let win = initial_window_size(Size::new(3840.0, 2160.0), chrome);
+        assert_eq!(win, Size::new(1280.0, 720.0 + chrome));
+    }
+
+    #[test]
+    fn measure_chrome_height_is_reasonable_and_deterministic() {
+        // 离屏实测菜单栏 + 状态栏高度：应在合理区间，且两次调用一致（确定性）。
+        let font = crate::fonts::ui_font();
+        let h1 = measure_chrome_height(1920.0, font);
+        let h2 = measure_chrome_height(1920.0, font);
+        assert!(
+            (20.0..200.0).contains(&h1),
+            "实测 chrome 高度应落在合理区间 20..200，实际 {h1}"
+        );
+        assert_eq!(h1, h2, "离屏测量必须确定（两次调用应完全一致）");
+    }
+
+    #[test]
+    fn initial_window_size_with_measured_chrome_yields_16_9_video() {
+        // 端到端：实测 chrome → 算初始窗口 → 视频区严格 16:9。
+        // 这是修复的核心验收点：无论真实 chrome 是多少，启动窗口视频区必为 16:9。
+        let font = crate::fonts::ui_font();
+        let chrome = measure_chrome_height(1920.0, font);
+        let win = initial_window_size(Size::new(1920.0, 1080.0), chrome);
+        let video_h = win.height - chrome;
+        assert!(
+            (win.width / video_h - 16.0 / 9.0).abs() < 1e-3,
+            "实测 chrome 后启动窗口视频区必须严格 16:9，实际 {:.4}",
+            win.width / video_h
+        );
     }
 
     #[test]

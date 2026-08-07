@@ -14,6 +14,10 @@ futures-util = { workspace = true }
 iced = { version = "0.14", features = ["tokio", "image", "advanced"] }
 iced_aw.workspace = true
 iced_futures = "0.14"
+iced_runtime = "0.14"
+# 启动时离屏实测菜单栏 + 状态栏的真实 chrome 高度，用于精确计算初始窗口尺寸
+# （见 lib.rs::measure_chrome_height），使视频区严格保持 16:9。
+iced_tiny_skia = { version = "0.14", default-features = false }
 ipkvm-core = { path = "../ipkvm-core", features = ["serial"] }
 ipkvm-desktop = { path = "../ipkvm-desktop" }
 ipkvm-desktop-core = { path = "../ipkvm-desktop-core" }
@@ -21,15 +25,13 @@ ipkvm-session = { path = "../ipkvm-session" }
 ipkvm-video = { path = "../ipkvm-video", features = ["camera", "test-support"] }
 rust-i18n = "4.2.1"
 sys-locale = "0.3.2"
+tiny-skia = "0.11"
 
 [dev-dependencies]
 iced_test = "0.14"
-iced_runtime = "0.14"
-iced_tiny_skia = { version = "0.14", default-features = false }
 ipkvm-video = { path = "../ipkvm-video", features = ["test-support"] }
 # 仅测试用：编码小尺寸 JPEG 作为 MJPEG 帧数据，避免引入二进制 fixture 文件。
 jpeg-encoder.workspace = true
-tiny-skia = "0.11"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [target.'cfg(windows)'.dependencies]
