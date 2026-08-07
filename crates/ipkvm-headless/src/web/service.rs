@@ -511,21 +511,21 @@ async fn api_status<I: InputSink + Clone + Send + 'static>(
     // 检查是否超时
     {
         let deadline = state.disconnect_deadline.lock().await;
-        if let Some(dl) = *deadline {
-            if std::time::Instant::now() >= dl {
-                drop(deadline);
-                // 超时：停止 session
-                let mut manager = state.manager.lock().await;
-                if manager.state() == ipkvm_session::session_manager::SessionState::Running {
-                    let _ = manager.stop();
-                    manager.wait_stopped().await;
-                    let _ = manager.stop_and_destroy().await;
-                    state
-                        .frame_source
-                        .set_current(Arc::new(EmptyFrameSource::new()));
-                }
-                state.disconnect_deadline.lock().await.take();
+        if let Some(dl) = *deadline
+            && std::time::Instant::now() >= dl
+        {
+            drop(deadline);
+            // 超时：停止 session
+            let mut manager = state.manager.lock().await;
+            if manager.state() == ipkvm_session::session_manager::SessionState::Running {
+                let _ = manager.stop();
+                manager.wait_stopped().await;
+                let _ = manager.stop_and_destroy().await;
+                state
+                    .frame_source
+                    .set_current(Arc::new(EmptyFrameSource::new()));
             }
+            state.disconnect_deadline.lock().await.take();
         }
     }
 

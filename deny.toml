@@ -34,6 +34,22 @@ name = "jpeg-encoder"
 version = "0.6"
 allow = ["MIT", "Apache-2.0", "IJG"]
 
+# mozjpeg 0.10.x：nokhwa-core 的固定 JPEG 解码依赖（Linux V4L2 / macOS
+# AVFoundation 相机后端的 MJPEG 解码）。IJG 为宽松许可证但要求产品文档致谢。
+# 合规记录见 docs/dependency-license-policy.md「按组件审查」。
+[[licenses.exceptions]]
+name = "mozjpeg"
+version = "0.10"
+allow = ["IJG"]
+
+# mozjpeg-sys 2.2.x：mozjpeg 的 FFI 绑定（cc 编译 libjpeg-turbo/mozjpeg C 源码），
+# 许可证为 IJG AND Zlib AND BSD-3-Clause（libjpeg-turbo 混合）。
+# 合规记录见 docs/dependency-license-policy.md「按组件审查」。
+[[licenses.exceptions]]
+name = "mozjpeg-sys"
+version = "2.2"
+allow = ["IJG", "Zlib", "BSD-3-Clause"]
+
 # serialport 4.x：MPL-2.0（文件级弱 copyleft）。仅链接使用、未修改其源文件，
 # 合规义务为在产品 NOTICE/文档中声明使用了 serialport 并保留其许可证声明。
 # 其传递依赖（cfg-if/scopeguard/windows-sys）均为 MIT/Apache，已在全局允许列表内。

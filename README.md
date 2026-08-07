@@ -41,6 +41,18 @@ Linux 桌面端说明：
 - 键鼠注入走真实 CH9329 串口 `/dev/ttyUSBn`（CH340 驱动，默认 9600 8N1）。
 - iced/wgpu 渲染依赖系统图形库 `libxkbcommon`（X11 键盘映射）；缺失时应用无法创建窗口，需先安装（如 Debian/Ubuntu 的 `libxkbcommon0` 及 `libxkbcommon-x11-0`）。
 
+macOS 桌面端说明（issue #42，"摸黑"支持，CI 验证编译与测试）：
+
+```bash
+cargo run -p ipkvm-desktop-iced --all-features
+```
+
+- 视频采集走 macOS AVFoundation 后端（nokhwa），UVC 采集卡即插即用，可在应用内设备列表选择；无真实采集卡时无法验证实际捕捉（桌面端无 CLI 伪设备参数，演示/验证可运行 headless 的 Y4M 伪设备）。
+- 键鼠注入走真实 CH9329 串口 `/dev/tty.usbserial-*`（CH340 驱动，默认 9600 8N1）。
+- 截图保存与 profile 加载使用原生文件对话框（rfd，objc2 后端）。
+- 相对鼠标 raw input（Windows 独占能力）在 macOS 尚未实现，见 `crates/ipkvm-desktop-iced/src/platform/stub.rs` 与 issue #42。
+- 当前无 macOS 真机验证环境：CI 保证编译、全量测试与文档门禁；窗口交互等 GUI 行为待真机验证。
+
 启动后选择视频设备和控制设备；控制设备必须探测为合法 CH9329 后「连接」按钮才会启用。连接后：
 
 - 点击视频区域获得焦点后可发送本地键盘/鼠标（绝对坐标按目标画面缩放换算）。
@@ -112,9 +124,9 @@ py .\scripts\verify-web-assets.py
 
 ### dev 预发布（自动）
 
-main 分支 verify CI 全绿后，`dev-release` workflow 自动构建 Windows/Linux 产物并覆盖更新固定的 `dev` 预发布（GitHub Releases 页面），方便随时下载测试：
+main 分支 verify CI 全绿后，`dev-release` workflow 自动构建 Windows/Linux/macOS 产物并覆盖更新固定的 `dev` 预发布（GitHub Releases 页面），方便随时下载测试：
 
-- `ipkvm-dev-windows-x86_64.zip` / `ipkvm-dev-linux-x86_64.tar.gz`
+- `ipkvm-dev-windows-x86_64.zip` / `ipkvm-dev-linux-x86_64.tar.gz` / `ipkvm-dev-macos-x86_64.tar.gz`
 - 每包内含 `ipkvm-headless`、`ipkvm-desktop-iced` 与 README、LICENSE、`THIRD_PARTY_LICENSES.txt`（由 `cargo metadata` 自动生成）；Release 页附 `SHA256SUMS.txt` 校验和。
 
 ### 正式发版

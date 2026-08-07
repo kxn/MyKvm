@@ -377,20 +377,71 @@ fn headless_list_cameras_succeeds_on_windows() {
     }
 }
 
-/// `--camera <不存在的设备>`：Windows 上设备未找到、非 Windows 上
-/// UnsupportedPlatform——两种情况都应非 0 退出（跨平台可测）。
-#[test]
-fn headless_camera_with_unknown_device_fails() {
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_ipkvm-headless"))
-        .arg("--camera")
-        .arg("0:no-such-camera")
-        .output()
-        .unwrap();
+/// `--camera <不存在的设备>` 不再使进程启动即失败：启动时不自动构建会话，
+/// 相机设备错误推迟到网页连接阶段才上报（don't auto-start session）。
+/// 进程应正常启动空会话并保持运行（跨平台可测）。
+#[tokio::test]
+async fn headless_camera_argument_starts_empty_session_without_failing() {
+    struct ChildGuard(Option<tokio::process::Child>);
+
+    impl Drop for ChildGuard {
+        fn drop(&mut self) {
+            if let Some(child) = self.0.as_mut() {
+                let _ = child.start_kill();
+            }
+        }
+    }
+
+    let mut child = ChildGuard(Some(
+        Command::new(env!("CARGO_BIN_EXE_ipkvm-headless"))
+            .args(["--camera", "0:no-such-camera", "--tcp", "0", "--http", "0"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("headless process should spawn"),
+    ));
+    let stdout = child
+        .0
+        .as_mut()
+        .and_then(|child| child.stdout.take())
+        .expect("stdout should be piped");
+    let mut lines = BufReader::new(stdout).lines();
+    let mut saw_empty_session_message = false;
+    let startup = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let Some(line) = lines.next_line().await.expect("stdout should be readable") else {
+                panic!("headless exited before reporting startup");
+            };
+            if line.contains("启动空会话，等待用户连接") {
+                saw_empty_session_message = true;
+            }
+            if line.contains("ipkvm-headless 已启动") {
+                break line;
+            }
+        }
+    })
+    .await
+    .expect("headless startup should be reported despite unknown camera argument");
     assert!(
-        !output.status.success(),
-        "--camera with an unknown device should fail, stdout: {}",
-        String::from_utf8_lossy(&output.stdout)
+        saw_empty_session_message,
+        "unknown camera argument should still start an empty session: {startup}"
     );
+
+    child
+        .0
+        .as_mut()
+        .expect("child should still be running")
+        .kill()
+        .await
+        .expect("headless process should stop");
+    let _ = child
+        .0
+        .take()
+        .expect("child should be available for reaping")
+        .wait()
+        .await
+        .expect("headless process should be reaped");
 }
 
 /// `--assets` 与 `--camera` 互斥：参数错误退出码 2。
@@ -446,7 +497,7 @@ async fn headless_without_video_arguments_starts_empty_session() {
             let Some(line) = lines.next_line().await.expect("stdout should be readable") else {
                 panic!("headless exited before reporting startup");
             };
-            if line.contains("启动空会话，等待网页选择设备") {
+            if line.contains("启动空会话，等待用户连接") {
                 saw_empty_session_message = true;
             }
             if line.contains("ipkvm-headless 已启动") {

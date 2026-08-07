@@ -81,6 +81,9 @@ jobs:
           - os: ubuntu-latest
             runner_os: Linux
             python: python3
+          - os: macos-latest
+            runner_os: macOS
+            python: python3
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4

@@ -485,6 +485,8 @@ vnc_password = "filepass"
             assets_dir: None,
             camera_name: Some("OBS Virtual Camera".to_string()),
             list_cameras: false,
+            install_service: None,
+            uninstall_service: None,
             serial_path: None,
             serial_baud: None,
             bind_address: Some("10.0.0.1".to_string()),

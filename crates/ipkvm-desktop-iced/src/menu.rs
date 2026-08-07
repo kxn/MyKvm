@@ -179,7 +179,8 @@ fn save_screenshot_item<'a, R>(has_frame: bool) -> Item<'a, MenuAction, iced::Th
 where
     R: iced::advanced::Renderer + iced::advanced::text::Renderer<Font = iced::Font> + 'a,
 {
-    #[cfg(windows)]
+    // Windows/macOS 有原生保存对话框（rfd）；其余平台按不支持处理。
+    #[cfg(any(windows, target_os = "macos"))]
     {
         action_item(
             t!("edit.save_screenshot"),
@@ -187,7 +188,7 @@ where
             has_frame,
         )
     }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     {
         let _ = has_frame;
         Item::new(

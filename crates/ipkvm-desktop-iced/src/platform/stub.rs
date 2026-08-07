@@ -1,7 +1,9 @@
-//! 非 Windows 平台相对鼠标 stub。
+//! Linux/macOS 相对鼠标 stub。
 //!
-//! macOS 迁移时在此实现（winit 集成模式或 NSEvent local monitor）；当前只保证
-//! trait 形状编译通过（`cargo check --target x86_64-apple-darwin`）。
+//! 当前 Linux/macOS 均返回“未实现”错误，保证 trait 形状编译通过。
+//! macOS 迁移方向：NSEvent local monitor（`addLocalMonitorForEventsMatchingMask`，
+//! 需要 objc2 + block2 运行时注入）或 winit `DeviceEvent::MouseMotion` 集成
+//! （iced 0.14 不暴露 winit DeviceEvent，需自建事件通道）。见 issue #42 跟踪。
 
 use crate::relative::{DeltaReceiver, RelativePointerSource};
 

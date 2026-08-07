@@ -21,14 +21,12 @@ REQUIRED_PACKAGES = [
     "ipkvm-device",
     "ipkvm-headless",
     "ipkvm-headless-app",
-    "ipkvm-headless-demo",
     "ipkvm-browser-fixture",
     "ipkvm-desktop-core",
 ]
 
 REQUIRED_BINARIES = {
     "ipkvm-headless-app": "ipkvm-headless",
-    "ipkvm-headless-demo": "ipkvm-demo",
     "ipkvm-browser-fixture": "ipkvm-browser-fixture",
 }
 

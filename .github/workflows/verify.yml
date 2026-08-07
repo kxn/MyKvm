@@ -42,6 +42,21 @@ jobs:
       - run: cargo install --locked cargo-make
       - run: cargo make full
 
+  # 必需 job（macOS）：跨平台编译与测试覆盖，作 main 分支保护 required status check
+  # （issue #42）。macOS 为"摸黑"支持：无真机，CI 无头环境验证编译、全量测试与
+  # 文档门禁；桌面端 GUI 行为（rfd 对话框、窗口交互）待真机验证。
+  core-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.89
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install --locked --version 0.20.2 cargo-deny
+      - run: cargo install --locked cargo-make
+      - run: cargo make full
+
   # 必需 job：真实浏览器闭环（node 20 + Chrome）。历史上因 runner 环境
   # 不稳以 advisory 存在（continue-on-error），现已连续多轮全绿转正，
   # 失败会标红 workflow，不再被静默吞掉。
