@@ -72,14 +72,6 @@ export class StatusPanel {
         <div class="status-panel-section">
           <div class="status-panel-section-title">🖥️ ${t("statusPanel.connection")}</div>
           <div class="status-panel-row">
-            <span>${t("statusPanel.client")}</span>
-            <span id="sp-client">-</span>
-          </div>
-          <div class="status-panel-row">
-            <span>${t("statusPanel.transport")}</span>
-            <span id="sp-transport">-</span>
-          </div>
-          <div class="status-panel-row">
             <span>${t("statusPanel.connected")}</span>
             <span id="sp-connected">-</span>
           </div>
@@ -216,8 +208,6 @@ export class StatusPanel {
 
     // Connection
     const controller = status?.controller;
-    el("client").textContent = controller?.peer_addr ?? "-";
-    el("transport").textContent = controller?.transport ?? "-";
     if (controller?.connected_since_ms) {
       const minutes = Math.floor(controller.connected_since_ms / 60000);
       const seconds = Math.floor((controller.connected_since_ms % 60000) / 1000);
