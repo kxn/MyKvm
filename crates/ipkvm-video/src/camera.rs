@@ -84,8 +84,8 @@ pub struct CameraSource {
     slot: Option<SinkFrameSlot>,
     /// 兼容停止信号（control.Stop 之前让采集循环退出）。
     stop: Arc<AtomicBool>,
-    /// 采集线程句柄。
-    _handle: Option<std::thread::JoinHandle<()>>,
+    /// 采集线程句柄（Drop 时 join，同步等待 control.Stop() 完成后再释放设备）。
+    _handle: Option<std::thread::JoinHandle<Result<(), CameraSourceError>>>,
     /// 源侧采集/转换统计（采集线程写，/api/status 读）。
     stats: Arc<crate::SourceStats>,
 }
@@ -130,7 +130,10 @@ impl CameraSource {
         let device_id = device_id.to_owned();
         let device_id_for_error = device_id.clone();
         let (init_tx, init_rx) = std::sync::mpsc::sync_channel(1);
-        let _handle = std::thread::Builder::new()
+        // stop 标志在闭包外创建，clone 进采集线程；open 超时失败路径需要置位它唤醒线程退出。
+        let stop = Arc::new(AtomicBool::new(false));
+        let task_stop = Arc::clone(&stop);
+        let handle = std::thread::Builder::new()
             .name("camera-directshow".into())
             .spawn(move || -> Result<(), CameraSourceError> {
                 // DirectShow 必须 STA + 同一线程；线程结束时先 drop 所有 COM 对象
@@ -266,7 +269,8 @@ impl CameraSource {
                     let latest = Arc::new(RwLock::new(None));
                     let (sender, _receiver) = watch::channel(None);
                     let stats = crate::SourceStats::new();
-                    let stop = Arc::new(AtomicBool::new(false));
+                    // stop 由 open_impl 闭包外创建并 clone 进来（task_stop）。
+                    let stop = Arc::clone(&task_stop);
                     // 启动图（采集设备在 paused 时不出帧，必须 Run）
                     unsafe { control.Run() }.map_err(|e| {
                         CameraSourceError::Open(device_id.to_owned(), format!("run graph: {e}"))
@@ -379,17 +383,34 @@ impl CameraSource {
             .map_err(|e| {
                 CameraSourceError::Open(device_id_for_error.clone(), format!("spawn: {e}"))
             })?;
-        // open 等待初始化完成（最多 5 秒），不 join 采集循环。
+        // open 等待初始化完成（最多 5 秒），不 join 采集循环（循环会一直跑到 Drop）。
+        // 成功时把采集线程句柄塞回 CameraSource，供 Drop 同步等待 control.Stop() 完成；
+        // 失败时 join 句柄让线程干净退出（避免设备句柄在线程未结束时被丢弃）。
         match init_rx.recv_timeout(std::time::Duration::from_secs(5)) {
-            Ok(result) => result,
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(CameraSourceError::Open(
-                device_id_for_error,
-                "camera initialization timed out".to_owned(),
-            )),
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(CameraSourceError::Open(
-                device_id_for_error,
-                "camera thread exited during init".to_owned(),
-            )),
+            Ok(Ok(mut source)) => {
+                source._handle = Some(handle);
+                Ok(source)
+            }
+            Ok(Err(error)) => {
+                // 闭包内初始化失败，线程已 return；join 让它彻底退出。
+                let _ = handle.join();
+                Err(error)
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                stop.store(true, Ordering::Release);
+                let _ = handle.join();
+                Err(CameraSourceError::Open(
+                    device_id_for_error,
+                    "camera initialization timed out".to_owned(),
+                ))
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                let _ = handle.join();
+                Err(CameraSourceError::Open(
+                    device_id_for_error,
+                    "camera thread exited during init".to_owned(),
+                ))
+            }
         }
     }
 }
@@ -402,6 +423,13 @@ impl Drop for CameraSource {
         self.stop.store(true, Ordering::Release);
         if let Some(slot) = &self.slot {
             slot.stop();
+        }
+        // 同步等待采集线程退出：线程退出循环末尾会执行 control.Stop()（停止 DirectShow
+        // graph 并释放摄像头设备句柄）。join 返回即证明 graph 已停止，之后可安全重开同一
+        // 设备（#46：此前句柄被丢弃无法 join，Drop 返回后 graph 可能还在 Running、独占设备，
+        // 导致快速重开报「系统资源不足」）。采集循环有 1 秒兜底超时，正常 1-2 秒内退出。
+        if let Some(handle) = self._handle.take() {
+            let _ = handle.join();
         }
     }
 }
