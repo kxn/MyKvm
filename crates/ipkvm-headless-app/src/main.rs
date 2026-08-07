@@ -162,10 +162,12 @@ fn print_cameras() -> Result<(), String> {
     Ok(())
 }
 
-fn install_service(service_name: &str, options: &ipkvm_headless::config::Options) -> Result<(), String> {
+fn install_service(
+    service_name: &str,
+    options: &ipkvm_headless::config::Options,
+) -> Result<(), String> {
     // 获取当前可执行文件路径
-    let exe_path = std::env::current_exe()
-        .map_err(|e| format!("获取可执行文件路径失败：{e}"))?;
+    let exe_path = std::env::current_exe().map_err(|e| format!("获取可执行文件路径失败：{e}"))?;
 
     // 构建启动命令参数
     let mut args = Vec::new();
@@ -237,8 +239,9 @@ WantedBy=multi-user.target
         println!("服务文件：{service_path}");
         println!("启动命令：systemctl start {service_name}");
         println!("查看日志：journalctl -u {service_name} -f");
-
-    } else if std::path::Path::new("/sbin/openrc").exists() || std::path::Path::new("/usr/sbin/openrc").exists() {
+    } else if std::path::Path::new("/sbin/openrc").exists()
+        || std::path::Path::new("/usr/sbin/openrc").exists()
+    {
         // openrc
         // openrc 的 command 不能含空格，需要把参数放在 command_args
         let service_content = format!(
@@ -282,7 +285,6 @@ start_pre() {{
         println!("服务文件：{service_path}");
         println!("启动命令：rc-service {service_name} start");
         println!("查看日志：tail -f /var/log/messages");
-
     } else {
         return Err("未检测到支持的 init 系统（需要 systemd 或 openrc）".to_string());
     }
@@ -304,8 +306,7 @@ fn uninstall_service(service_name: &str) -> Result<(), String> {
             .ok();
 
         let service_path = format!("/etc/systemd/system/{}.service", service_name);
-        std::fs::remove_file(&service_path)
-            .map_err(|e| format!("删除服务文件失败：{e}"))?;
+        std::fs::remove_file(&service_path).map_err(|e| format!("删除服务文件失败：{e}"))?;
 
         std::process::Command::new("systemctl")
             .args(["daemon-reload"])
@@ -313,8 +314,9 @@ fn uninstall_service(service_name: &str) -> Result<(), String> {
             .map_err(|e| format!("systemctl daemon-reload 失败：{e}"))?;
 
         println!("已卸载 systemd 服务：{service_name}");
-
-    } else if std::path::Path::new("/sbin/openrc").exists() || std::path::Path::new("/usr/sbin/openrc").exists() {
+    } else if std::path::Path::new("/sbin/openrc").exists()
+        || std::path::Path::new("/usr/sbin/openrc").exists()
+    {
         // openrc
         std::process::Command::new("rc-service")
             .args([service_name, "stop"])
@@ -327,11 +329,9 @@ fn uninstall_service(service_name: &str) -> Result<(), String> {
             .ok();
 
         let service_path = format!("/etc/init.d/{}", service_name);
-        std::fs::remove_file(&service_path)
-            .map_err(|e| format!("删除服务文件失败：{e}"))?;
+        std::fs::remove_file(&service_path).map_err(|e| format!("删除服务文件失败：{e}"))?;
 
         println!("已卸载 openrc 服务：{service_name}");
-
     } else {
         return Err("未检测到支持的 init 系统（需要 systemd 或 openrc）".to_string());
     }

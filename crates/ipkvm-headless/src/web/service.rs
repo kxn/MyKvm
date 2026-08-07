@@ -495,7 +495,10 @@ async fn api_status<I: InputSink + Clone + Send + 'static>(
 
     // 浏览器断开超时：如果会话运行中但没有活跃连接，设置 1 分钟超时。
     // 如果 1 分钟内有新连接，取消超时；超时后停止 session。
-    if !controller.active && session_state == "running" && !state.manual_stop.load(Ordering::Relaxed) {
+    if !controller.active
+        && session_state == "running"
+        && !state.manual_stop.load(Ordering::Relaxed)
+    {
         let mut deadline = state.disconnect_deadline.lock().await;
         if deadline.is_none() {
             *deadline = Some(std::time::Instant::now() + std::time::Duration::from_secs(60));
@@ -517,7 +520,9 @@ async fn api_status<I: InputSink + Clone + Send + 'static>(
                     let _ = manager.stop();
                     manager.wait_stopped().await;
                     let _ = manager.stop_and_destroy().await;
-                    state.frame_source.set_current(Arc::new(EmptyFrameSource::new()));
+                    state
+                        .frame_source
+                        .set_current(Arc::new(EmptyFrameSource::new()));
                 }
                 state.disconnect_deadline.lock().await.take();
             }
