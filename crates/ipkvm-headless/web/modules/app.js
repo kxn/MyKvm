@@ -295,6 +295,8 @@ export function initApp(root) {
       if (wasVideo && reason === REASON.MANUAL_STOP) {
         el.connectionMessage.textContent = `${t("status.manualStop")}（${t("status.synced")}）`;
       }
+      // 切换到连接页时自动刷新设备列表
+      connection.refreshAll();
     }
   };
 
