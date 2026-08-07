@@ -752,10 +752,70 @@ struct DeviceDto {
     kind: &'static str,
 }
 
+use std::sync::Mutex;
+
+/// CPU 使用率采样器：记录上一次的 ticks，计算增量百分比。
+struct CpuSampler {
+    last_proc_ticks: u64,
+    last_total_ticks: u64,
+}
+
+impl CpuSampler {
+    fn new() -> Self {
+        let (proc, total) = read_cpu_ticks();
+        Self {
+            last_proc_ticks: proc,
+            last_total_ticks: total,
+        }
+    }
+
+    fn sample(&mut self) -> f64 {
+        let (proc, total) = read_cpu_ticks();
+        let proc_delta = proc.saturating_sub(self.last_proc_ticks);
+        let total_delta = total.saturating_sub(self.last_total_ticks);
+        self.last_proc_ticks = proc;
+        self.last_total_ticks = total;
+        if total_delta == 0 {
+            0.0
+        } else {
+            (proc_delta as f64 / total_delta as f64) * 100.0
+        }
+    }
+}
+
+fn read_cpu_ticks() -> (u64, u64) {
+    let proc_ticks = std::fs::read_to_string("/proc/self/stat")
+        .ok()
+        .and_then(|s| {
+            let fields: Vec<&str> = s.split_whitespace().collect();
+            let utime: u64 = fields.get(13)?.parse().ok()?;
+            let stime: u64 = fields.get(14)?.parse().ok()?;
+            Some(utime + stime)
+        })
+        .unwrap_or(0);
+
+    let total_ticks = std::fs::read_to_string("/proc/stat")
+        .ok()
+        .and_then(|s| {
+            let line = s.lines().next()?;
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            Some(fields[1..].iter().filter_map(|v| v.parse::<u64>().ok()).sum())
+        })
+        .unwrap_or(0);
+
+    (proc_ticks, total_ticks)
+}
+
+static CPU_SAMPLER: std::sync::OnceLock<Mutex<CpuSampler>> = std::sync::OnceLock::new();
+
 async fn api_system() -> Response {
-    // 读取系统信息：内存和 CPU 负载
     let mem_info = read_mem_info();
     let load_avg = read_load_avg();
+    let cpu_percent = CPU_SAMPLER
+        .get_or_init(|| Mutex::new(CpuSampler::new()))
+        .lock()
+        .map(|mut s| s.sample())
+        .unwrap_or(0.0);
 
     #[derive(serde::Serialize)]
     struct SystemInfo {
@@ -765,6 +825,7 @@ async fn api_system() -> Response {
         load_1m: f64,
         load_5m: f64,
         load_15m: f64,
+        cpu_percent: f64,
     }
 
     let info = SystemInfo {
@@ -774,6 +835,7 @@ async fn api_system() -> Response {
         load_1m: load_avg.0,
         load_5m: load_avg.1,
         load_15m: load_avg.2,
+        cpu_percent,
     };
 
     match serde_json::to_vec(&info) {

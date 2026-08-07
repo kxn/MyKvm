@@ -110,8 +110,8 @@ export class StatusPanel {
         <div class="status-panel-section">
           <div class="status-panel-section-title">📊 ${t("statusPanel.system")}</div>
           <div class="status-panel-row">
-            <span>${t("statusPanel.cpuLoad")}</span>
-            <span id="sp-cpu-load">-</span>
+            <span>${t("statusPanel.cpu")}</span>
+            <span id="sp-cpu">-</span>
           </div>
           <div class="status-panel-row">
             <span>${t("statusPanel.memory")}</span>
@@ -255,8 +255,8 @@ export class StatusPanel {
 
     // System
     if (system) {
-      const load = system.load_1m ?? 0;
-      el("cpu-load").textContent = `${load.toFixed(2)} (${(load * 100 / 4).toFixed(0)}%)`;
+      const cpuPercent = system.cpu_percent ?? 0;
+      el("cpu").textContent = `${cpuPercent.toFixed(1)}%`;
       const memUsedMB = system.mem_used_kb ? (system.mem_used_kb / 1024).toFixed(0) : "-";
       const memTotalMB = system.mem_total_kb ? (system.mem_total_kb / 1024).toFixed(0) : "-";
       el("memory").textContent = `${memUsedMB} MB / ${memTotalMB} MB`;
