@@ -13,7 +13,7 @@ use tokio::{
 
 use super::{
     RfbClientId, RfbConnectionSettings, RfbDisconnectReason, RfbFrameError, RfbServerEvent,
-    RfbTransport, RfbTransportError, RfbTransportRead, frame::frame_view,
+    RfbTransport, RfbTransportError, RfbTransportRead,
     pending::PendingFramebufferRequest,
 };
 
@@ -371,36 +371,16 @@ async fn queue_and_write_frame<T: RfbTransport>(
         return Ok(outcome);
     }
 
-    // RGB 直接编码：YUYV→RGB 路径，省掉 alpha 通道（JPEG 不支持透明）。
-    if frame.pixel_format == PixelFormat::Rgb888 {
-        let width = u16::try_from(frame.width)
-            .map_err(|_| RfbConnectionError::Frame(RfbFrameError::WidthOutOfRange(frame.width)))?;
-        let height = u16::try_from(frame.height).map_err(|_| {
-            RfbConnectionError::Frame(RfbFrameError::HeightOutOfRange(frame.height))
-        })?;
-        let size = ipkvm_rfb::RfbSize::new(width, height).map_err(RfbFrameError::from)?;
-        let rgb_frame = ipkvm_rfb::RgbFrameView::new(size, frame.stride as usize, &frame.data)
-            .map_err(RfbFrameError::from)?;
+    // RGB 编码：统一路径。
+    let width = u16::try_from(frame.width)
+        .map_err(|_| RfbConnectionError::Frame(RfbFrameError::WidthOutOfRange(frame.width)))?;
+    let height = u16::try_from(frame.height).map_err(|_| {
+        RfbConnectionError::Frame(RfbFrameError::HeightOutOfRange(frame.height))
+    })?;
+    let size = ipkvm_rfb::RfbSize::new(width, height).map_err(RfbFrameError::from)?;
+    let rgb_frame = ipkvm_rfb::RgbFrameView::new(size, frame.stride as usize, &frame.data)
+        .map_err(RfbFrameError::from)?;
 
-        let dirty_rects = frame.dirty_rects.as_deref();
-        let dirty_rfb: Option<Vec<ipkvm_rfb::RfbRectangle>> = dirty_rects.map(|rects| {
-            rects
-                .iter()
-                .map(|r| ipkvm_rfb::RfbRectangle {
-                    x: r.x as u16,
-                    y: r.y as u16,
-                    width: r.width as u16,
-                    height: r.height as u16,
-                })
-                .collect()
-        });
-        let outcome =
-            core.queue_framebuffer_update_rgb(rgb_frame, request, dirty_rfb.as_deref())?;
-        write_core_output(transport, core).await?;
-        return Ok(outcome);
-    }
-
-    // BGRA 路径：传统方式。
     let dirty_rects = frame.dirty_rects.as_deref();
     let dirty_rfb: Option<Vec<ipkvm_rfb::RfbRectangle>> = dirty_rects.map(|rects| {
         rects
@@ -414,7 +394,7 @@ async fn queue_and_write_frame<T: RfbTransport>(
             .collect()
     });
     let outcome =
-        core.queue_framebuffer_update(frame_view(frame)?, request, dirty_rfb.as_deref())?;
+        core.queue_framebuffer_update_rgb(rgb_frame, request, dirty_rfb.as_deref())?;
     write_core_output(transport, core).await?;
     Ok(outcome)
 }
@@ -601,7 +581,7 @@ mod tests {
         let sent = Arc::clone(&transport.sent);
         let closed = Arc::clone(&transport.closed);
         let frame_source = MockFrameSource::new();
-        frame_source.publish_frame(shared_bgra_frame(1, 1, 1, &[0; 4]));
+        frame_source.publish_frame(shared_bgra_frame(1, 1, 1, &[0; 3]));
         let (event_tx, _event_rx) = mpsc::channel(1);
         let (_shutdown_tx, shutdown_rx) = watch::channel(false);
         let end = run_connection(
@@ -662,8 +642,8 @@ mod tests {
             MonotonicTimestamp::from_nanos(seq),
             width,
             height,
-            width * 4,
-            PixelFormat::Bgra8888,
+            width * 3,
+            PixelFormat::Rgb888,
             Arc::from(data.to_vec().into_boxed_slice()),
         ))
     }
@@ -879,7 +859,7 @@ mod tests {
     #[tokio::test]
     async fn fragmented_handshake_emits_connected_event() {
         let frame_source = MockFrameSource::new();
-        frame_source.publish_frame(shared_bgra_frame(1, 2, 1, &[1, 2, 3, 0, 4, 5, 6, 0]));
+        frame_source.publish_frame(shared_bgra_frame(1, 2, 1, &[1, 2, 3, 4, 5, 6]));
         let (server_stream, mut client_stream, peer_addr) = tcp_pair().await;
         let (event_tx, mut event_rx) = mpsc::channel(8);
         let (_shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -914,7 +894,7 @@ mod tests {
     #[tokio::test]
     async fn pipelined_input_events_preserve_order() {
         let frame_source = MockFrameSource::new();
-        frame_source.publish_frame(shared_bgra_frame(1, 2, 1, &[0; 8]));
+        frame_source.publish_frame(shared_bgra_frame(1, 2, 1, &[0; 6]));
         let (server_stream, mut client_stream, peer_addr) = tcp_pair().await;
         let (event_tx, mut event_rx) = mpsc::channel(8);
         let (_shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -984,7 +964,7 @@ mod tests {
     #[tokio::test]
     async fn relative_pointer_message_emits_relative_pointer_event() {
         let frame_source = MockFrameSource::new();
-        frame_source.publish_frame(shared_bgra_frame(1, 2, 1, &[0; 8]));
+        frame_source.publish_frame(shared_bgra_frame(1, 2, 1, &[0; 6]));
         let (task, mut client, mut events, _shutdown) = completed_connection(
             RfbClientId(30),
             &frame_source,
@@ -1015,7 +995,7 @@ mod tests {
     #[tokio::test]
     async fn protocol_error_follows_prior_valid_event() {
         let frame_source = MockFrameSource::new();
-        frame_source.publish_frame(shared_bgra_frame(1, 1, 1, &[0; 4]));
+        frame_source.publish_frame(shared_bgra_frame(1, 1, 1, &[0; 3]));
         let (server_stream, mut client_stream, peer_addr) = tcp_pair().await;
         let (event_tx, mut event_rx) = mpsc::channel(8);
         let (_shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -1055,7 +1035,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn handshake_timeout_uses_paused_clock() {
         let frame_source = MockFrameSource::new();
-        frame_source.publish_frame(shared_bgra_frame(1, 1, 1, &[0; 4]));
+        frame_source.publish_frame(shared_bgra_frame(1, 1, 1, &[0; 3]));
         let (server_stream, mut client_stream, peer_addr) = tcp_pair().await;
         let (event_tx, _event_rx) = mpsc::channel(8);
         let (_shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -1084,7 +1064,7 @@ mod tests {
     #[tokio::test]
     async fn shutdown_ends_handshake() {
         let frame_source = MockFrameSource::new();
-        frame_source.publish_frame(shared_bgra_frame(1, 1, 1, &[0; 4]));
+        frame_source.publish_frame(shared_bgra_frame(1, 1, 1, &[0; 3]));
         let (server_stream, mut client_stream, peer_addr) = tcp_pair().await;
         let (event_tx, _event_rx) = mpsc::channel(8);
         let (shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -1110,7 +1090,7 @@ mod tests {
     #[tokio::test]
     async fn non_incremental_request_resends_same_frame() {
         let frame_source = MockFrameSource::new();
-        frame_source.publish_frame(shared_bgra_frame(1, 2, 1, &[1, 2, 3, 9, 4, 5, 6, 9]));
+        frame_source.publish_frame(shared_bgra_frame(1, 2, 1, &[1, 2, 3, 4, 5, 6]));
         let (task, mut client, _events, _shutdown) = completed_connection(
             RfbClientId(10),
             &frame_source,
@@ -1124,7 +1104,7 @@ mod tests {
         let second = read_update(&mut client, 8).await;
 
         assert_eq!(first.encoding, 0);
-        assert_eq!(first.pixels, [1, 2, 3, 0, 4, 5, 6, 0]);
+        assert_eq!(first.pixels, [3, 2, 1, 0, 6, 5, 4, 0]);
         assert_eq!(second, first);
         drop(client);
         assert!(matches!(task.await.unwrap(), ConnectionEnd::ClientClosed));
@@ -1133,7 +1113,7 @@ mod tests {
     #[tokio::test]
     async fn incremental_request_waits_for_new_sequence() {
         let frame_source = MockFrameSource::new();
-        frame_source.publish_frame(shared_bgra_frame(1, 2, 1, &[0; 8]));
+        frame_source.publish_frame(shared_bgra_frame(1, 2, 1, &[0; 6]));
         let (task, mut client, mut events, _shutdown) = completed_connection(
             RfbClientId(11),
             &frame_source,
@@ -1156,9 +1136,9 @@ mod tests {
             Err(error) if error.kind() == io::ErrorKind::WouldBlock
         ));
 
-        frame_source.publish_frame(shared_bgra_frame(2, 2, 1, &[10, 20, 30, 9, 40, 50, 60, 9]));
+        frame_source.publish_frame(shared_bgra_frame(2, 2, 1, &[10, 20, 30, 40, 50, 60]));
         let update = read_update(&mut client, 8).await;
-        assert_eq!(update.pixels, [10, 20, 30, 0, 40, 50, 60, 0]);
+        assert_eq!(update.pixels, [30, 20, 10, 0, 60, 50, 40, 0]);
 
         drop(client);
         assert!(matches!(task.await.unwrap(), ConnectionEnd::ClientClosed));
@@ -1167,7 +1147,7 @@ mod tests {
     #[tokio::test]
     async fn outstanding_incremental_requests_coalesce() {
         let frame_source = MockFrameSource::new();
-        frame_source.publish_frame(shared_bgra_frame(1, 2, 1, &[0; 8]));
+        frame_source.publish_frame(shared_bgra_frame(1, 2, 1, &[0; 6]));
         let (task, mut client, mut events, _shutdown) = completed_connection(
             RfbClientId(12),
             &frame_source,
@@ -1185,14 +1165,14 @@ mod tests {
             events.recv().await,
             Some(RfbServerEvent::Key { keysym: 0x42, .. })
         ));
-        frame_source.publish_frame(shared_bgra_frame(2, 2, 1, &[1, 2, 3, 0, 4, 5, 6, 0]));
+        frame_source.publish_frame(shared_bgra_frame(2, 2, 1, &[1, 2, 3, 4, 5, 6]));
 
         let update = read_update(&mut client, 8).await;
         assert_eq!(
             (update.x, update.y, update.width, update.height),
             (0, 0, 2, 1)
         );
-        assert_eq!(update.pixels, [1, 2, 3, 0, 4, 5, 6, 0]);
+        assert_eq!(update.pixels, [3, 2, 1, 0, 6, 5, 4, 0]);
 
         drop(client);
         assert!(matches!(task.await.unwrap(), ConnectionEnd::ClientClosed));
@@ -1201,7 +1181,7 @@ mod tests {
     #[tokio::test]
     async fn desktop_size_is_sent_before_new_pixels() {
         let frame_source = MockFrameSource::new();
-        frame_source.publish_frame(shared_bgra_frame(1, 2, 1, &[0; 8]));
+        frame_source.publish_frame(shared_bgra_frame(1, 2, 1, &[0; 6]));
         let (task, mut client, _events, _shutdown) = completed_connection(
             RfbClientId(13),
             &frame_source,
@@ -1212,7 +1192,7 @@ mod tests {
         send_update_request(&mut client, false, 0, 0, 2, 1).await;
         read_update(&mut client, 8).await;
 
-        frame_source.publish_frame(shared_bgra_frame(2, 3, 1, &[1; 12]));
+        frame_source.publish_frame(shared_bgra_frame(2, 3, 1, &[1; 9]));
         send_update_request(&mut client, true, 0, 0, 2, 1).await;
         let resize = read_update(&mut client, 0).await;
         assert_eq!(
@@ -1237,7 +1217,7 @@ mod tests {
     #[tokio::test]
     async fn pointer_events_keep_the_coordinate_size_from_their_input_epoch() {
         let frame_source = MockFrameSource::new();
-        frame_source.publish_frame(shared_bgra_frame(1, 2, 1, &[0; 8]));
+        frame_source.publish_frame(shared_bgra_frame(1, 2, 1, &[0; 6]));
         let (task, mut client, mut events, _shutdown) = completed_connection(
             RfbClientId(17),
             &frame_source,
@@ -1245,7 +1225,7 @@ mod tests {
         )
         .await;
         send_set_encodings(&mut client, &[-223]).await;
-        frame_source.publish_frame(shared_bgra_frame(2, 3, 1, &[1; 12]));
+        frame_source.publish_frame(shared_bgra_frame(2, 3, 1, &[1; 9]));
 
         let mut messages = vec![3, 1, 0, 0, 0, 0, 0, 2, 0, 1];
         messages.extend_from_slice(&[5, 0, 0, 1, 0, 0]);
@@ -1283,7 +1263,7 @@ mod tests {
     #[tokio::test]
     async fn resize_without_negotiation_ends_connection() {
         let frame_source = MockFrameSource::new();
-        frame_source.publish_frame(shared_bgra_frame(1, 2, 1, &[0; 8]));
+        frame_source.publish_frame(shared_bgra_frame(1, 2, 1, &[0; 6]));
         let (task, mut client, _events, _shutdown) = completed_connection(
             RfbClientId(14),
             &frame_source,
@@ -1293,7 +1273,7 @@ mod tests {
         send_update_request(&mut client, false, 0, 0, 2, 1).await;
         read_update(&mut client, 8).await;
 
-        frame_source.publish_frame(shared_bgra_frame(2, 3, 1, &[0; 12]));
+        frame_source.publish_frame(shared_bgra_frame(2, 3, 1, &[0; 9]));
         send_update_request(&mut client, true, 0, 0, 2, 1).await;
 
         assert!(matches!(
@@ -1307,14 +1287,14 @@ mod tests {
     #[tokio::test]
     async fn regressed_frame_sequence_ends_connection() {
         let frame_source = MockFrameSource::new();
-        frame_source.publish_frame(shared_bgra_frame(2, 1, 1, &[0; 4]));
+        frame_source.publish_frame(shared_bgra_frame(2, 1, 1, &[0; 6]));
         let (task, mut client, _events, _shutdown) = completed_connection(
             RfbClientId(15),
             &frame_source,
             RfbConnectionSettings::default(),
         )
         .await;
-        frame_source.publish_frame(shared_bgra_frame(1, 1, 1, &[0; 4]));
+        frame_source.publish_frame(shared_bgra_frame(1, 1, 1, &[0; 3]));
         send_update_request(&mut client, false, 0, 0, 1, 1).await;
 
         assert!(matches!(
@@ -1331,7 +1311,7 @@ mod tests {
     #[tokio::test]
     async fn framebuffer_limit_never_writes_partial_update() {
         let frame_source = MockFrameSource::new();
-        frame_source.publish_frame(shared_bgra_frame(1, 1, 1, &[0; 4]));
+        frame_source.publish_frame(shared_bgra_frame(1, 1, 1, &[0; 3]));
         let mut config = RfbConnectionSettings::default();
         config.protocol_limits.max_framebuffer_bytes = 4;
         config.protocol_limits.max_queued_output_bytes = 128;
@@ -1340,13 +1320,13 @@ mod tests {
         send_update_request(&mut client, false, 0, 0, 1, 1).await;
         read_update(&mut client, 4).await;
 
-        frame_source.publish_frame(shared_bgra_frame(2, 2, 1, &[0; 8]));
+        frame_source.publish_frame(shared_bgra_frame(2, 2, 1, &[0; 6]));
         send_update_request(&mut client, false, 0, 0, 2, 1).await;
         assert!(matches!(
             task.await.unwrap(),
             ConnectionEnd::Failed(RfbConnectionError::Encode(
                 RfbEncodeError::FramebufferTooLarge {
-                    actual: 8,
+                    actual: 6,
                     maximum: 4,
                 }
             ))
@@ -1359,7 +1339,7 @@ mod tests {
     #[tokio::test]
     async fn vnc_password_handshake_emits_connected_event() {
         let frame_source = MockFrameSource::new();
-        frame_source.publish_frame(shared_bgra_frame(1, 2, 1, &[1, 2, 3, 0, 4, 5, 6, 0]));
+        frame_source.publish_frame(shared_bgra_frame(1, 2, 1, &[1, 2, 3, 4, 5, 6]));
         let (server_stream, mut client_stream, peer_addr) = tcp_pair().await;
         let (event_tx, mut event_rx) = mpsc::channel(8);
         let (_shutdown_tx, shutdown_rx) = watch::channel(false);
@@ -1400,7 +1380,7 @@ mod tests {
     #[tokio::test]
     async fn wrong_vnc_password_ends_with_authentication_failed() {
         let frame_source = MockFrameSource::new();
-        frame_source.publish_frame(shared_bgra_frame(1, 1, 1, &[0; 4]));
+        frame_source.publish_frame(shared_bgra_frame(1, 1, 1, &[0; 3]));
         let (server_stream, mut client_stream, peer_addr) = tcp_pair().await;
         let (event_tx, _event_rx) = mpsc::channel(8);
         let (_shutdown_tx, shutdown_rx) = watch::channel(false);

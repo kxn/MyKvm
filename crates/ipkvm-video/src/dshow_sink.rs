@@ -892,12 +892,12 @@ pub fn convert_to_bgra_into(
     match mt.format {
         NegotiatedFormat::Mjpeg => {
             // MJPEG 直通：原始 JPEG 字节不解码，直接拷出（供 F 透传）。
-            // 下游需按 PixelFormat::Mjpeg 处理，不走 BGRA 路径。
+            // 下游需按 PixelFormat::Mjpeg 处理，不走 RGB 路径。
             out.clear();
             out.extend_from_slice(src);
         }
         _ => {
-            let out_size = w * h * 4;
+            let out_size = w * h * 3;
             out.clear();
             out.resize(out_size, 0);
             match mt.format {
@@ -905,25 +905,25 @@ pub fn convert_to_bgra_into(
                     if src.len() < w * h * 3 / 2 {
                         return None;
                     }
-                    nv12_to_bgra_inner(src, w, h, true, out);
+                    nv12_to_rgb_inner(src, w, h, true, out);
                 }
                 NegotiatedFormat::Yuy2 => {
                     if src.len() < w * h * 2 {
                         return None;
                     }
-                    yuy2_to_bgra_inner(src, w, h, true, out);
+                    yuy2_to_rgb_inner(src, w, h, true, out);
                 }
                 NegotiatedFormat::Rgb24 => {
                     if src.len() < w * h * 3 {
                         return None;
                     }
-                    rgb24_to_bgra_inner(src, w, h, mt.top_down, out);
+                    rgb24_to_rgb_inner(src, w, h, mt.top_down, out);
                 }
                 NegotiatedFormat::Argb32 => {
                     if src.len() < w * h * 4 {
                         return None;
                     }
-                    copy_bgra_with_flip(src, w, h, mt.top_down, out);
+                    argb32_to_rgb_inner(src, w, h, mt.top_down, out);
                 }
                 NegotiatedFormat::Mjpeg => unreachable!(),
             }
@@ -1029,6 +1029,107 @@ fn copy_bgra_with_flip(src: &[u8], w: usize, h: usize, top_down: bool, out: &mut
             let dst_row = h - 1 - row;
             out[dst_row * stride..dst_row * stride + stride]
                 .copy_from_slice(&src[row * stride..row * stride + stride]);
+        }
+    }
+}
+
+/// NV12 -> RGB888（直接输出 RGB，无 alpha 通道）。
+fn nv12_to_rgb_inner(src: &[u8], w: usize, h: usize, top_down: bool, out: &mut [u8]) {
+    let y_plane = &src[..w * h];
+    let uv_plane = &src[w * h..];
+    for row in 0..h {
+        let dst_row = if top_down { row } else { h - 1 - row };
+        for x in 0..w {
+            let y_val = y_plane[row * w + x] as i32;
+            let uv_index = (row / 2) * w + (x / 2) * 2;
+            let u = uv_plane[uv_index] as i32;
+            let v = uv_plane[uv_index + 1] as i32;
+            let (d, e) = (u - 128, v - 128);
+            let c = y_val - 16;
+            let r = ((298 * c + 409 * e + 128) >> 8).clamp(0, 255) as u8;
+            let g = ((298 * c - 100 * d - 208 * e + 128) >> 8).clamp(0, 255) as u8;
+            let b = ((298 * c + 516 * d + 128) >> 8).clamp(0, 255) as u8;
+            let o = dst_row * w * 3 + x * 3;
+            out[o..o + 3].copy_from_slice(&[r, g, b]);
+        }
+    }
+}
+
+/// YUY2 -> RGB888。
+fn yuy2_to_rgb_inner(src: &[u8], w: usize, h: usize, top_down: bool, out: &mut [u8]) {
+    let stride = w * 2;
+    for row in 0..h {
+        let dst_row = if top_down { row } else { h - 1 - row };
+        let line = &src[row * stride..][..stride];
+        let mut x = 0;
+        let mut i = 0;
+        while x + 1 < w {
+            let y0 = line[i] as i32;
+            let u = line[i + 1] as i32;
+            let y1 = line[i + 2] as i32;
+            let v = line[i + 3] as i32;
+            i += 4;
+            let o0 = dst_row * w * 3 + x * 3;
+            let o1 = o0 + 3;
+            let (d, e) = (u - 128, v - 128);
+            let c0 = y0 - 16;
+            let c1 = y1 - 16;
+            let r0 = ((298 * c0 + 409 * e + 128) >> 8).clamp(0, 255) as u8;
+            let g0 = ((298 * c0 - 100 * d - 208 * e + 128) >> 8).clamp(0, 255) as u8;
+            let b0 = ((298 * c0 + 516 * d + 128) >> 8).clamp(0, 255) as u8;
+            let r1 = ((298 * c1 + 409 * e + 128) >> 8).clamp(0, 255) as u8;
+            let g1 = ((298 * c1 - 100 * d - 208 * e + 128) >> 8).clamp(0, 255) as u8;
+            let b1 = ((298 * c1 + 516 * d + 128) >> 8).clamp(0, 255) as u8;
+            out[o0..o0 + 3].copy_from_slice(&[r0, g0, b0]);
+            out[o1..o1 + 3].copy_from_slice(&[r1, g1, b1]);
+            x += 2;
+        }
+        // 奇数宽度：最后一列复用前一对 UV。
+        if x < w {
+            let y0 = line[i.min(stride - 1)] as i32;
+            let u = line[i.saturating_sub(3).min(stride - 3)] as i32;
+            let v = line[i.saturating_sub(1).min(stride - 1)] as i32;
+            let (d, e) = (u - 128, v - 128);
+            let c0 = y0 - 16;
+            let r0 = ((298 * c0 + 409 * e + 128) >> 8).clamp(0, 255) as u8;
+            let g0 = ((298 * c0 - 100 * d - 208 * e + 128) >> 8).clamp(0, 255) as u8;
+            let b0 = ((298 * c0 + 516 * d + 128) >> 8).clamp(0, 255) as u8;
+            let o0 = dst_row * w * 3 + x * 3;
+            out[o0..o0 + 3].copy_from_slice(&[r0, g0, b0]);
+        }
+    }
+}
+
+/// RGB24 (BGR 内存序) -> RGB888，交换 R 和 B。
+fn rgb24_to_rgb_inner(src: &[u8], w: usize, h: usize, top_down: bool, out: &mut [u8]) {
+    let src_stride = w * 3;
+    for row in 0..h {
+        let dst_row = if top_down { row } else { h - 1 - row };
+        let line = &src[row * src_stride..][..src_stride];
+        for x in 0..w {
+            let si = x * 3;
+            let di = dst_row * w * 3 + x * 3;
+            // DirectShow RGB24 内存序为 B,G,R；输出为 R,G,B。
+            out[di] = line[si + 2];     // R
+            out[di + 1] = line[si + 1]; // G
+            out[di + 2] = line[si];     // B
+        }
+    }
+}
+
+/// ARGB32 -> RGB888，丢弃 alpha，交换 R 和 B。
+fn argb32_to_rgb_inner(src: &[u8], w: usize, h: usize, top_down: bool, out: &mut [u8]) {
+    let src_stride = w * 4;
+    for row in 0..h {
+        let dst_row = if top_down { row } else { h - 1 - row };
+        let line = &src[row * src_stride..][..src_stride];
+        for x in 0..w {
+            let si = x * 4;
+            let di = dst_row * w * 3 + x * 3;
+            // ARGB/BGRA 内存序：B,G,R,A；输出为 R,G,B。
+            out[di] = line[si + 2];     // R
+            out[di + 1] = line[si + 1]; // G
+            out[di + 2] = line[si];     // B
         }
     }
 }

@@ -2,8 +2,9 @@ use crate::protocol::client::{ClientMessage, ClientMessageDecoder};
 use crate::protocol::server::{
     AUTH_FAILED_REASON, ENCODING_TIGHT, NONE_SECURITY_TYPES, PROTOCOL_VERSION,
     SECURITY_RESULT_FAILED, SECURITY_RESULT_OK, VNC_SECURITY_TYPES, checked_output_len,
-    encode_desktop_size_update, encode_empty_update, encode_raw_update_multi, encode_server_init,
-    encode_tight_jpeg_update, encode_tight_jpeg_update_rgb, encode_tight_mjpeg_passthrough,
+    encode_desktop_size_update, encode_empty_update, encode_raw_update_multi,
+    encode_raw_update_rgb, encode_server_init, encode_tight_jpeg_update,
+    encode_tight_jpeg_update_rgb, encode_tight_mjpeg_passthrough,
 };
 use crate::security::{RfbSecurity, constant_time_eq, vnc_expected_response};
 use crate::{
@@ -432,6 +433,16 @@ impl RfbConnectionCore {
         if self.state != RfbConnectionState::Normal {
             return Err(RfbEncodeError::HandshakeNotComplete);
         }
+        let rgb_byte_span = usize::from(frame.size().width())
+            .checked_mul(usize::from(frame.size().height()))
+            .and_then(|px| px.checked_mul(3))
+            .ok_or(RfbEncodeError::LengthOverflow)?;
+        if rgb_byte_span > self.config.limits.max_framebuffer_bytes {
+            return Err(RfbEncodeError::FramebufferTooLarge {
+                actual: rgb_byte_span,
+                maximum: self.config.limits.max_framebuffer_bytes,
+            });
+        }
         if frame.size() != self.announced_size {
             if !self.supports_desktop_size() {
                 return Err(RfbEncodeError::DesktopSizeNotNegotiated {
@@ -498,9 +509,7 @@ impl RfbConnectionCore {
         let written = if use_tight {
             encode_tight_jpeg_update_rgb(frame, &rects, self.config.jpeg_quality, &mut self.output)?
         } else {
-            // Raw 编码暂不支持 RGB，回退到空更新
-            self.queue_output(encode_empty_update())?;
-            0
+            encode_raw_update_rgb(frame, &rects, self.pixel_format, &mut self.output)?
         };
         self.encode_stats.record(encode_start.elapsed(), written);
         let outcome = if use_tight {

@@ -1,5 +1,4 @@
 use std::{
-    borrow::Cow,
     net::SocketAddr,
     sync::{
         Arc,
@@ -23,7 +22,7 @@ use ipkvm_core::{InputSink, MouseMode, MouseProfile};
 use ipkvm_device::{DeviceInventoryProvider, SerialDevice, VideoDevice};
 use ipkvm_session::console_session::InputOfflineInfo;
 use ipkvm_session::session_manager::{SessionManager, SessionState};
-use ipkvm_video::{FrameSource, PixelFormat, VideoFrame, VideoSourceKind};
+use ipkvm_video::{FrameSource, PixelFormat, VideoSourceKind};
 use serde::Deserialize;
 use thiserror::Error;
 use tokio::{
@@ -709,7 +708,10 @@ async fn api_screenshot<I: InputSink + Clone + Send + 'static>(
             .expect("screenshot response headers are valid");
     }
 
-    // RGB 或 BGRA：编码为 JPEG。
+    // RGB：编码为 JPEG。
+    if frame.pixel_format != PixelFormat::Rgb888 {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
     let Ok(width) = u16::try_from(frame.width) else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
@@ -718,31 +720,11 @@ async fn api_screenshot<I: InputSink + Clone + Send + 'static>(
     };
 
     let mut jpeg = Vec::new();
-    match frame.pixel_format {
-        PixelFormat::Rgb888 => {
-            // RGB 直接编码为 JPEG。
-            if jpeg_encoder::Encoder::new(&mut jpeg, JPEG_QUALITY)
-                .encode(&frame.data, width, height, jpeg_encoder::ColorType::Rgb)
-                .is_err()
-            {
-                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-            }
-        }
-        PixelFormat::Bgra8888 => {
-            // BGRA 编码为 JPEG。
-            let Some(bgra) = packed_bgra(&frame) else {
-                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-            };
-            if jpeg_encoder::Encoder::new(&mut jpeg, JPEG_QUALITY)
-                .encode(&bgra, width, height, jpeg_encoder::ColorType::Bgra)
-                .is_err()
-            {
-                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-            }
-        }
-        _ => {
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        }
+    if jpeg_encoder::Encoder::new(&mut jpeg, JPEG_QUALITY)
+        .encode(&frame.data, width, height, jpeg_encoder::ColorType::Rgb)
+        .is_err()
+    {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
     Response::builder()
         .status(StatusCode::OK)
@@ -754,26 +736,6 @@ async fn api_screenshot<I: InputSink + Clone + Send + 'static>(
 
 /// 把帧数据整理成 jpeg-encoder 需要的紧凑行布局（每行 width*4 字节）。
 ///
-/// jpeg-encoder 按连续行读取像素，不感知 `VideoFrame.stride`；当前各帧源
-/// 都产生紧凑帧（stride == width*4），这里对带行填充的帧做防御性重排。
-fn packed_bgra(frame: &VideoFrame) -> Option<Cow<'_, [u8]>> {
-    let width = frame.width as usize;
-    let row_bytes = width * 4;
-    if frame.stride as usize == row_bytes {
-        return Some(Cow::Borrowed(&frame.data));
-    }
-    let stride = frame.stride as usize;
-    if frame.data.len() < stride * frame.height as usize {
-        return None;
-    }
-    let mut packed = Vec::with_capacity(row_bytes * frame.height as usize);
-    for y in 0..frame.height as usize {
-        let start = y * stride;
-        packed.extend_from_slice(frame.data.get(start..start + row_bytes)?);
-    }
-    Some(Cow::Owned(packed))
-}
-
 // ---- /api/devices ----
 
 #[derive(serde::Serialize)]

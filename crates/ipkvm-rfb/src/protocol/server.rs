@@ -289,6 +289,52 @@ fn write_tight_length(output: &mut Vec<u8>, mut value: usize) {
     }
 }
 
+/// 把一帧 RGB888 像素编码为单条 RFB Raw FramebufferUpdate 消息。
+///
+/// Raw 编码直接发送像素字节。RGB 帧每像素 3 字节（R,G,B）。
+pub(crate) fn encode_raw_update_rgb(
+    frame: RgbFrameView<'_>,
+    rectangles: &[RfbRectangle],
+    pixel_format: RfbPixelFormat,
+    output: &mut Vec<u8>,
+) -> Result<usize, RfbEncodeError> {
+    if rectangles.is_empty() {
+        return Err(RfbEncodeError::LengthOverflow);
+    }
+    let num_rects = u16::try_from(rectangles.len()).map_err(|_| RfbEncodeError::LengthOverflow)?;
+    let start = output.len();
+    output.extend_from_slice(&[0, 0]);
+    output.extend_from_slice(&num_rects.to_be_bytes());
+
+    for rectangle in rectangles {
+        write_u16(output, rectangle.x);
+        write_u16(output, rectangle.y);
+        write_u16(output, rectangle.width);
+        write_u16(output, rectangle.height);
+        write_i32(output, ENCODING_RAW);
+
+        let end_y = rectangle
+            .y
+            .checked_add(rectangle.height)
+            .ok_or(RfbEncodeError::LengthOverflow)?;
+        let start_x = usize::from(rectangle.x)
+            .checked_mul(3)
+            .ok_or(RfbEncodeError::LengthOverflow)?;
+        let end_x = usize::from(rectangle.width)
+            .checked_mul(3)
+            .and_then(|width| start_x.checked_add(width))
+            .ok_or(RfbEncodeError::LengthOverflow)?;
+
+        for y in rectangle.y..end_y {
+            let row = frame.row(y);
+            for pixel in row[start_x..end_x].chunks_exact(3) {
+                pixel_format.write_bgr(output, pixel[2], pixel[1], pixel[0]);
+            }
+        }
+    }
+    Ok(output.len() - start)
+}
+
 /// MJPEG 透传：把原始 JPEG 字节作为单个 Tight JPEG 矩形编码（不重新 JPEG 编码）。
 ///
 /// 采集卡输出 MJPEG 时（D 的 sink 直通），frame.data 已经是完整 JPEG 字节流。

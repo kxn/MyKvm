@@ -339,12 +339,12 @@ impl CameraSource {
                                 Arc::from(std::mem::take(&mut bgra_buf).into_boxed_slice());
                             let capture_ns = crate::now_ns();
                             seq = seq.saturating_add(1);
-                            // MJPEG 直通时 pixel_format 标 Mjpeg（stride 无意义）；其余 BGRA。
+                            // MJPEG 直通时 pixel_format 标 Mjpeg（stride 无意义）；其余 RGB。
                             let (pixel_format, stride) = match mt.format {
                                 crate::dshow_sink::NegotiatedFormat::Mjpeg => {
                                     (PixelFormat::Mjpeg, 0)
                                 }
-                                _ => (PixelFormat::Bgra8888, w * 4),
+                                _ => (PixelFormat::Rgb888, w * 3),
                             };
                             let frame = VideoFrame::new(
                                 seq,

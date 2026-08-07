@@ -201,20 +201,20 @@ fn default_frame() -> Arc<VideoFrame> {
         MonotonicTimestamp::from_nanos(1),
         2,
         1,
-        8,
-        PixelFormat::Bgra8888,
-        Arc::from([0, 0, 255, 0, 0, 255, 0, 0]),
+        6,
+        PixelFormat::Rgb888,
+        Arc::from([255, 0, 0, 0, 255, 0]),
     ))
 }
 
-fn bgra_frame(seq: u64, bytes: [u8; 4]) -> Arc<VideoFrame> {
+fn rgb_frame(seq: u64, bytes: [u8; 3]) -> Arc<VideoFrame> {
     Arc::new(VideoFrame::new(
         seq,
         MonotonicTimestamp::from_nanos(seq),
         1,
         1,
-        4,
-        PixelFormat::Bgra8888,
+        3,
+        PixelFormat::Rgb888,
         Arc::from(bytes),
     ))
 }
@@ -321,7 +321,7 @@ async fn novnc_1_7_without_h264_receives_initial_and_incremental_raw_updates() {
     let mut server = TestWebSocketServer::start_with_config(config).await;
     server
         .source
-        .publish_frame(bgra_frame(2, [30, 20, 10, 255]));
+        .publish_frame(rgb_frame(2, [10, 20, 30]));
     let (socket, response) = server.connect_without_protocol().await;
     assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
     let mut client = TestWebSocketRfbClient::new(socket);
@@ -357,7 +357,7 @@ async fn novnc_1_7_without_h264_receives_initial_and_incremental_raw_updates() {
     client.send_binary(&incremental_request).await;
     server
         .source
-        .publish_frame(bgra_frame(3, [60, 50, 40, 255]));
+        .publish_frame(rgb_frame(3, [40, 50, 60]));
     let incremental_update = client.read_update(4).await;
     assert_eq!(
         (
@@ -449,6 +449,7 @@ async fn rfb_output_is_sent_as_binary_messages() {
         (0, 0, 2, 1)
     );
     assert_eq!(update.encoding, 0);
+    // RGB [255,0,0] → BGRA [0,0,255,0], RGB [0,255,0] → BGRA [0,255,0,0]
     assert_eq!(update.pixels, [0, 0, 255, 0, 0, 255, 0, 0]);
 }
 

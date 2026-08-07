@@ -1283,15 +1283,15 @@ const RED_FRAME_SIZE: u16 = 8;
 fn red_frame() -> Arc<VideoFrame> {
     let width = RED_FRAME_SIZE as u32;
     let height = RED_FRAME_SIZE as u32;
-    let red_bgra = [0, 0, 255, 255].repeat((width * height) as usize);
+    let red_rgb = [255, 0, 0].repeat((width * height) as usize);
     Arc::new(VideoFrame::new(
         2,
         MonotonicTimestamp::from_nanos(2),
         width,
         height,
-        width * 4,
-        PixelFormat::Bgra8888,
-        Arc::from(red_bgra.into_boxed_slice()),
+        width * 3,
+        PixelFormat::Rgb888,
+        Arc::from(red_rgb.into_boxed_slice()),
     ))
 }
 

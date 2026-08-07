@@ -111,8 +111,8 @@ fn default_frame() -> Arc<VideoFrame> {
         1,
         2,
         1,
-        PixelFormat::Bgra8888,
-        &[0, 0, 255, 0, 0, 255, 0, 0],
+        PixelFormat::Rgb888,
+        &[255, 0, 0, 0, 255, 0],
     )
 }
 
