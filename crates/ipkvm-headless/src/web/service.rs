@@ -63,6 +63,8 @@ pub(super) struct ApiState<I: InputSink + Clone + Send + 'static> {
     pub(super) settings: Arc<SettingsStore>,
     /// 手动停止标记：`stop` 置位，`create`/`restart` 清除，恢复循环尊重。
     pub(super) manual_stop: Arc<AtomicBool>,
+    /// 浏览器断开后等待超时的时间戳（None 表示没有断开）。
+    pub(super) disconnect_deadline: Arc<tokio::sync::Mutex<Option<std::time::Instant>>>,
 }
 
 /// 一次运行时会话选择。字段为 `None` 时由工厂沿用启动配置默认值。
@@ -129,6 +131,7 @@ impl<I: InputSink + Clone + Send + 'static> HeadlessWebService<I> {
             device_provider,
             settings,
             manual_stop,
+            disconnect_deadline: Arc::new(tokio::sync::Mutex::new(None)),
         });
         let rfb = RfbWebSocketService::new(
             frame_source,
@@ -489,6 +492,38 @@ async fn api_status<I: InputSink + Clone + Send + 'static>(
         (profile.as_str(), profile.resolve_mode())
     };
     let mouse_mode = actual_mouse_mode.unwrap_or(selected_mouse_mode);
+
+    // 浏览器断开超时：如果会话运行中但没有活跃连接，设置 1 分钟超时。
+    // 如果 1 分钟内有新连接，取消超时；超时后停止 session。
+    if !controller.active && session_state == "running" && !state.manual_stop.load(Ordering::Relaxed) {
+        let mut deadline = state.disconnect_deadline.lock().await;
+        if deadline.is_none() {
+            *deadline = Some(std::time::Instant::now() + std::time::Duration::from_secs(60));
+        }
+    } else if controller.active {
+        // 有活跃连接，清除超时
+        state.disconnect_deadline.lock().await.take();
+    }
+
+    // 检查是否超时
+    {
+        let deadline = state.disconnect_deadline.lock().await;
+        if let Some(dl) = *deadline {
+            if std::time::Instant::now() >= dl {
+                drop(deadline);
+                // 超时：停止 session
+                let mut manager = state.manager.lock().await;
+                if manager.state() == ipkvm_session::session_manager::SessionState::Running {
+                    let _ = manager.stop();
+                    manager.wait_stopped().await;
+                    let _ = manager.stop_and_destroy().await;
+                    state.frame_source.set_current(Arc::new(EmptyFrameSource::new()));
+                }
+                state.disconnect_deadline.lock().await.take();
+            }
+        }
+    }
+
     let status = StatusResponse {
         service: ServiceStatus {
             name: env!("CARGO_PKG_NAME"),
@@ -1069,20 +1104,21 @@ async fn api_session<I: InputSink + Clone + Send + 'static>(
             *state.selection.lock().await = Some(target_selection);
             json_session_state(&manager)
         }
-        "stop" => match manager.stop() {
-            Ok(()) => {
-                manager.wait_stopped().await;
-                // 断开必须真正释放采集：销毁会话并把帧源切回空源，
-                // 否则相机/素材源仍被持有，持续采集浪费 CPU。
-                let _ = manager.stop_and_destroy().await;
-                state
-                    .frame_source
-                    .set_current(Arc::new(EmptyFrameSource::new()));
-                state.manual_stop.store(true, Ordering::Relaxed);
-                json_session_state(&manager)
+        "stop" => {
+            // 用户手动断开：立即停止 session
+            state.manual_stop.store(true, Ordering::Relaxed);
+            match manager.stop() {
+                Ok(()) => {
+                    manager.wait_stopped().await;
+                    let _ = manager.stop_and_destroy().await;
+                    state
+                        .frame_source
+                        .set_current(Arc::new(EmptyFrameSource::new()));
+                    json_session_state(&manager)
+                }
+                Err(error) => session_error(error),
             }
-            Err(error) => session_error(error),
-        },
+        }
         other => json_error(
             StatusCode::BAD_REQUEST,
             "unknown action",

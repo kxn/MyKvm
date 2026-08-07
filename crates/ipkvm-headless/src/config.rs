@@ -13,6 +13,8 @@ use serde::Deserialize;
 pub const USAGE: &str = "\
 用法：ipkvm-headless [--list-cameras] [--camera <名称>|--assets <目录>] \
 [--serial <串口> [--baud <波特率>]] [--bind <地址>] [--tcp <端口>] [--http <端口>] [--fps <帧率>]
+       ipkvm-headless --install [<服务名>]
+       ipkvm-headless --uninstall [<服务名>]
 
   --list-cameras   枚举视频采集设备并退出
   --camera <名称>  按名称（id 或显示名）打开相机；与 --assets 互斥
@@ -20,9 +22,9 @@ pub const USAGE: &str = "\
   --serial <串口>  CH9329 串口路径（如 COM9 / /dev/ttyUSB0），启用真实键鼠注入；
                    不指定时键鼠事件进入模拟队列被丢弃
   --baud <波特率>  CH9329 串口波特率；未指定时取运行时设置（初始 9600）
-  --bind <地址>    监听地址，默认 127.0.0.1
+  --bind <地址>    监听地址，默认 0.0.0.0（服务模式）
   --tcp <端口>     RFB TCP 监听端口，默认 5900
-  --http <端口>    HTTP/noVNC 监听端口，默认 6080
+  --http <端口>    HTTP/noVNC 监听端口，默认 80
   --fps <帧率>     播放帧率；未指定时取运行时设置（初始 30）
   --config <路径>  读取 TOML 配置文件；CLI 参数覆盖文件字段（CLI > 文件 > 默认）
   --token <token>  [auth] HTTP/WS 鉴权 token（非空，仅含字母数字与 - _ . ~）；未配置时仅允许本机访问
@@ -30,6 +32,8 @@ pub const USAGE: &str = "\
                    [auth] RFB VNC 密码（1-8 个 ASCII 字符）；未配置时 TCP 仅允许本机连接
   --encoding <模式> RFB 编码：raw（无压缩）/ tight（Tight+JPEG）/ auto（默认，客户端支持则 Tight）
   --jpeg-quality <N> Tight+JPEG 质量 1-100，默认 85（仅 --encoding tight/auto 时生效）
+  --install [名称] 安装为系统服务（自动检测 systemd/openrc），默认服务名 mykvm
+  --uninstall [名称] 卸载系统服务
 ";
 
 /// CLI 参数（全部可选：`None`/`false` 表示未显式指定，不覆盖文件字段）。
@@ -38,6 +42,8 @@ pub struct CliOptions {
     pub assets_dir: Option<PathBuf>,
     pub camera_name: Option<String>,
     pub list_cameras: bool,
+    pub install_service: Option<String>,
+    pub uninstall_service: Option<String>,
     pub serial_path: Option<String>,
     pub serial_baud: Option<u32>,
     pub bind_address: Option<String>,
@@ -62,6 +68,8 @@ pub struct Options {
     pub assets_dir: Option<PathBuf>,
     pub camera_name: Option<String>,
     pub list_cameras: bool,
+    pub install_service: Option<String>,
+    pub uninstall_service: Option<String>,
     pub serial_path: Option<String>,
     pub serial_baud: Option<u32>,
     pub bind_address: String,
@@ -179,6 +187,8 @@ pub fn resolve(cli: CliOptions, file: Option<FileConfig>) -> Result<Options, Str
         assets_dir,
         camera_name,
         list_cameras: cli.list_cameras,
+        install_service: cli.install_service,
+        uninstall_service: cli.uninstall_service,
         serial_path: cli
             .serial_path
             .clone()
@@ -247,6 +257,18 @@ fn parse_cli_from<S: AsRef<str>>(args: &[S]) -> Result<CliOptions, String> {
     while let Some(argument) = args.next() {
         match argument.as_ref() {
             "--list-cameras" => options.list_cameras = true,
+            "--install" => {
+                let name = args.next()
+                    .map(|a| a.as_ref().to_string())
+                    .unwrap_or_else(|| "mykvm".to_string());
+                options.install_service = Some(name);
+            }
+            "--uninstall" => {
+                let name = args.next()
+                    .map(|a| a.as_ref().to_string())
+                    .unwrap_or_else(|| "mykvm".to_string());
+                options.uninstall_service = Some(name);
+            }
             "--camera" => {
                 options.camera_name = Some(
                     args.next()
