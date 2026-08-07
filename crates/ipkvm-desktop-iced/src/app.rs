@@ -2180,11 +2180,14 @@ pub fn run() -> iced::Result {
     // 生成应用图标：深色背景 + 绿色 K 字母
     let icon = generate_icon();
 
+    let work_area = crate::desktop_work_area();
+    // 启动时离屏实测真实 chrome 高度，使初始窗口视频区严格 16:9（#48）。
+    let chrome_h = crate::measure_chrome_height(work_area.width, crate::fonts::ui_font());
     let mut app = iced::application(App::production, App::update, App::view)
         .subscription(App::subscription)
         .theme(App::theme)
         .title(WINDOW_TITLE)
-        .window_size(crate::initial_window_size(crate::desktop_work_area()))
+        .window_size(crate::initial_window_size(work_area, chrome_h))
         .default_font(crate::fonts::ui_font());
 
     if let Some(icon) = icon {
