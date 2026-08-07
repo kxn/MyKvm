@@ -17,19 +17,17 @@ export const REASON = Object.freeze({
 
 export function resolveView(status) {
   const state = status?.session?.state;
-  if (state === "running") {
-    return { view: VIEW.VIDEO, reason: null };
-  }
+  // 手动停止：切换到连接页
   if (status?.session?.manual_stop) {
     return { view: VIEW.CONNECTION, reason: REASON.MANUAL_STOP };
   }
+  // 会话不存在：切换到连接页
   if (state === "absent") {
     return { view: VIEW.CONNECTION, reason: REASON.ABSENT };
   }
-  if (status?.session?.input_offline || status?.video?.stalled) {
-    return { view: VIEW.CONNECTION, reason: REASON.RECOVERING };
-  }
-  return { view: VIEW.CONNECTION, reason: REASON.STOPPED };
+  // 会话运行中或停止中（恢复循环会自动重建）：保持视频页
+  // 只有手动停止或会话不存在才切换到连接页
+  return { view: VIEW.VIDEO, reason: null };
 }
 
 export class StatusController {
