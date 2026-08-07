@@ -332,14 +332,12 @@ async fn main() {
 }
 
 fn build_initial_session_components(
-    options: &Options,
-    runtime: &WebSettings,
+    _options: &Options,
+    _runtime: &WebSettings,
 ) -> Result<Option<SessionComponents>, String> {
-    if !initial_video_source_requested(options) {
-        println!("未指定视频源，启动空会话，等待网页选择设备");
-        return Ok(None);
-    }
-    build_session_components(options, runtime, None).map(Some)
+    // 启动时不自动启动 session，等待用户手动连接
+    println!("启动空会话，等待用户连接");
+    Ok(None)
 }
 
 /// 按 CLI 参数与运行时设置构造会话所需的帧源与输入 sink。

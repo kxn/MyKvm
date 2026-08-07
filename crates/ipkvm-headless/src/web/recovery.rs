@@ -231,6 +231,7 @@ mod tests {
             device_provider: Arc::new(StaticDeviceInventoryProvider::new(Vec::new(), Vec::new())),
             settings: Arc::new(settings),
             manual_stop: Arc::new(AtomicBool::new(false)),
+            disconnect_deadline: Arc::new(tokio::sync::Mutex::new(None)),
         })
     }
 

@@ -612,7 +612,7 @@ async fn serves_the_console_and_chinese_license_page() {
     assert!(
         std::str::from_utf8(&console.body)
             .unwrap()
-            .contains("my_ipkvm 控制台")
+            .contains("MyKvm 控制台")
     );
 
     let licenses = server.request("GET", "/licenses/").await;
