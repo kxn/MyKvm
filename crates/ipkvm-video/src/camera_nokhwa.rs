@@ -38,6 +38,32 @@ enum CaptureMode {
     DecodeToRgb,
 }
 
+/// 从 JPEG 数据中解析分辨率（SOF0/SOF2 标记）。
+fn parse_jpeg_resolution(data: &[u8]) -> Option<(u32, u32)> {
+    let mut i = 0;
+    while i + 3 < data.len() {
+        if data[i] == 0xFF {
+            let marker = data[i + 1];
+            // SOF0 (0xC0) 或 SOF2 (0xC2)
+            if marker == 0xC0 || marker == 0xC2 {
+                if i + 9 < data.len() {
+                    let height = u16::from_be_bytes([data[i + 5], data[i + 6]]) as u32;
+                    let width = u16::from_be_bytes([data[i + 7], data[i + 8]]) as u32;
+                    return Some((width, height));
+                }
+            }
+            // 跳过标记段
+            if i + 3 < data.len() {
+                let len = u16::from_be_bytes([data[i + 2], data[i + 3]]) as usize;
+                i += 2 + len;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
 /// nokhwa 相机帧源。`open` 成功后由后台采集线程持续发布帧。
 ///
 /// 停止：drop 时置位停止标志，采集线程在下次 `frame()` 返回（或被停止唤醒）后退出并
@@ -126,13 +152,15 @@ impl CameraSource {
                     FrameFormat::MJPEG => CaptureMode::MjpegPassthrough,
                     _ => CaptureMode::DecodeToRgb,
                 };
-                // MJPEG 透传时 frame_raw() 不含分辨率，先调用 frame() 获取并缓存。
-                // （会消耗一帧，但分辨率在整个会话期间不变。）
+                // MJPEG 透传时 frame_raw() 不含分辨率。
+                // 从 frame_raw() 数据中解析 JPEG SOF 标记获取分辨率，
+                // 避免调用 frame() 消耗额外帧导致 seq 跳跃。
+                // MJPEG 透传时 frame_raw() 不含分辨率，从 frame_format() 或 camera_format 获取。
+                // 不能调用 frame() 因为它会消耗下一帧（V4L2缓冲区被覆盖）。
                 let cached_resolution = if matches!(capture_mode, CaptureMode::MjpegPassthrough) {
-                    camera.frame().ok().map(|f| {
-                        let r = f.resolution();
-                        (r.width_x, r.height_y)
-                    })
+                    // 从 camera_format 获取分辨率（nokhwa 在 open_stream 时已协商）
+                    let fmt = camera.camera_format();
+                    Some((fmt.width(), fmt.height()))
                 } else {
                     None
                 };

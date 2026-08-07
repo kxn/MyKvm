@@ -59,15 +59,11 @@ impl SessionStats {
         self.last_input_ns = Some(crate::now_ns());
     }
 
-    /// 观察一帧：seq 跳跃即丢帧（首帧初始化基准，不计数；seq 回退/重复
-    /// 视为重置，不计数）。
+    /// 观察一帧：记录 seq 用于序列跟踪，但不计算 dropped_frames。
+    /// dropped_frames 仅在真正丢帧时计数（RFB 编码/发送失败），
+    /// 因为 latest_frame() 轮询机制会导致 seq 跳跃（中间帧被覆盖），
+    /// 这不是真正的丢帧。
     pub fn observe_frame_seq(&mut self, seq: u64) {
-        match self.last_seq {
-            Some(last) if seq > last + 1 => {
-                self.dropped_frames = self.dropped_frames.saturating_add(seq - last - 1);
-            }
-            _ => {}
-        }
         self.last_seq = Some(seq);
     }
 
@@ -703,24 +699,22 @@ mod tests {
     /// 帧 seq 跳跃（1→3，缺 2）→ dropped_frames 计数 1；首帧初始化基准
     /// 不计数；seq 回退（3→2）与重复（2→2）视为重置，不计数。
     #[test]
-    fn frame_seq_jump_counts_dropped_frame() {
+    fn frame_seq_jump_does_not_count_as_dropped() {
         let mut stats = SessionStats::default();
         stats.observe_frame_seq(1);
         stats.observe_frame_seq(3);
-        assert_eq!(stats.dropped_frames, 1);
+        assert_eq!(stats.dropped_frames, 0, "seq 跳跃不计为丢帧（latest_frame 轮询机制）");
         stats.observe_frame_seq(2);
-        assert_eq!(stats.dropped_frames, 1, "seq 回退不计数");
-        stats.observe_frame_seq(2);
-        assert_eq!(stats.dropped_frames, 1, "seq 重复不计数");
+        assert_eq!(stats.dropped_frames, 0, "seq 回退不计数");
     }
 
-    /// 大跨度跳跃（1→5）按缺失帧数累计（3 帧），不是只计 1。
+    /// 大跨度跳跃也不计为丢帧。
     #[test]
-    fn large_frame_seq_jump_counts_each_missing_frame() {
+    fn large_frame_seq_jump_does_not_count_as_dropped() {
         let mut stats = SessionStats::default();
         stats.observe_frame_seq(1);
         stats.observe_frame_seq(5);
-        assert_eq!(stats.dropped_frames, 3);
+        assert_eq!(stats.dropped_frames, 0);
     }
 
     /// 输入事件计数与最后时间更新。
@@ -823,7 +817,7 @@ mod tests {
     /// observe_frame 经帧源 latest_frame().seq 检测丢帧：1→3 缺 2 计 1 帧；
     /// 空帧源（无最新帧）不计数也不初始化基准。
     #[test]
-    fn observe_frame_counts_dropped_frames() {
+    fn observe_frame_does_not_count_dropped_frames() {
         let mock = Arc::new(MockFrameSource::new());
         let frame_source: Arc<dyn FrameSource> = mock.clone();
         let (event_publisher, _) = watch::channel(None);
@@ -852,7 +846,7 @@ mod tests {
         session.observe_frame();
         mock.publish_frame(frame(3));
         session.observe_frame();
-        assert_eq!(session.stats().dropped_frames, 1);
+        assert_eq!(session.stats().dropped_frames, 0, "seq 跳跃不计为丢帧");
     }
 
     /// observe_frame 同时记录 capture_ns（来自 frame.timestamp，统一时钟）与
@@ -946,7 +940,7 @@ mod tests {
         session.refresh_stats();
 
         let stats = session.stats();
-        assert_eq!(stats.dropped_frames, 1);
+        assert_eq!(stats.dropped_frames, 0, "seq 跳跃不计为丢帧");
         assert_eq!(
             stats.serial,
             Some(crate::serial_stats::SerialStats {
