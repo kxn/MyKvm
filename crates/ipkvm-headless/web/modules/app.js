@@ -505,5 +505,12 @@ export function initApp(root) {
   statusController.start();
   connection.refreshAll();
   settingsController.loadInitial();
-  setView(VIEW.CONNECTION, REASON.ABSENT);
+  // 初始视图：如果会话已运行，显示视频页；否则显示连接页
+  const initialStatus = statusController.status;
+  const initialState = initialStatus?.session?.state;
+  if (initialState === "running") {
+    setView(VIEW.VIDEO, null);
+  } else {
+    setView(VIEW.CONNECTION, REASON.ABSENT);
+  }
 }
