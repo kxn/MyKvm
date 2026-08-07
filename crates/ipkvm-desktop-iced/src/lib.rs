@@ -6,7 +6,7 @@
 //! 可测试性要求（每阶段强制）：lib/bin 拆分，UI 逻辑可 headless 测试
 //! （iced_test Simulator），窗口元数据走常量/函数并可断言。
 
-use iced::Size;
+use iced::{Rectangle, Size};
 use rust_i18n::t;
 
 pub mod app;
@@ -188,16 +188,75 @@ pub fn measure_chrome_height(work_area_width: f32, font: iced::Font) -> f32 {
     }
 }
 
-/// 桌面工作区（逻辑点）。Windows 读 SPI_GETWORKAREA 并按系统 DPI 换算；
-/// 失败/兜底返回足够大的值（1920x1080），使初始窗口 = 720p 适中窗口。
-#[cfg(windows)]
+/// 桌面工作区尺寸（逻辑点）。等价于 [`desktop_work_rect`] 的宽高；
+/// 仅为兼容只关心尺寸的调用方保留。
 pub fn desktop_work_area() -> Size {
+    let r = desktop_work_rect();
+    Size::new(r.width, r.height)
+}
+
+/// 桌面工作区矩形（逻辑点，原点为虚拟桌面左上角）。
+///
+/// Windows 选取**光标所在显示器**（启动时通常是用户当前操作的那块屏）的工作区
+/// （`GetMonitorInfoW.rcWork`，已扣除任务栏），按该屏 per-monitor DPI 换算成逻辑点，
+/// 并**保留虚拟桌面原点**——多屏时左侧屏原点可能为负，任务栏在顶/左侧时原点也非 (0,0)。
+/// 窗口位置据此计算才能在"当前屏"内居中、不压任务栏。任何环节失败回退主屏 `SPI_GETWORKAREA`，
+/// 再失败回退 (0,0)+1920×1080。
+#[cfg(windows)]
+pub fn desktop_work_rect() -> Rectangle {
     unsafe {
-        use windows::Win32::Foundation::RECT;
-        use windows::Win32::UI::HiDpi::GetDpiForSystem;
-        use windows::Win32::UI::WindowsAndMessaging::{
-            SPI_GETWORKAREA, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW,
+        use windows::Win32::Foundation::POINT;
+        use windows::Win32::Graphics::Gdi::{
+            GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint,
         };
+        use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+        use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
+
+        // 1. 光标所在显示器。
+        let mut cursor = POINT::default();
+        let cursor_ok = GetCursorPos(&mut cursor).is_ok();
+        if cursor_ok {
+            let monitor = MonitorFromPoint(cursor, MONITOR_DEFAULTTONEAREST);
+            // 2. 该屏 per-monitor DPI。
+            let mut dpix = 96u32;
+            let mut dpiy = 96u32;
+            let dpi_ok = GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &mut dpix, &mut dpiy).is_ok();
+            // 3. 该屏工作区（虚拟桌面坐标，已扣任务栏）。
+            let mut info = MONITORINFO {
+                cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+                ..Default::default()
+            };
+            if GetMonitorInfoW(monitor, &mut info).as_bool() {
+                let dpi = if dpi_ok {
+                    dpix.max(96) as f32 / 96.0
+                } else {
+                    1.0
+                };
+                let r = info.rcWork;
+                return Rectangle::new(
+                    iced::Point::new(r.left as f32 / dpi, r.top as f32 / dpi),
+                    Size::new(
+                        (r.right - r.left) as f32 / dpi,
+                        (r.bottom - r.top) as f32 / dpi,
+                    ),
+                );
+            }
+        }
+
+        // 回退：主屏工作区（SPI_GETWORKAREA）+ 系统 DPI。
+        primary_work_rect()
+    }
+}
+
+/// 主屏工作区回退（Windows）。`SPI_GETWORKAREA` 只返回主显示器，用于多屏 API 失败时。
+#[cfg(windows)]
+unsafe fn primary_work_rect() -> Rectangle {
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::UI::HiDpi::GetDpiForSystem;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SPI_GETWORKAREA, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SystemParametersInfoW,
+    };
+    unsafe {
         let mut rect = RECT::default();
         let ok = SystemParametersInfoW(
             SPI_GETWORKAREA,
@@ -208,27 +267,70 @@ pub fn desktop_work_area() -> Size {
         .is_ok();
         if ok {
             let dpi = GetDpiForSystem().max(96) as f32 / 96.0;
-            Size::new(
-                (rect.right - rect.left) as f32 / dpi,
-                (rect.bottom - rect.top) as f32 / dpi,
+            Rectangle::new(
+                iced::Point::new(rect.left as f32 / dpi, rect.top as f32 / dpi),
+                Size::new(
+                    (rect.right - rect.left) as f32 / dpi,
+                    (rect.bottom - rect.top) as f32 / dpi,
+                ),
             )
         } else {
-            Size::new(1920.0, 1080.0)
+            Rectangle::new(iced::Point::ORIGIN, Size::new(1920.0, 1080.0))
         }
     }
 }
 
 #[cfg(target_os = "macos")]
-pub fn desktop_work_area() -> Size {
-    // TODO(macos): 用 NSScreen.main.visibleFrame 换算逻辑尺寸。
-    // 当前兜底 1920×1080 → 初始 720p 适中窗口；回头补独立实现即可。
-    Size::new(1920.0, 1080.0)
+pub fn desktop_work_rect() -> Rectangle {
+    // TODO(macos): 用 NSScreen.main.visibleFrame 换算逻辑矩形。
+    // 当前兜底 (0,0)+1920×1080；回头补独立实现即可。
+    Rectangle::new(iced::Point::ORIGIN, Size::new(1920.0, 1080.0))
 }
 
 #[cfg(not(any(windows, target_os = "macos")))]
-pub fn desktop_work_area() -> Size {
-    // Linux 桌面使用概率低，兜底 1920×1080 → 初始 720p 适中窗口。
-    Size::new(1920.0, 1080.0)
+pub fn desktop_work_rect() -> Rectangle {
+    // Linux 桌面使用概率低，兜底 (0,0)+1920×1080。
+    Rectangle::new(iced::Point::ORIGIN, Size::new(1920.0, 1080.0))
+}
+
+/// 窗口标题栏 + 可调边框的逻辑高度（仅 Windows 精确获取；其它平台用经验值）。
+///
+/// `Settings.size` 是客户区尺寸，窗口实际占屏高度还要加标题栏和边框。
+/// 算初始位置时必须补偿这部分，否则底部会溢出工作区压到任务栏。
+pub fn title_bar_height() -> f32 {
+    #[cfg(windows)]
+    {
+        unsafe {
+            use windows::Win32::UI::HiDpi::GetDpiForSystem;
+            use windows::Win32::UI::WindowsAndMessaging::{
+                GetSystemMetrics, SM_CYCAPTION, SM_CYSIZEFRAME,
+            };
+            let dpi = GetDpiForSystem().max(96) as f32 / 96.0;
+            // SM_CYCAPTION = 标题栏高度；SM_CYSIZEFRAME = 可调窗口上边框。
+            // GetSystemMetrics 返回物理像素，按 DPI 换算成逻辑点。失败返回 0，由兜底处理。
+            let caption = GetSystemMetrics(SM_CYCAPTION).max(0) as f32;
+            let frame = GetSystemMetrics(SM_CYSIZEFRAME).max(0) as f32;
+            let total = (caption + frame) / dpi;
+            if total > 0.0 {
+                return total;
+            }
+        }
+    }
+    // 兜底经验值（逻辑点）：标题栏约 23 + 边框约 3 ≈ 26（96 DPI 下 Win10/11 典型值）。
+    26.0
+}
+
+/// 计算窗口左上角坐标，使窗口（含标题栏补偿）居中在工作区内（#51）。
+///
+/// `window_size` 是窗口客户区逻辑尺寸（= `Settings.size`）。`title_bar` 为标题栏+边框
+/// 补偿高度（见 [`title_bar_height`]）。返回窗口左上角逻辑坐标，保证窗口整体
+/// （含标题栏）落在 `work_rect` 内并居中。窗口大于工作区时贴左上角（不越界）。
+pub fn window_position(work_rect: Rectangle, window_size: Size, title_bar: f32) -> iced::Point {
+    // 窗口实际占屏高度 = 客户区高 + 标题栏；宽度近似等于客户区宽（侧边框通常很窄）。
+    let full_h = window_size.height + title_bar;
+    let x = work_rect.x + (work_rect.width - window_size.width).max(0.0) / 2.0;
+    let y = work_rect.y + (work_rect.height - full_h).max(0.0) / 2.0;
+    iced::Point::new(x, y)
 }
 
 pub use app::run;
@@ -665,5 +767,75 @@ mod tests {
             "run() 不得用 Settings {{ icon, ..Default::default() }} 调用 .window()——\
              它会覆盖 .window_size() 设的尺寸（#48 真根因）"
         );
+    }
+
+    #[test]
+    fn window_position_centers_within_work_rect_with_title_bar() {
+        // 任务栏在底部：工作区原点 (0,0)，窗口 + 标题栏整体居中。
+        let work = Rectangle::new(iced::Point::ORIGIN, Size::new(1920.0, 1040.0));
+        let pos = window_position(work, Size::new(1280.0, 720.0), 26.0);
+        // 整体高度 720+26=746，水平居中：(1920-1280)/2=320。
+        assert!(
+            (pos.x - 320.0).abs() < 0.01,
+            "x 应水平居中 = 320，实际 {}",
+            pos.x
+        );
+        // 垂直居中：(1040-746)/2=147。
+        assert!(
+            (pos.y - 147.0).abs() < 0.01,
+            "y 应含标题栏居中 = 147，实际 {}",
+            pos.y
+        );
+        // 整体（含标题栏）不越界：底 = y + 720 + 26 = 893 ≤ 1040。
+        assert!(
+            pos.y + 720.0 + 26.0 <= 1040.0 + 0.01,
+            "窗口底部不得超出工作区"
+        );
+    }
+
+    #[test]
+    fn window_position_handles_taskbar_on_top_or_side() {
+        // 任务栏在顶部：工作区 top > 0，窗口 y 必须从工作区原点开始计算。
+        let work = Rectangle::new(iced::Point::new(0.0, 40.0), Size::new(1920.0, 1000.0));
+        let pos = window_position(work, Size::new(1280.0, 720.0), 26.0);
+        // 垂直居中：40 + (1000-746)/2 = 40+127 = 167。
+        assert!(
+            (pos.y - 167.0).abs() < 0.01,
+            "顶部任务栏时 y 应=167，实际 {}",
+            pos.y
+        );
+        assert!(pos.y >= 40.0, "窗口顶部不得进入任务栏区");
+
+        // 任务栏在左侧：工作区 left > 0。
+        let work = Rectangle::new(iced::Point::new(80.0, 0.0), Size::new(1840.0, 1040.0));
+        let pos = window_position(work, Size::new(1280.0, 720.0), 26.0);
+        assert!(
+            (pos.x - (80.0 + (1840.0 - 1280.0) / 2.0)).abs() < 0.01,
+            "左侧任务栏 x 应居中于工作区"
+        );
+    }
+
+    #[test]
+    fn window_position_clamps_when_window_larger_than_work_area() {
+        // 窗口比工作区还大（极端情况）：贴左上角，不越界（max 保证不产生负偏移）。
+        let work = Rectangle::new(iced::Point::new(10.0, 10.0), Size::new(800.0, 600.0));
+        let pos = window_position(work, Size::new(1280.0, 720.0), 26.0);
+        assert!(
+            (pos.x - 10.0).abs() < 0.01,
+            "窗口过大时 x 应贴工作区左边 = 10"
+        );
+        assert!(
+            (pos.y - 10.0).abs() < 0.01,
+            "窗口过大时 y 应贴工作区顶边 = 10"
+        );
+    }
+
+    #[test]
+    fn desktop_work_rect_and_area_are_consistent() {
+        // work_area 是 work_rect 的宽高。
+        let rect = desktop_work_rect();
+        let area = desktop_work_area();
+        assert_eq!(rect.width, area.width);
+        assert_eq!(rect.height, area.height);
     }
 }

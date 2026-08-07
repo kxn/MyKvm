@@ -2180,10 +2180,17 @@ pub fn run() -> iced::Result {
     // 生成应用图标：深色背景 + 绿色 K 字母
     let icon = generate_icon();
 
-    let work_area = crate::desktop_work_area();
+    let work_rect = crate::desktop_work_rect();
+    let work_area = Size::new(work_rect.width, work_rect.height);
     // 启动时离屏实测真实 chrome 高度，使初始窗口视频区严格 16:9（#48）。
     let chrome_h = crate::measure_chrome_height(work_area.width, crate::fonts::ui_font());
     let window_size = crate::initial_window_size(work_area, chrome_h);
+    // #51：窗口在工作区内居中（含标题栏补偿），避免压任务栏。
+    let position = iced::window::Position::Specific(crate::window_position(
+        work_rect,
+        window_size,
+        crate::title_bar_height(),
+    ));
 
     // 关键（#48 真根因）：iced 的 `.window(Settings)` 会整体替换 window 字段，
     // 若用 `Settings { icon, ..Default::default() }`，其 `size` 是默认的 1024×768，
@@ -2191,6 +2198,7 @@ pub fn run() -> iced::Result {
     // 必须把 size 和 icon 放进同一个 Settings，或先 .window 再 .window_size 补回。
     let window_settings = iced::window::Settings {
         size: window_size,
+        position,
         icon,
         ..Default::default()
     };
