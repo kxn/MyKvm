@@ -16,7 +16,6 @@ export function initApp(root) {
   const el = {
     console: root,
     connectionStatus: root.querySelector("#connection-status"),
-    toolbarConnect: root.querySelector("#toolbar-connect"),
     toolbarDisconnect: root.querySelector("#toolbar-disconnect"),
     openSettings: root.querySelector("#open-settings"),
     specialKeysButton: root.querySelector("#special-keys-button"),
@@ -448,13 +447,6 @@ export function initApp(root) {
       setConnectionState("failed", t("status.error"));
       message(`${t("status.error")}：${errorText(error)}`, "error");
     },
-  });
-
-  el.toolbarConnect.addEventListener("click", () => {
-    if (!el.videoView.hidden) {
-      statusController.setViewOverride(VIEW.CONNECTION);
-      setView(VIEW.CONNECTION, REASON.SWITCH);
-    }
   });
 
   el.toolbarDisconnect.addEventListener("click", async () => {

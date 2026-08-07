@@ -163,7 +163,17 @@ select:disabled {
 }
 
 .toolbar-actions a {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.github-link {
+  padding: 0 8px !important;
+}
+
+.github-link svg {
+  display: block;
 }
 
 .language-control {
