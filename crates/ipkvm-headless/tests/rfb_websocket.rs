@@ -319,9 +319,7 @@ async fn novnc_1_7_without_h264_receives_initial_and_incremental_raw_updates() {
         },
     };
     let mut server = TestWebSocketServer::start_with_config(config).await;
-    server
-        .source
-        .publish_frame(rgb_frame(2, [10, 20, 30]));
+    server.source.publish_frame(rgb_frame(2, [10, 20, 30]));
     let (socket, response) = server.connect_without_protocol().await;
     assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
     let mut client = TestWebSocketRfbClient::new(socket);
@@ -355,9 +353,7 @@ async fn novnc_1_7_without_h264_receives_initial_and_incremental_raw_updates() {
     incremental_request.extend_from_slice(&init.width.to_be_bytes());
     incremental_request.extend_from_slice(&init.height.to_be_bytes());
     client.send_binary(&incremental_request).await;
-    server
-        .source
-        .publish_frame(rgb_frame(3, [40, 50, 60]));
+    server.source.publish_frame(rgb_frame(3, [40, 50, 60]));
     let incremental_update = client.read_update(4).await;
     assert_eq!(
         (

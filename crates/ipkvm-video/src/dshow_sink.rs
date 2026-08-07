@@ -1110,9 +1110,9 @@ fn rgb24_to_rgb_inner(src: &[u8], w: usize, h: usize, top_down: bool, out: &mut 
             let si = x * 3;
             let di = dst_row * w * 3 + x * 3;
             // DirectShow RGB24 内存序为 B,G,R；输出为 R,G,B。
-            out[di] = line[si + 2];     // R
+            out[di] = line[si + 2]; // R
             out[di + 1] = line[si + 1]; // G
-            out[di + 2] = line[si];     // B
+            out[di + 2] = line[si]; // B
         }
     }
 }
@@ -1127,9 +1127,9 @@ fn argb32_to_rgb_inner(src: &[u8], w: usize, h: usize, top_down: bool, out: &mut
             let si = x * 4;
             let di = dst_row * w * 3 + x * 3;
             // ARGB/BGRA 内存序：B,G,R,A；输出为 R,G,B。
-            out[di] = line[si + 2];     // R
+            out[di] = line[si + 2]; // R
             out[di + 1] = line[si + 1]; // G
-            out[di + 2] = line[si];     // B
+            out[di + 2] = line[si]; // B
         }
     }
 }

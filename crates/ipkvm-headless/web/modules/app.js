@@ -77,12 +77,25 @@ export function initApp(root) {
     el.connectionStatus.textContent = text ?? "";
   };
 
+  let messageTimer = null;
   const message = (text, level) => {
+    if (messageTimer) {
+      clearTimeout(messageTimer);
+      messageTimer = null;
+    }
     el.videoMessage.textContent = text;
     if (level) {
       el.videoMessage.dataset.level = level;
     } else {
       delete el.videoMessage.dataset.level;
+    }
+    // 成功消息自动消失（3秒）
+    if (level === "ok") {
+      messageTimer = setTimeout(() => {
+        el.videoMessage.textContent = "";
+        delete el.videoMessage.dataset.level;
+        messageTimer = null;
+      }, 3000);
     }
   };
 

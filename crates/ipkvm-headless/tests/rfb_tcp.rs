@@ -107,13 +107,7 @@ impl ServerFixture {
 }
 
 fn default_frame() -> Arc<VideoFrame> {
-    frame(
-        1,
-        2,
-        1,
-        PixelFormat::Rgb888,
-        &[255, 0, 0, 0, 255, 0],
-    )
+    frame(1, 2, 1, PixelFormat::Rgb888, &[255, 0, 0, 0, 255, 0])
 }
 
 /// 独立实现 VNC 密码响应（RFC 6143 §7.2 + Erratum 4951），交叉验证服务器

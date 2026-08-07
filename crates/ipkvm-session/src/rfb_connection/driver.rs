@@ -13,8 +13,7 @@ use tokio::{
 
 use super::{
     RfbClientId, RfbConnectionSettings, RfbDisconnectReason, RfbFrameError, RfbServerEvent,
-    RfbTransport, RfbTransportError, RfbTransportRead,
-    pending::PendingFramebufferRequest,
+    RfbTransport, RfbTransportError, RfbTransportRead, pending::PendingFramebufferRequest,
 };
 
 #[derive(Debug, Error)]
@@ -374,9 +373,8 @@ async fn queue_and_write_frame<T: RfbTransport>(
     // RGB 编码：统一路径。
     let width = u16::try_from(frame.width)
         .map_err(|_| RfbConnectionError::Frame(RfbFrameError::WidthOutOfRange(frame.width)))?;
-    let height = u16::try_from(frame.height).map_err(|_| {
-        RfbConnectionError::Frame(RfbFrameError::HeightOutOfRange(frame.height))
-    })?;
+    let height = u16::try_from(frame.height)
+        .map_err(|_| RfbConnectionError::Frame(RfbFrameError::HeightOutOfRange(frame.height)))?;
     let size = ipkvm_rfb::RfbSize::new(width, height).map_err(RfbFrameError::from)?;
     let rgb_frame = ipkvm_rfb::RgbFrameView::new(size, frame.stride as usize, &frame.data)
         .map_err(RfbFrameError::from)?;
@@ -393,8 +391,7 @@ async fn queue_and_write_frame<T: RfbTransport>(
             })
             .collect()
     });
-    let outcome =
-        core.queue_framebuffer_update_rgb(rgb_frame, request, dirty_rfb.as_deref())?;
+    let outcome = core.queue_framebuffer_update_rgb(rgb_frame, request, dirty_rfb.as_deref())?;
     write_core_output(transport, core).await?;
     Ok(outcome)
 }
