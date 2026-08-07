@@ -2140,7 +2140,11 @@ pub fn run() -> iced::Result {
         "startup args: {:?}",
         std::env::args().collect::<Vec<_>>()
     ));
-    iced::application(App::production, App::update, App::view)
+
+    // 生成应用图标：深色背景 + 绿色 K 字母
+    let icon = generate_icon();
+
+    let mut app = iced::application(App::production, App::update, App::view)
         .subscription(App::subscription)
         .theme(App::theme)
         .title(WINDOW_TITLE)
@@ -2148,8 +2152,83 @@ pub fn run() -> iced::Result {
             DEFAULT_WINDOW_SIZE,
             crate::desktop_work_area(),
         ))
-        .default_font(crate::fonts::ui_font())
-        .run()
+        .default_font(crate::fonts::ui_font());
+
+    if let Some(icon) = icon {
+        let window_settings = iced::window::Settings {
+            icon: Some(icon),
+            ..Default::default()
+        };
+        app = app.window(window_settings);
+    }
+
+    app.run()
+}
+
+/// 生成应用图标：深色背景 + 绿色 K 字母（与 headless favicon 一致）
+fn generate_icon() -> Option<iced::window::Icon> {
+    let size = 64u32;
+    let mut pixels = vec![0u8; (size * size * 4) as usize];
+
+    // 深色背景
+    for y in 0..size {
+        for x in 0..size {
+            let idx = ((y * size + x) * 4) as usize;
+            pixels[idx] = 51; // R
+            pixels[idx + 1] = 51; // G
+            pixels[idx + 2] = 51; // B
+            pixels[idx + 3] = 255; // A
+        }
+    }
+
+    // 绘制绿色 K 字母（简化版）
+    let green = [74, 222, 128, 255]; // #4ade80
+
+    // K 的竖线
+    for y in 16..48 {
+        for x in 24..28 {
+            let idx = ((y * size + x) * 4) as usize;
+            pixels[idx..idx + 4].copy_from_slice(&green);
+        }
+    }
+
+    // K 的上斜线
+    for i in 0..16 {
+        let x = 28 + i;
+        let y = 32 - i;
+        if x < size && y < size {
+            for dx in 0..4 {
+                for dy in 0..4 {
+                    let px = x + dx;
+                    let py = y + dy;
+                    if px < size && py < size {
+                        let idx = ((py * size + px) * 4) as usize;
+                        pixels[idx..idx + 4].copy_from_slice(&green);
+                    }
+                }
+            }
+        }
+    }
+
+    // K 的下斜线
+    for i in 0..16 {
+        let x = 28 + i;
+        let y = 32 + i;
+        if x < size && y < size {
+            for dx in 0..4 {
+                for dy in 0..4 {
+                    let px = x + dx;
+                    let py = y + dy;
+                    if px < size && py < size {
+                        let idx = ((py * size + px) * 4) as usize;
+                        pixels[idx..idx + 4].copy_from_slice(&green);
+                    }
+                }
+            }
+        }
+    }
+
+    iced::window::icon::from_rgba(pixels, size, size).ok()
 }
 
 /// 记录型光标控制器：断言 set_visible/set_clipped 调用序列（Task 7b 测试用）。
