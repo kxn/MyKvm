@@ -2174,7 +2174,7 @@ fn generate_icon() -> Option<iced::window::Icon> {
     for y in 0..size {
         for x in 0..size {
             let idx = ((y * size + x) * 4) as usize;
-            pixels[idx] = 51;     // R
+            pixels[idx] = 51; // R
             pixels[idx + 1] = 51; // G
             pixels[idx + 2] = 51; // B
             pixels[idx + 3] = 255; // A

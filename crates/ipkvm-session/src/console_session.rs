@@ -703,7 +703,10 @@ mod tests {
         let mut stats = SessionStats::default();
         stats.observe_frame_seq(1);
         stats.observe_frame_seq(3);
-        assert_eq!(stats.dropped_frames, 0, "seq 跳跃不计为丢帧（latest_frame 轮询机制）");
+        assert_eq!(
+            stats.dropped_frames, 0,
+            "seq 跳跃不计为丢帧（latest_frame 轮询机制）"
+        );
         stats.observe_frame_seq(2);
         assert_eq!(stats.dropped_frames, 0, "seq 回退不计数");
     }

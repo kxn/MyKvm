@@ -258,13 +258,15 @@ fn parse_cli_from<S: AsRef<str>>(args: &[S]) -> Result<CliOptions, String> {
         match argument.as_ref() {
             "--list-cameras" => options.list_cameras = true,
             "--install" => {
-                let name = args.next()
+                let name = args
+                    .next()
                     .map(|a| a.as_ref().to_string())
                     .unwrap_or_else(|| "mykvm".to_string());
                 options.install_service = Some(name);
             }
             "--uninstall" => {
-                let name = args.next()
+                let name = args
+                    .next()
                     .map(|a| a.as_ref().to_string())
                     .unwrap_or_else(|| "mykvm".to_string());
                 options.uninstall_service = Some(name);
