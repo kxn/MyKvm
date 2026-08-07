@@ -174,7 +174,7 @@ pub fn measure_chrome_height(work_area_width: f32, font: iced::Font) -> f32 {
     // （BoundsRecorder 在 ui.draw 阶段已完成记录）。
     let mut pixmap = tiny_skia::Pixmap::new(2, 2).expect("2x2 pixmap");
     let mut mask = tiny_skia::Mask::new(2, 2).expect("2x2 mask");
-    let _ = renderer.draw(
+    renderer.draw(
         &mut pixmap.as_mut(),
         &mut mask,
         &Viewport::with_physical_size(iced::Size::new(2, 2), 1.0),
