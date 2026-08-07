@@ -799,7 +799,12 @@ fn read_cpu_ticks() -> (u64, u64) {
         .and_then(|s| {
             let line = s.lines().next()?;
             let fields: Vec<&str> = line.split_whitespace().collect();
-            Some(fields[1..].iter().filter_map(|v| v.parse::<u64>().ok()).sum())
+            Some(
+                fields[1..]
+                    .iter()
+                    .filter_map(|v| v.parse::<u64>().ok())
+                    .sum(),
+            )
         })
         .unwrap_or(0);
 
