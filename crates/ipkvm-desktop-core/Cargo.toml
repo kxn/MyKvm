@@ -15,6 +15,11 @@ serde.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"] }
 toml.workspace = true
+# JPEG 解码：MJPEG 设备透出的帧是原始 JPEG 字节，本地预览/截图需要解码成 RGBA。
+zune-core.workspace = true
+zune-jpeg.workspace = true
 
 [dev-dependencies]
 ipkvm-video = { path = "../ipkvm-video", features = ["test-support"] }
+# 仅测试用：编码小尺寸 JPEG 作为 MJPEG 帧数据，避免引入二进制 fixture 文件。
+jpeg-encoder.workspace = true

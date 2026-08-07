@@ -1594,7 +1594,7 @@ where
             self.status_message = Some(t!("message.no_frame_screenshot").to_string());
             return;
         };
-        match ipkvm_desktop_core::frame::bgra_to_rgba(&frame) {
+        match ipkvm_desktop_core::frame::frame_to_rgba(&frame) {
             Ok(rgba) => match ipkvm_desktop::clipboard::ClipboardService::copy_image(&rgba) {
                 Ok(()) => self.status_message = Some(t!("message.screenshot_copied").to_string()),
                 Err(error) => {
@@ -1615,7 +1615,7 @@ where
             self.status_message = Some(t!("message.no_frame_screenshot").to_string());
             return;
         };
-        match ipkvm_desktop_core::frame::bgra_to_rgba(&frame) {
+        match ipkvm_desktop_core::frame::frame_to_rgba(&frame) {
             Ok(rgba) => match ipkvm_desktop::clipboard::save_jpeg(&path, &rgba) {
                 Ok(()) => {
                     self.status_message = Some(

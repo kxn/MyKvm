@@ -27,6 +27,8 @@ iced_test = "0.14"
 iced_runtime = "0.14"
 iced_tiny_skia = { version = "0.14", default-features = false }
 ipkvm-video = { path = "../ipkvm-video", features = ["test-support"] }
+# 仅测试用：编码小尺寸 JPEG 作为 MJPEG 帧数据，避免引入二进制 fixture 文件。
+jpeg-encoder.workspace = true
 tiny-skia = "0.11"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 

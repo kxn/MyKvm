@@ -2372,10 +2372,13 @@ dependencies = [
  "ipkvm-rfb",
  "ipkvm-session",
  "ipkvm-video",
+ "jpeg-encoder",
  "serde",
  "thiserror 2.0.19",
  "tokio",
  "toml 0.9.12+spec-1.1.0",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
@@ -2397,6 +2400,7 @@ dependencies = [
  "ipkvm-desktop-core",
  "ipkvm-session",
  "ipkvm-video",
+ "jpeg-encoder",
  "rfd",
  "rust-i18n",
  "sys-locale",
