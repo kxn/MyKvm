@@ -458,18 +458,24 @@ select:disabled {
 }
 
 .video-message {
-  position: absolute;
-  bottom: 10px;
-  right: 10px;
-  z-index: 2;
+  position: fixed;
+  bottom: 60px;
+  right: 20px;
+  z-index: 100;
   max-width: min(400px, 90%);
-  padding: 8px 16px;
+  padding: 10px 20px;
   border: 1px solid var(--border);
   border-radius: 8px;
-  background: rgb(255 255 255 / 95%);
-  box-shadow: 0 4px 16px rgb(0 0 0 / 20%);
+  background: rgb(30 30 30 / 90%);
+  color: #fff;
+  box-shadow: 0 4px 20px rgb(0 0 0 / 30%);
   text-align: left;
   font-size: 13px;
+  pointer-events: none;
+}
+
+.video-message:empty {
+  display: none;
 }
 
 .video-message:not(:empty) {

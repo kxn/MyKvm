@@ -89,14 +89,13 @@ export function initApp(root) {
     } else {
       delete el.videoMessage.dataset.level;
     }
-    // 成功消息自动消失（3秒）
-    if (level === "ok") {
-      messageTimer = setTimeout(() => {
-        el.videoMessage.textContent = "";
-        delete el.videoMessage.dataset.level;
-        messageTimer = null;
-      }, 3000);
-    }
+    // 所有消息自动消失：ok 3秒，error 5秒，无level 3秒
+    const delay = level === "error" ? 5000 : 3000;
+    messageTimer = setTimeout(() => {
+      el.videoMessage.textContent = "";
+      delete el.videoMessage.dataset.level;
+      messageTimer = null;
+    }, delay);
   };
 
   const websocketUrl = () => {
