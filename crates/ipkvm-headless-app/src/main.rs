@@ -162,6 +162,183 @@ fn print_cameras() -> Result<(), String> {
     Ok(())
 }
 
+fn install_service(service_name: &str, options: &ipkvm_headless::config::Options) -> Result<(), String> {
+    // 获取当前可执行文件路径
+    let exe_path = std::env::current_exe()
+        .map_err(|e| format!("获取可执行文件路径失败：{e}"))?;
+
+    // 构建启动命令参数
+    let mut args = Vec::new();
+    if let Some(camera) = &options.camera_name {
+        args.push(format!("--camera '{}'", camera.replace('\'', "'\\''")));
+    }
+    if let Some(assets) = &options.assets_dir {
+        args.push(format!("--assets '{}'", assets.display()));
+    }
+    if let Some(serial) = &options.serial_path {
+        args.push(format!("--serial '{}'", serial));
+    }
+    if options.bind_address != "0.0.0.0" {
+        args.push(format!("--bind '{}'", options.bind_address));
+    }
+    if options.tcp_port != 5900 {
+        args.push(format!("--tcp {}", options.tcp_port));
+    }
+    if options.http_port != 80 {
+        args.push(format!("--http {}", options.http_port));
+    }
+    if let Some(fps) = options.frames_per_second {
+        args.push(format!("--fps {}", fps));
+    }
+    if let Some(token) = &options.token {
+        args.push(format!("--token '{}'", token));
+    }
+    if let Some(password) = &options.vnc_password {
+        args.push(format!("--vnc-password '{}'", password));
+    }
+
+    let exec_line = format!("{} {}", exe_path.display(), args.join(" "));
+
+    // 检测 init 系统
+    if std::path::Path::new("/run/systemd/system").exists() {
+        // systemd
+        let service_content = format!(
+            "[Unit]
+Description=MyKvm Headless Service
+After=network.target
+
+[Service]
+Type=simple
+ExecStart={}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+",
+            exec_line
+        );
+        let service_path = format!("/etc/systemd/system/{}.service", service_name);
+        std::fs::write(&service_path, service_content)
+            .map_err(|e| format!("写入服务文件失败：{e}"))?;
+
+        // 启用并启动服务
+        std::process::Command::new("systemctl")
+            .args(["daemon-reload"])
+            .status()
+            .map_err(|e| format!("systemctl daemon-reload 失败：{e}"))?;
+
+        std::process::Command::new("systemctl")
+            .args(["enable", service_name])
+            .status()
+            .map_err(|e| format!("systemctl enable 失败：{e}"))?;
+
+        println!("已安装 systemd 服务：{service_name}");
+        println!("服务文件：{service_path}");
+        println!("启动命令：systemctl start {service_name}");
+        println!("查看日志：journalctl -u {service_name} -f");
+
+    } else if std::path::Path::new("/sbin/openrc").exists() || std::path::Path::new("/usr/sbin/openrc").exists() {
+        // openrc
+        // openrc 的 command 不能含空格，需要把参数放在 command_args
+        let service_content = format!(
+            "#!/sbin/openrc-run
+
+description=\"MyKvm Headless Service\"
+command=\"{exe}\"
+command_args=\"{args}\"
+command_background=\"yes\"
+pidfile=\"/run/{name}.pid\"
+
+depend() {{
+    need net
+}}
+
+start_pre() {{
+    checkpath -d -m 0755 -o root /run
+}}
+",
+            exe = exe_path.display(),
+            args = args.join(" "),
+            name = service_name,
+        );
+        let service_path = format!("/etc/init.d/{}", service_name);
+        std::fs::write(&service_path, service_content)
+            .map_err(|e| format!("写入服务文件失败：{e}"))?;
+
+        // 设置可执行权限
+        std::process::Command::new("chmod")
+            .args(["+x", &service_path])
+            .status()
+            .map_err(|e| format!("chmod 失败：{e}"))?;
+
+        // 启用服务
+        std::process::Command::new("rc-update")
+            .args(["add", service_name, "default"])
+            .status()
+            .map_err(|e| format!("rc-update add 失败：{e}"))?;
+
+        println!("已安装 openrc 服务：{service_name}");
+        println!("服务文件：{service_path}");
+        println!("启动命令：rc-service {service_name} start");
+        println!("查看日志：tail -f /var/log/messages");
+
+    } else {
+        return Err("未检测到支持的 init 系统（需要 systemd 或 openrc）".to_string());
+    }
+
+    Ok(())
+}
+
+fn uninstall_service(service_name: &str) -> Result<(), String> {
+    if std::path::Path::new("/run/systemd/system").exists() {
+        // systemd
+        std::process::Command::new("systemctl")
+            .args(["stop", service_name])
+            .status()
+            .ok();
+
+        std::process::Command::new("systemctl")
+            .args(["disable", service_name])
+            .status()
+            .ok();
+
+        let service_path = format!("/etc/systemd/system/{}.service", service_name);
+        std::fs::remove_file(&service_path)
+            .map_err(|e| format!("删除服务文件失败：{e}"))?;
+
+        std::process::Command::new("systemctl")
+            .args(["daemon-reload"])
+            .status()
+            .map_err(|e| format!("systemctl daemon-reload 失败：{e}"))?;
+
+        println!("已卸载 systemd 服务：{service_name}");
+
+    } else if std::path::Path::new("/sbin/openrc").exists() || std::path::Path::new("/usr/sbin/openrc").exists() {
+        // openrc
+        std::process::Command::new("rc-service")
+            .args([service_name, "stop"])
+            .status()
+            .ok();
+
+        std::process::Command::new("rc-update")
+            .args(["del", service_name, "default"])
+            .status()
+            .ok();
+
+        let service_path = format!("/etc/init.d/{}", service_name);
+        std::fs::remove_file(&service_path)
+            .map_err(|e| format!("删除服务文件失败：{e}"))?;
+
+        println!("已卸载 openrc 服务：{service_name}");
+
+    } else {
+        return Err("未检测到支持的 init 系统（需要 systemd 或 openrc）".to_string());
+    }
+
+    Ok(())
+}
+
 /// 按 CLI 参数选择视频源并统一包装成 `Arc<dyn FrameSource>`。
 ///
 /// 优先级：`--assets`（文件伪设备）> `--camera`（按名打开）。
@@ -305,6 +482,26 @@ async fn main() {
             Ok(()) => std::process::exit(0),
             Err(error) => {
                 eprintln!("{error}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(service_name) = &options.install_service {
+        match install_service(service_name, &options) {
+            Ok(()) => std::process::exit(0),
+            Err(error) => {
+                eprintln!("安装服务失败：{error}");
+                std::process::exit(1);
+            }
+        }
+    }
+
+    if let Some(service_name) = &options.uninstall_service {
+        match uninstall_service(service_name) {
+            Ok(()) => std::process::exit(0),
+            Err(error) => {
+                eprintln!("卸载服务失败：{error}");
                 std::process::exit(1);
             }
         }
