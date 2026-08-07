@@ -374,15 +374,15 @@ fn build_source(
     Ok(source)
 }
 
-fn initial_video_source_requested(options: &Options) -> bool {
-    options.assets_dir.is_some() || options.camera_name.is_some()
-}
-
 type SessionComponents = (Arc<dyn FrameSource>, HeadlessSink);
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn initial_video_source_requested(options: &Options) -> bool {
+        options.assets_dir.is_some() || options.camera_name.is_some()
+    }
 
     fn options() -> Options {
         Options {
@@ -401,6 +401,8 @@ mod tests {
             vnc_password: None,
             dirty_rects: false,
             dirty_rect_tile_size: None,
+            install_service: None,
+            uninstall_service: None,
         }
     }
 

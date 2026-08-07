@@ -38,32 +38,6 @@ enum CaptureMode {
     DecodeToRgb,
 }
 
-/// 从 JPEG 数据中解析分辨率（SOF0/SOF2 标记）。
-fn parse_jpeg_resolution(data: &[u8]) -> Option<(u32, u32)> {
-    let mut i = 0;
-    while i + 3 < data.len() {
-        if data[i] == 0xFF {
-            let marker = data[i + 1];
-            // SOF0 (0xC0) 或 SOF2 (0xC2)
-            if marker == 0xC0 || marker == 0xC2 {
-                if i + 9 < data.len() {
-                    let height = u16::from_be_bytes([data[i + 5], data[i + 6]]) as u32;
-                    let width = u16::from_be_bytes([data[i + 7], data[i + 8]]) as u32;
-                    return Some((width, height));
-                }
-            }
-            // 跳过标记段
-            if i + 3 < data.len() {
-                let len = u16::from_be_bytes([data[i + 2], data[i + 3]]) as usize;
-                i += 2 + len;
-                continue;
-            }
-        }
-        i += 1;
-    }
-    None
-}
-
 /// nokhwa 相机帧源。`open` 成功后由后台采集线程持续发布帧。
 ///
 /// 停止：drop 时置位停止标志，采集线程在下次 `frame()` 返回（或被停止唤醒）后退出并
