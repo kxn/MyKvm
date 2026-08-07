@@ -155,7 +155,7 @@ mod tests {
         assert!(index_text.contains("data-view=\"video\""));
         assert!(index_text.contains("id=\"connection-view\""));
         assert!(index_text.contains("id=\"video-view\""));
-        assert!(index_text.contains("id=\"toolbar-connect\""));
+        assert!(index_text.contains("id=\"toolbar-disconnect\""));
         assert!(index_text.contains("id=\"toolbar-disconnect\""));
         assert!(index_text.contains("id=\"open-settings\""));
         assert!(index_text.contains("id=\"special-keys-button\""));

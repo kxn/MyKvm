@@ -11,6 +11,7 @@ import { ScreenshotController } from "./screenshot.js";
 import { SETTINGS_DEFAULTS, SettingsController, modeForProfile } from "./settings.js";
 import { SpecialKeysController } from "./special-keys.js";
 import { REASON, StatusController, VIEW } from "./status.js";
+import { StatusPanel } from "./status-panel.js";
 
 export function initApp(root) {
   const el = {
@@ -421,6 +422,11 @@ export function initApp(root) {
     menu: el.screenshotMenu,
     saveButton: el.saveScreenshot,
     copyButton: el.copyScreenshot,
+    message,
+  });
+
+  const statusPanel = new StatusPanel({
+    button: root.querySelector("#status-panel-button"),
     message,
   });
 

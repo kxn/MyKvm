@@ -187,6 +187,7 @@ fn api_router<I: InputSink + Clone + Send + 'static>(api: Arc<ApiState<I>>) -> R
         .route("/api/status", get(api_status::<I>))
         .route("/api/screenshot", get(api_screenshot::<I>))
         .route("/api/devices", get(api_devices))
+        .route("/api/system", get(api_system))
         .route(
             "/api/settings",
             get(api_get_settings::<I>).post(api_post_settings::<I>),
@@ -749,6 +750,76 @@ struct DeviceDto {
     id: String,
     display_name: String,
     kind: &'static str,
+}
+
+async fn api_system() -> Response {
+    // 读取系统信息：内存和 CPU 负载
+    let mem_info = read_mem_info();
+    let load_avg = read_load_avg();
+
+    #[derive(serde::Serialize)]
+    struct SystemInfo {
+        mem_total_kb: u64,
+        mem_available_kb: u64,
+        mem_used_kb: u64,
+        load_1m: f64,
+        load_5m: f64,
+        load_15m: f64,
+    }
+
+    let info = SystemInfo {
+        mem_total_kb: mem_info.0,
+        mem_available_kb: mem_info.1,
+        mem_used_kb: mem_info.0.saturating_sub(mem_info.1),
+        load_1m: load_avg.0,
+        load_5m: load_avg.1,
+        load_15m: load_avg.2,
+    };
+
+    match serde_json::to_vec(&info) {
+        Ok(body) => Response::builder()
+            .status(StatusCode::OK)
+            .header(CONTENT_TYPE, HeaderValue::from_static("application/json"))
+            .body(Body::from(body))
+            .unwrap(),
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+fn read_mem_info() -> (u64, u64) {
+    let content = match std::fs::read_to_string("/proc/meminfo") {
+        Ok(c) => c,
+        Err(_) => return (0, 0),
+    };
+    let mut total = 0u64;
+    let mut available = 0u64;
+    for line in content.lines() {
+        if line.starts_with("MemTotal:") {
+            total = parse_mem_value(line);
+        } else if line.starts_with("MemAvailable:") {
+            available = parse_mem_value(line);
+        }
+    }
+    (total, available)
+}
+
+fn parse_mem_value(line: &str) -> u64 {
+    line.split_whitespace()
+        .nth(1)
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(0)
+}
+
+fn read_load_avg() -> (f64, f64, f64) {
+    let content = match std::fs::read_to_string("/proc/loadavg") {
+        Ok(c) => c,
+        Err(_) => return (0.0, 0.0, 0.0),
+    };
+    let parts: Vec<&str> = content.split_whitespace().collect();
+    let load1 = parts.first().and_then(|v| v.parse().ok()).unwrap_or(0.0);
+    let load5 = parts.get(1).and_then(|v| v.parse().ok()).unwrap_or(0.0);
+    let load15 = parts.get(2).and_then(|v| v.parse().ok()).unwrap_or(0.0);
+    (load1, load5, load15)
 }
 
 async fn api_devices<I: InputSink + Clone + Send + 'static>(
