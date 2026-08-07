@@ -2183,22 +2183,25 @@ pub fn run() -> iced::Result {
     let work_area = crate::desktop_work_area();
     // 启动时离屏实测真实 chrome 高度，使初始窗口视频区严格 16:9（#48）。
     let chrome_h = crate::measure_chrome_height(work_area.width, crate::fonts::ui_font());
-    let mut app = iced::application(App::production, App::update, App::view)
+    let window_size = crate::initial_window_size(work_area, chrome_h);
+
+    // 关键（#48 真根因）：iced 的 `.window(Settings)` 会整体替换 window 字段，
+    // 若用 `Settings { icon, ..Default::default() }`，其 `size` 是默认的 1024×768，
+    // 会覆盖 `.window_size()` 设的 16:9 尺寸，导致视频区比例失准、上下白条。
+    // 必须把 size 和 icon 放进同一个 Settings，或先 .window 再 .window_size 补回。
+    let window_settings = iced::window::Settings {
+        size: window_size,
+        icon,
+        ..Default::default()
+    };
+
+    iced::application(App::production, App::update, App::view)
         .subscription(App::subscription)
         .theme(App::theme)
         .title(WINDOW_TITLE)
-        .window_size(crate::initial_window_size(work_area, chrome_h))
-        .default_font(crate::fonts::ui_font());
-
-    if let Some(icon) = icon {
-        let window_settings = iced::window::Settings {
-            icon: Some(icon),
-            ..Default::default()
-        };
-        app = app.window(window_settings);
-    }
-
-    app.run()
+        .window(window_settings)
+        .default_font(crate::fonts::ui_font())
+        .run()
 }
 
 /// 生成应用图标：深色背景 + 绿色 K 字母（与 headless favicon 一致）

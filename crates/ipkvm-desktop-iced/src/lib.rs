@@ -645,4 +645,25 @@ mod tests {
             "main.rs 缺少 windows_subsystem 属性，Windows release 启动会带黑窗"
         );
     }
+
+    #[test]
+    fn run_does_not_override_window_size_with_default() {
+        // #48 真根因回归：iced 的 Application::window(Settings) 是整体替换 window 字段，
+        // 若 run() 里出现 `.window(iced::window::Settings { icon: ..., ..Default::default() })`
+        // 这种"只设 icon"的形式，size 会被重置回默认 1024×768，覆盖 .window_size() 设的
+        // 16:9 尺寸，导致视频区上下白条。本测试断言 run() 把 size 和 icon 放进同一 Settings。
+        let source = include_str!("app.rs");
+        assert!(
+            source.contains("size: window_size,"),
+            "run() 必须把 initial_window_size 的结果作为 window Settings 的 size 字段，\
+             不能用 ..Default::default() 覆盖（#48）"
+        );
+        // 同时禁止危险的"先 .window_size 再 .window(..Default::default())"顺序覆盖模式。
+        let dangerous = ".window(iced::window::Settings {\n            icon: Some(icon),\n            ..Default::default()\n        })";
+        assert!(
+            !source.contains(dangerous),
+            "run() 不得用 Settings {{ icon, ..Default::default() }} 调用 .window()——\
+             它会覆盖 .window_size() 设的尺寸（#48 真根因）"
+        );
+    }
 }
