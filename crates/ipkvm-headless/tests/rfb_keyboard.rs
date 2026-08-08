@@ -80,6 +80,9 @@ fn public_mapper_handles_modifiers_function_keys_and_keypad() {
     for keysym in 0xffbe..=0xffc9 {
         assert_direct_round_trip(keysym, 0x3a + (keysym - 0xffbe) as u8);
     }
+    for keysym in 0xffca..=0xffd1 {
+        assert_direct_round_trip(keysym, 0x68 + (keysym - 0xffca) as u8);
+    }
     for keysym in 0xffb0..=0xffb9 {
         let digit = (keysym - 0xffb0) as u8;
         let usage = if digit == 0 { 0x62 } else { 0x58 + digit };
@@ -179,7 +182,7 @@ fn unsupported_keysyms_return_stable_errors_without_sink_calls() {
     let mut mapper = RfbKeyboardMapper::new();
     let mut sink = RecordingSink::default();
 
-    for keysym in [0xffca, 0x00e9, 0x0101_f642, 0xdead_beef] {
+    for keysym in [0x00e9, 0x0101_f642, 0xdead_beef] {
         assert_eq!(
             mapper.handle_key(&mut sink, true, keysym),
             Err(RfbKeyboardError::UnsupportedKeysym(keysym))

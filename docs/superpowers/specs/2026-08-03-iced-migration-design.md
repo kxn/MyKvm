@@ -119,6 +119,7 @@ frame_source.subscribe() → iced Subscription (Recipe)
 
 - 字符键使用 `key_event_to_keysym(Code, modified_key) -> keysym`：当 `modified_key` 是单个可打印 ASCII 字符时，直接把该字符作为 RFB/X11 keysym，保留 Shift、Caps Lock 和符号键后的字符语义。
 - 非字符键、功能键、导航键、修饰键，以及暂不支持的非 ASCII/多字符输入，退回 `physical_code_to_keysym(iced::keyboard::key::Code) -> keysym`（96 键，跨平台物理键码）。
+- 功能键链路端到端覆盖 F1-F20：桌面层产生 `0xffbe..0xffd1`，session 层映射为 HID usage F1-F12=`0x3a..0x45`、F13-F20=`0x68..0x6f`。
 - App 记录每个物理键按下时实际发送的 keysym；抬起时释放这同一个 keysym，避免用户先松 Shift 再松字母时出现 keysym 不匹配或远端按键滞留。
 - 下游 `RfbKeyboardMapper` 仍按 RFC 6143 解释字符：大小写/符号由 keysym 决定，Shift 只作为提示；特殊键（Ctrl+Alt+Del 等）走 `SpecialKey` 菜单 → 现有 `special_key_sequence` 逻辑。
 - 本地组合键 Ctrl+Alt+K（退出远程捕获）、Ctrl+Alt+M（切换鼠标模式）在应用层拦截，不转发远端。

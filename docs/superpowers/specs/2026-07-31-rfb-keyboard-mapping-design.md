@@ -11,7 +11,7 @@
 
 本阶段把 RFB 的 X11 keysym 转换为现有 CH9329 输入核心能够消费的 USB HID 键盘事件，并固定失败原子性：
 
-1. 支持 en-US 键盘上的可打印 ASCII、左右修饰键、导航键、F1-F12、系统键和常用数字小键盘键。
+1. 支持 en-US 键盘上的可打印 ASCII、左右修饰键、导航键、F1-F20、系统键和常用数字小键盘键。
 2. 遵守 RFC 6143 的字符语义：大小写和符号由 keysym 决定，客户端当前 Shift 状态只作为提示。
 3. 必要时合成 Shift；客户端 Shift 与字符语义冲突时，暂时抑制 Shift。
 4. 一次 RFB 按键事件产生的多个 HID 状态变更通过一个原子批次提交。
@@ -222,13 +222,13 @@ Control 和 Alt 永远按客户端状态转发，不参与字符 Shift 修正。
 
 - BackSpace、Tab、Return、Escape、Insert、Delete。
 - Home、End、PageUp、PageDown、四个方向键。
-- F1-F12。
+- F1-F20，其中 F1-F12 使用 HID usage `0x3a..0x45`，F13-F20 使用 `0x68..0x6f`。
 - Print/SysReq、ScrollLock、Pause、Menu。
 - `ISO_Left_Tab` 作为需要 Shift 的 Tab。
 - KP Enter、KP Divide、Multiply、Subtract、Add、Decimal、Equal 和 KP 0-9。
 - KP Home/End/PageUp/PageDown/Insert/Delete/方向键映射为不依赖 NumLock 的普通导航 usage。
 
-F13 及以上、媒体键、XF86 键、Compose、ModeSwitch 和语言输入键返回 `UnsupportedKeysym`。
+F21 及以上、媒体键、XF86 键、Compose、ModeSwitch 和语言输入键返回 `UnsupportedKeysym`。
 
 CapsLock 和 NumLock 的 down/up 都返回 `IgnoredLock`，不改变 mapper 或 sink。字符正确性仍以 keysym 为准。
 
@@ -356,11 +356,11 @@ pub enum RfbKeyboardError {
 ### 10.3 特殊键测试
 
 - 左右八个修饰键逐项映射。
-- 导航键、F1-F12 和系统键逐项映射。
+- 导航键、F1-F20 和系统键逐项映射。
 - 主键区数字和 KP 数字使用不同 usage。
 - `ISO_Left_Tab` 产生 Shift+Tab。
 - CapsLock 和 NumLock 被忽略。
-- F13、Unicode keysym 和未知 keysym 被拒绝。
+- F21、Unicode keysym 和未知 keysym 被拒绝。
 
 ### 10.4 状态测试
 
