@@ -28,7 +28,7 @@ pub async fn run_managed_connection<T: RfbTransport>(
     peer_addr: SocketAddr,
     transport: T,
     frame_rx: FrameReceiver,
-    event_tx: mpsc::Sender<RfbServerEvent>,
+    event_tx: Option<mpsc::Sender<RfbServerEvent>>,
     settings: RfbConnectionSettings,
     shutdown: watch::Receiver<bool>,
 ) -> RfbConnectionCompletion {
@@ -81,7 +81,7 @@ pub async fn finalize_connection(
 /// 旧输入泵的事件接收端可能已经被关闭，此时无法再投递 `Disconnected`；
 /// 但这是会话级重启的预期结果，不应让连接 lease 的 Drop 毒化 gate。
 pub async fn finalize_connection_after_session_end(
-    event_tx: &mpsc::Sender<RfbServerEvent>,
+    event_tx: Option<&mpsc::Sender<RfbServerEvent>>,
     completion: RfbConnectionCompletion,
 ) -> ConnectionEnd {
     let RfbConnectionCompletion {
@@ -89,7 +89,7 @@ pub async fn finalize_connection_after_session_end(
         lease,
         peer_addr,
     } = completion;
-    if let Some(reason) = end.reason() {
+    if let (Some(event_tx), Some(reason)) = (event_tx, end.reason()) {
         let _ = event_tx
             .send(RfbServerEvent::Disconnected {
                 client_id: lease.client_id(),
@@ -250,7 +250,7 @@ mod tests {
         let (event_tx, mut event_rx) = mpsc::channel(1);
 
         assert!(matches!(
-            finalize_connection_after_session_end(&event_tx, completion).await,
+            finalize_connection_after_session_end(Some(&event_tx), completion).await,
             ConnectionEnd::Failed(RfbConnectionError::EventChannelClosed)
         ));
         assert!(matches!(
@@ -272,7 +272,23 @@ mod tests {
         drop(event_rx);
 
         assert!(matches!(
-            finalize_connection_after_session_end(&event_tx, completion).await,
+            finalize_connection_after_session_end(Some(&event_tx), completion).await,
+            ConnectionEnd::ClientClosed
+        ));
+        gate.try_acquire(RfbTransportKind::Tcp, peer()).unwrap();
+    }
+
+    #[tokio::test]
+    async fn session_end_without_event_sender_releases_gate() {
+        let gate = RfbConnectionGate::new();
+        let completion = completion(
+            &gate,
+            "127.0.0.1:5900".parse().unwrap(),
+            ConnectionEnd::ClientClosed,
+        );
+
+        assert!(matches!(
+            finalize_connection_after_session_end(None, completion).await,
             ConnectionEnd::ClientClosed
         ));
         gate.try_acquire(RfbTransportKind::Tcp, peer()).unwrap();

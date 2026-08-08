@@ -48,14 +48,30 @@ impl ServerFixture {
         initial_frame: Option<Arc<VideoFrame>>,
         security: RfbSecurity,
     ) -> Self {
+        let (event_tx, events) = mpsc::channel(event_capacity);
+        let event_publisher = watch::channel(Some(event_tx)).1;
+        Self::start_with_event_publisher(initial_frame, security, event_publisher, events).await
+    }
+
+    async fn start_view_only(initial_frame: Option<Arc<VideoFrame>>) -> Self {
+        let (_unused_tx, events) = mpsc::channel(16);
+        let event_publisher = watch::channel(None).1;
+        Self::start_with_event_publisher(initial_frame, RfbSecurity::None, event_publisher, events)
+            .await
+    }
+
+    async fn start_with_event_publisher(
+        initial_frame: Option<Arc<VideoFrame>>,
+        security: RfbSecurity,
+        event_publisher: watch::Receiver<Option<mpsc::Sender<RfbServerEvent>>>,
+        events: mpsc::Receiver<RfbServerEvent>,
+    ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let source = Arc::new(MockFrameSource::new());
         if let Some(initial_frame) = initial_frame {
             source.publish_frame(initial_frame);
         }
-        let (event_tx, events) = mpsc::channel(event_capacity);
-        let event_publisher = watch::channel(Some(event_tx)).1;
         let (shutdown, shutdown_rx) = watch::channel(false);
         let server = RfbTcpServer::new(
             listener,
@@ -294,27 +310,47 @@ async fn protocol_error_disconnects_client_and_server_continues() {
 }
 
 #[tokio::test]
-async fn closed_event_receiver_is_a_server_error() {
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-    let source = Arc::new(MockFrameSource::new());
-    source.publish_frame(default_frame());
+async fn missing_event_sender_allows_view_only_tcp_updates() {
+    let mut fixture = ServerFixture::start_view_only(Some(default_frame())).await;
+    let mut client = TestRfbClient::connect(fixture.address).await;
+
+    let init = client.handshake(true).await;
+    assert_eq!(
+        (init.width, init.height, init.name.as_str()),
+        (2, 1, "my_ipkvm")
+    );
+    client.send_key(true, 0x41).await;
+    client.request_update(false, 0, 0, 2, 1).await;
+    let update = client.read_update(8).await;
+    assert_eq!(update.encoding, 0);
+    assert_eq!(update.pixels, [0, 0, 255, 0, 0, 255, 0, 0]);
+    assert!(matches!(
+        fixture.events.try_recv(),
+        Err(mpsc::error::TryRecvError::Disconnected)
+    ));
+    fixture.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn closed_event_receiver_allows_view_only_tcp_updates() {
     let (event_tx, event_rx) = mpsc::channel(1);
     drop(event_rx);
+    let replacement_events = mpsc::channel(1).1;
     let event_publisher = watch::channel(Some(event_tx)).1;
-    let (_shutdown, shutdown_rx) = watch::channel(false);
-    let server = RfbTcpServer::new(
-        listener,
-        source,
+    let fixture = ServerFixture::start_with_event_publisher(
+        Some(default_frame()),
+        RfbSecurity::None,
         event_publisher,
-        RfbTcpConfig::default(),
-        RfbConnectionGate::new(),
+        replacement_events,
     )
-    .unwrap();
+    .await;
+    let mut client = TestRfbClient::connect(fixture.address).await;
 
-    assert!(matches!(
-        server.run(shutdown_rx).await,
-        Err(RfbTcpServerError::EventChannelClosed)
-    ));
+    client.handshake(true).await;
+    client.request_update(false, 0, 0, 2, 1).await;
+    let update = client.read_update(8).await;
+    assert_eq!(update.encoding, 0);
+    fixture.stop().await.unwrap();
 }
 
 #[tokio::test]

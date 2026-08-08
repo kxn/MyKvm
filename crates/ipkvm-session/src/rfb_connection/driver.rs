@@ -93,7 +93,7 @@ pub(crate) async fn run_connection<T: RfbTransport>(
     peer_addr: SocketAddr,
     mut transport: T,
     frame_rx: FrameReceiver,
-    event_tx: mpsc::Sender<RfbServerEvent>,
+    event_tx: Option<mpsc::Sender<RfbServerEvent>>,
     settings: RfbConnectionSettings,
     shutdown: watch::Receiver<bool>,
 ) -> ConnectionEnd {
@@ -120,7 +120,7 @@ async fn drive_connection<T: RfbTransport>(
     peer_addr: SocketAddr,
     transport: &mut T,
     frame_rx: FrameReceiver,
-    event_tx: mpsc::Sender<RfbServerEvent>,
+    event_tx: Option<mpsc::Sender<RfbServerEvent>>,
     settings: RfbConnectionSettings,
     mut shutdown: watch::Receiver<bool>,
 ) -> Result<ConnectionEnd, RfbConnectionError> {
@@ -172,7 +172,7 @@ async fn drive_connection<T: RfbTransport>(
                         debug_assert!(!input.is_empty());
                         let events = state.core.push_input(&input);
                         write_core_output(transport, &mut state.core).await?;
-                        if let Some(error) = state.handle_core_events(transport, &event_tx, events).await? {
+                        if let Some(error) = state.handle_core_events(transport, event_tx.as_ref(), events).await? {
                             return Err(error.into());
                         }
                         write_core_output(transport, &mut state.core).await?;
@@ -188,13 +188,10 @@ async fn drive_connection<T: RfbTransport>(
             }
             changed = state.frame_rx.changed(), if state.pending.get().is_some() => {
                 changed.map_err(|_| RfbFrameError::FrameUnavailable)?;
-                state.handle_frame_change(transport, &event_tx).await?;
+                state.handle_frame_change(transport, event_tx.as_ref()).await?;
             }
             _ = wait_for_shutdown(&mut shutdown) => {
                 return Ok(ConnectionEnd::ServerShutdown);
-            }
-            _ = event_tx.closed() => {
-                return Err(RfbConnectionError::EventChannelClosed);
             }
             _ = &mut handshake_deadline, if awaiting_handshake => {
                 return Err(RfbConnectionError::HandshakeTimeout);
@@ -211,7 +208,7 @@ impl ConnectionState {
     async fn handle_core_events(
         &mut self,
         transport: &mut impl RfbTransport,
-        event_tx: &mpsc::Sender<RfbServerEvent>,
+        event_tx: Option<&mpsc::Sender<RfbServerEvent>>,
         events: Vec<Result<RfbEvent, RfbProtocolError>>,
     ) -> Result<Option<RfbProtocolError>, RfbConnectionError> {
         for event in events {
@@ -279,7 +276,7 @@ impl ConnectionState {
     async fn handle_update_request(
         &mut self,
         transport: &mut impl RfbTransport,
-        event_tx: &mpsc::Sender<RfbServerEvent>,
+        event_tx: Option<&mpsc::Sender<RfbServerEvent>>,
         request: FramebufferUpdateRequest,
     ) -> Result<(), RfbConnectionError> {
         let frame = self.latest_frame()?;
@@ -306,7 +303,7 @@ impl ConnectionState {
     async fn handle_frame_change(
         &mut self,
         transport: &mut impl RfbTransport,
-        _event_tx: &mpsc::Sender<RfbServerEvent>,
+        _event_tx: Option<&mpsc::Sender<RfbServerEvent>>,
     ) -> Result<(), RfbConnectionError> {
         // 注意：此处不调 emit_frame_update_sent。该分支由 frame_rx.changed() 在高频
         // 帧源（如 1000fps demo）下持续触发，同步的 try_send 后无 await 让出点，
@@ -407,13 +404,14 @@ fn update_last_sent_sequence(
 }
 
 async fn send_event(
-    sender: &mpsc::Sender<RfbServerEvent>,
+    sender: Option<&mpsc::Sender<RfbServerEvent>>,
     event: RfbServerEvent,
 ) -> Result<(), RfbConnectionError> {
-    sender
-        .send(event)
-        .await
-        .map_err(|_| RfbConnectionError::EventChannelClosed)
+    let Some(sender) = sender else {
+        return Ok(());
+    };
+    let _ = sender.send(event).await;
+    Ok(())
 }
 
 /// 成功发送一次 FramebufferUpdate 后，把 encode 统计快照通知给上层（updates/sec
@@ -423,10 +421,13 @@ async fn send_event(
 /// （统计精度优先级低于核心路径活性）。返回值恒为 `Ok`，仅保留 `Result` 签名
 /// 以与调用点的 `?` 一致。
 fn emit_frame_update_sent(
-    sender: &mpsc::Sender<RfbServerEvent>,
+    sender: Option<&mpsc::Sender<RfbServerEvent>>,
     client_id: RfbClientId,
     core: &RfbConnectionCore,
 ) -> Result<(), RfbConnectionError> {
+    let Some(sender) = sender else {
+        return Ok(());
+    };
     let _ = sender.try_send(RfbServerEvent::FrameUpdateSent {
         client_id,
         encode: core.encode_stats_snapshot(),
@@ -586,7 +587,7 @@ mod tests {
             "127.0.0.1:5900".parse().unwrap(),
             transport,
             frame_source.subscribe(),
-            event_tx,
+            Some(event_tx),
             RfbConnectionSettings::default(),
             shutdown_rx,
         )
@@ -814,7 +815,7 @@ mod tests {
             peer_addr,
             TestTransport::new(stream),
             frame_rx,
-            event_tx,
+            Some(event_tx),
             settings,
             shutdown_rx,
         ))
@@ -986,6 +987,35 @@ mod tests {
         );
 
         drop(client);
+        assert!(matches!(task.await.unwrap(), ConnectionEnd::ClientClosed));
+    }
+
+    #[tokio::test]
+    async fn view_only_connection_works_without_event_sender() {
+        let frame_source = MockFrameSource::new();
+        frame_source.publish_frame(shared_bgra_frame(1, 2, 1, &[1, 2, 3, 4, 5, 6]));
+        let (server_stream, mut client_stream, peer_addr) = tcp_pair().await;
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let task = tokio::spawn(run_connection(
+            RfbClientId(31),
+            peer_addr,
+            TestTransport::new(server_stream),
+            frame_source.subscribe(),
+            None,
+            RfbConnectionSettings::default(),
+            shutdown_rx,
+        ));
+
+        assert_eq!(
+            finish_handshake(&mut client_stream, true).await,
+            (2, 1, "my_ipkvm".to_string())
+        );
+        send_key(&mut client_stream, true, 0x41).await;
+        send_update_request(&mut client_stream, false, 0, 0, 2, 1).await;
+        let update = read_update(&mut client_stream, 8).await;
+
+        assert_eq!(update.pixels, [3, 2, 1, 0, 6, 5, 4, 0]);
+        drop(client_stream);
         assert!(matches!(task.await.unwrap(), ConnectionEnd::ClientClosed));
     }
 
