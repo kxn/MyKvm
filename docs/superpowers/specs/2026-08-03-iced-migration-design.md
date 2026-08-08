@@ -42,7 +42,7 @@
 
 1. 平台差异收口在 UI 壳下的小模块（trait 隔离），上层逻辑不感知平台；
 2. 核心 crate 零平台依赖，不引入 iced/winit/windows 类型；
-3. 键盘映射用 winit 统一物理键码，macOS 特殊键映射放独立平台模块；
+3. 键盘映射中，字符键使用 iced/winit 的 `modified_key` 生成字符 keysym，物理键码只作为非字符键和不可映射字符的稳定回退；macOS 特殊键映射放独立平台模块；
 4. 已跨平台依赖（serialport / nokhwa / arboard / rfd）保持，不引入平台独占替代；
 5. 配置路径与设备命名不写死平台假设；
 6. 日常 `cargo check --target x86_64-apple-darwin` 抓 cfg 错误；实机验证后补。
@@ -53,12 +53,13 @@
 |---|---|---|
 | 1 视频渲染（1080p30） | ✅ | 渲染零丢帧 2695/2695（100%）、CPU 31.7%（<40%）、内存 +11.9MB（<100MB）；平均/p95 帧间隔未达阈值，根因是 mock 推帧产能 ~22.5fps，非渲染瓶颈 |
 | 2 菜单/模态 | ✅（自绘） | 4 顶层菜单、深度≥3 子菜单、i18n 切换、模态三关闭路径、hover 走廊 100 次穿越 0 误关，全部 headless 自动化（iced_test）通过 |
-| 3 输入层 | ✅ | keymap 96 键、500 键管道 0 丢失/顺序一致/不吞首键；Windows Raw Input 1:1 增量、延迟实测 0.2–0.9ms（p95 < 16ms 达标）；macOS stub 留口 |
+| 3 输入层 | ✅ | keymap 96 键、Shift/Caps Lock 字符 keysym 回归、500 键管道 0 丢失/顺序一致/不吞首键；Windows Raw Input 1:1 增量、延迟实测 0.2–0.9ms（p95 < 16ms 达标）；macOS stub 留口 |
 
 ### 本轮额外发现并修复的真实缺陷
 
 - **flush-on-send**：`DesktopSessionController` 事件通道满时，残余事件只在下一次 `send` 时补送；突发填满通道后，最后的 key-up 可能无限期滞留 pending（目标机按键卡住）。已修复：新增 `flush_pending()`，**iced UI 必须每帧/定时调用**（egui 端此前靠每帧发事件掩盖）。
 - **Raw Input 重启挂死**：窗口句柄原存全局 `OnceLock`，第二次启动的 `stop()` 把退出消息发给已销毁窗口 → `join()` 永久阻塞。已修复：HWND 随实例保存。
+- **桌面端大写输入失效（#57）**：iced 端曾只用物理键码把 `KeyA..KeyZ` 固定转成小写 keysym，导致下游 RFB mapper 为了小写字符主动释放远端 Shift；Caps Lock 也因锁定键被下游忽略而无法改变大小写。已修复：字符键优先使用 `modified_key` 中已应用 Shift/Caps Lock 的单个可打印 ASCII 字符，抬起时释放按下时记录的同一 keysym。
 
 ## 3. 目标架构
 
@@ -116,8 +117,10 @@ frame_source.subscribe() → iced Subscription (Recipe)
 
 ### 3.5 键盘
 
-- `physical_code_to_keysym(iced::keyboard::key::Code) -> keysym`（spike keymap.rs，96 键，跨平台物理键码）→ `controller.send_key(down, keysym)`。
-- 大小写/符号由修饰键状态层处理（Shift 逻辑），特殊键（Ctrl+Alt+Del 等）走 `SpecialKey` 菜单 → 现有 `special_key_sequence` 逻辑。
+- 字符键使用 `key_event_to_keysym(Code, modified_key) -> keysym`：当 `modified_key` 是单个可打印 ASCII 字符时，直接把该字符作为 RFB/X11 keysym，保留 Shift、Caps Lock 和符号键后的字符语义。
+- 非字符键、功能键、导航键、修饰键，以及暂不支持的非 ASCII/多字符输入，退回 `physical_code_to_keysym(iced::keyboard::key::Code) -> keysym`（96 键，跨平台物理键码）。
+- App 记录每个物理键按下时实际发送的 keysym；抬起时释放这同一个 keysym，避免用户先松 Shift 再松字母时出现 keysym 不匹配或远端按键滞留。
+- 下游 `RfbKeyboardMapper` 仍按 RFC 6143 解释字符：大小写/符号由 keysym 决定，Shift 只作为提示；特殊键（Ctrl+Alt+Del 等）走 `SpecialKey` 菜单 → 现有 `special_key_sequence` 逻辑。
 - 本地组合键 Ctrl+Alt+K（退出远程捕获）、Ctrl+Alt+M（切换鼠标模式）在应用层拦截，不转发远端。
 - macOS 特殊键策略（Cmd/Option 映射）放独立平台模块，迁移期实现。
 

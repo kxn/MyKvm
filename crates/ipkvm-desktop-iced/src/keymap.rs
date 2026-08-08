@@ -1,9 +1,10 @@
-//! iced 物理键 → X11 keysym 映射。
+//! iced 键盘事件 → X11 keysym 映射。
 //!
 //! winit/iced 的 `keyboard::key::Code` 是跨平台统一的物理键码（USB HID 风格），
-//! 因此这张表一次实现、Windows/macOS 通用；keysym→HID usage 由 session 输入泵
-//! 内部完成，本表只负责物理键码到 keysym。
+//! 用作非字符键的稳定回退；字符键优先使用 `modified_key` 保留 Shift/Caps Lock
+//! 后的字符语义。keysym→HID usage 由 session 输入泵内部完成。
 
+use iced::keyboard::Key;
 use iced::keyboard::key::Code;
 
 // X11 keysym（与 desktop/src/input.rs 一致）。
@@ -97,6 +98,27 @@ pub fn physical_code_to_keysym(code: Code) -> Option<u32> {
     Some(keysym)
 }
 
+/// iced 逻辑键 + 物理键码 → RFB/X11 keysym。
+///
+/// 字符键优先使用 `modified_key` 中已经应用 Shift/Caps Lock 后的单个可打印
+/// ASCII 字符；非字符键或暂不支持的布局字符退回物理键表，保留方向键、功能键、
+/// 修饰键和 Alt/Option 组合的既有物理键语义。
+pub fn key_event_to_keysym(code: Code, modified_key: &Key) -> Option<u32> {
+    modified_character_to_keysym(modified_key).or_else(|| physical_code_to_keysym(code))
+}
+
+fn modified_character_to_keysym(modified_key: &Key) -> Option<u32> {
+    let Key::Character(text) = modified_key else {
+        return None;
+    };
+    let mut chars = text.chars();
+    let character = chars.next()?;
+    if chars.next().is_some() || !('\u{20}'..='\u{7e}').contains(&character) {
+        return None;
+    }
+    Some(character as u32)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,6 +150,34 @@ mod tests {
         assert_eq!(physical_code_to_keysym(Code::Slash), Some('/' as u32));
         // 未覆盖键返回 None（状态栏提示“不支持的按键”）。
         assert_eq!(physical_code_to_keysym(Code::KanaMode), None);
+    }
+
+    #[test]
+    fn key_event_to_keysym_prefers_modified_printable_ascii() {
+        assert_eq!(
+            key_event_to_keysym(Code::KeyA, &Key::Character("A".into())),
+            Some('A' as u32)
+        );
+        assert_eq!(
+            key_event_to_keysym(Code::Digit1, &Key::Character("!".into())),
+            Some('!' as u32)
+        );
+        assert_eq!(
+            key_event_to_keysym(Code::KeyA, &Key::Character("a".into())),
+            Some('a' as u32)
+        );
+    }
+
+    #[test]
+    fn key_event_to_keysym_falls_back_for_non_ascii_or_named_keys() {
+        assert_eq!(
+            key_event_to_keysym(Code::KeyE, &Key::Character("é".into())),
+            Some('e' as u32)
+        );
+        assert_eq!(
+            key_event_to_keysym(Code::ArrowUp, &Key::Unidentified),
+            Some(XK_UP)
+        );
     }
 
     #[test]
