@@ -1,5 +1,6 @@
 //! 应用状态/消息/视图/订阅（M2）：菜单/模态/连接页/profile + M1 视频链路。
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -34,7 +35,7 @@ use crate::input::{
     KeyAction, SpecialKey, is_mode_toggle_combo, is_remote_exit_combo, modifier_diff,
     special_key_from_menu, special_key_sequence, wheel_steps,
 };
-use crate::keymap::physical_code_to_keysym;
+use crate::keymap::{key_event_to_keysym, physical_code_to_keysym};
 use crate::locale::AppLanguage;
 use crate::menu::{MenuAction, menu_bar};
 use crate::modal::{ModalAction, ModalKind, ModalState};
@@ -293,6 +294,7 @@ where
     status_message: Option<String>,
     remote_input: bool,
     last_modifiers: iced::keyboard::Modifiers,
+    active_keysyms: BTreeMap<iced::keyboard::key::Code, u32>,
     relative_source: Option<Box<dyn RelativePointerSource>>,
     relative_rx: Option<DeltaReceiver>,
     relative_sampler: DeltaSampler,
@@ -368,6 +370,7 @@ impl App<RecordingSink, MockFactory> {
             status_message: None,
             remote_input: false,
             last_modifiers: iced::keyboard::Modifiers::empty(),
+            active_keysyms: BTreeMap::new(),
             relative_source: None,
             relative_rx: None,
             relative_sampler: DeltaSampler::new(Duration::from_millis(33)),
@@ -434,6 +437,7 @@ impl App<Ch9329InputSink<SerialCommandQueue>, ProductionSessionFactory> {
             status_message: None,
             remote_input: false,
             last_modifiers: iced::keyboard::Modifiers::empty(),
+            active_keysyms: BTreeMap::new(),
             relative_source: None,
             relative_rx: None,
             relative_sampler: DeltaSampler::new(Duration::from_millis(33)),
@@ -940,6 +944,7 @@ where
             }
             MenuAction::Simple("release_all") => {
                 let _ = self.controller.release_all();
+                self.active_keysyms.clear();
                 Task::none()
             }
             MenuAction::Simple(_) => Task::none(),
@@ -1173,6 +1178,7 @@ where
         match event {
             iced::keyboard::Event::KeyPressed {
                 physical_key,
+                modified_key,
                 modifiers,
                 repeat,
                 ..
@@ -1191,7 +1197,7 @@ where
                 if repeat {
                     return;
                 }
-                let Some(keysym) = physical_code_to_keysym(code) else {
+                let Some(keysym) = key_event_to_keysym(code, &modified_key) else {
                     self.status_message = Some(t!("message.unsupported_key").to_string());
                     return;
                 };
@@ -1199,13 +1205,18 @@ where
                     self.status_message = Some(
                         t!("message.keyboard_send_failed", error = error.to_string()).to_string(),
                     );
+                } else {
+                    self.active_keysyms.insert(code, keysym);
                 }
             }
             iced::keyboard::Event::KeyReleased { physical_key, .. } => {
                 let iced::keyboard::key::Physical::Code(code) = physical_key else {
                     return;
                 };
-                if let Some(keysym) = physical_code_to_keysym(code)
+                if let Some(keysym) = self
+                    .active_keysyms
+                    .remove(&code)
+                    .or_else(|| physical_code_to_keysym(code))
                     && let Err(error) = self.controller.send_key(false, keysym)
                 {
                     self.status_message = Some(
@@ -1321,6 +1332,7 @@ where
 
     fn enter_remote_input(&mut self) {
         self.remote_input = true;
+        self.active_keysyms.clear();
         self.sync_cursor();
     }
 
@@ -1336,6 +1348,7 @@ where
         // 复位去重/限频状态，避免重进同位置点击被节流吞掉。
         self.last_pointer_sent = None;
         self.last_pointer_sent_at = None;
+        self.active_keysyms.clear();
         self.relative_sampler.reset();
         self.stop_relative_source();
         let _ = self.controller.release_all();
@@ -1595,6 +1608,7 @@ where
         self.latest_frame = None;
         self.frame_size = None;
         self.remote_input = false;
+        self.active_keysyms.clear();
         self.last_pointer = None;
         self.last_relative_mask = 0;
         self.sync_cursor();
@@ -3059,6 +3073,44 @@ mod tests {
         })
     }
 
+    fn keyboard_modifiers(shift: bool) -> iced::keyboard::Modifiers {
+        let mut modifiers = iced::keyboard::Modifiers::empty();
+        modifiers.set(iced::keyboard::Modifiers::SHIFT, shift);
+        modifiers
+    }
+
+    fn press_character_key(
+        code: iced::keyboard::key::Code,
+        key: &str,
+        modified_key: &str,
+        modifiers: iced::keyboard::Modifiers,
+    ) -> Message {
+        Message::Keyboard(iced::keyboard::Event::KeyPressed {
+            key: iced::keyboard::Key::Character(key.into()),
+            modified_key: iced::keyboard::Key::Character(modified_key.into()),
+            physical_key: iced::keyboard::key::Physical::Code(code),
+            location: iced::keyboard::Location::Standard,
+            modifiers,
+            text: Some(modified_key.into()),
+            repeat: false,
+        })
+    }
+
+    fn release_character_key(
+        code: iced::keyboard::key::Code,
+        key: &str,
+        modified_key: &str,
+        modifiers: iced::keyboard::Modifiers,
+    ) -> Message {
+        Message::Keyboard(iced::keyboard::Event::KeyReleased {
+            key: iced::keyboard::Key::Character(key.into()),
+            modified_key: iced::keyboard::Key::Character(modified_key.into()),
+            physical_key: iced::keyboard::key::Physical::Code(code),
+            location: iced::keyboard::Location::Standard,
+            modifiers,
+        })
+    }
+
     fn click_video(app: &mut MockApp) {
         let _ = app.update(Message::IcedEvent(iced::Event::Mouse(
             iced::mouse::Event::ButtonPressed(iced::mouse::Button::Left),
@@ -3152,6 +3204,98 @@ mod tests {
         let recorded = wait_sink(&app, 2);
         assert_eq!(recorded[0], (true, 0x04));
         assert_eq!(recorded[1], (false, 0x04));
+    }
+
+    #[test]
+    fn shift_modified_letter_reaches_sink_as_uppercase() {
+        let (mut app, _) = MockApp::new_mock();
+        enter_remote(&mut app);
+        let shift = keyboard_modifiers(true);
+
+        let _ = app.update(Message::Keyboard(iced::keyboard::Event::ModifiersChanged(
+            shift,
+        )));
+        let _ = app.update(press_character_key(
+            iced::keyboard::key::Code::KeyA,
+            "a",
+            "A",
+            shift,
+        ));
+        let _ = app.update(release_character_key(
+            iced::keyboard::key::Code::KeyA,
+            "a",
+            "A",
+            shift,
+        ));
+        let _ = app.update(Message::Keyboard(iced::keyboard::Event::ModifiersChanged(
+            iced::keyboard::Modifiers::empty(),
+        )));
+
+        let recorded = drain_to(&mut app, 4);
+        assert_eq!(
+            recorded,
+            vec![(true, 0xe1), (true, 0x04), (false, 0x04), (false, 0xe1)],
+            "Shift+A 必须保持远端 Shift 按下并输入大写 A"
+        );
+    }
+
+    #[test]
+    fn caps_lock_modified_letter_reaches_sink_as_uppercase() {
+        let (mut app, _) = MockApp::new_mock();
+        enter_remote(&mut app);
+
+        let _ = app.update(press_character_key(
+            iced::keyboard::key::Code::KeyA,
+            "a",
+            "A",
+            iced::keyboard::Modifiers::empty(),
+        ));
+        let _ = app.update(release_character_key(
+            iced::keyboard::key::Code::KeyA,
+            "a",
+            "A",
+            iced::keyboard::Modifiers::empty(),
+        ));
+
+        let recorded = drain_to(&mut app, 4);
+        assert_eq!(
+            recorded,
+            vec![(true, 0xe1), (true, 0x04), (false, 0x04), (false, 0xe1)],
+            "Caps Lock 反映到 modified_key 后必须输入大写 A"
+        );
+    }
+
+    #[test]
+    fn modified_letter_release_uses_original_pressed_keysym() {
+        let (mut app, _) = MockApp::new_mock();
+        enter_remote(&mut app);
+        let shift = keyboard_modifiers(true);
+
+        let _ = app.update(Message::Keyboard(iced::keyboard::Event::ModifiersChanged(
+            shift,
+        )));
+        let _ = app.update(press_character_key(
+            iced::keyboard::key::Code::KeyA,
+            "a",
+            "A",
+            shift,
+        ));
+        let _ = app.update(Message::Keyboard(iced::keyboard::Event::ModifiersChanged(
+            iced::keyboard::Modifiers::empty(),
+        )));
+        let _ = app.update(release_character_key(
+            iced::keyboard::key::Code::KeyA,
+            "a",
+            "a",
+            iced::keyboard::Modifiers::empty(),
+        ));
+
+        let recorded = drain_to(&mut app, 4);
+        assert_eq!(
+            recorded,
+            vec![(true, 0xe1), (true, 0x04), (false, 0x04), (false, 0xe1)],
+            "字母抬起必须释放按下时登记的 keysym，不能受当前 modifiers 改变"
+        );
     }
 
     #[test]
