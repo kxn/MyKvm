@@ -1,11 +1,4 @@
-use std::{
-    net::SocketAddr,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    time::Duration,
-};
+use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use axum::{
     Json, Router,
@@ -21,7 +14,12 @@ use axum::{
 use ipkvm_core::{InputSink, MouseMode, MouseProfile};
 use ipkvm_device::{DeviceInventoryProvider, SerialDevice, VideoDevice};
 use ipkvm_session::console_session::InputOfflineInfo;
-use ipkvm_session::session_manager::{SessionManager, SessionState};
+use ipkvm_session::frame_hub::FrameHub;
+use ipkvm_session::session_manager::SessionState;
+use ipkvm_session::supervisor::{
+    ControlRuntimeStatus, RecoveryPolicy, SessionIntent, SessionSupervisor, SupervisorStatus,
+    VideoRuntimeStatus,
+};
 use ipkvm_video::{FrameSource, PixelFormat, VideoSourceKind};
 use serde::Deserialize;
 use thiserror::Error;
@@ -32,7 +30,6 @@ use tokio::{
 };
 
 use super::{assets::find_asset, auth};
-use crate::frame_source::{EmptyFrameSource, SwitchableFrameSource};
 use crate::rfb_ws::{RfbWebSocketConfig, RfbWebSocketService, RfbWebSocketServiceError};
 use crate::settings::{SettingsStore, WebSettings, validate};
 use ipkvm_session::rfb_connection::{RfbConnectionGate, RfbServerEvent, RfbTransportKind};
@@ -43,7 +40,7 @@ const JPEG_QUALITY: u8 = 85;
 const VIDEO_STALL_TIMEOUT_NS: u64 = 2_000_000_000;
 
 pub struct HeadlessWebService<I: InputSink + Clone + Send + 'static> {
-    rfb: RfbWebSocketService<SwitchableFrameSource>,
+    rfb: RfbWebSocketService<FrameHub>,
     api: Arc<ApiState<I>>,
     shutdown: watch::Receiver<bool>,
     auth: Option<String>,
@@ -51,9 +48,9 @@ pub struct HeadlessWebService<I: InputSink + Clone + Send + 'static> {
 
 /// `/api` 路由共享的服务状态：帧源元数据、连接闸门与会话管理器。
 pub(super) struct ApiState<I: InputSink + Clone + Send + 'static> {
-    pub(super) frame_source: Arc<SwitchableFrameSource>,
+    pub(super) frame_source: Arc<FrameHub>,
     pub(super) gate: RfbConnectionGate,
-    pub(super) manager: Arc<tokio::sync::Mutex<SessionManager<I>>>,
+    pub(super) supervisor: Arc<tokio::sync::Mutex<SessionSupervisor<I>>>,
     pub(super) selection: tokio::sync::Mutex<Option<SessionSelection>>,
     /// 会话工厂：按请求中的设备选择构造帧源与 sink。
     pub(super) factory: Arc<dyn SessionFactory<I> + Send + Sync>,
@@ -61,10 +58,6 @@ pub(super) struct ApiState<I: InputSink + Clone + Send + 'static> {
     pub(super) device_provider: Arc<dyn DeviceInventoryProvider>,
     /// 运行时设置存储：`/api/settings` 读写 + 会话组装分层取默认值。
     pub(super) settings: Arc<SettingsStore>,
-    /// 手动停止标记：`stop` 置位，`create`/`restart` 清除，恢复循环尊重。
-    pub(super) manual_stop: Arc<AtomicBool>,
-    /// 浏览器断开后等待超时的时间戳（None 表示没有断开）。
-    pub(super) disconnect_deadline: Arc<tokio::sync::Mutex<Option<std::time::Instant>>>,
 }
 
 /// 一次运行时会话选择。字段为 `None` 时由工厂沿用启动配置默认值。
@@ -90,8 +83,17 @@ impl SessionSelection {
 }
 
 /// 会话工厂：按启动默认配置与运行时选择构造帧源与输入 sink。
+///
+/// `build_video()` 与 `build_control()` 是独立恢复契约：实现方必须分别打开
+/// 视频与控制设备，不能通过一次性 `build()` 隐式构造两遍完整会话。
 pub trait SessionFactory<I>: Send + Sync {
-    fn build(&self, selection: &SessionSelection) -> Result<(Arc<dyn FrameSource>, I), String>;
+    fn build_video(&self, selection: &SessionSelection) -> Result<Arc<dyn FrameSource>, String>;
+
+    fn build_control(&self, selection: &SessionSelection) -> Result<I, String>;
+
+    fn build(&self, selection: &SessionSelection) -> Result<(Arc<dyn FrameSource>, I), String> {
+        Ok((self.build_video(selection)?, self.build_control(selection)?))
+    }
 }
 
 #[derive(Debug, Error)]
@@ -105,12 +107,12 @@ pub enum HeadlessWebServiceError {
 impl<I: InputSink + Clone + Send + 'static> HeadlessWebService<I> {
     /// `auth` 为 `[auth] token`（HTTP/WS 鉴权）；`None` 表示仅允许本机来源。
     ///
-    /// `event_publisher` 来自 `SessionManager::event_publisher()`，传输层据此
+    /// `event_publisher` 来自 `SessionSupervisor::event_publisher()`，传输层据此
     /// 在会话重启后拿到新事件发送端。
     #[allow(clippy::too_many_arguments)] // 组装依赖项，无法合理合并
     pub fn new(
-        frame_source: Arc<SwitchableFrameSource>,
-        manager: Arc<tokio::sync::Mutex<SessionManager<I>>>,
+        frame_source: Arc<FrameHub>,
+        supervisor: Arc<tokio::sync::Mutex<SessionSupervisor<I>>>,
         factory: Arc<dyn SessionFactory<I> + Send + Sync>,
         device_provider: Arc<dyn DeviceInventoryProvider>,
         event_publisher: watch::Receiver<Option<mpsc::Sender<RfbServerEvent>>>,
@@ -119,19 +121,16 @@ impl<I: InputSink + Clone + Send + 'static> HeadlessWebService<I> {
         gate: RfbConnectionGate,
         auth: Option<String>,
         settings: Arc<SettingsStore>,
-        manual_stop: Arc<AtomicBool>,
         initial_selection: Option<SessionSelection>,
     ) -> Result<Self, HeadlessWebServiceError> {
         let api = Arc::new(ApiState {
             frame_source: Arc::clone(&frame_source),
             gate: gate.clone(),
-            manager,
+            supervisor,
             selection: tokio::sync::Mutex::new(initial_selection),
             factory,
             device_provider,
             settings,
-            manual_stop,
-            disconnect_deadline: Arc::new(tokio::sync::Mutex::new(None)),
         });
         let rfb = RfbWebSocketService::new(
             frame_source,
@@ -149,11 +148,9 @@ impl<I: InputSink + Clone + Send + 'static> HeadlessWebService<I> {
     }
 
     pub async fn serve(self, listener: TcpListener) -> Result<(), HeadlessWebServiceError> {
-        // 自动恢复循环：输入泵失败/视频从未出帧时按退避重建会话。
-        tokio::spawn(super::recovery::run_recovery_loop(
+        tokio::spawn(run_supervisor_loop(
             Arc::clone(&self.api),
             self.shutdown.clone(),
-            super::recovery::RecoveryPolicy::default(),
         ));
         let shutdown = self.shutdown;
         let router = static_router()
@@ -198,6 +195,36 @@ fn api_router<I: InputSink + Clone + Send + 'static>(api: Arc<ApiState<I>>) -> R
         .route("/api/input/mouse-profile", post(api_mouse_profile::<I>))
         .route("/api/session", post(api_session::<I>))
         .with_state(api)
+}
+
+async fn run_supervisor_loop<I: InputSink + Clone + Send + 'static>(
+    api: Arc<ApiState<I>>,
+    mut shutdown: watch::Receiver<bool>,
+) {
+    let policy = RecoveryPolicy::default();
+    loop {
+        if *shutdown.borrow() {
+            return;
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(policy.tick) => {}
+            _ = shutdown.changed() => return,
+        }
+        let Some(selection) = api.selection.lock().await.clone() else {
+            continue;
+        };
+        let factory_for_video = Arc::clone(&api.factory);
+        let factory_for_control = Arc::clone(&api.factory);
+        let selection_for_video = selection.clone();
+        let selection_for_control = selection;
+        let mut supervisor = api.supervisor.lock().await;
+        supervisor
+            .tick(
+                move || factory_for_video.build_video(&selection_for_video),
+                move || factory_for_control.build_control(&selection_for_control),
+            )
+            .await;
+    }
 }
 
 async fn serve_asset(uri: Uri) -> Response {
@@ -263,6 +290,7 @@ struct VideoStatus {
     source: SourceStatus,
     frame: Option<FrameStatus>,
     stalled: bool,
+    runtime: RuntimeStatusDto,
     /// 源侧采集/转换统计（仅支持统计的源才输出）。
     #[serde(skip_serializing_if = "Option::is_none")]
     source_stats: Option<SourceStatsDto>,
@@ -304,6 +332,7 @@ struct SessionStatus {
     state: &'static str,
     /// 手动停止标记：恒序列化（契约要求恒存在）。
     manual_stop: bool,
+    control: RuntimeStatusDto,
     input_events: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     last_input_ns: Option<u64>,
@@ -319,6 +348,17 @@ struct SessionStatus {
     encode: Option<RfbEncodeStatsDto>,
     /// RFB 成功发送的 FramebufferUpdate 累计次数。
     updates_sent: u64,
+}
+
+#[derive(serde::Serialize)]
+struct RuntimeStatusDto {
+    state: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    attempt: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    attempts: Option<u32>,
 }
 
 #[derive(serde::Serialize)]
@@ -399,7 +439,7 @@ impl From<ipkvm_session::serial_stats::SerialStats> for SerialStatsDto {
 async fn api_status<I: InputSink + Clone + Send + 'static>(
     State(state): State<Arc<ApiState<I>>>,
 ) -> Response {
-    let frame_source = state.frame_source.current();
+    let frame_source = Arc::clone(&state.frame_source);
     let source = frame_source.source_info();
     let frame = frame_source.latest_frame();
     let controller = match state.gate.active_controller() {
@@ -430,10 +470,12 @@ async fn api_status<I: InputSink + Clone + Send + 'static>(
         updates_sent,
         input_offline,
         actual_mouse_mode,
+        supervisor_status,
     ) = {
-        let mut manager = state.manager.lock().await;
-        manager.refresh_stats();
-        let state_name = session_state_name(manager.state());
+        let mut supervisor = state.supervisor.lock().await;
+        supervisor.manager_mut().refresh_stats();
+        let supervisor_status = supervisor.status();
+        let state_name = supervisor_session_state_name(&supervisor_status);
         let (
             input_events,
             last_input_ns,
@@ -443,7 +485,7 @@ async fn api_status<I: InputSink + Clone + Send + 'static>(
             encode,
             updates_sent,
             input_offline,
-        ) = match manager.session() {
+        ) = match supervisor.manager().session() {
             Some(session) => {
                 let stats = session.stats();
                 (
@@ -459,7 +501,8 @@ async fn api_status<I: InputSink + Clone + Send + 'static>(
             }
             None => (0, None, 0, None, None, None, 0, None),
         };
-        let actual_mouse_mode = manager
+        let actual_mouse_mode = supervisor
+            .manager()
             .session()
             .and_then(|session| *session.mouse_mode().borrow());
         (
@@ -473,15 +516,17 @@ async fn api_status<I: InputSink + Clone + Send + 'static>(
             updates_sent,
             input_offline,
             actual_mouse_mode,
+            supervisor_status,
         )
     };
     let now_ns = ipkvm_session::now_ns();
-    let stalled = match &frame {
-        Some(_) => last_frame_ns
-            .map(|last| now_ns.saturating_sub(last) > VIDEO_STALL_TIMEOUT_NS)
-            .unwrap_or(true),
-        None => session_state != "absent",
-    };
+    let stalled = matches!(supervisor_status.video, VideoRuntimeStatus::Stalled { .. })
+        || match &frame {
+            Some(_) => last_frame_ns
+                .map(|last| now_ns.saturating_sub(last) > VIDEO_STALL_TIMEOUT_NS)
+                .unwrap_or(true),
+            None => session_state != "absent",
+        };
     let (mouse_profile, selected_mouse_mode) = {
         let selection = state.selection.lock().await;
         let profile = selection
@@ -492,42 +537,6 @@ async fn api_status<I: InputSink + Clone + Send + 'static>(
         (profile.as_str(), profile.resolve_mode())
     };
     let mouse_mode = actual_mouse_mode.unwrap_or(selected_mouse_mode);
-
-    // 浏览器断开超时：如果会话运行中但没有活跃连接，设置 1 分钟超时。
-    // 如果 1 分钟内有新连接，取消超时；超时后停止 session。
-    if !controller.active
-        && session_state == "running"
-        && !state.manual_stop.load(Ordering::Relaxed)
-    {
-        let mut deadline = state.disconnect_deadline.lock().await;
-        if deadline.is_none() {
-            *deadline = Some(std::time::Instant::now() + std::time::Duration::from_secs(60));
-        }
-    } else if controller.active {
-        // 有活跃连接，清除超时
-        state.disconnect_deadline.lock().await.take();
-    }
-
-    // 检查是否超时
-    {
-        let deadline = state.disconnect_deadline.lock().await;
-        if let Some(dl) = *deadline
-            && std::time::Instant::now() >= dl
-        {
-            drop(deadline);
-            // 超时：停止 session
-            let mut manager = state.manager.lock().await;
-            if manager.state() == ipkvm_session::session_manager::SessionState::Running {
-                let _ = manager.stop();
-                manager.wait_stopped().await;
-                let _ = manager.stop_and_destroy().await;
-                state
-                    .frame_source
-                    .set_current(Arc::new(EmptyFrameSource::new()));
-            }
-            state.disconnect_deadline.lock().await.take();
-        }
-    }
 
     let status = StatusResponse {
         service: ServiceStatus {
@@ -549,12 +558,14 @@ async fn api_status<I: InputSink + Clone + Send + 'static>(
                 last_frame_ns,
             }),
             stalled,
+            runtime: video_runtime_status(&supervisor_status.video),
             source_stats: frame_source.source_stats().map(SourceStatsDto::from),
         },
         controller,
         session: SessionStatus {
             state: session_state,
-            manual_stop: state.manual_stop.load(Ordering::Relaxed),
+            manual_stop: supervisor_status.intent == SessionIntent::ManualStopped,
+            control: control_runtime_status(&supervisor_status.control),
             input_events,
             last_input_ns,
             dropped_frames,
@@ -573,6 +584,82 @@ fn mouse_mode_name(mode: MouseMode) -> &'static str {
     match mode {
         MouseMode::Absolute => "absolute",
         MouseMode::Relative => "relative",
+    }
+}
+
+fn video_runtime_status(status: &VideoRuntimeStatus) -> RuntimeStatusDto {
+    match status {
+        VideoRuntimeStatus::Idle => RuntimeStatusDto {
+            state: "idle",
+            reason: None,
+            attempt: None,
+            attempts: None,
+        },
+        VideoRuntimeStatus::Starting { attempt } => RuntimeStatusDto {
+            state: "starting",
+            reason: None,
+            attempt: Some(*attempt),
+            attempts: None,
+        },
+        VideoRuntimeStatus::Streaming => RuntimeStatusDto {
+            state: "streaming",
+            reason: None,
+            attempt: None,
+            attempts: None,
+        },
+        VideoRuntimeStatus::Stalled { reason } => RuntimeStatusDto {
+            state: "stalled",
+            reason: Some(reason.clone()),
+            attempt: None,
+            attempts: None,
+        },
+        VideoRuntimeStatus::Recovering { reason, attempt } => RuntimeStatusDto {
+            state: "recovering",
+            reason: Some(reason.clone()),
+            attempt: Some(*attempt),
+            attempts: None,
+        },
+        VideoRuntimeStatus::Failed { reason, attempts } => RuntimeStatusDto {
+            state: "failed",
+            reason: Some(reason.clone()),
+            attempt: None,
+            attempts: Some(*attempts),
+        },
+    }
+}
+
+fn control_runtime_status(status: &ControlRuntimeStatus) -> RuntimeStatusDto {
+    match status {
+        ControlRuntimeStatus::Idle => RuntimeStatusDto {
+            state: "idle",
+            reason: None,
+            attempt: None,
+            attempts: None,
+        },
+        ControlRuntimeStatus::Starting { attempt } => RuntimeStatusDto {
+            state: "starting",
+            reason: None,
+            attempt: Some(*attempt),
+            attempts: None,
+        },
+        ControlRuntimeStatus::Ready => RuntimeStatusDto {
+            state: "ready",
+            reason: None,
+            attempt: None,
+            attempts: None,
+        },
+        ControlRuntimeStatus::Recovering { reason, attempt } => RuntimeStatusDto {
+            state: "recovering",
+            reason: Some(reason.clone()),
+            attempt: Some(*attempt),
+            attempts: None,
+        },
+        ControlRuntimeStatus::Failed { reason, attempts } => RuntimeStatusDto {
+            state: "failed",
+            reason: Some(reason.clone()),
+            attempt: None,
+            attempts: Some(*attempts),
+        },
     }
 }
 
@@ -657,11 +744,11 @@ async fn api_mouse_profile<I: InputSink + Clone + Send + 'static>(
             Some("connect the remote display before changing the mouse profile"),
         );
     };
-    let manager = state.manager.lock().await;
-    if manager.state() != SessionState::Running {
+    let supervisor = state.supervisor.lock().await;
+    if supervisor.manager().state() != SessionState::Running {
         return json_error(StatusCode::CONFLICT, "session is not running", None);
     }
-    let Some(session) = manager.session() else {
+    let Some(session) = supervisor.manager().session() else {
         return json_error(StatusCode::CONFLICT, "session is not running", None);
     };
     let event_tx = session.event_tx().clone();
@@ -733,11 +820,10 @@ async fn wait_for_mouse_mode(
 async fn api_screenshot<I: InputSink + Clone + Send + 'static>(
     State(state): State<Arc<ApiState<I>>>,
 ) -> Response {
-    let frame_source = state.frame_source.current();
-    let Some(frame) = frame_source.latest_frame() else {
+    let Some(frame) = state.frame_source.latest_frame() else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
-    state.manager.lock().await.refresh_stats();
+    state.supervisor.lock().await.manager_mut().refresh_stats();
 
     // MJPEG 透传：帧已经是 JPEG，直接返回。
     if frame.pixel_format == PixelFormat::Mjpeg {
@@ -1008,7 +1094,6 @@ async fn api_session<I: InputSink + Clone + Send + 'static>(
     State(state): State<Arc<ApiState<I>>>,
     Json(request): Json<SessionRequest>,
 ) -> Response {
-    let mut manager = state.manager.lock().await;
     let mouse_profile =
         match normalize_session_mouse_profile(request.mouse_profile, request.mouse_mode) {
             Ok(profile) => profile,
@@ -1027,61 +1112,26 @@ async fn api_session<I: InputSink + Clone + Send + 'static>(
     };
     match request.action.as_str() {
         "restart" => {
-            // 手动停止标记由 restart 清除：用户显式要求重建会话。
-            state.manual_stop.store(false, Ordering::Relaxed);
-            let (previous_selection, target_selection) = {
+            let target_selection = {
                 let current = state.selection.lock().await;
                 let base = current.clone().unwrap_or_default();
-                (current.clone(), base.with_overrides(&selection))
+                base.with_overrides(&selection)
             };
-            if let Err(error) = manager.stop_and_destroy().await {
-                return session_error(error);
-            }
-            state
-                .frame_source
-                .set_current(Arc::new(EmptyFrameSource::new()));
-            let (frame_source, sink) = match state.factory.build(&target_selection) {
-                Ok(built) => built,
-                Err(detail) => {
-                    let rollback = match &previous_selection {
-                        Some(previous) => restore_previous_session(&state, &mut manager, previous)
-                            .await
-                            .map(|()| previous.clone()),
-                        None => Err("没有上一成功会话选择可回滚".to_string()),
-                    };
-                    let detail = match rollback {
-                        Ok(restored) => {
-                            *state.selection.lock().await = Some(restored);
-                            format!("{detail}; 已回滚到上一会话选择")
-                        }
-                        Err(rollback_detail) => {
-                            *state.selection.lock().await = None;
-                            format!("{detail}; 回滚上一会话选择失败：{rollback_detail}")
-                        }
-                    };
-                    return json_error(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "session creation failed",
-                        Some(&detail),
-                    );
-                }
-            };
-            match create_and_start_session(&mut manager, &frame_source, sink, state.gate.clone()) {
-                Ok(()) => {
-                    state.frame_source.set_current(frame_source);
-                    *state.selection.lock().await = Some(target_selection);
-                    json_session_state(&manager)
-                }
-                Err(error) => session_error(error),
-            }
+            let mut supervisor = state.supervisor.lock().await;
+            let _ = supervisor.stop_manual().await;
+            start_supervisor_selection(&state, &mut supervisor, &target_selection).await;
+            *state.selection.lock().await = Some(target_selection);
+            json_supervisor_state(&supervisor)
         }
         "create" => {
             // 零初始会话首启：经工厂构造帧源/sink 后 create + start。
-            if manager.state() != SessionState::Absent {
+            let mut supervisor = state.supervisor.lock().await;
+            if !matches!(
+                supervisor.status().intent,
+                SessionIntent::NoSelection | SessionIntent::ManualStopped
+            ) {
                 return session_error(ipkvm_session::console_session::SessionError::AlreadyCreated);
             }
-            // 手动停止标记由 create 清除：用户显式要求启动会话。
-            state.manual_stop.store(false, Ordering::Relaxed);
             let target_selection = {
                 let current = state.selection.lock().await;
                 current
@@ -1089,40 +1139,15 @@ async fn api_session<I: InputSink + Clone + Send + 'static>(
                     .unwrap_or_default()
                     .with_overrides(&selection)
             };
-            let (frame_source, sink) = match state.factory.build(&target_selection) {
-                Ok(built) => built,
-                Err(detail) => {
-                    return json_error(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "session creation failed",
-                        Some(&detail),
-                    );
-                }
-            };
-            // create 用独立闸门副本（与传输层共享同一仲裁，clone 共享内部信号量）。
-            if let Err(error) =
-                create_and_start_session(&mut manager, &frame_source, sink, state.gate.clone())
-            {
-                return session_error(error);
-            }
-            state.frame_source.set_current(frame_source);
+            start_supervisor_selection(&state, &mut supervisor, &target_selection).await;
             *state.selection.lock().await = Some(target_selection);
-            json_session_state(&manager)
+            json_supervisor_state(&supervisor)
         }
         "stop" => {
             // 用户手动断开：立即停止 session
-            state.manual_stop.store(true, Ordering::Relaxed);
-            match manager.stop() {
-                Ok(()) => {
-                    manager.wait_stopped().await;
-                    let _ = manager.stop_and_destroy().await;
-                    state
-                        .frame_source
-                        .set_current(Arc::new(EmptyFrameSource::new()));
-                    json_session_state(&manager)
-                }
-                Err(error) => session_error(error),
-            }
+            let mut supervisor = state.supervisor.lock().await;
+            let _ = supervisor.stop_manual().await;
+            json_supervisor_state(&supervisor)
         }
         other => json_error(
             StatusCode::BAD_REQUEST,
@@ -1153,34 +1178,29 @@ fn normalize_session_mouse_profile(
     Ok(Some(profile.as_str().to_string()))
 }
 
-pub(super) fn create_and_start_session<I: InputSink + Clone + Send + 'static>(
-    manager: &mut SessionManager<I>,
-    frame_source: &Arc<dyn FrameSource>,
-    sink: I,
-    gate: RfbConnectionGate,
-) -> Result<(), ipkvm_session::console_session::SessionError> {
-    manager.create(Arc::clone(frame_source), sink, gate)?;
-    manager.start()?;
-    Ok(())
-}
-
-async fn restore_previous_session<I: InputSink + Clone + Send + 'static>(
+async fn start_supervisor_selection<I: InputSink + Clone + Send + 'static>(
     state: &ApiState<I>,
-    manager: &mut SessionManager<I>,
+    supervisor: &mut SessionSupervisor<I>,
     selection: &SessionSelection,
-) -> Result<(), String> {
-    let (frame_source, sink) = state.factory.build(selection)?;
-    create_and_start_session(manager, &frame_source, sink, state.gate.clone())
-        .map_err(|error| error.to_string())?;
-    state.frame_source.set_current(frame_source);
-    Ok(())
+) {
+    let factory_for_video = Arc::clone(&state.factory);
+    let factory_for_control = Arc::clone(&state.factory);
+    let selection_for_video = selection.clone();
+    let selection_for_control = selection.clone();
+    supervisor
+        .start_at(
+            move || factory_for_video.build_video(&selection_for_video),
+            move || factory_for_control.build_control(&selection_for_control),
+            std::time::Instant::now(),
+        )
+        .await;
 }
 
-fn json_session_state<I: InputSink + Clone + Send + 'static>(
-    manager: &SessionManager<I>,
+fn json_supervisor_state<I: InputSink + Clone + Send + 'static>(
+    supervisor: &SessionSupervisor<I>,
 ) -> Response {
     let body = serde_json::to_vec(&SessionResponse {
-        state: session_state_name(manager.state()),
+        state: supervisor_session_state_name(&supervisor.status()),
     })
     .expect("session response serialization cannot fail");
     Response::builder()
@@ -1212,11 +1232,20 @@ fn session_error(error: ipkvm_session::console_session::SessionError) -> Respons
     }
 }
 
+#[cfg(test)]
 pub(super) fn session_state_name(state: SessionState) -> &'static str {
     match state {
         SessionState::Absent => "absent",
         SessionState::Stopped => "stopped",
         SessionState::Running => "running",
+    }
+}
+
+fn supervisor_session_state_name(status: &SupervisorStatus) -> &'static str {
+    if status.should_show_work_view() {
+        "running"
+    } else {
+        "absent"
     }
 }
 

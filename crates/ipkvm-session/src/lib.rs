@@ -1,10 +1,12 @@
 //! 控制台会话抽象。
 
 pub mod console_session;
+pub mod frame_hub;
 pub mod rfb_connection;
 pub mod rfb_input;
 pub mod serial_stats;
 pub mod session_manager;
+pub mod supervisor;
 
 use ipkvm_core::MouseMode;
 use ipkvm_video::{PixelFormat, VideoFormat};

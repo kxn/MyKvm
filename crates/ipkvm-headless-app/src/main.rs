@@ -22,7 +22,7 @@
 //! 只有一个客户端能获得控制权。
 
 use std::path::PathBuf;
-use std::sync::{Arc, atomic::AtomicBool};
+use std::sync::Arc;
 use std::time::Duration;
 
 use ipkvm_core::{
@@ -31,12 +31,11 @@ use ipkvm_core::{
 };
 use ipkvm_device::ProductionDeviceInventoryProvider;
 use ipkvm_headless::config::{self, Options};
-use ipkvm_headless::frame_source::{EmptyFrameSource, SwitchableFrameSource};
 use ipkvm_headless::rfb_connection::{RfbConnectionGate, RfbConnectionSettings};
 use ipkvm_headless::rfb_tcp::{RfbTcpConfig, RfbTcpServer, RfbTcpServerError};
 use ipkvm_headless::rfb_ws::RfbWebSocketConfig;
-use ipkvm_headless::session_manager::SessionManager;
 use ipkvm_headless::settings::{SettingsStore, WebSettings};
+use ipkvm_headless::supervisor::{RecoveryPolicy, SessionSupervisor};
 use ipkvm_headless::web::{
     HeadlessWebService, HeadlessWebServiceError, SessionFactory, SessionSelection,
 };
@@ -52,11 +51,9 @@ const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// headless 统一输入 sink：枚举分发真实串口与模拟队列。
 ///
-/// `SessionManager<S>` 要求 `S: InputSink + Clone + Send + 'static`；真实串口
-/// (`Ch9329InputSink<SerialCommandQueue>`) 与模拟队列
-/// (`Ch9329InputSink<FakeCommandQueue>`) 是不同具体类型，本枚举在组装层统一，
-/// 使 `SessionManager<HeadlessSink>` 在整个进程生命周期单态化。运行时换 sink
-/// 类型不在本轮范围（见 issue #32）——启动时决定，restart 复用相同变体。
+/// `SessionSupervisor<S>` 要求 `S: InputSink + Clone + Send + 'static`；真实
+/// 串口 (`Ch9329InputSink<SerialCommandQueue>`) 与模拟队列
+/// (`Ch9329InputSink<FakeCommandQueue>`) 是不同具体类型，本枚举在组装层统一。
 #[derive(Clone)]
 enum HeadlessSink {
     Serial(Ch9329InputSink<SerialCommandQueue>),
@@ -433,8 +430,6 @@ enum HeadlessRunError {
     Web(#[from] HeadlessWebServiceError),
     #[error("后台任务失败")]
     Join(#[from] JoinError),
-    #[error("会话失败：{0}")]
-    Session(String),
 }
 
 type TaskResult<T> = Result<T, HeadlessRunError>;
@@ -539,29 +534,6 @@ fn build_initial_session_components(
     Ok(None)
 }
 
-/// 按 CLI 参数与运行时设置构造会话所需的帧源与输入 sink。
-///
-/// 返回的 `(frame_source, sink)` 同时用于启动即绑定（`run` 首启）与零初始
-/// 会话启动后的工厂 `build()`。两条 sink 路径（真实串口/模拟队列）经
-/// `HeadlessSink` 统一类型。`serial_baud`/`frames_per_second` 未指定时取
-/// 运行时设置（`auto_baud` 本单仅存储，不在 headless 使用）。
-fn build_session_components(
-    options: &Options,
-    runtime: &WebSettings,
-    profile_override: Option<&str>,
-) -> Result<SessionComponents, String> {
-    let frames_per_second = options.frames_per_second.unwrap_or(runtime.preview_fps);
-    let baud = options.serial_baud.unwrap_or(runtime.baud_rate);
-    let source = build_source(options, frames_per_second)?;
-    let profile = profile_override
-        .map(MouseProfile::parse)
-        .transpose()
-        .map_err(|error| error.to_string())?
-        .unwrap_or(runtime.mouse_profile);
-    let sink = build_sink(options, baud, profile.resolve_mode())?;
-    Ok((source, sink))
-}
-
 /// 按 `--serial` 选择输入 sink：真实串口或模拟队列。
 fn build_sink(options: &Options, baud: u32, mouse_mode: MouseMode) -> Result<HeadlessSink, String> {
     if let Some(serial_path) = &options.serial_path {
@@ -593,6 +565,10 @@ impl SessionFactory<HeadlessSink> for HeadlessSessionFactory {
         &self,
         selection: &SessionSelection,
     ) -> Result<(Arc<dyn FrameSource>, HeadlessSink), String> {
+        Ok((self.build_video(selection)?, self.build_control(selection)?))
+    }
+
+    fn build_video(&self, selection: &SessionSelection) -> Result<Arc<dyn FrameSource>, String> {
         let mut options = self.options.clone();
         if let Some(video) = &selection.video
             && !video.trim().is_empty()
@@ -600,6 +576,14 @@ impl SessionFactory<HeadlessSink> for HeadlessSessionFactory {
             options.camera_name = Some(video.clone());
             options.assets_dir = None;
         }
+        let frames_per_second = options
+            .frames_per_second
+            .unwrap_or(self.settings.get().preview_fps);
+        build_source(&options, frames_per_second)
+    }
+
+    fn build_control(&self, selection: &SessionSelection) -> Result<HeadlessSink, String> {
+        let mut options = self.options.clone();
         if let Some(serial) = &selection.serial {
             options.serial_path = if serial.trim().is_empty() {
                 None
@@ -607,11 +591,16 @@ impl SessionFactory<HeadlessSink> for HeadlessSessionFactory {
                 Some(serial.clone())
             };
         }
-        build_session_components(
-            &options,
-            &self.settings.get(),
-            selection.mouse_profile.as_deref(),
-        )
+        let runtime = self.settings.get();
+        let baud = options.serial_baud.unwrap_or(runtime.baud_rate);
+        let profile = selection
+            .mouse_profile
+            .as_deref()
+            .map(MouseProfile::parse)
+            .transpose()
+            .map_err(|error| error.to_string())?
+            .unwrap_or(runtime.mouse_profile);
+        build_sink(&options, baud, profile.resolve_mode())
     }
 }
 
@@ -632,32 +621,31 @@ async fn run(
     // 因此同一时刻只有一个活跃 RFB 控制连接，无论它来自哪个传输层。
     let gate = RfbConnectionGate::new();
 
-    let (switchable_source, manager, initial_selection) = match initial {
+    let mut supervisor =
+        SessionSupervisor::<HeadlessSink>::new(gate.clone(), RecoveryPolicy::default());
+    let initial_selection = match initial {
         Some((source, sink)) => {
-            let switchable_source = Arc::new(SwitchableFrameSource::new(Arc::clone(&source)));
-            // 显式指定视频源时启动即绑定；无参数路径使用下面的 empty manager。
-            let mut manager = SessionManager::new(Arc::clone(&source), sink, gate.clone());
-            manager
-                .start()
-                .map_err(|error| HeadlessRunError::Session(format!("启动会话失败：{error}")))?;
             let selection = Some(SessionSelection {
                 video: options.camera_name.clone(),
                 serial: options.serial_path.clone(),
                 mouse_profile: Some(settings.get().mouse_profile.as_str().to_string()),
             });
-            (switchable_source, manager, selection)
+            let source_for_start = Arc::clone(&source);
+            let sink_for_start = sink.clone();
+            supervisor
+                .start_at(
+                    move || Ok(Arc::clone(&source_for_start)),
+                    move || Ok(sink_for_start.clone()),
+                    std::time::Instant::now(),
+                )
+                .await;
+            selection
         }
-        None => {
-            let empty = Arc::new(EmptyFrameSource::new());
-            (
-                Arc::new(SwitchableFrameSource::new(empty)),
-                SessionManager::empty(),
-                None,
-            )
-        }
+        None => None,
     };
-    let event_publisher = manager.event_publisher();
-    let manager = Arc::new(tokio::sync::Mutex::new(manager));
+    let frame_hub = Arc::new(supervisor.frame_source());
+    let event_publisher = supervisor.event_publisher();
+    let supervisor = Arc::new(tokio::sync::Mutex::new(supervisor));
     let factory = Arc::new(HeadlessSessionFactory {
         options: options.clone(),
         settings: Arc::clone(&settings),
@@ -688,7 +676,7 @@ async fn run(
 
     let tcp_server = RfbTcpServer::new(
         tcp_listener,
-        Arc::clone(&switchable_source),
+        Arc::clone(&frame_hub),
         event_publisher.clone(),
         tcp_config,
         gate.clone(),
@@ -697,8 +685,8 @@ async fn run(
     let mut tcp_task = tokio::spawn(async move { tcp_server.run(tcp_shutdown).await });
 
     let web_service = HeadlessWebService::<HeadlessSink>::new(
-        switchable_source,
-        Arc::clone(&manager),
+        frame_hub,
+        Arc::clone(&supervisor),
         factory,
         Arc::new(ProductionDeviceInventoryProvider),
         event_publisher,
@@ -707,7 +695,6 @@ async fn run(
         gate,
         options.token.clone(), // HTTP/WS 鉴权 token（[auth] token）
         settings,
-        Arc::new(AtomicBool::new(false)),
         initial_selection,
     )?;
     let mut http_task = tokio::spawn(async move { web_service.serve(http_listener).await });
@@ -753,10 +740,8 @@ async fn run(
 
     // 优雅关闭：先停会话（释放输入泵、release_all），再等待传输任务结束。
     let session_stop = async {
-        let mut manager = manager.lock().await;
-        if manager.stop().is_ok() {
-            manager.wait_stopped().await;
-        }
+        let mut supervisor = supervisor.lock().await;
+        let _ = supervisor.stop_manual().await;
     };
     let join = async {
         let tcp = flatten(tcp_task.await);

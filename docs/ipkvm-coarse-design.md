@@ -778,11 +778,14 @@ WebSocket 兼容：
   单档 300ms 超时），可关闭；扫描失败回退手动配置值。
 - 桌面指针发送限频约 30Hz 并做位置/掩码去重；按键状态变化立即发送。
 - 视频新帧到达时请求重绘，空闲无输入时画面保持刷新。
-- headless 自动恢复：输入泵因串口写失败退出、或视频从未出帧超过 5s 时，
-  按 1s→2s→…→30s 指数退避重建会话；视频曾出帧后停滞只报告不重启
-  （目标机重启场景，避免抢串口）。
-- `/api/status` 暴露 `video.stalled`、`video.frame.last_frame_ns` 与
-  `session.input_offline`（离线原因与时间）。
+- 视频与控制恢复使用 `ipkvm-session::SessionSupervisor` 统一管理，headless 和
+  desktop 不再各自维护恢复状态机；控制设备失败或重试耗尽时保持视频/工作页，
+  显示输入链路失败，不自动回连接页。
+- 视频订阅通过共享 `FrameHub` 保持稳定；视频源重建不关闭上层订阅，hub 对外
+  帧序号保持单调。RFB 在控制 sender 缺失或关闭时保持只读观看，输入事件被忽略；
+  Web 前端在控制恢复后受控重连以获取新的输入 sender。
+- `/api/status` 暴露 `video.runtime`、`video.frame.last_frame_ns`、
+  `session.control` 与 `session.intent`；兼容字段继续保留。
 - RFB 性能优化先做脏块检测，再评估 `ZRLE` 或 `Tight/JPEG`。
 
 ## 桌面远程输入模式

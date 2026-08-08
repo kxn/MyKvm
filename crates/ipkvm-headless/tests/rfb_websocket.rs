@@ -53,16 +53,31 @@ impl TestWebSocketServer {
         Self::start_with_channels(config, event_tx, events).await
     }
 
+    async fn start_view_only() -> Self {
+        let (_unused_tx, events) = mpsc::channel(32);
+        let event_publisher = watch::channel(None).1;
+        Self::start_with_event_publisher(RfbWebSocketConfig::default(), event_publisher, events)
+            .await
+    }
+
     async fn start_with_channels(
         config: RfbWebSocketConfig,
         event_tx: mpsc::Sender<RfbServerEvent>,
+        events: mpsc::Receiver<RfbServerEvent>,
+    ) -> Self {
+        let event_publisher = watch::channel(Some(event_tx)).1;
+        Self::start_with_event_publisher(config, event_publisher, events).await
+    }
+
+    async fn start_with_event_publisher(
+        config: RfbWebSocketConfig,
+        event_publisher: watch::Receiver<Option<mpsc::Sender<RfbServerEvent>>>,
         events: mpsc::Receiver<RfbServerEvent>,
     ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let source = Arc::new(MockFrameSource::new());
         source.publish_frame(default_frame());
-        let event_publisher = watch::channel(Some(event_tx)).1;
         let (shutdown, shutdown_rx) = watch::channel(false);
         let service = RfbWebSocketService::new(
             Arc::clone(&source),
@@ -619,7 +634,31 @@ async fn shutdown_before_upgrade_returns_empty_service_unavailable() {
 }
 
 #[tokio::test]
-async fn closed_event_receiver_rejects_upgrade_with_service_unavailable() {
+async fn missing_event_sender_allows_view_only_updates() {
+    let mut server = TestWebSocketServer::start_view_only().await;
+    let (socket, response) = server.connect_without_protocol().await;
+    assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+    let mut client = TestWebSocketRfbClient::new(socket);
+
+    let init = client.handshake(true).await;
+    assert_eq!(
+        (init.width, init.height, init.name.as_str()),
+        (2, 1, "my_ipkvm")
+    );
+    client.request_update(false, 0, 0, 2, 1).await;
+    let update = client.read_update(8).await;
+    assert_eq!(update.encoding, 0);
+    assert_eq!(update.pixels, [0, 0, 255, 0, 0, 255, 0, 0]);
+    client.send_key(true, 0x41).await;
+    assert!(matches!(
+        server.events.try_recv(),
+        Err(mpsc::error::TryRecvError::Disconnected)
+    ));
+    drop(client);
+}
+
+#[tokio::test]
+async fn closed_event_receiver_allows_view_only_updates() {
     let (event_tx, events) = mpsc::channel(1);
     drop(events);
     let replacement_events = mpsc::channel(1).1;
@@ -629,9 +668,15 @@ async fn closed_event_receiver_rejects_upgrade_with_service_unavailable() {
         replacement_events,
     )
     .await;
+    let (socket, response) = server.connect_without_protocol().await;
+    assert_eq!(response.status(), StatusCode::SWITCHING_PROTOCOLS);
+    let mut client = TestWebSocketRfbClient::new(socket);
 
-    let response = server.rejected_response().await;
-    assert_empty_rejection(&response, StatusCode::SERVICE_UNAVAILABLE);
+    client.handshake(true).await;
+    client.request_update(false, 0, 0, 2, 1).await;
+    let update = client.read_update(8).await;
+    assert_eq!(update.encoding, 0);
+    client.close().await;
 }
 
 #[tokio::test]

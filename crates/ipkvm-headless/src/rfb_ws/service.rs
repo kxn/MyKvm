@@ -24,7 +24,7 @@ pub struct RfbWebSocketService<S: ?Sized> {
 struct ServiceState<S: ?Sized> {
     frame_source: Arc<S>,
     /// 当前活动事件出口订阅端：每个 WS upgrade 读取最新 sender；
-    /// `None`（会话未启动/已停止）时拒绝升级。会话重启后自动读到新 channel。
+    /// `None`（控制不可用）时仍允许只读观看。会话重启后自动读到新 channel。
     event_publisher: watch::Receiver<Option<mpsc::Sender<RfbServerEvent>>>,
     config: RfbWebSocketConfig,
     shutdown: watch::Receiver<bool>,
@@ -66,14 +66,8 @@ async fn handle_upgrade<S: FrameSource + ?Sized + 'static>(
     if shutdown_is_requested(&state.shutdown) {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
-    // 读取当前活动事件出口；无活动会话时拒绝升级（等下一次 start）。
-    let event_tx = match state.event_publisher.borrow().clone() {
-        Some(tx) => tx,
-        None => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
-    };
-    if event_tx.is_closed() {
-        return StatusCode::SERVICE_UNAVAILABLE.into_response();
-    }
+    // 读取当前活动事件出口。没有控制出口时仍允许只读 RFB 连接，视频继续可见。
+    let event_tx = current_live_event_tx(&state.event_publisher);
 
     let permit = match state
         .gate
@@ -102,7 +96,7 @@ async fn run_upgraded_connection<S: FrameSource + ?Sized + 'static>(
     socket: WebSocket,
     peer_addr: SocketAddr,
     reservation: RfbConnectionReservation,
-    event_tx: mpsc::Sender<RfbServerEvent>,
+    event_tx: Option<mpsc::Sender<RfbServerEvent>>,
 ) {
     let completion = run_managed_connection(
         reservation,
@@ -114,10 +108,14 @@ async fn run_upgraded_connection<S: FrameSource + ?Sized + 'static>(
         state.shutdown.clone(),
     )
     .await;
-    if event_sender_is_current(&state.event_publisher, &event_tx) {
+    if event_tx
+        .as_ref()
+        .is_some_and(|sender| event_sender_is_current(&state.event_publisher, sender))
+    {
+        let event_tx = event_tx.expect("checked above");
         let _ = finalize_connection(&event_tx, completion).await;
     } else {
-        finalize_connection_after_session_end(&event_tx, completion).await;
+        finalize_connection_after_session_end(event_tx.as_ref(), completion).await;
     }
 }
 
@@ -141,7 +139,17 @@ fn event_sender_is_current(
     publisher
         .borrow()
         .as_ref()
-        .is_some_and(|current| sender.same_channel(current))
+        .is_some_and(|current| !sender.is_closed() && sender.same_channel(current))
+}
+
+fn current_live_event_tx(
+    publisher: &watch::Receiver<Option<mpsc::Sender<RfbServerEvent>>>,
+) -> Option<mpsc::Sender<RfbServerEvent>> {
+    publisher
+        .borrow()
+        .as_ref()
+        .filter(|sender| !sender.is_closed())
+        .cloned()
 }
 
 #[cfg(test)]

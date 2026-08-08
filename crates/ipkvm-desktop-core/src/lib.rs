@@ -8,4 +8,7 @@ pub mod session;
 pub mod state;
 
 pub use render::FrameSize;
-pub use session::{ConnectRequest, DesktopSessionController, DesktopSessionError, SessionParts};
+pub use session::{
+    ConnectRequest, DesktopSessionController, DesktopSessionError, DesktopSessionFactory,
+    SessionParts,
+};

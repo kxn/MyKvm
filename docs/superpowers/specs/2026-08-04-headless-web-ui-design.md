@@ -111,7 +111,10 @@ headless 版目前只有极简页面：一条状态栏（连接状态/重连/断
 - 连接页点“连接” = `POST /api/session {"action":"create"}`（absent 时）或
   `{"action":"restart","video":…,"serial":…}`（切换设备）；
 - 工具栏“断开” = `POST /api/session {"action":"stop"}`，并标记手动停止；
-- 切换设备失败：服务端现有“回滚上一会话选择”逻辑保留，前端展示错误原因并回到连接页。
+- 切换设备失败（历史语义）：服务端现有“回滚上一会话选择”逻辑保留，前端展示错误原因并回到连接页。
+
+#55 已更新该行为：video/control 打开失败进入共享 supervisor 的恢复状态，Web 保持视频页，
+在状态栏显示输入或视频失败；前端不因单链路失败回连接页。
 
 决策（2026-08-04 已确认）：手动停止后保持停止，直到再次 create/restart 或服务重启。
 实现见前置单 #136。
@@ -132,7 +135,8 @@ running 且多标签：状态轮询驱动；任一标签断开/切换，其它�
 - `GET /api/status` → `{service, video:{source,frame,stalled}, controller, session:{state,stats,serial,input_offline}}`；
 - `GET /api/devices` → `{video:[{id,display_name}], serial:[{id,display_name}]}`；
 - `GET /api/screenshot` → JPEG（无帧 503）；
-- `POST /api/session`：`create`（仅 absent）、`restart`（带 video/serial 覆盖，失败回滚）、`stop`。
+- `POST /api/session`：`create`（仅 absent/manual stopped）、`restart`（带 video/serial 覆盖，
+  构建失败进入 supervisor 恢复态）、`stop`。
 
 ### 6.2 新增 `GET/POST /api/settings`
 
@@ -256,8 +260,9 @@ DTO（与设置弹层字段一致）：
 
 Web API 的 `/api/devices` 通过构造时注入的 `DeviceInventoryProvider` 枚举设备，JSON
 字段和错误状态码不变。正式 app 注入真实 provider，browser fixture 注入静态 provider。
-Web/RFB library 不打开硬件；打开 camera/serial 的职责仍在各 app 的 `SessionFactory`，
-从而保持 stop、释放、重建和失败回滚顺序不变。
+Web/RFB library 不打开硬件；打开 camera/serial 的职责仍在各 app 的 `SessionFactory`。
+#55 后，stop/释放/重建顺序仍由共享 supervisor 保证；新设备打开失败不再按上一成功选择
+回滚，而是进入对应链路的恢复态并由 `/api/status` 暴露。
 
 ## 12. 建议里程碑（供后续 writing-plans 拆分）
 

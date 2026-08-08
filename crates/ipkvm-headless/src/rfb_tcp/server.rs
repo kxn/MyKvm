@@ -18,7 +18,7 @@ pub struct RfbTcpServer<S: ?Sized> {
     listener: TcpListener,
     frame_source: Arc<S>,
     /// 当前活动事件出口订阅端：每个连接 accept 后读取最新 sender；
-    /// `None`（会话未启动/已停止）时拒绝连接。会话重启后自动读到新 channel。
+    /// `None`（控制不可用）时仍允许只读观看。会话重启后自动读到新 channel。
     event_publisher: watch::Receiver<Option<mpsc::Sender<RfbServerEvent>>>,
     config: RfbTcpConfig,
     gate: RfbConnectionGate,
@@ -55,7 +55,7 @@ impl<S: FrameSource + ?Sized + 'static> RfbTcpServer<S> {
             if shutdown_is_requested(&shutdown) {
                 return Ok(());
             }
-            let watched_event_tx = current_event_tx(&self.event_publisher);
+            let watched_event_tx = current_live_event_tx(&self.event_publisher);
             if event_sender_is_current_and_closed(&self.event_publisher, &watched_event_tx) {
                 return Err(RfbTcpServerError::EventChannelClosed);
             }
@@ -76,11 +76,8 @@ impl<S: FrameSource + ?Sized + 'static> RfbTcpServer<S> {
                 // 未配置密码：非回环来源直接关闭，不进入握手。
                 continue;
             }
-            // 每个连接前读取当前活动事件出口；无活动会话时拒绝（等下一次 start）。
-            let event_tx = match current_event_tx(&self.event_publisher) {
-                Some(tx) => tx,
-                None => continue,
-            };
+            // 每个连接前读取当前活动事件出口；无控制出口时仍允许只读视频连接。
+            let event_tx = current_live_event_tx(&self.event_publisher);
             #[cfg(test)]
             if let Some(notifier) = &self.gate_wait_notifier {
                 let _ = notifier.send(peer_addr);
@@ -105,10 +102,14 @@ impl<S: FrameSource + ?Sized + 'static> RfbTcpServer<S> {
                 shutdown.clone(),
             )
             .await;
-            let end = if event_sender_is_current(&self.event_publisher, &event_tx) {
+            let end = if event_tx
+                .as_ref()
+                .is_some_and(|sender| event_sender_is_current(&self.event_publisher, sender))
+            {
+                let event_tx = event_tx.expect("checked above");
                 finalize_connection(&event_tx, completion).await?
             } else {
-                finalize_connection_after_session_end(&event_tx, completion).await
+                finalize_connection_after_session_end(event_tx.as_ref(), completion).await
             };
             if matches!(&end, ConnectionEnd::ServerShutdown) {
                 return Ok(());
@@ -122,6 +123,12 @@ fn current_event_tx(
     publisher: &watch::Receiver<Option<mpsc::Sender<RfbServerEvent>>>,
 ) -> Option<mpsc::Sender<RfbServerEvent>> {
     publisher.borrow().clone()
+}
+
+fn current_live_event_tx(
+    publisher: &watch::Receiver<Option<mpsc::Sender<RfbServerEvent>>>,
+) -> Option<mpsc::Sender<RfbServerEvent>> {
+    current_event_tx(publisher).filter(|sender| !sender.is_closed())
 }
 
 fn event_sender_is_current_and_closed(
@@ -141,7 +148,7 @@ fn event_sender_is_current(
     publisher: &watch::Receiver<Option<mpsc::Sender<RfbServerEvent>>>,
     sender: &mpsc::Sender<RfbServerEvent>,
 ) -> bool {
-    current_event_tx(publisher).is_some_and(|current| sender.same_channel(&current))
+    current_live_event_tx(publisher).is_some_and(|current| sender.same_channel(&current))
 }
 
 async fn wait_for_event_channel_closed(sender: Option<mpsc::Sender<RfbServerEvent>>) {

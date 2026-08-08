@@ -13,13 +13,13 @@ use futures_util::StreamExt;
 use ipkvm_core::{InputResult, InputSink, KeyEvent, MouseMode, PointerEvent};
 use ipkvm_device::StaticDeviceInventoryProvider;
 use ipkvm_headless::{
-    frame_source::SwitchableFrameSource,
-    rfb_connection::RfbConnectionGate,
+    rfb_connection::{RfbConnectionGate, RfbServerEvent},
     rfb_ws::RfbWebSocketConfig,
-    session_manager::SessionManager,
     settings::SettingsStore,
+    supervisor::{RecoveryPolicy, SessionSupervisor},
     web::{HeadlessWebService, HeadlessWebServiceError, SessionFactory, SessionSelection},
 };
+use ipkvm_session::frame_hub::FrameHub;
 use ipkvm_video::{
     FrameReceiver, FrameSource, MonotonicTimestamp, PixelFormat, SharedVideoFrame,
     SourceStatsSnapshot, VideoFrame, VideoSourceInfo, VideoSourceKind, mock::MockFrameSource,
@@ -27,7 +27,7 @@ use ipkvm_video::{
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
-    sync::watch,
+    sync::{mpsc, watch},
     task::JoinHandle,
     time::timeout,
 };
@@ -157,17 +157,18 @@ struct TestSessionFactory {
 }
 
 impl SessionFactory<RecordingSink> for TestSessionFactory {
-    fn build(
-        &self,
-        selection: &SessionSelection,
-    ) -> Result<(Arc<dyn FrameSource>, RecordingSink), String> {
+    fn build_video(&self, selection: &SessionSelection) -> Result<Arc<dyn FrameSource>, String> {
         if selection.video.as_deref() == Some("__factory_fail__") {
             return Err("test factory failure".to_string());
         }
-        Ok((
-            Arc::clone(&self.replacement) as Arc<dyn FrameSource>,
-            RecordingSink::default(),
-        ))
+        Ok(Arc::clone(&self.replacement) as Arc<dyn FrameSource>)
+    }
+
+    fn build_control(&self, selection: &SessionSelection) -> Result<RecordingSink, String> {
+        if selection.serial.as_deref() == Some("__control_fail__") {
+            return Err("test control failure".to_string());
+        }
+        Ok(RecordingSink::default())
     }
 }
 
@@ -178,17 +179,15 @@ struct ReleaseCheckingFactory {
 }
 
 impl SessionFactory<RecordingSink> for ReleaseCheckingFactory {
-    fn build(
-        &self,
-        _selection: &SessionSelection,
-    ) -> Result<(Arc<dyn FrameSource>, RecordingSink), String> {
+    fn build_video(&self, _selection: &SessionSelection) -> Result<Arc<dyn FrameSource>, String> {
         if !self.old_released.load(Ordering::SeqCst) {
             return Err("old resource is still held".to_string());
         }
-        Ok((
-            Arc::clone(&self.replacement) as Arc<dyn FrameSource>,
-            RecordingSink::default(),
-        ))
+        Ok(Arc::clone(&self.replacement) as Arc<dyn FrameSource>)
+    }
+
+    fn build_control(&self, _selection: &SessionSelection) -> Result<RecordingSink, String> {
+        Ok(RecordingSink::default())
     }
 }
 
@@ -226,13 +225,73 @@ impl Drop for TempSettingsDir {
     }
 }
 
+struct SupervisorParts {
+    frame_hub: Arc<FrameHub>,
+    supervisor: Arc<tokio::sync::Mutex<SessionSupervisor<RecordingSink>>>,
+    event_publisher: watch::Receiver<Option<mpsc::Sender<RfbServerEvent>>>,
+}
+
+impl SupervisorParts {
+    fn empty(gate: RfbConnectionGate) -> Self {
+        let supervisor = SessionSupervisor::<RecordingSink>::new(gate, RecoveryPolicy::default());
+        Self::from_supervisor(supervisor)
+    }
+
+    async fn running(
+        gate: RfbConnectionGate,
+        source: Arc<dyn FrameSource>,
+        sink: RecordingSink,
+    ) -> Self {
+        let mut supervisor =
+            SessionSupervisor::<RecordingSink>::new(gate, RecoveryPolicy::default());
+        let source_for_start = Arc::clone(&source);
+        let sink_for_start = sink.clone();
+        supervisor
+            .start_at(
+                move || Ok(Arc::clone(&source_for_start)),
+                move || Ok(sink_for_start.clone()),
+                std::time::Instant::now(),
+            )
+            .await;
+        Self::from_supervisor(supervisor)
+    }
+
+    async fn control_failed(
+        gate: RfbConnectionGate,
+        source: Arc<dyn FrameSource>,
+        reason: &'static str,
+    ) -> Self {
+        let mut supervisor =
+            SessionSupervisor::<RecordingSink>::new(gate, RecoveryPolicy::default());
+        let source_for_start = Arc::clone(&source);
+        supervisor
+            .start_at(
+                move || Ok(Arc::clone(&source_for_start)),
+                move || Err(reason.to_string()),
+                std::time::Instant::now(),
+            )
+            .await;
+        Self::from_supervisor(supervisor)
+    }
+
+    fn from_supervisor(supervisor: SessionSupervisor<RecordingSink>) -> Self {
+        let frame_hub = Arc::new(supervisor.frame_source());
+        let event_publisher = supervisor.event_publisher();
+        let supervisor = Arc::new(tokio::sync::Mutex::new(supervisor));
+        Self {
+            frame_hub,
+            supervisor,
+            event_publisher,
+        }
+    }
+}
+
 struct ReleaseOrderWebServer {
     address: SocketAddr,
-    manager: Arc<tokio::sync::Mutex<SessionManager<RecordingSink>>>,
+    supervisor: Arc<tokio::sync::Mutex<SessionSupervisor<RecordingSink>>>,
     shutdown: watch::Sender<bool>,
     task: JoinHandle<Result<(), HeadlessWebServiceError>>,
     _settings: Arc<SettingsStore>,
-    _manual_stop: Arc<AtomicBool>,
     _settings_dir: TempSettingsDir,
 }
 
@@ -247,43 +306,37 @@ impl ReleaseOrderWebServer {
             Arc::clone(&old_released),
         ));
         let gate = RfbConnectionGate::new();
-        let mut manager =
-            SessionManager::new(Arc::clone(&source), RecordingSink::default(), gate.clone());
-        manager.start().unwrap();
-        let event_publisher = manager.event_publisher();
-        let manager = Arc::new(tokio::sync::Mutex::new(manager));
-        let switchable = Arc::new(SwitchableFrameSource::new(source));
+        let parts =
+            SupervisorParts::running(gate.clone(), Arc::clone(&source), RecordingSink::default())
+                .await;
         let factory = Arc::new(ReleaseCheckingFactory {
             old_released,
             replacement: Arc::new(NamedFrameSource::new("wide", Some(wide_frame()))),
         });
         let settings_dir = TempSettingsDir::new();
         let settings = settings_dir.store();
-        let manual_stop = Arc::new(AtomicBool::new(false));
         let (shutdown, shutdown_rx) = watch::channel(false);
         let service = HeadlessWebService::<RecordingSink>::new(
-            switchable,
-            Arc::clone(&manager),
+            Arc::clone(&parts.frame_hub),
+            Arc::clone(&parts.supervisor),
             factory,
             Arc::new(StaticDeviceInventoryProvider::new(Vec::new(), Vec::new())),
-            event_publisher,
+            parts.event_publisher,
             RfbWebSocketConfig::default(),
             shutdown_rx,
             gate,
             None,
             Arc::clone(&settings),
-            Arc::clone(&manual_stop),
             Some(SessionSelection::default()),
         )
         .unwrap();
         let task = tokio::spawn(service.serve(listener));
         Self {
             address,
-            manager,
+            supervisor: parts.supervisor,
             shutdown,
             task,
             _settings: settings,
-            _manual_stop: manual_stop,
             _settings_dir: settings_dir,
         }
     }
@@ -301,10 +354,8 @@ impl ReleaseOrderWebServer {
 
     async fn stop(self) {
         {
-            let mut manager = self.manager.lock().await;
-            if manager.stop().is_ok() {
-                manager.wait_stopped().await;
-            }
+            let mut supervisor = self.supervisor.lock().await;
+            let _ = supervisor.stop_manual().await;
         }
         self.shutdown.send_replace(true);
         timeout(Duration::from_secs(2), self.task)
@@ -318,11 +369,10 @@ impl ReleaseOrderWebServer {
 struct TestWebServer {
     address: SocketAddr,
     source: Arc<NamedFrameSource>,
-    manager: Arc<tokio::sync::Mutex<SessionManager<RecordingSink>>>,
+    supervisor: Arc<tokio::sync::Mutex<SessionSupervisor<RecordingSink>>>,
     shutdown: watch::Sender<bool>,
     task: JoinHandle<Result<(), HeadlessWebServiceError>>,
     settings: Arc<SettingsStore>,
-    manual_stop: Arc<AtomicBool>,
     _settings_dir: TempSettingsDir,
 }
 
@@ -337,32 +387,25 @@ impl TestWebServer {
         let address = listener.local_addr().unwrap();
         let source = Arc::new(NamedFrameSource::new("initial", Some(test_frame())));
         let gate = RfbConnectionGate::new();
-        // empty：不构造会话；event_publisher 初始为 None，传输层拒绝连接。
-        let manager = Arc::new(tokio::sync::Mutex::new(
-            SessionManager::<RecordingSink>::empty(),
-        ));
+        // empty：不构造会话；event_publisher 初始为 None，传输层只读连接仍可建立。
+        let parts = SupervisorParts::empty(gate.clone());
         let factory = Arc::new(TestSessionFactory {
             replacement: Arc::new(NamedFrameSource::new("wide", Some(wide_frame()))),
         });
         let settings_dir = TempSettingsDir::new();
         let settings = settings_dir.store();
-        let manual_stop = Arc::new(AtomicBool::new(false));
         let (shutdown, shutdown_rx) = watch::channel(false);
-        let switchable = Arc::new(SwitchableFrameSource::new(
-            Arc::clone(&source) as Arc<dyn FrameSource>
-        ));
         let service = HeadlessWebService::<RecordingSink>::new(
-            switchable,
-            Arc::clone(&manager),
+            Arc::clone(&parts.frame_hub),
+            Arc::clone(&parts.supervisor),
             factory,
             Arc::new(StaticDeviceInventoryProvider::new(Vec::new(), Vec::new())),
-            manager.lock().await.event_publisher(),
+            parts.event_publisher,
             RfbWebSocketConfig::default(),
             shutdown_rx,
             gate,
             None,
             Arc::clone(&settings),
-            Arc::clone(&manual_stop),
             Some(SessionSelection::default()),
         )
         .unwrap();
@@ -370,11 +413,10 @@ impl TestWebServer {
         Self {
             address,
             source,
-            manager,
+            supervisor: parts.supervisor,
             shutdown,
             task,
             settings,
-            manual_stop,
             _settings_dir: settings_dir,
         }
     }
@@ -397,6 +439,49 @@ impl TestWebServer {
         .await
     }
 
+    async fn start_with_control_failure(reason: &'static str) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let source = Arc::new(NamedFrameSource::new("initial", Some(test_frame())));
+        let gate = RfbConnectionGate::new();
+        let parts = SupervisorParts::control_failed(
+            gate.clone(),
+            Arc::clone(&source) as Arc<dyn FrameSource>,
+            reason,
+        )
+        .await;
+        let factory = Arc::new(TestSessionFactory {
+            replacement: Arc::new(NamedFrameSource::new("wide", Some(wide_frame()))),
+        });
+        let settings_dir = TempSettingsDir::new();
+        let settings = settings_dir.store();
+        let (shutdown, shutdown_rx) = watch::channel(false);
+        let service = HeadlessWebService::<RecordingSink>::new(
+            Arc::clone(&parts.frame_hub),
+            Arc::clone(&parts.supervisor),
+            factory,
+            Arc::new(StaticDeviceInventoryProvider::new(Vec::new(), Vec::new())),
+            parts.event_publisher,
+            RfbWebSocketConfig::default(),
+            shutdown_rx,
+            gate,
+            None,
+            Arc::clone(&settings),
+            Some(SessionSelection::default()),
+        )
+        .unwrap();
+        let task = tokio::spawn(service.serve(listener));
+        Self {
+            address,
+            source,
+            supervisor: parts.supervisor,
+            shutdown,
+            task,
+            settings,
+            _settings_dir: settings_dir,
+        }
+    }
+
     async fn start_with_frame_and_provider(
         frame: Option<SharedVideoFrame>,
         auth: Option<String>,
@@ -408,36 +493,29 @@ impl TestWebServer {
         let sink = RecordingSink::default();
         let gate = RfbConnectionGate::new();
         // 启动即绑定：构造并 start 会话，传输层立即接受连接。
-        let mut manager = SessionManager::new(
-            Arc::clone(&source) as Arc<dyn FrameSource>,
-            sink.clone(),
+        let parts = SupervisorParts::running(
             gate.clone(),
-        );
-        manager.start().unwrap();
-        let event_publisher = manager.event_publisher();
-        let manager = Arc::new(tokio::sync::Mutex::new(manager));
+            Arc::clone(&source) as Arc<dyn FrameSource>,
+            sink,
+        )
+        .await;
         let factory = Arc::new(TestSessionFactory {
             replacement: Arc::new(NamedFrameSource::new("wide", Some(wide_frame()))),
         });
         let settings_dir = TempSettingsDir::new();
         let settings = settings_dir.store();
-        let manual_stop = Arc::new(AtomicBool::new(false));
         let (shutdown, shutdown_rx) = watch::channel(false);
-        let switchable = Arc::new(SwitchableFrameSource::new(
-            Arc::clone(&source) as Arc<dyn FrameSource>
-        ));
         let service = HeadlessWebService::<RecordingSink>::new(
-            switchable,
-            Arc::clone(&manager),
+            Arc::clone(&parts.frame_hub),
+            Arc::clone(&parts.supervisor),
             factory,
             device_provider,
-            event_publisher,
+            parts.event_publisher,
             RfbWebSocketConfig::default(),
             shutdown_rx,
             gate,
             auth, // HTTP 鉴权 token；None 表示仅放行本机来源
             Arc::clone(&settings),
-            Arc::clone(&manual_stop),
             Some(SessionSelection::default()),
         )
         .unwrap();
@@ -445,11 +523,10 @@ impl TestWebServer {
         Self {
             address,
             source,
-            manager,
+            supervisor: parts.supervisor,
             shutdown,
             task,
             settings,
-            manual_stop,
             _settings_dir: settings_dir,
         }
     }
@@ -493,13 +570,16 @@ impl TestWebServer {
         request_with_headers_and_body(self.address, method, path, headers, body).await
     }
 
+    async fn manual_stop(&self) {
+        let mut supervisor = self.supervisor.lock().await;
+        let _ = supervisor.stop_manual().await;
+    }
+
     async fn stop(self) {
         // 先停会话（释放泵），再触发 web 服务优雅关闭。
         {
-            let mut manager = self.manager.lock().await;
-            if manager.stop().is_ok() {
-                manager.wait_stopped().await;
-            }
+            let mut supervisor = self.supervisor.lock().await;
+            let _ = supervisor.stop_manual().await;
         }
         self.shutdown.send_replace(true);
         timeout(Duration::from_secs(2), self.task)
@@ -697,7 +777,12 @@ async fn api_status_reports_video_and_controller() {
     assert_eq!(status["video"]["frame"]["width"], 2);
     assert_eq!(status["video"]["frame"]["height"], 1);
     assert_eq!(status["video"]["frame"]["pixel_format"], "bgra8888");
-    assert_eq!(status["video"]["frame"]["seq"], 1);
+    assert!(
+        status["video"]["frame"]["seq"]
+            .as_u64()
+            .is_some_and(|seq| seq > 0),
+        "FrameHub 对外暴露稳定帧流 seq，不要求等于底层源本地 seq"
+    );
     assert_eq!(status["video"]["stalled"], false);
     assert!(status["video"]["frame"]["last_frame_ns"].is_number());
     // capture_ns（采集时间，统一时钟）应存在且 <= observe 时间（last_frame_ns）。
@@ -730,6 +815,9 @@ async fn api_status_reports_video_and_controller() {
     assert_eq!(status["session"]["state"], "running");
     assert_eq!(status["session"]["input_events"], 0);
     assert_eq!(status["session"]["dropped_frames"], 0);
+    assert_eq!(status["session"]["control"]["state"], "ready");
+    assert!(status["session"]["control"].get("reason").is_none());
+    assert_eq!(status["video"]["runtime"]["state"], "streaming");
     // updates_sent 恒序列化（无连接时为 0）；encode 无连接时因 skip 不出现。
     assert_eq!(status["session"]["updates_sent"], 0);
     assert!(
@@ -747,6 +835,33 @@ async fn api_status_reports_video_and_controller() {
     assert_eq!(
         status["session"]["manual_stop"], false,
         "默认未手动停止时 manual_stop 必须恒序列化为 false"
+    );
+
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn api_status_keeps_work_view_when_control_is_recovering() {
+    let server = TestWebServer::start_with_control_failure("serial reset by target").await;
+
+    let response = server.request("GET", "/api/status").await;
+    assert_eq!(response.status, 200);
+    let status: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
+
+    assert_eq!(status["session"]["state"], "running");
+    assert_eq!(status["session"]["manual_stop"], false);
+    assert_eq!(status["video"]["source"]["device_name"], "initial");
+    assert!(
+        status["video"]["frame"]["seq"]
+            .as_u64()
+            .is_some_and(|seq| seq > 0),
+        "FrameHub 对外暴露稳定帧流 seq，不要求等于底层源本地 seq"
+    );
+    assert_eq!(status["video"]["runtime"]["state"], "streaming");
+    assert_eq!(status["session"]["control"]["state"], "recovering");
+    assert_eq!(
+        status["session"]["control"]["reason"],
+        "serial reset by target"
     );
 
     server.stop().await;
@@ -940,6 +1055,60 @@ async fn api_session_create_starts_from_empty_manager() {
 }
 
 #[tokio::test]
+async fn api_session_create_build_failure_enters_recovery_work_view() {
+    let server = TestWebServer::start_empty().await;
+
+    let create = server
+        .request_with_body(
+            "POST",
+            "/api/session",
+            br#"{"action":"create","video":"__factory_fail__"}"#,
+        )
+        .await;
+    assert_eq!(create.status, 200);
+    let body: serde_json::Value = serde_json::from_slice(&create.body).unwrap();
+    assert_eq!(body["state"], "running");
+
+    let status: serde_json::Value =
+        serde_json::from_slice(&server.request("GET", "/api/status").await.body).unwrap();
+    assert_eq!(status["session"]["state"], "running");
+    assert_eq!(status["video"]["runtime"]["state"], "recovering");
+    assert_eq!(status["session"]["control"]["state"], "ready");
+    assert_eq!(status["video"]["runtime"]["reason"], "test factory failure");
+
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn api_session_create_control_build_failure_keeps_video_streaming() {
+    let server = TestWebServer::start_empty().await;
+
+    let create = server
+        .request_with_body(
+            "POST",
+            "/api/session",
+            br#"{"action":"create","serial":"__control_fail__"}"#,
+        )
+        .await;
+    assert_eq!(create.status, 200);
+    let body: serde_json::Value = serde_json::from_slice(&create.body).unwrap();
+    assert_eq!(body["state"], "running");
+
+    let status: serde_json::Value =
+        serde_json::from_slice(&server.request("GET", "/api/status").await.body).unwrap();
+    assert_eq!(status["session"]["state"], "running");
+    assert_eq!(status["video"]["runtime"]["state"], "streaming");
+    assert_eq!(status["video"]["source"]["device_name"], "wide");
+    assert_eq!(status["session"]["control"]["state"], "recovering");
+    assert_eq!(
+        status["session"]["control"]["reason"],
+        "test control failure"
+    );
+
+    server.stop().await;
+}
+
+#[tokio::test]
 async fn api_session_stop_then_restart_cycles_state() {
     let server = TestWebServer::start().await;
 
@@ -993,7 +1162,12 @@ async fn api_session_restart_with_video_switches_current_frame_source() {
     assert_eq!(body["video"]["source"]["device_name"], "wide");
     assert_eq!(body["video"]["frame"]["width"], 4);
     assert_eq!(body["video"]["frame"]["height"], 1);
-    assert_eq!(body["video"]["frame"]["seq"], 9);
+    assert!(
+        body["video"]["frame"]["seq"]
+            .as_u64()
+            .is_some_and(|seq| seq > 0),
+        "FrameHub 对外暴露稳定帧流 seq，不要求等于底层源本地 seq=9"
+    );
 
     server.stop().await;
 }
@@ -1170,8 +1344,8 @@ async fn api_status_exposes_manual_stop_and_stop_restart_cycle_flips_it() {
 #[tokio::test]
 async fn api_session_create_clears_manual_stop() {
     let server = TestWebServer::start_empty().await;
-    // 预置手动停止标记（模拟先前 stop 后尚未 create 的状态）。
-    server.manual_stop.store(true, Ordering::SeqCst);
+    // 预置手动停止状态（模拟先前 stop 后尚未 create 的状态）。
+    server.manual_stop().await;
 
     let create = server
         .request_with_body("POST", "/api/session", br#"{"action":"create"}"#)
