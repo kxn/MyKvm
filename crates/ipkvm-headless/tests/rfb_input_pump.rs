@@ -194,8 +194,11 @@ async fn real_tcp_client_drives_ch9329_input_and_disconnect_release() {
         ]
     ));
     let release = queue.accepted_batches();
-    let release_frames = release.last().unwrap().frames();
+    // 第 3 个批次是 RFB pump 的断连释放；最后一个批次来自文本服务取消时的
+    // 防御性 release_all，其独立 sink 没有绝对坐标，严格模式下只释放键盘。
+    let release_frames = release[2].frames();
     assert_eq!(release_frames[0].data(), &[0; 8]);
+    assert_eq!(release_frames[1].command(), 0x04);
     assert_eq!(release_frames[1].data()[1], 0);
 }
 

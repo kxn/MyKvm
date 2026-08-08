@@ -145,7 +145,7 @@ impl DeltaSampler {
         self.remainder_y += dy;
     }
 
-    /// 无视 33ms 周期取出当前整数增量，用于按钮/滚轮等控制边沿前的 flush。
+    /// 无视当前采样周期取出整数增量，用于按钮/滚轮等控制边沿前的 flush。
     pub fn flush(&mut self, now: Instant) -> Option<(i16, i16)> {
         let ix = self
             .remainder_x
