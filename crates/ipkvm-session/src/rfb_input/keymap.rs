@@ -113,6 +113,7 @@ pub(super) fn map_keysym(keysym: u32) -> Result<MappedKey, RfbKeyboardError> {
         0xffb1..=0xffb9 => return Ok(direct(0x58 + (keysym - 0xffb0) as u8)),
         0xffbd => return Ok(direct(0x67)),
         0xffbe..=0xffc9 => return Ok(direct(0x3a + (keysym - 0xffbe) as u8)),
+        0xffca..=0xffd1 => return Ok(direct(0x68 + (keysym - 0xffca) as u8)),
         0xffe1 => return Ok(direct(0xe1)),
         0xffe2 => return Ok(direct(0xe5)),
         0xffe3 => return Ok(direct(0xe0)),
@@ -251,6 +252,16 @@ mod tests {
             assert!(
                 matches!(map_keysym(keysym), Ok(MappedKey::Character { .. })),
                 "missing keysym {keysym:#x}"
+            );
+        }
+    }
+
+    #[test]
+    fn maps_extended_function_keys_to_usb_hid_usages() {
+        for keysym in 0xffca..=0xffd1 {
+            assert_eq!(
+                map_keysym(keysym).unwrap(),
+                MappedKey::Direct(KeyboardUsage::new(0x68 + (keysym - 0xffca) as u8).unwrap())
             );
         }
     }
