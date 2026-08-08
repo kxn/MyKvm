@@ -9,21 +9,16 @@
 
 mod support;
 
-use std::{
-    net::SocketAddr,
-    process::Stdio,
-    sync::{Arc, atomic::AtomicBool},
-};
+use std::{net::SocketAddr, process::Stdio, sync::Arc};
 
 use futures_util::StreamExt;
 use ipkvm_core::{Ch9329InputSink, MouseMode, fake_serial::FakeCommandQueue};
 use ipkvm_device::StaticDeviceInventoryProvider;
 use ipkvm_headless::{
-    frame_source::SwitchableFrameSource,
     rfb_connection::RfbConnectionGate,
     rfb_tcp::{RfbTcpConfig, RfbTcpServer, RfbTcpServerError},
     rfb_ws::RfbWebSocketConfig,
-    session_manager::SessionManager,
+    supervisor::{RecoveryPolicy, SessionSupervisor},
     web::{HeadlessWebService, SessionFactory, SessionSelection},
 };
 use ipkvm_video::{MonotonicTimestamp, PixelFormat, VideoFrame, mock::MockFrameSource};
@@ -60,26 +55,32 @@ impl HeadlessAssembly {
         let (shutdown, shutdown_rx) = watch::channel(false);
         let gate = RfbConnectionGate::new();
 
-        // 会话管理器：构造并 start（内部 spawn 输入泵消费两个传输汇入的事件）。
-        // `event_publisher()` 提供传输层共享的 watch 订阅端。
-        let mut manager = SessionManager::new(
-            Arc::clone(&source) as Arc<dyn ipkvm_video::FrameSource>,
-            Ch9329InputSink::new(FakeCommandQueue::new(), 0, MouseMode::Absolute),
-            gate.clone(),
-        );
-        manager.start().unwrap();
-        let event_publisher = manager.event_publisher();
-        let manager = Arc::new(tokio::sync::Mutex::new(manager));
+        // 会话 supervisor：视频与控制共享同一个稳定 FrameHub，两个传输只订阅该 hub。
+        let mut supervisor = SessionSupervisor::new(gate.clone(), RecoveryPolicy::default());
+        let source_for_start = Arc::clone(&source);
+        supervisor
+            .start_at(
+                move || Ok(source_for_start.clone() as Arc<dyn ipkvm_video::FrameSource>),
+                || {
+                    Ok(Ch9329InputSink::new(
+                        FakeCommandQueue::new(),
+                        0,
+                        MouseMode::Absolute,
+                    ))
+                },
+                std::time::Instant::now(),
+            )
+            .await;
+        let frame_hub = Arc::new(supervisor.frame_source());
+        let event_publisher = supervisor.event_publisher();
+        let supervisor = Arc::new(tokio::sync::Mutex::new(supervisor));
         let factory = Arc::new(TestSessionFactory);
-        let switchable_source = Arc::new(SwitchableFrameSource::new(
-            Arc::clone(&source) as Arc<dyn ipkvm_video::FrameSource>
-        ));
         let settings = support::temp_settings_store();
 
         // TCP 任务（clone gate）。
         let tcp_server = RfbTcpServer::new(
             tcp_listener,
-            Arc::clone(&switchable_source),
+            Arc::clone(&frame_hub),
             event_publisher.clone(),
             RfbTcpConfig::default(),
             gate.clone(),
@@ -90,8 +91,8 @@ impl HeadlessAssembly {
 
         // HTTP+WS 任务（move gate）：HeadlessWebService 提供静态资源 + /rfb。
         let web_service = HeadlessWebService::new(
-            switchable_source,
-            manager,
+            frame_hub,
+            supervisor,
             factory,
             Arc::new(StaticDeviceInventoryProvider::new(Vec::new(), Vec::new())),
             event_publisher,
@@ -100,7 +101,6 @@ impl HeadlessAssembly {
             gate,
             None, // auth：未配置 token，仅放行本机来源（本测试不覆盖鉴权）
             settings,
-            Arc::new(AtomicBool::new(false)),
             Some(SessionSelection::default()),
         )
         .unwrap();
@@ -147,21 +147,23 @@ impl HeadlessAssembly {
 struct TestSessionFactory;
 
 impl SessionFactory<Ch9329InputSink<FakeCommandQueue>> for TestSessionFactory {
-    fn build(
+    fn build_video(
         &self,
         _selection: &SessionSelection,
-    ) -> Result<
-        (
-            Arc<dyn ipkvm_video::FrameSource>,
-            Ch9329InputSink<FakeCommandQueue>,
-        ),
-        String,
-    > {
+    ) -> Result<Arc<dyn ipkvm_video::FrameSource>, String> {
         let source = Arc::new(MockFrameSource::new());
         source.publish_frame(test_frame());
-        Ok((
-            source as Arc<dyn ipkvm_video::FrameSource>,
-            Ch9329InputSink::new(FakeCommandQueue::new(), 0, MouseMode::Absolute),
+        Ok(source as Arc<dyn ipkvm_video::FrameSource>)
+    }
+
+    fn build_control(
+        &self,
+        _selection: &SessionSelection,
+    ) -> Result<Ch9329InputSink<FakeCommandQueue>, String> {
+        Ok(Ch9329InputSink::new(
+            FakeCommandQueue::new(),
+            0,
+            MouseMode::Absolute,
         ))
     }
 }
@@ -288,7 +290,7 @@ async fn active_tcp_blocks_websocket_with_conflict() {
 }
 
 #[tokio::test]
-async fn session_restart_while_tcp_active_releases_gate_and_keeps_tcp_server_alive() {
+async fn session_restart_while_tcp_active_keeps_viewer_and_gate_until_client_closes() {
     let system = HeadlessAssembly::start().await;
 
     let mut tcp = TestRfbClient::connect(system.tcp_address).await;
@@ -299,20 +301,32 @@ async fn session_restart_while_tcp_active_releases_gate_and_keeps_tcp_server_ali
         status.starts_with("HTTP/1.1 200"),
         "restart status: {status}"
     );
-    let old_closed = tokio::time::timeout(Duration::from_secs(1), tcp.read_one())
-        .await
-        .expect("active TCP connection should close during session restart")
-        .expect("old TCP read should complete");
-    assert_eq!(old_closed, 0, "old TCP connection should reach EOF");
 
-    let mut next = TestRfbClient::connect(system.tcp_address).await;
-    assert_eq!(next.read_banner().await.unwrap(), *b"RFB 003.008\n");
+    tcp.request_update(false, 0, 0, 2, 2).await;
+    let update = tcp.read_update(16).await;
+    assert_eq!(update.width, 2);
+    assert_eq!(update.height, 2);
+
+    let mut waiting = TestRfbClient::connect(system.tcp_address).await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), waiting.read_banner())
+            .await
+            .is_err(),
+        "旧 TCP 观看连接保持时，新 TCP 连接应等待 gate 释放"
+    );
+
+    drop(tcp);
+    let banner = tokio::time::timeout(Duration::from_secs(1), waiting.read_banner())
+        .await
+        .expect("旧 TCP 关闭后，新 TCP 应获得 gate")
+        .expect("new TCP should read banner");
+    assert_eq!(banner, *b"RFB 003.008\n");
 
     system.stop().await;
 }
 
 #[tokio::test]
-async fn session_restart_while_websocket_active_releases_gate_for_new_websocket() {
+async fn session_restart_while_websocket_active_keeps_viewer_and_gate_until_client_closes() {
     let system = HeadlessAssembly::start().await;
 
     let (socket, _response) = connect_async(format!("ws://{}/rfb", system.http_address))
@@ -326,17 +340,48 @@ async fn session_restart_while_websocket_active_releases_gate_for_new_websocket(
         status.starts_with("HTTP/1.1 200"),
         "restart status: {status}"
     );
-    let _old_end = tokio::time::timeout(Duration::from_secs(1), websocket.read_message())
-        .await
-        .expect("active WebSocket should close during session restart");
 
-    let (socket, _response) = connect_async(format!("ws://{}/rfb", system.http_address))
+    websocket.request_update(false, 0, 0, 2, 2).await;
+    let update = tokio::time::timeout(Duration::from_secs(1), websocket.read_update(16))
         .await
-        .expect("new WebSocket upgrade should succeed after restart");
+        .expect("旧 WebSocket 观看连接应在 restart 后继续出帧");
+    assert_eq!(update.width, 2);
+    assert_eq!(update.height, 2);
+
+    let error = match connect_async(format!("ws://{}/rfb", system.http_address)).await {
+        Ok(_) => panic!("new WebSocket upgrade succeeded while old viewer held the gate"),
+        Err(error) => error,
+    };
+    let status = match error {
+        WebSocketError::Http(response) => response.status(),
+        other => panic!("expected HTTP rejection, got {other:?}"),
+    };
+    assert_eq!(status, axum::http::StatusCode::CONFLICT);
+
+    websocket.close().await;
+    let _ = tokio::time::timeout(Duration::from_secs(1), websocket.read_message()).await;
+
+    let socket = connect_websocket_after_gate_release(system.http_address).await;
     let mut next = TestWebSocketRfbClient::new(socket);
     assert_eq!(next.read_banner().await, *b"RFB 003.008\n");
 
     system.stop().await;
+}
+
+async fn connect_websocket_after_gate_release(address: SocketAddr) -> support::ClientWebSocket {
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    loop {
+        match connect_async(format!("ws://{address}/rfb")).await {
+            Ok((socket, _response)) => return socket,
+            Err(WebSocketError::Http(response))
+                if response.status() == axum::http::StatusCode::CONFLICT
+                    && std::time::Instant::now() < deadline =>
+            {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            Err(error) => panic!("new WebSocket should connect after old viewer closes: {error:?}"),
+        }
+    }
 }
 
 #[tokio::test]

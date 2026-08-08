@@ -8,11 +8,18 @@ pub enum ConnectionStatus {
     ControlOffline(String),
 }
 
-pub fn derive_status(connected: bool, offline_reason: Option<String>) -> ConnectionStatus {
-    match (connected, offline_reason) {
-        (false, _) => ConnectionStatus::Disconnected,
-        (true, Some(reason)) => ConnectionStatus::ControlOffline(reason),
+pub fn derive_status(
+    work_view: bool,
+    control_online: bool,
+    offline_reason: Option<String>,
+) -> ConnectionStatus {
+    if !work_view {
+        return ConnectionStatus::Disconnected;
+    }
+    match (control_online, offline_reason) {
+        (_, Some(reason)) => ConnectionStatus::ControlOffline(reason),
         (true, None) => ConnectionStatus::Connected,
+        (false, None) => ConnectionStatus::Connecting,
     }
 }
 
@@ -37,19 +44,30 @@ mod tests {
 
     #[test]
     fn disconnected_when_not_connected() {
-        assert_eq!(derive_status(false, None), ConnectionStatus::Disconnected);
+        assert_eq!(
+            derive_status(false, false, Some("serial reset".into())),
+            ConnectionStatus::Disconnected
+        );
     }
 
     #[test]
     fn connected_when_online_without_reason() {
-        assert_eq!(derive_status(true, None), ConnectionStatus::Connected);
+        assert_eq!(derive_status(true, true, None), ConnectionStatus::Connected);
     }
 
     #[test]
     fn control_offline_carries_reason() {
         assert_eq!(
-            derive_status(true, Some("serial write failed".into())),
+            derive_status(true, false, Some("serial write failed".into())),
             ConnectionStatus::ControlOffline("serial write failed".into())
+        );
+    }
+
+    #[test]
+    fn work_view_without_ready_control_is_connecting() {
+        assert_eq!(
+            derive_status(true, false, None),
+            ConnectionStatus::Connecting
         );
     }
 

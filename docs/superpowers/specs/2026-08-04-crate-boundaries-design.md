@@ -236,7 +236,7 @@ pub trait DeviceInventoryProvider: Send + Sync {
 - profile 文件路径、字段名、mouse mode 序列化、最近使用列表和损坏配置回退不变；
 - `ipkvm-desktop` re-export 旧共享类型，iced 内部逐步改用 core 路径，避免 profile 文件和外部 Rust 调用同时迁移。
 
-### 5.2 资源打开和失败回滚
+### 5.2 资源打开和失败恢复
 
 资源生命周期必须遵守以下顺序：
 
@@ -250,7 +250,10 @@ pub trait DeviceInventoryProvider: Send + Sync {
   -> 发布新 frame source 和 event sender
 ```
 
-新设备打开失败时，headless Web 继续按上一成功选择回滚；回滚失败则保持 `Absent` 和空帧源，并在现有错误 detail 中同时报告两次失败。desktop controller 继续在失败后清空事件出口、帧源和 pending events，之后可以再次 connect。
+新设备打开失败的语义已被 #55 更新：headless Web 和 desktop controller 都把
+video/control 构建错误交给共享 `SessionSupervisor`，进入对应链路的恢复态；不再
+因为单个设备打开失败回滚上一成功选择或自动回连接页。`stop_manual` 仍负责释放
+旧 `FrameSource` / `InputSink`，后续 tick 按统一退避策略重试。
 
 provider 枚举错误只影响设备列表，不销毁当前会话；生产 probe 仍保留当前 CH9329 GetInfo、超时、波特率验证和错误分类。
 

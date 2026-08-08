@@ -128,7 +128,7 @@ impl<S: InputSink + Clone + Send + 'static> SessionSupervisor<S> {
         mut open_control: impl FnMut() -> Result<S, String>,
         now: Instant,
     ) {
-        self.stop_video(false);
+        self.stop_video(true).await;
         let _ = self.manager.stop_and_destroy().await;
         self.video_attempts = 0;
         self.video_next_retry = None;
@@ -142,13 +142,13 @@ impl<S: InputSink + Clone + Send + 'static> SessionSupervisor<S> {
             VideoRuntimeStatus::Starting { attempt: 0 },
             ControlRuntimeStatus::Starting { attempt: 0 },
         ));
-        self.try_open_video(&mut open_video, now);
+        self.try_open_video(&mut open_video, now).await;
         self.try_open_control(&mut open_control, now).await;
         self.refresh_status(now);
     }
 
     pub async fn stop_manual(&mut self) -> Result<(), SupervisorError> {
-        self.stop_video(true);
+        self.stop_video(true).await;
         self.manager.stop_and_destroy().await?;
         self.video_attempts = 0;
         self.video_next_retry = None;
@@ -182,10 +182,10 @@ impl<S: InputSink + Clone + Send + 'static> SessionSupervisor<S> {
         if matches!(self.status().intent, SessionIntent::ManualStopped) {
             return;
         }
-        self.refresh_video_state(now);
+        self.refresh_video_state(now).await;
         self.refresh_control_state(now).await;
         if self.video_retry_due(now) {
-            self.try_open_video(&mut open_video, now);
+            self.try_open_video(&mut open_video, now).await;
         }
         if self.control_retry_due(now) {
             self.try_open_control(&mut open_control, now).await;
@@ -193,12 +193,12 @@ impl<S: InputSink + Clone + Send + 'static> SessionSupervisor<S> {
         self.refresh_status(now);
     }
 
-    fn try_open_video(
+    async fn try_open_video(
         &mut self,
         open_video: &mut impl FnMut() -> Result<Arc<dyn FrameSource>, String>,
         now: Instant,
     ) {
-        self.stop_video(false);
+        self.stop_video(true).await;
         self.publish_status(SupervisorStatus::new(
             self.status().intent,
             VideoRuntimeStatus::Starting {
@@ -218,7 +218,7 @@ impl<S: InputSink + Clone + Send + 'static> SessionSupervisor<S> {
                 }
             }
             Err(reason) => {
-                self.schedule_video_retry(reason, now);
+                self.schedule_video_retry(reason, now).await;
             }
         }
     }
@@ -259,9 +259,10 @@ impl<S: InputSink + Clone + Send + 'static> SessionSupervisor<S> {
         }
     }
 
-    fn stop_video(&mut self, clear_hub: bool) {
+    async fn stop_video(&mut self, clear_hub: bool) {
         if let Some(task) = self.video_task.take() {
             task.abort();
+            let _ = task.await;
         }
         self.video_started_at = None;
         if clear_hub {
@@ -269,7 +270,7 @@ impl<S: InputSink + Clone + Send + 'static> SessionSupervisor<S> {
         }
     }
 
-    fn refresh_video_state(&mut self, now: Instant) {
+    async fn refresh_video_state(&mut self, now: Instant) {
         if self.video_next_retry.is_some() || self.video_last_error.is_some() {
             return;
         }
@@ -278,7 +279,8 @@ impl<S: InputSink + Clone + Send + 'static> SessionSupervisor<S> {
             .as_ref()
             .is_some_and(|task| task.is_finished())
         {
-            self.schedule_video_retry("video source stopped".to_string(), now);
+            self.schedule_video_retry("video source stopped".to_string(), now)
+                .await;
             return;
         }
 
@@ -286,14 +288,16 @@ impl<S: InputSink + Clone + Send + 'static> SessionSupervisor<S> {
             if self.video_started_at.is_some_and(|started| {
                 now.duration_since(started) >= self.policy.video_start_timeout
             }) {
-                self.schedule_video_retry("video source produced no frames".to_string(), now);
+                self.schedule_video_retry("video source produced no frames".to_string(), now)
+                    .await;
             }
             return;
         };
         match self.video_last_frame {
             Some((seq, observed_at)) if frame.seq == seq => {
                 if now.duration_since(observed_at) >= self.policy.video_start_timeout {
-                    self.schedule_video_retry("video source stalled".to_string(), now);
+                    self.schedule_video_retry("video source stalled".to_string(), now)
+                        .await;
                 }
             }
             _ => {
@@ -332,8 +336,8 @@ impl<S: InputSink + Clone + Send + 'static> SessionSupervisor<S> {
         self.control_next_retry.is_some_and(|retry| now >= retry)
     }
 
-    fn schedule_video_retry(&mut self, reason: String, now: Instant) {
-        self.stop_video(false);
+    async fn schedule_video_retry(&mut self, reason: String, now: Instant) {
+        self.stop_video(true).await;
         self.video_last_error = Some(reason);
         self.video_next_retry = self
             .policy
@@ -608,7 +612,14 @@ mod tests {
             )
             .await;
         second.publish_frame(frame(2));
-        frame_rx.changed().await.unwrap();
+        assert!(
+            yield_until(|| frame_rx
+                .borrow()
+                .as_ref()
+                .is_some_and(|frame| frame.seq == 2))
+            .await,
+            "new source should publish through the existing receiver"
+        );
         supervisor
             .tick_at(
                 || panic!("new video should not be reopened"),

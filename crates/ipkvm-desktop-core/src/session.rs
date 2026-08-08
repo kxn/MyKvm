@@ -8,7 +8,7 @@ use ipkvm_session::rfb_connection::{
     RfbClientId, RfbConnectionGate, RfbDisconnectReason, RfbServerEvent,
 };
 use ipkvm_session::rfb_input::RfbInputNotice;
-use ipkvm_session::session_manager::SessionManager;
+use ipkvm_session::supervisor::{RecoveryPolicy, SessionSupervisor};
 use ipkvm_video::FrameSource;
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -16,6 +16,7 @@ use tokio::sync::mpsc;
 use crate::render::FrameSize;
 
 /// 桌面连接请求：把设备选择与高级设置固化为一次会话启动的组件参数。
+#[derive(Clone, Debug)]
 pub struct ConnectRequest {
     pub video_device_id: String,
     pub control_device_id: String,
@@ -46,21 +47,49 @@ pub enum DesktopSessionError {
 /// 会话组件三元组：帧源、输入 sink、连接闸门。
 pub type SessionParts<S> = (Arc<dyn FrameSource>, S, RfbConnectionGate);
 
-/// 桌面本地会话控制器：内存事件 → 共享 SessionManager → 输入泵 → 真实 sink。
+/// 桌面会话组件工厂。
+///
+/// `build_video()` 与 `build_control()` 是独立恢复契约：实现方必须分别打开
+/// 视频和控制设备，不能通过一次性 `build()` 隐式构造两遍完整会话。
+pub trait DesktopSessionFactory<S: InputSink + Clone + Send + 'static> {
+    fn build_video(
+        &mut self,
+        request: &ConnectRequest,
+    ) -> Result<Arc<dyn FrameSource>, DesktopSessionError>;
+
+    fn build_control(&mut self, request: &ConnectRequest) -> Result<S, DesktopSessionError>;
+
+    fn build_gate(
+        &mut self,
+        _request: &ConnectRequest,
+    ) -> Result<RfbConnectionGate, DesktopSessionError> {
+        Ok(RfbConnectionGate::new())
+    }
+
+    fn build(&mut self, request: &ConnectRequest) -> Result<SessionParts<S>, DesktopSessionError> {
+        Ok((
+            self.build_video(request)?,
+            self.build_control(request)?,
+            self.build_gate(request)?,
+        ))
+    }
+}
+
+/// 桌面本地会话控制器：内存事件 → 共享 supervisor → 输入泵 → 真实 sink。
 ///
 /// 自身持有 tokio runtime，GUI 线程直接调用；`connect`/`stop` 在 runtime 内
 /// block_on 会话生命周期操作，避免 `tokio::spawn` 找不到运行时上下文。
 pub struct DesktopSessionController<S, F>
 where
     S: InputSink + Clone + Send + 'static,
-    F: FnMut(&ConnectRequest) -> Result<SessionParts<S>, DesktopSessionError>,
+    F: DesktopSessionFactory<S>,
 {
     runtime: tokio::runtime::Runtime,
-    manager: SessionManager<S>,
+    supervisor: SessionSupervisor<S>,
     factory: F,
+    current_request: Option<ConnectRequest>,
     notice_rx: mpsc::UnboundedReceiver<RfbInputNotice>,
     event_tx: Option<mpsc::Sender<RfbServerEvent>>,
-    frame_source: Option<Arc<dyn FrameSource>>,
     /// 未送出的事件（通道满时暂存），保证桌面输入不丢事件。
     pending_events: std::sync::Mutex<VecDeque<RfbServerEvent>>,
 }
@@ -68,84 +97,92 @@ where
 impl<S, F> DesktopSessionController<S, F>
 where
     S: InputSink + Clone + Send + 'static,
-    F: FnMut(&ConnectRequest) -> Result<SessionParts<S>, DesktopSessionError>,
+    F: DesktopSessionFactory<S>,
 {
-    /// 用组件工厂构造控制器（测试注入 fake sink/帧源，生产用 `production_parts`）。
+    /// 用组件工厂构造控制器（测试注入 fake sink/帧源，生产用 split factory）。
     pub fn with_factory(factory: F) -> Self {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
             .expect("desktop tokio runtime");
-        let manager = SessionManager::empty();
+        let supervisor =
+            SessionSupervisor::new(RfbConnectionGate::new(), RecoveryPolicy::default());
         let (_notice_tx, notice_rx) = mpsc::unbounded_channel();
         Self {
             runtime,
-            manager,
+            supervisor,
             factory,
+            current_request: None,
             notice_rx,
             event_tx: None,
-            frame_source: None,
             pending_events: std::sync::Mutex::new(VecDeque::new()),
         }
     }
 
-    /// 连接：会话级停旧启新（`replace_and_start`），然后以本地桌面控制器身份
-    /// 发送 `Connected` 成为当前唯一活动控制器。
+    /// 连接：创建新的共享 supervisor，并把视频/控制构建结果交给底层状态机。
+    /// 构建失败不会直接退回连接页；supervisor 会进入对应恢复状态。
     pub fn connect(&mut self, request: ConnectRequest) -> Result<(), DesktopSessionError> {
         // 先停旧会话并销毁，释放相机/串口句柄，再构建新组件：Windows 串口
         // 独占，旧句柄不释放时重连/重建必然失败（此前 factory 先于停旧执行，
         // 重连打不开串口，还会造成 UI 模式与 sink 模式分叉）。
-        if let Err(error) = self
-            .runtime
-            .block_on(self.manager.stop_and_destroy())
-            .map_err(|error| DesktopSessionError::Session(error.to_string()))
-        {
-            self.rollback();
-            return Err(error);
-        }
-        let (frame_source, sink, gate) = (self.factory)(&request)?;
-        let session_frame_source = Arc::clone(&frame_source);
+        let _ = self.runtime.block_on(self.supervisor.stop_manual());
+        self.current_request = None;
+        self.event_tx = None;
+        self.pending_events
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clear();
+
+        let gate = self.factory.build_gate(&request)?;
+        let video_result = self.factory.build_video(&request);
+        let control_result = self.factory.build_control(&request);
+        let mut supervisor = SessionSupervisor::new(gate, RecoveryPolicy::default());
         // 先建 notice 镜像再启动，避免错过泵的早期 notice；unbounded 通道缓冲
         // 到本控制器持有 receiver 为止。
         let (notice_tx, notice_rx) = mpsc::unbounded_channel();
-        self.manager.set_notice_mirror(Some(notice_tx));
-        if let Err(error) = self.runtime.block_on(async {
-            self.manager.create(session_frame_source, sink, gate)?;
-            self.manager.start()?;
-            Ok::<(), ipkvm_session::console_session::SessionError>(())
-        }) {
-            self.rollback();
-            return Err(DesktopSessionError::Session(error.to_string()));
-        }
-        self.frame_source = Some(frame_source);
+        supervisor.set_notice_mirror(Some(notice_tx));
+        let mut video_result = Some(video_result);
+        let mut control_result = Some(control_result);
+        self.runtime.block_on(supervisor.start_at(
+            move || {
+                match video_result
+                    .take()
+                    .expect("video opener called once during start")
+                {
+                    Ok(source) => Ok(source),
+                    Err(error) => Err(error.to_string()),
+                }
+            },
+            move || {
+                match control_result
+                    .take()
+                    .expect("control opener called once during start")
+                {
+                    Ok(sink) => Ok(sink),
+                    Err(error) => Err(error.to_string()),
+                }
+            },
+            Instant::now(),
+        ));
+        self.supervisor = supervisor;
         self.notice_rx = notice_rx;
+        self.current_request = Some(request);
 
-        let Some(sender) = self.manager.event_publisher().borrow().clone() else {
-            self.rollback();
-            return Err(DesktopSessionError::NoEventSender);
-        };
-        if let Err(error) = sender.try_send(RfbServerEvent::Connected {
-            client_id: RfbClientId::local_desktop(),
-            peer_addr: LOCAL_PEER,
-            shared: true,
-        }) {
-            self.rollback();
-            return Err(DesktopSessionError::Input(error.to_string()));
-        }
-        self.event_tx = Some(sender);
+        self.refresh_event_sender()?;
         Ok(())
     }
 
     /// 回滚到未连接状态：销毁已组装会话（释放相机/串口）、清空事件出口与
     /// 帧源，并换新 notice 通道，保证失败后状态一致、可再次连接。
+    #[cfg(test)]
     fn rollback(&mut self) {
         self.event_tx = None;
-        self.frame_source = None;
+        self.current_request = None;
         self.pending_events
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
-        let _ = self.runtime.block_on(self.manager.stop_and_destroy());
+        let _ = self.runtime.block_on(self.supervisor.stop_manual());
         let (_notice_tx, notice_rx) = mpsc::unbounded_channel();
         self.notice_rx = notice_rx;
     }
@@ -153,21 +190,42 @@ where
     /// 停止连接并销毁会话组件（释放相机/串口），之后可重新连接。
     pub fn stop(&mut self) -> Result<(), DesktopSessionError> {
         self.event_tx = None;
-        self.frame_source = None;
+        self.current_request = None;
         self.pending_events
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clear();
         self.runtime
-            .block_on(self.manager.stop_and_destroy())
+            .block_on(self.supervisor.stop_manual())
             .map_err(|error| DesktopSessionError::Session(error.to_string()))
+    }
+
+    /// 推进共享恢复状态机。UI 在固定 tick 调用；视频/控制会按底层策略独立重试。
+    pub fn tick_recovery(&mut self) -> Result<(), DesktopSessionError> {
+        let Some(request) = self.current_request.clone() else {
+            return Ok(());
+        };
+        let factory = std::cell::RefCell::new(&mut self.factory);
+        self.runtime.block_on(self.supervisor.tick(
+            || {
+                factory
+                    .borrow_mut()
+                    .build_video(&request)
+                    .map_err(|error| error.to_string())
+            },
+            || {
+                factory
+                    .borrow_mut()
+                    .build_control(&request)
+                    .map_err(|error| error.to_string())
+            },
+        ));
+        self.refresh_event_sender()
     }
 
     /// 当前会话帧源的最新帧（渲染与控制台无信号检测用）。
     pub fn latest_frame(&self) -> Option<ipkvm_video::SharedVideoFrame> {
-        self.frame_source
-            .as_ref()
-            .and_then(|source| source.latest_frame())
+        self.supervisor.latest_frame()
     }
 
     /// 订阅当前会话帧源：新帧到达时通过返回的 watch receiver 通知。
@@ -175,25 +233,30 @@ where
     /// 前端可把帧通知转换为自己的重绘信号（例如 iced 的 `Subscription`）。
     /// 连接前帧源为空，返回 `None`。
     pub fn subscribe_frames(&self) -> Option<ipkvm_video::FrameReceiver> {
-        self.frame_source.as_ref().map(|source| source.subscribe())
+        self.current_request
+            .as_ref()
+            .map(|_| self.supervisor.subscribe_frames())
     }
 
     /// 会话输入泵是否仍在运行。
     pub fn is_running(&self) -> bool {
-        self.manager.state() == ipkvm_session::session_manager::SessionState::Running
+        self.supervisor.status().should_show_work_view()
+    }
+
+    /// 当前是否应显示视频/工作页。控制链路失败或恢复中不应回到连接页。
+    pub fn should_show_work_view(&self) -> bool {
+        self.supervisor.status().should_show_work_view()
     }
 
     /// 本地控制器是否在线：已连接且输入泵运行（串口写失败等导致泵退出时为 false）。
     pub fn is_control_online(&self) -> bool {
-        self.event_tx.is_some() && self.is_running()
+        self.event_tx.as_ref().is_some_and(|tx| !tx.is_closed())
+            && self.supervisor.is_control_ready()
     }
 
     /// 输入泵离线原因（串口写失败等；离线时用于状态栏诊断）。
     pub fn input_offline_reason(&self) -> Option<String> {
-        self.manager
-            .session()
-            .and_then(|session| session.stats().input_offline.clone())
-            .map(|info| info.reason)
+        self.supervisor.input_offline_reason()
     }
 
     /// 发送键盘事件（内存直喂输入泵，不经网络）。
@@ -244,7 +307,8 @@ where
     /// 在线切换鼠标模式（不经重连，等待输入泵确认后才返回成功）。
     pub fn set_mouse_mode(&mut self, mode: MouseMode) -> Result<(), DesktopSessionError> {
         let mut mode_rx = self
-            .manager
+            .supervisor
+            .manager()
             .session()
             .ok_or(DesktopSessionError::NoEventSender)?
             .mouse_mode();
@@ -339,6 +403,30 @@ where
         };
         flush_pending_events(&mut pending, |next| tx.try_send(next))
     }
+
+    fn refresh_event_sender(&mut self) -> Result<(), DesktopSessionError> {
+        let sender = self.supervisor.event_publisher().borrow().clone();
+        let Some(sender) = sender else {
+            self.event_tx = None;
+            self.pending_events
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clear();
+            return Ok(());
+        };
+        if self.event_tx.as_ref().is_some_and(|tx| !tx.is_closed()) {
+            return Ok(());
+        }
+        sender
+            .try_send(RfbServerEvent::Connected {
+                client_id: RfbClientId::local_desktop(),
+                peer_addr: LOCAL_PEER,
+                shared: true,
+            })
+            .map_err(|error| DesktopSessionError::Input(error.to_string()))?;
+        self.event_tx = Some(sender);
+        Ok(())
+    }
 }
 
 /// 尽力把暂存队列按 FIFO 顺序送入事件通道；通道满时保留剩余事件等待下次
@@ -370,17 +458,48 @@ const LOCAL_PEER: SocketAddr =
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
     use std::time::Duration;
 
     use ipkvm_core::{InputResult, KeyEvent, MouseMode, PointerEvent};
-    use ipkvm_session::rfb_connection::RfbConnectionGate;
     use ipkvm_video::mock::MockFrameSource;
 
     use super::*;
 
-    type TestSessionFactory =
-        Box<dyn FnMut(&ConnectRequest) -> Result<SessionParts<RecordingSink>, DesktopSessionError>>;
+    #[derive(Clone)]
+    struct TestSessionFactory {
+        source: Arc<MockFrameSource>,
+        sink: RecordingSink,
+    }
+
+    impl TestSessionFactory {
+        fn new(sink: RecordingSink) -> Self {
+            Self {
+                source: Arc::new(MockFrameSource::new()),
+                sink,
+            }
+        }
+    }
+
+    impl DesktopSessionFactory<RecordingSink> for TestSessionFactory {
+        fn build_video(
+            &mut self,
+            _request: &ConnectRequest,
+        ) -> Result<Arc<dyn FrameSource>, DesktopSessionError> {
+            Ok(self.source.clone())
+        }
+
+        fn build_control(
+            &mut self,
+            _request: &ConnectRequest,
+        ) -> Result<RecordingSink, DesktopSessionError> {
+            Ok(self.sink.clone())
+        }
+    }
+
     type TestController = DesktopSessionController<RecordingSink, TestSessionFactory>;
 
     /// 记录型输入 sink：观察泵写入的键/指针批次与 release_all 次数。
@@ -437,17 +556,40 @@ mod tests {
 
     fn controller_with_sink() -> (TestController, RecordingSink) {
         let sink = RecordingSink::default();
-        let sink_for_factory = sink.clone();
-        let factory: TestSessionFactory = Box::new(move |_request| {
-            let frame_source: Arc<dyn FrameSource> = Arc::new(MockFrameSource::new());
-            Ok((
-                frame_source,
-                sink_for_factory.clone(),
-                RfbConnectionGate::new(),
-            ))
-        });
+        let factory = TestSessionFactory::new(sink.clone());
         let controller = DesktopSessionController::with_factory(factory);
         (controller, sink)
+    }
+
+    struct SplitRecoverFactory {
+        source: Arc<MockFrameSource>,
+        sink: RecordingSink,
+        video_failures: Arc<AtomicUsize>,
+        control_failures: Arc<AtomicUsize>,
+    }
+
+    impl DesktopSessionFactory<RecordingSink> for SplitRecoverFactory {
+        fn build_video(
+            &mut self,
+            _request: &ConnectRequest,
+        ) -> Result<Arc<dyn FrameSource>, DesktopSessionError> {
+            if self.video_failures.load(Ordering::SeqCst) > 0 {
+                self.video_failures.fetch_sub(1, Ordering::SeqCst);
+                return Err(DesktopSessionError::Build("camera reset".into()));
+            }
+            Ok(self.source.clone())
+        }
+
+        fn build_control(
+            &mut self,
+            _request: &ConnectRequest,
+        ) -> Result<RecordingSink, DesktopSessionError> {
+            if self.control_failures.load(Ordering::SeqCst) > 0 {
+                self.control_failures.fetch_sub(1, Ordering::SeqCst);
+                return Err(DesktopSessionError::Build("serial reset".into()));
+            }
+            Ok(self.sink.clone())
+        }
     }
 
     fn wait_until(mut condition: impl FnMut() -> bool, what: &str) {
@@ -553,30 +695,68 @@ mod tests {
     }
 
     #[test]
-    fn failed_connect_keeps_controller_offline_and_recoverable() {
+    fn control_open_failure_keeps_video_active_and_recovers_on_tick() {
+        let source = Arc::new(MockFrameSource::new());
+        source.publish_frame(Arc::new(make_frame(1)));
         let sink = RecordingSink::default();
-        let sink_for_factory = sink.clone();
-        let mut calls = 0;
-        let factory: TestSessionFactory = Box::new(move |_request| {
-            calls += 1;
-            if calls == 1 {
-                return Err(DesktopSessionError::Build("boom".into()));
-            }
-            let frame_source: Arc<dyn FrameSource> = Arc::new(MockFrameSource::new());
-            Ok((
-                frame_source,
-                sink_for_factory.clone(),
-                RfbConnectionGate::new(),
-            ))
-        });
+        let control_failures = Arc::new(AtomicUsize::new(1));
+        let factory = SplitRecoverFactory {
+            source,
+            sink: sink.clone(),
+            video_failures: Arc::new(AtomicUsize::new(0)),
+            control_failures,
+        };
         let mut controller = DesktopSessionController::with_factory(factory);
 
-        assert!(controller.connect(request()).is_err());
+        controller.connect(request()).unwrap();
+
+        assert!(controller.should_show_work_view());
         assert!(!controller.is_control_online());
-        assert!(controller.latest_frame().is_none());
+        assert_eq!(
+            controller.latest_frame().as_ref().map(|frame| frame.seq),
+            Some(1)
+        );
+        assert_eq!(
+            controller.input_offline_reason(),
+            Some("session component build failed: serial reset".into())
+        );
+
+        std::thread::sleep(Duration::from_millis(300));
+        controller.tick_recovery().unwrap();
+        assert!(controller.is_control_online());
+        controller.send_key(true, 0x61).unwrap();
+        wait_until(
+            || sink.recorded.lock().unwrap().key_batches == 1,
+            "控制链路恢复后键盘事件必须到达 sink",
+        );
+        controller.stop().unwrap();
+    }
+
+    #[test]
+    fn video_open_failure_keeps_work_view_and_recovers_on_tick() {
+        let source = Arc::new(MockFrameSource::new());
+        source.publish_frame(Arc::new(make_frame(1)));
+        let sink = RecordingSink::default();
+        let video_failures = Arc::new(AtomicUsize::new(1));
+        let factory = SplitRecoverFactory {
+            source,
+            sink,
+            video_failures,
+            control_failures: Arc::new(AtomicUsize::new(0)),
+        };
+        let mut controller = DesktopSessionController::with_factory(factory);
 
         controller.connect(request()).unwrap();
+        assert!(controller.should_show_work_view());
         assert!(controller.is_control_online());
+        assert!(controller.latest_frame().is_none());
+
+        std::thread::sleep(Duration::from_millis(300));
+        controller.tick_recovery().unwrap();
+        wait_until(
+            || controller.latest_frame().is_some(),
+            "视频链路恢复后必须重新发布帧",
+        );
         controller.stop().unwrap();
     }
 
@@ -698,16 +878,10 @@ mod tests {
         // 外层保留句柄以便 publish_frame 触发 watch 通知。
         let mock = Arc::new(MockFrameSource::new());
         let sink = RecordingSink::default();
-        let sink_for_factory = sink.clone();
-        let mock_for_factory = Arc::clone(&mock);
-        let factory: TestSessionFactory = Box::new(move |_request| {
-            let frame_source: Arc<dyn FrameSource> = mock_for_factory.clone();
-            Ok((
-                frame_source,
-                sink_for_factory.clone(),
-                RfbConnectionGate::new(),
-            ))
-        });
+        let factory = TestSessionFactory {
+            source: Arc::clone(&mock),
+            sink,
+        };
         let mut controller = DesktopSessionController::with_factory(factory);
 
         controller.connect(request()).unwrap();
@@ -721,9 +895,14 @@ mod tests {
 
         // 推一帧：watch 标记已变化，可读到刚发布的帧 seq。
         mock.publish_frame(Arc::new(make_frame(1)));
-        assert!(
-            receiver.has_changed().unwrap(),
-            "新帧后 watch 必须 has_changed"
+        wait_until(
+            || {
+                receiver
+                    .borrow()
+                    .as_ref()
+                    .is_some_and(|frame| frame.seq == 1)
+            },
+            "新帧后 shared frame hub 必须转发到 receiver",
         );
         let frame = receiver.borrow().as_ref().unwrap().clone();
         assert_eq!(frame.seq, 1, "watch 必须读到刚发布的帧");

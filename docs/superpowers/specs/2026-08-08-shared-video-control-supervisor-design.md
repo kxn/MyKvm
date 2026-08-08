@@ -4,7 +4,7 @@
 
 关联 issue：[#55](https://github.com/kxn/MyKvm/issues/55)
 
-状态：调研草案。目标是先把问题、代码事实、彻底方案、风险和未决点写清楚，再进入实施拆分。
+状态：已实现（#55 分支）。本文保留实施前调研事实，并记录落地后的共享状态机行为、剩余边界和验证要求。
 
 ## 1. 背景
 
@@ -18,9 +18,21 @@
 - 重试耗尽后仍停留在视频页，显示控制设备失败提示，不回连接页。
 - web 和 desktop 必须使用同一套底层恢复逻辑，不能各自维护一套状态机。
 
-本设计采用彻底方案：拆分视频 runtime 和控制 runtime，并在共享层实现统一 supervisor。中间方案（只把 headless 恢复循环搬给 desktop 复用）虽然改动小，但仍把视频和控制绑在同一个 session 里，会继续为后续挖坑，因此不采用。
+本设计采用彻底方案：拆分视频链路和控制链路的恢复职责，并在共享层实现统一 supervisor。中间方案（只把 headless 恢复循环搬给 desktop 复用）虽然改动小，但仍把视频和控制绑在同一个 session 里，会继续为后续挖坑，因此不采用。
 
-## 2. 当前代码事实
+## 1.1 已落地结论
+
+- `ipkvm-session` 提供共享 `FrameHub` 和 `SessionSupervisor`，headless 与 desktop 都通过同一套 supervisor 驱动恢复。
+- 视频源由 `FrameHub` 提供稳定订阅；底层视频源替换或清空时，上层 `watch` 订阅不关闭。
+- 控制链路由 supervisor 内部的 `SessionManager` 管理；控制 sink 创建失败或输入泵失败只影响控制状态，不销毁 `FrameHub`。
+- headless `SessionFactory` 与 desktop `DesktopSessionFactory` 要求显式实现 `build_video()` 和 `build_control()`，避免 adapter 用一次性构造悄悄把两条链路重新耦合。
+- RFB WS/TCP 在控制 sender 缺失或关闭时仍允许观看连接，输入事件按只读语义忽略。
+- headless 删除私有 `web/recovery.rs` 和 `SwitchableFrameSource`；`/api/status` 暴露 `video.runtime` 与 `session.control`。
+- desktop 删除输入泵失败后的自动 `stop()` 路径；主界面是否停留工作页由 `SupervisorStatus::should_show_work_view()` 决定。
+- 初始 connect/create/restart 时 video/control 构建错误也进入 supervisor 恢复态，不再直接 500 回滚或退回连接页。
+- 人工 `stop` 是返回连接页的明确路径；控制恢复耗尽后仍停留视频/工作页并显示控制失败。
+
+## 2. 实施前代码事实
 
 ### 2.1 session 层仍把视频和输入组装成一个会话
 
@@ -376,3 +388,42 @@ hub 需要避免旧 frame source 任务泄漏。每次替换源时必须取消�
 - 手动停止后不会自动复活。
 - 共享层、headless、desktop 均有覆盖失败与恢复路径的自动化测试。
 - 长期文档更新，说明新状态机、UI 行为和剩余硬件验证边界。
+
+## 13. 实现结果
+
+### 13.1 共享层
+
+`ipkvm-session::FrameHub` 是视频链路的稳定入口。上层始终订阅 hub；supervisor 重新打开视频源时先停止旧转发任务并等待释放，再把新源接入同一个 hub。`FrameHub::clear()` 只在曾经有源或已有帧时发布 `None`，避免空会话初始化阶段产生无意义的帧变更。
+
+hub 对外发布的是稳定帧流 seq，不是底层源本地 seq。源替换后即使新源从 `seq=1` 开始，hub 对外 seq 仍保持单调递增，避免 RFB 把正常重建误判为帧序倒退。
+
+`ipkvm-session::SessionSupervisor` 维护同一份 `SupervisorStatus`，包含 `SessionIntent`、`VideoRuntimeStatus` 与 `ControlRuntimeStatus`。控制失败、控制恢复中、视频恢复中和重试耗尽都不会自动变成连接页；只有人工停止或没有选择时，上层才应显示连接页。
+
+控制链路仍复用既有 `SessionManager` 和输入泵，但 `SessionManager` 的帧源是稳定 `FrameHub`，不是一次会话私有的视频源。因此输入泵退出只会把控制状态推进到恢复或失败，不会释放视频订阅。
+
+### 13.2 headless 与 RFB
+
+headless 的 HTTP 服务不再维护私有恢复循环。`HeadlessWebService` 持有共享 `SessionSupervisor`、`FrameHub` 和当前选择；`/api/session create/restart/stop` 直接调用 supervisor action。后台恢复循环只负责按统一 `RecoveryPolicy` tick supervisor，不再自行重建整套 `(frame_source, sink)`。
+
+`/api/status` 仍保留兼容字段，同时增加结构化运行态：
+
+- `video.runtime.state/reason/attempt/attempts`
+- `session.control.state/reason/attempt/attempts`
+- `session.intent`
+
+前端继续把人工停止或无选择视为连接页；控制恢复中或失败时留在视频页，并在视频栏显示输入链路状态。
+
+RFB WS/TCP 已支持 video-only：没有当前控制 sender 时不拒绝连接，也不因 sender 关闭而断开观看路径。输入事件在控制不可用时忽略。RFB driver 仍是在连接建立时捕获当时的 sender，不在单条连接内动态切换；Web 前端在 `control` 从非 `ready` 恢复到 `ready` 后会断开旧 RFB，让状态轮询触发下一次自动连接，从而拿到新的输入 sender。非浏览器 RFB 客户端如果要在控制恢复后重新获得输入能力，也需要主动关闭并重连。
+
+### 13.3 desktop
+
+`DesktopSessionController` 改为 supervisor adapter。生产实现通过 `DesktopSessionFactory` 分别打开视频和控制设备：视频打开成功但控制打开失败时，`connect()` 仍进入工作页，视频保持可用，控制状态进入恢复。
+
+iced 主界面使用 `controller.should_show_work_view()` 选页，不再用 `is_control_online()` 决定是否返回连接页。`UiTick` 推进共享 supervisor 恢复并刷新本地 event sender；控制恢复后 desktop 本地输入重新获得新的 sender。控制离线期间，UI 退出远程输入模式并拒绝继续发送键鼠事件，避免恢复后重放过时输入。
+
+### 13.4 剩余边界
+
+- RFB 已有连接不会在 driver 内动态切换输入 sender；当前产品路径通过 Web 前端受控重连恢复输入。若未来要让第三方 RFB 客户端无感恢复输入，需要把 driver 改成订阅 sender watch，并重新审视 gate 语义。
+- `RecoveryPolicy::default()` 参数仍是固定策略，暂未提供 UI/API 配置。
+- BIOS/Windows 重启、CH9329 短断电和视频设备拔插仍需要真实硬件验证；自动化测试已覆盖状态机和 adapter 行为，但不能替代硬件链路验证。
+- 视频失败时绝对鼠标坐标的禁用策略仍需结合 BIOS 坐标域问题单独收敛，本 issue 不改变鼠标坐标映射。

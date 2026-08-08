@@ -71,6 +71,7 @@ export function initApp(root) {
   let lastStatus = null;
   let currentReason = null;
   let profileChangePending = false;
+  let rfbNeedsInputReconnect = false;
 
   const setConnectionState = (state, text) => {
     root.dataset.connectionState = state;
@@ -128,6 +129,7 @@ export function initApp(root) {
   /// 失败后按指数退避重试；切回连接页时显式断开并停止自动重连。
   const syncRfbWithStatus = (status) => {
     if (status?.session?.state !== "running") {
+      rfbNeedsInputReconnect = false;
       return;
     }
     if (pointer.locked) {
@@ -162,6 +164,28 @@ export function initApp(root) {
     }
     rfbState = "idle";
     connectRfb();
+  };
+
+  const syncRfbInputRecovery = (status) => {
+    const controlState = status?.session?.control?.state;
+    if (status?.session?.state !== "running" || !controlState) {
+      rfbNeedsInputReconnect = false;
+      return;
+    }
+    if (controlState !== "ready") {
+      rfbNeedsInputReconnect = true;
+      return;
+    }
+    if (!rfbNeedsInputReconnect) {
+      return;
+    }
+    if (rfb && pointer.locked) {
+      return;
+    }
+    rfbNeedsInputReconnect = false;
+    if (rfb && !el.videoView.hidden) {
+      disconnectRfb();
+    }
   };
 
   const connectRfb = () => {
@@ -333,9 +357,21 @@ export function initApp(root) {
           frames: serial.frames_accepted ?? 0,
         })
       : "";
-    el.inputStats.textContent = t("video.input", {
-      events: status?.session?.input_events ?? 0,
-    });
+    const control = status?.session?.control;
+    if (
+      control &&
+      !["ready", "idle"].includes(control.state) &&
+      control.reason
+    ) {
+      el.inputStats.textContent = t("video.inputOffline", {
+        state: t(`video.runtime.${control.state}`),
+        reason: control.reason,
+      });
+    } else {
+      el.inputStats.textContent = t("video.input", {
+        events: status?.session?.input_events ?? 0,
+      });
+    }
     if (status?.session?.mouse_profile && !profileChangePending) {
       el.videoMouseProfile.value = status.session.mouse_profile;
     }
@@ -446,6 +482,7 @@ export function initApp(root) {
       connection.applyStatus(status);
       screenshot.setFrameAvailable(Boolean(status.video?.frame));
       connection.updateConnectState();
+      syncRfbInputRecovery(status);
       syncRfbWithStatus(status);
     },
     onViewChange: (view, reason) => setView(view, reason),

@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 
 use ipkvm_rfb::{
     FramebufferUpdateOutcome, FramebufferUpdateRequest, RfbConfigError, RfbConnectionConfig,
-    RfbConnectionCore, RfbConnectionState, RfbEncodeError, RfbEvent, RfbProtocolError,
+    RfbConnectionCore, RfbConnectionState, RfbEncodeError, RfbEvent, RfbProtocolError, RfbSize,
 };
 use ipkvm_video::{FrameReceiver, PixelFormat, SharedVideoFrame};
 use thiserror::Error;
@@ -49,6 +49,7 @@ struct ConnectionState {
     pending: PendingFramebufferRequest,
     last_observed_seq: u64,
     last_sent_seq: Option<u64>,
+    last_frame_size: RfbSize,
 }
 
 impl ConnectionEnd {
@@ -158,6 +159,7 @@ async fn drive_connection<T: RfbTransport>(
         pending: PendingFramebufferRequest::default(),
         last_observed_seq: initial_frame.seq,
         last_sent_seq: None,
+        last_frame_size: initial_size,
     };
     let handshake_deadline = time::sleep(settings.handshake_timeout);
     tokio::pin!(handshake_deadline);
@@ -279,7 +281,10 @@ impl ConnectionState {
         event_tx: Option<&mpsc::Sender<RfbServerEvent>>,
         request: FramebufferUpdateRequest,
     ) -> Result<(), RfbConnectionError> {
-        let frame = self.latest_frame()?;
+        let Some(frame) = self.latest_frame()? else {
+            self.pending.merge(request, self.last_frame_size);
+            return Ok(());
+        };
         // MJPEG 透传：从帧元数据获取尺寸，跳过 frame_view（它要求 BGRA）。
         let w =
             u16::try_from(frame.width).map_err(|_| RfbFrameError::WidthOutOfRange(frame.width))?;
@@ -310,7 +315,9 @@ impl ConnectionState {
         // 会饿死 select! 循环的 TCP read 分支，导致客户端请求永远不被处理。
         // updates_sent / encode 统计仅在 handle_update_request（客户端请求驱动，
         // 频率受控）中上报；累计值仍能反映真实更新速率。
-        let frame = self.latest_frame()?;
+        let Some(frame) = self.latest_frame()? else {
+            return Ok(());
+        };
         if self.last_sent_seq != Some(frame.seq)
             && let Some(request) = self.pending.take()
         {
@@ -320,12 +327,10 @@ impl ConnectionState {
         Ok(())
     }
 
-    fn latest_frame(&mut self) -> Result<SharedVideoFrame, RfbFrameError> {
-        let frame = self
-            .frame_rx
-            .borrow()
-            .clone()
-            .ok_or(RfbFrameError::FrameUnavailable)?;
+    fn latest_frame(&mut self) -> Result<Option<SharedVideoFrame>, RfbFrameError> {
+        let Some(frame) = self.frame_rx.borrow().clone() else {
+            return Ok(None);
+        };
         if frame.seq < self.last_observed_seq {
             return Err(RfbFrameError::FrameSequenceRegressed {
                 previous: self.last_observed_seq,
@@ -333,7 +338,12 @@ impl ConnectionState {
             });
         }
         self.last_observed_seq = frame.seq;
-        Ok(frame)
+        let width =
+            u16::try_from(frame.width).map_err(|_| RfbFrameError::WidthOutOfRange(frame.width))?;
+        let height = u16::try_from(frame.height)
+            .map_err(|_| RfbFrameError::HeightOutOfRange(frame.height))?;
+        self.last_frame_size = RfbSize::new(width, height).map_err(RfbFrameError::from)?;
+        Ok(Some(frame))
     }
 }
 
@@ -1017,6 +1027,52 @@ mod tests {
         assert_eq!(update.pixels, [3, 2, 1, 0, 6, 5, 4, 0]);
         drop(client_stream);
         assert!(matches!(task.await.unwrap(), ConnectionEnd::ClientClosed));
+    }
+
+    #[tokio::test]
+    async fn frame_gap_and_source_seq_reset_do_not_end_existing_viewer() {
+        let hub = crate::frame_hub::FrameHub::new_empty();
+        let first = Arc::new(MockFrameSource::new());
+        first.publish_frame(shared_bgra_frame(10, 2, 1, &[1, 2, 3, 4, 5, 6]));
+        let first_task = tokio::spawn(hub.set_source(first).run());
+
+        let (server_stream, mut client_stream, peer_addr) = tcp_pair().await;
+        let (event_tx, mut event_rx) = mpsc::channel(16);
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let task = tokio::spawn(run_connection(
+            RfbClientId(32),
+            peer_addr,
+            TestTransport::new(server_stream),
+            hub.subscribe(),
+            Some(event_tx),
+            RfbConnectionSettings::default(),
+            shutdown_rx,
+        ));
+        finish_handshake(&mut client_stream, true).await;
+        assert!(matches!(
+            event_rx.recv().await,
+            Some(RfbServerEvent::Connected {
+                client_id: RfbClientId(32),
+                ..
+            })
+        ));
+        send_update_request(&mut client_stream, false, 0, 0, 2, 1).await;
+        let first_update = read_update(&mut client_stream, 8).await;
+        assert_eq!(first_update.pixels, [3, 2, 1, 0, 6, 5, 4, 0]);
+
+        hub.clear();
+        send_update_request(&mut client_stream, false, 0, 0, 2, 1).await;
+
+        let second = Arc::new(MockFrameSource::new());
+        let second_task = tokio::spawn(hub.set_source(second.clone()).run());
+        second.publish_frame(shared_bgra_frame(1, 2, 1, &[9, 8, 7, 6, 5, 4]));
+        let second_update = read_update(&mut client_stream, 8).await;
+        assert_eq!(second_update.pixels, [7, 8, 9, 0, 4, 5, 6, 0]);
+
+        drop(client_stream);
+        assert!(matches!(task.await.unwrap(), ConnectionEnd::ClientClosed));
+        first_task.abort();
+        second_task.abort();
     }
 
     #[tokio::test]

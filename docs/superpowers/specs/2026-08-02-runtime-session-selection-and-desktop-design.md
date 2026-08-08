@@ -62,17 +62,23 @@ KVM 软件的核心体验不是“启动进程时把设备写死”，而是用�
 - `replace_and_start`：保留给已预先构建好新组件的内部替换场景；运行时真实设备切换优先使用 `stop_and_destroy` 释放旧资源后再构建。
 - `stop`：停止输入泵，但保留当前已选择的帧源用于状态和截图。
 
-`restart` 的失败语义：新设备构建失败时，后端尝试按上一成功选择重新构建会话并启动；若回滚成功，请求仍返回 `500` 告知本次切换失败，但系统回到上一会话选择。若回滚也失败，会话保持空状态并返回包含回滚失败原因的 `500`。
+`restart` 的失败语义（历史）：新设备构建失败时，后端尝试按上一成功选择重新构建会话并启动；若回滚成功，请求仍返回 `500` 告知本次切换失败，但系统回到上一会话选择。若回滚也失败，会话保持空状态并返回包含回滚失败原因的 `500`。
+
+此失败语义已被 #55 更新：video/control 构建失败进入共享 `SessionSupervisor`
+的 `Recovering/Failed` 状态，HTTP create/restart 和 desktop connect 不再因为
+单条设备链路打开失败而自动回连接页或按上一选择回滚。人工 stop 仍是明确停止路径。
 
 ### 当前帧源发布
 
-传输层不缓存启动时帧源。`headless` 维护一个 `SwitchableFrameSource`：
+传输层不缓存启动时帧源。本文最初设计中，headless 曾维护 `SwitchableFrameSource`：
 
 - `latest_frame()`、`source_info()` 委托给当前帧源。
 - `subscribe()` 在新连接建立时订阅当前帧源。
 - 会话切换前临时切到空帧源以释放旧独占资源；新会话启动成功后更新为新帧源。
 
-旧连接可以继续持有旧帧源订阅；旧事件通道关闭后连接会结束。本轮不保证旧连接无缝迁移。
+此模型已被 #55 取代：当前长期模型是 `ipkvm-session::FrameHub`。RFB、headless
+截图和 desktop 主画面都订阅稳定 hub；底层视频源替换不会关闭上层订阅。旧事件
+通道关闭也不再作为观看连接结束条件，控制不可用时 RFB 进入只读输入语义。
 
 ## Desktop 设计
 
@@ -96,7 +102,10 @@ KVM 软件的核心体验不是“启动进程时把设备写死”，而是用�
 ## 错误处理
 
 - 设备枚举失败：`503` + `{error, detail}`。
-- 会话构建失败：`500` + `{error, detail}`，尝试按上一成功选择回滚启动；回滚结果写入 `detail`。
+- 会话构建失败（#55 后）：video/control 构建错误进入 supervisor 恢复状态；`create/restart`
+  返回当前会话状态，状态详情通过 `/api/status.video.runtime` 与
+  `/api/status.session.control` 暴露。请求格式错误、未知 action、已存在冲突仍按
+  HTTP 错误返回。
 - 会话已存在时 `create`：`409`。
 - 未知 action：`400`。
 - 未鉴权：沿用现有鉴权响应。

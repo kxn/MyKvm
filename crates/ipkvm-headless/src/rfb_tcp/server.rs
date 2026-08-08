@@ -18,7 +18,7 @@ pub struct RfbTcpServer<S: ?Sized> {
     listener: TcpListener,
     frame_source: Arc<S>,
     /// 当前活动事件出口订阅端：每个连接 accept 后读取最新 sender；
-    /// `None`（会话未启动/已停止）时拒绝连接。会话重启后自动读到新 channel。
+    /// `None`（控制不可用）时仍允许只读观看。会话重启后自动读到新 channel。
     event_publisher: watch::Receiver<Option<mpsc::Sender<RfbServerEvent>>>,
     config: RfbTcpConfig,
     gate: RfbConnectionGate,

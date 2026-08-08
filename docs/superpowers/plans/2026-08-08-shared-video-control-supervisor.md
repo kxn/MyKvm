@@ -588,3 +588,35 @@ gh pr create --repo kxn/MyKvm --base main --head codex/55-shared-video-control-s
 ```
 
 PR body must include `Closes #55`, summary, design basis, tests, documentation impact, and manual verification exceptions.
+
+## 执行记录（2026-08-08）
+
+已按 #55 分支落地共享 supervisor 方案：
+
+- `ipkvm-session` 新增并接入稳定 `FrameHub` 与 `SessionSupervisor`；`FrameHub` 对外 seq 保持单调，视频源替换不关闭订阅。
+- RFB WS/TCP 支持 video-only 连接；控制 sender 缺失或关闭时不再断开观看路径，输入事件按只读语义忽略。
+- headless 删除私有 `web/recovery.rs` 和 `SwitchableFrameSource`，HTTP API/状态轮询/前端均接入共享 supervisor。
+- desktop-core/desktop/iced 接入共享 supervisor，控制失败或恢复耗尽时保持工作页；只有人工停止回连接页。
+- Web 前端在控制从非 `ready` 恢复到 `ready` 后受控重连 RFB，以获取新的输入 sender。
+- 初始 create/restart/connect 的 video/control 构建错误进入 supervisor 恢复态，不再触发 500 回滚或回连接页。
+
+验证证据：
+
+- `cargo fmt --all --check`
+- `node --check crates/ipkvm-headless/web/modules/app.js`
+- `cargo test -p ipkvm-session frame_hub -- --nocapture`
+- `cargo test -p ipkvm-session supervisor -- --nocapture`
+- `cargo test -p ipkvm-session rfb_connection -- --nocapture`
+- `cargo test -p ipkvm-headless --test web_http -- --nocapture`
+- `cargo test -p ipkvm-headless-app --test headless_process -- --nocapture`
+- `cargo test -p ipkvm-desktop-core session -- --nocapture`
+- `cargo test -p ipkvm-desktop-iced status -- --nocapture`
+- `cargo check -p ipkvm-desktop-iced`
+- `cargo check -p ipkvm-browser-fixture`
+- `cargo test --workspace --all-features`
+
+未覆盖的人工验证边界：
+
+- 真实目标机 BIOS/Windows 重启期间的视频和控制链路恢复。
+- CH9329 短断电、串口设备长时间缺失后的重试耗尽提示。
+- 真实浏览器 noVNC 在控制恢复后的受控重连体验。

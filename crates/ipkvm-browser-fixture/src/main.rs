@@ -1,6 +1,6 @@
 use std::{
     io::{self, BufRead, Write},
-    sync::{Arc, Mutex, atomic::AtomicBool},
+    sync::{Arc, Mutex},
 };
 
 use ipkvm_core::{
@@ -8,12 +8,11 @@ use ipkvm_core::{
 };
 use ipkvm_device::StaticDeviceInventoryProvider;
 use ipkvm_headless::{
-    frame_source::SwitchableFrameSource,
-    rfb_connection::{RfbConnectionGate, RfbServerEvent},
-    rfb_input::{RfbInputNotice, RfbInputPump, RfbInputRunError},
+    rfb_connection::RfbConnectionGate,
+    rfb_input::RfbInputNotice,
     rfb_ws::RfbWebSocketConfig,
-    session_manager::SessionManager,
     settings::SettingsStore,
+    supervisor::{RecoveryPolicy, SessionSupervisor},
     web::{HeadlessWebService, HeadlessWebServiceError, SessionFactory, SessionSelection},
 };
 use ipkvm_video::{
@@ -146,18 +145,16 @@ fn button_name(button: PointerButton) -> &'static str {
 struct FixtureFactory;
 
 impl SessionFactory<RecordingInputSink> for FixtureFactory {
-    fn build(
-        &self,
-        _selection: &SessionSelection,
-    ) -> Result<(Arc<dyn FrameSource>, RecordingInputSink), String> {
+    fn build_video(&self, _selection: &SessionSelection) -> Result<Arc<dyn FrameSource>, String> {
         // 浏览器测试会经 `POST /api/session` 触发 create/restart：工厂构建的
         // 新帧源必须先发布一帧，否则 RFB 连接会在初始帧检查处立即失败。
         let source = Arc::new(MockFrameSource::new());
         source.publish_frame(fixture_frame());
-        Ok((
-            source as Arc<dyn FrameSource>,
-            RecordingInputSink::new(LineWriter::new()),
-        ))
+        Ok(source as Arc<dyn FrameSource>)
+    }
+
+    fn build_control(&self, _selection: &SessionSelection) -> Result<RecordingInputSink, String> {
+        Ok(RecordingInputSink::new(LineWriter::new()))
     }
 }
 
@@ -167,22 +164,17 @@ enum FixtureError {
     Io(#[from] io::Error),
     #[error(transparent)]
     Web(#[from] HeadlessWebServiceError),
-    #[error(transparent)]
-    Input(#[from] RfbInputRunError),
     #[error("fixture task failed")]
     Join(#[from] JoinError),
     #[error("fixture stop channel closed unexpectedly")]
     StopChannel,
     #[error("HTTP service stopped before the fixture shutdown signal")]
     HttpStoppedEarly,
-    #[error("input pump stopped before the fixture shutdown signal")]
-    InputStoppedEarly,
 }
 
 enum Trigger {
     Stop(Result<io::Result<()>, oneshot::error::RecvError>),
     Http(Result<Result<(), HeadlessWebServiceError>, JoinError>),
-    Input(Result<Result<(), RfbInputRunError>, JoinError>),
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -200,9 +192,8 @@ async fn run() -> Result<(), FixtureError> {
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let address = listener.local_addr()?;
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
-    let (event_tx, mut event_rx) = mpsc::channel::<RfbServerEvent>(64);
 
-    // READY 在构造 HeadlessWebService 之前输出：引入 SessionManager 后，构造 +
+    // READY 在构造 HeadlessWebService 之前输出：引入后台会话任务后，构造 +
     // spawn 之后的 stdout 写入于 Windows 测试 pipe 下偶发不可达读端（手动运行
     // 正常，仅子进程受影响）。listener 已 bind，连接在 serve 起来前进 TCP 积压
     // 队列，不丢失。用 println! + 显式 flush（而非 output.line 的持久 handle），
@@ -213,16 +204,26 @@ async fn run() -> Result<(), FixtureError> {
         let _ = std::io::stdout().flush();
     }
 
-    // 传输层订阅端：fixture 手动驱动 RecordingInputSink + RfbInputPump 以打印
-    // 输入事件；SessionManager 仅满足 HeadlessWebService::new 签名（不 start，
-    // 故内部泵不参与）。event_publisher 由 fixture 的事件通道直接发布。
-    let (event_publish_tx, event_publisher) = watch::channel(Some(event_tx.clone()));
-    let manager = Arc::new(tokio::sync::Mutex::new(
-        SessionManager::<RecordingInputSink>::empty(),
-    ));
+    // 传输层订阅端来自共享 supervisor；输入事件由 supervisor 内部泵写入
+    // RecordingInputSink，fixture 只负责把事件打印到 stdout 供浏览器测试断言。
+    let gate = RfbConnectionGate::new();
+    let mut supervisor = SessionSupervisor::new(gate.clone(), RecoveryPolicy::default());
+    let source_for_start = Arc::clone(&source);
+    let sink_output = output.clone();
+    supervisor
+        .start_at(
+            move || Ok(source_for_start.clone() as Arc<dyn FrameSource>),
+            move || Ok(RecordingInputSink::new(sink_output.clone())),
+            std::time::Instant::now(),
+        )
+        .await;
+    let (notice_tx, mut notice_rx) = mpsc::unbounded_channel();
+    supervisor.set_notice_mirror(Some(notice_tx));
+    let frame_hub = Arc::new(supervisor.frame_source());
+    let event_publisher = supervisor.event_publisher();
+    let supervisor = Arc::new(tokio::sync::Mutex::new(supervisor));
     let factory: Arc<dyn SessionFactory<RecordingInputSink> + Send + Sync> =
         Arc::new(FixtureFactory);
-    let source = Arc::new(SwitchableFrameSource::new(source));
     let settings = Arc::new(
         SettingsStore::load_from(std::env::temp_dir().join(format!(
             "ipkvm-headless-fixture-settings-{}",
@@ -231,31 +232,27 @@ async fn run() -> Result<(), FixtureError> {
         .0,
     );
     let service = HeadlessWebService::new(
-        source,
-        manager,
+        frame_hub,
+        supervisor,
         factory,
         Arc::new(StaticDeviceInventoryProvider::new(Vec::new(), Vec::new())),
         event_publisher,
         RfbWebSocketConfig::default(),
         shutdown_rx,
-        RfbConnectionGate::new(),
+        gate,
         None, // auth：本机回环 fixture，未配置 token 即放行
         settings,
-        Arc::new(AtomicBool::new(false)),
         None,
     )?;
 
     let mut http_task = tokio::spawn(service.serve(listener));
-    let input_output = output.clone();
     let notice_output = output.clone();
-    let mut input_task = tokio::spawn(async move {
-        let mut pump = RfbInputPump::new(RecordingInputSink::new(input_output));
-        pump.run(&mut event_rx, |notice| {
+    let notice_task = tokio::spawn(async move {
+        while let Some(notice) = notice_rx.recv().await {
             if matches!(notice, RfbInputNotice::ControllerReleased { .. }) {
                 notice_output.line("CONTROLLER_RELEASED");
             }
-        })
-        .await
+        }
     });
     let stop_rx = spawn_stdin_waiter();
 
@@ -263,44 +260,28 @@ async fn run() -> Result<(), FixtureError> {
     let trigger = tokio::select! {
         result = &mut stop_rx => Trigger::Stop(result),
         result = &mut http_task => Trigger::Http(result),
-        result = &mut input_task => Trigger::Input(result),
     };
     shutdown_tx.send_replace(true);
-    event_publish_tx.send_replace(None);
-    drop(event_tx);
+    notice_task.abort();
+    let _ = notice_task.await;
 
     match trigger {
         Trigger::Stop(result) => {
             result.map_err(|_| FixtureError::StopChannel)??;
             flatten_http(http_task.await)?;
-            flatten_input(input_task.await)?;
             output.line("STOPPED");
             Ok(())
         }
         Trigger::Http(result) => {
             let http_result = flatten_http(result);
-            flatten_input(input_task.await)?;
             http_result?;
             Err(FixtureError::HttpStoppedEarly)
-        }
-        Trigger::Input(result) => {
-            let input_result = flatten_input(result);
-            flatten_http(http_task.await)?;
-            input_result?;
-            Err(FixtureError::InputStoppedEarly)
         }
     }
 }
 
 fn flatten_http(
     result: Result<Result<(), HeadlessWebServiceError>, JoinError>,
-) -> Result<(), FixtureError> {
-    result??;
-    Ok(())
-}
-
-fn flatten_input(
-    result: Result<Result<(), RfbInputRunError>, JoinError>,
 ) -> Result<(), FixtureError> {
     result??;
     Ok(())
