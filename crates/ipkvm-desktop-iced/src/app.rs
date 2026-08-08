@@ -58,7 +58,7 @@ static MOCK_STORE_SEQ: AtomicU64 = AtomicU64::new(0);
 const UI_TICK_INTERVAL: Duration = Duration::from_millis(33);
 
 /// 指针最小发送间隔（#102 限频，避免高频移动刷爆串口）。
-const POINTER_MIN_INTERVAL: Duration = Duration::from_millis(33);
+const POINTER_MIN_INTERVAL: Duration = Duration::from_millis(8);
 
 /// 项目主页（GitHub 公开仓库）。
 pub const PROJECT_URL: &str = "https://github.com/kxn/MyKvm";
@@ -1686,8 +1686,8 @@ where
             iced::time::every(Duration::from_millis(100)).map(|_| Message::PreviewTick);
         let keyboard = iced::keyboard::listen().map(Message::Keyboard);
         let events = iced::event::listen().map(Message::IcedEvent);
-        // #89：UiTick 只承担 flush_pending/drain_notices，16ms 无条件重绘会
-        // 放大视频闪烁与 CPU 占用；节流到 33ms（约 30Hz）语义不变。
+        // #89：UiTick 只承担 flush_pending/drain_notices，避免无条件重绘放大
+        // 视频闪烁与 CPU 占用；指针发送节流由 POINTER_MIN_INTERVAL 独立控制。
         let ui_tick = iced::time::every(UI_TICK_INTERVAL).map(|_| Message::UiTick);
         if !self.subscribed {
             return Subscription::batch([window_events, preview_timer, keyboard, events, ui_tick]);
@@ -3677,6 +3677,11 @@ mod tests {
         move_cursor(&mut app, 80.0, 45.0);
         wait_absolute_move(&app, 80, 45, 1);
         assert!(app.remote_input, "移动不得退出远程输入");
+    }
+
+    #[test]
+    fn absolute_pointer_throttle_allows_120hz_updates() {
+        assert_eq!(POINTER_MIN_INTERVAL, Duration::from_millis(8));
     }
 
     #[test]
