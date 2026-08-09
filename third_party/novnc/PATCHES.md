@@ -6,9 +6,10 @@ npm 元数据由 `manifest.sha256`、`npm-metadata.json` 和 `npm-attestations.j
 锁定。`scripts/verify-web-assets.ps1` 在每次验证时重新计算 `1.7.0/` 下每个文件
 的 SHA-256 并与 `manifest.sha256` 比对，确保资源完整性。
 
-上游 noVNC 1.7.0 不支持 RFB 相对指针消息（消息类型 0x08）和 pointer lock 下的
-相对移动批处理，因此本仓库对 `1.7.0/core/rfb.js` 应用了本地补丁。补丁在源码中
-以 `my_ipkvm local patch:` 注释逐处标注。
+上游 noVNC 1.7.0 不支持 RFB 相对指针消息（消息类型 0x08）、显式鼠标模式消息
+（消息类型 0x09）和 pointer lock 下的相对移动批处理，因此本仓库对
+`1.7.0/core/rfb.js` 应用了本地补丁。补丁在源码中以 `my_ipkvm local patch:`
+注释逐处标注。
 
 ## 补丁内容（`core/rfb.js`）
 
@@ -22,6 +23,10 @@ npm 元数据由 `manifest.sha256`、`npm-metadata.json` 和 `npm-attestations.j
    保证挂起的相对移动定时器不会在 RFB 拆除后仍触发。
 4. **暴露 canvas 与 screen 容器**：暴露 noVNC canvas 和 screen 容器引用，
    供上层应用做 pointer lock 进入/退出和光标隐藏处理。
+5. **RFB 显式鼠标模式消息（0x09）发送路径**：新增 `RFB.messages.setMouseMode()`，
+   按本项目扩展协议发送 `mode=0`（absolute）或 `mode=1`（relative）；`setRelativeMode()`
+   进入/退出相对发送路径时同步发送 0x09，使网页 Pointer Lock 生命周期和后端实际鼠标
+   模式保持一致。
 
 这些改动使 `core/rfb.js` 的 SHA-256 偏离上游原始值；`manifest.sha256` 中
 `core/rfb.js` 一行记录的是**打过本地补丁后**的哈希值（与本文件一同维护），

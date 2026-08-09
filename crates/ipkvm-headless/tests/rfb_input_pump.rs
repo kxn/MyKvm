@@ -69,6 +69,14 @@ impl EndToEndClient {
         self.stream.write_all(&message).await.unwrap();
     }
 
+    async fn send_mouse_mode(&mut self, mode: MouseMode) {
+        let wire = match mode {
+            MouseMode::Absolute => 0,
+            MouseMode::Relative => 1,
+        };
+        self.stream.write_all(&[9, wire, 0, 0]).await.unwrap();
+    }
+
     async fn read_exact(&mut self, length: usize) -> Vec<u8> {
         let mut bytes = vec![0; length];
         self.stream.read_exact(&mut bytes).await.unwrap();
@@ -310,4 +318,92 @@ async fn real_tcp_relative_client_ignores_absolute_transition_and_drives_relativ
             .any(|frame| { frame.command() == 0x05 && frame.data() == [1, 0, 12, 249, 0] }),
         "the RFB 0x08 message must reach CH9329 as relative motion"
     );
+}
+
+#[tokio::test]
+async fn real_tcp_relative_client_can_explicitly_switch_back_to_absolute_pointer() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let source = Arc::new(MockFrameSource::new());
+    source.publish_frame(Arc::new(VideoFrame::new(
+        1,
+        MonotonicTimestamp::from_nanos(1),
+        4,
+        4,
+        16,
+        PixelFormat::Bgra8888,
+        Arc::from(vec![0_u8; 64].into_boxed_slice()),
+    )));
+    let (event_tx, mut event_rx) = mpsc::channel(4);
+    let event_publisher = watch::channel(Some(event_tx)).1;
+    let (shutdown_tx, shutdown_rx) = watch::channel(false);
+    let server = RfbTcpServer::new(
+        listener,
+        Arc::clone(&source),
+        event_publisher,
+        RfbTcpConfig::default(),
+        RfbConnectionGate::new(),
+    )
+    .unwrap();
+    let server_task = tokio::spawn(server.run(shutdown_rx));
+
+    let queue = FakeCommandQueue::new();
+    let pump_queue = queue.clone();
+    let pump_task = tokio::spawn(async move {
+        let sink = Ch9329InputSink::new(pump_queue, 0, MouseMode::Absolute);
+        let mut pump = RfbInputPump::new(sink);
+        let mut notices = Vec::new();
+        pump.run(&mut event_rx, |notice| notices.push(notice.clone()))
+            .await
+            .unwrap();
+        notices
+    });
+
+    let mut client = EndToEndClient::connect(address).await;
+    assert_eq!(client.handshake().await, (4, 4));
+    client.send_relative_pointer(0, 5, -3, 0).await;
+    client.send_mouse_mode(MouseMode::Absolute).await;
+    client.send_pointer(1, 2, 3).await;
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            let saw_relative = queue.accepted_batches().iter().any(|batch| {
+                batch
+                    .frames()
+                    .iter()
+                    .any(|frame| frame.command() == 0x05 && frame.data() == [1, 0, 5, 253, 0])
+            });
+            let saw_absolute = queue.accepted_batches().iter().any(|batch| {
+                batch
+                    .frames()
+                    .iter()
+                    .any(|frame| frame.command() == 0x04 && frame.data()[1] == 1)
+            });
+            if saw_relative && saw_absolute {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("explicit RFB mouse mode switch did not restore absolute pointer handling");
+
+    drop(client);
+
+    shutdown_tx.send(true).unwrap();
+    assert!(server_task.await.unwrap().is_ok());
+    let notices = tokio::time::timeout(Duration::from_secs(1), pump_task)
+        .await
+        .expect("RFB input pump did not finish after the TCP client disconnected")
+        .unwrap();
+
+    assert!(notices.iter().any(|notice| {
+        matches!(
+            notice,
+            RfbInputNotice::MouseModeChanged {
+                mode: MouseMode::Absolute,
+                ..
+            }
+        )
+    }));
 }

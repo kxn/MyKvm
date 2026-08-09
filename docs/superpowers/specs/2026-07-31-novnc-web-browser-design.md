@@ -392,11 +392,17 @@ const url = `${scheme}://${location.host}/rfb`;
 - 连接成功后用户点击视频区域才进入正常浏览器焦点路径。
 - 键盘事件由 noVNC 转换为 RFB KeyEvent。
 - 鼠标只有位于视频区域时由 noVNC 转换为 RFB PointerEvent。
-- 页面不启用 pointer lock，不隐藏系统光标，不捕获视频区域外的鼠标。
-- 页面失焦和断开由 noVNC 的输入状态处理；后端现有输入泵负责最终 `release_all`。
+- 绝对模式使用 noVNC 标准 `PointerEvent`；相对模式只在 Pointer Lock 成功后启用，
+  noVNC 本地补丁把 `movementX/Y` 转为 RFB `0x08 PointerRelative`。
+- Pointer Lock 丢失、窗口 blur、显式退出相对模式和断开前，网页必须先请求 noVNC 发送零按钮
+  相对包，避免目标端卡住远端按钮状态。
+- 显式鼠标模式切换使用本项目 RFB 扩展 `0x09 SetMouseMode`，`mode=0` 为 absolute，
+  `mode=1` 为 relative；`setRelativeMode(true/false)` 负责在 Pointer Lock 进入/退出时发送
+  `0x09 relative/absolute`，标准 `PointerEvent` 不承担隐式切回绝对的语义。
 
-浏览器层只验收确定性、跨布局稳定的普通按键和主按钮点击。组合键释放、Unicode 到
-keysym、坐标裁剪和输入泵错误继续由现有 Rust 测试承担，不在浏览器脚本复制协议测试。
+浏览器层验收确定性、跨布局稳定的普通按键、主按钮点击、相对消息构造和 pointer lock
+生命周期。组合键释放、Unicode 到 keysym、坐标裁剪和输入泵错误继续由 Rust 测试承担，
+不在浏览器脚本复制协议测试。
 
 ## 9. 自动化测试
 
@@ -409,6 +415,8 @@ keysym、坐标裁剪和输入泵错误继续由现有 Rust 测试承担，不�
 - 未知资源不存在。
 - `..`、反斜杠、NUL 和非规范路径被拒绝。
 - 嵌入的 noVNC `package.json` 精确声明 1.7.0。
+- vendored `core/rfb.js` 保留本项目 `0x08 PointerRelative` 与 `0x09 SetMouseMode`
+  本地补丁入口。
 
 ### 9.2 Rust HTTP 集成测试
 
@@ -477,6 +485,9 @@ PowerShell 不启动夹具，因此不会与 Node 争用进程管道。Node 是�
   实际缩放和 noVNC 的取整/裁剪语义计算预期坐标。
 - 在桌面和窄视口分别点击，过滤连接初始化事件后断言绝对移动、主按钮按下和释放的完整
   顺序。
+- 直接探测 noVNC message builder，断言 `relativePointerEvent()` 输出 `0x08` wire bytes，
+  `setMouseMode()` 输出 `0x09 absolute/relative` wire bytes，非法 mode 被拒绝；
+  `setRelativeMode(true/false)` 的真实调度输出 `0x09 relative/absolute`。
 - 主动断开后先等待 DOM `disconnected`，再等待夹具输出 `ControllerReleased`，然后
   触发重新连接并等待 `connected`。
 

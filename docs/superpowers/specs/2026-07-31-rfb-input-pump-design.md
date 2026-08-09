@@ -282,6 +282,13 @@ mapper 已保证拒绝和 sink 失败时不提交内部状态。
 - 显式 `SetMouseMode` 和首个指针事件触发的自动模式收敛都只调用 `InputSink::set_mouse_mode(mode)`；该方法负责按旧鼠标模式释放鼠标按钮，不释放键盘。
 - sink 成功确认新模式后，输入泵用默认 `RfbPointerMapper` 替换旧 pointer mapper，避免 mapper 继续记住切换前的按钮 mask。
 - 鼠标模式切换不得调用 `release_all()`。`release_all()` 仍只用于控制者断开、事件源关闭和显式释放控制权。
+- #80 后，外部 RFB 客户端使用本项目扩展 client-to-server 消息 `0x09 SetMouseMode`
+  显式切换 absolute/relative；标准 `Pointer` 在当前为相对模式时仍被忽略，不承担隐式切回绝对。
+- 输入泵的 `mouse_mode_observer` 只发布 sink 已确认状态：控制者获得时发布已知初始模式，
+  模式切换成功后发布目标模式，控制者释放后发布 `None`。发布使用 `send_replace()`，
+  以支持控制面临时 subscribe 后读取最新 actual mode。
+- `/api/status` 只在 observer 有已确认值时序列化 `session.mouse_mode`；无活动控制者时不能把
+  selection/settings 推导值伪装为 actual mode。
 
 ### 9.4 `CutText`
 

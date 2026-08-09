@@ -8,8 +8,8 @@ use crate::protocol::server::{
 };
 use crate::security::{RfbSecurity, constant_time_eq, vnc_expected_response};
 use crate::{
-    BgraFrameView, FramebufferUpdateRequest, RfbPixelFormat, RfbProtocolError, RfbProtocolLimits,
-    RfbRectangle, RfbSize,
+    BgraFrameView, FramebufferUpdateRequest, RfbPixelFormat, RfbPointerMode, RfbProtocolError,
+    RfbProtocolLimits, RfbRectangle, RfbSize,
 };
 use thiserror::Error;
 
@@ -68,6 +68,9 @@ pub enum RfbEvent {
         dx: i16,
         dy: i16,
         wheel: i8,
+    },
+    SetMouseMode {
+        mode: RfbPointerMode,
     },
     CutText(Vec<u8>),
     EnableContinuousUpdates {
@@ -598,6 +601,9 @@ impl RfbConnectionCore {
                         dy,
                         wheel,
                     }));
+                }
+                Ok(ClientMessage::SetMouseMode { mode }) => {
+                    results.push(Ok(RfbEvent::SetMouseMode { mode }));
                 }
                 Ok(ClientMessage::CutText(bytes)) => {
                     results.push(Ok(RfbEvent::CutText(bytes)));
@@ -1169,6 +1175,7 @@ mod tests {
         messages.extend_from_slice(&[3, 0, 0, 1, 0, 2, 0, 3, 0, 4]);
         messages.extend_from_slice(&[5, 3, 0, 10, 0, 20]);
         messages.extend_from_slice(&[8, 3, 0x00, 0x0c, 0xff, 0xfc, 0x02]);
+        messages.extend_from_slice(&[9, 0, 0, 0]);
         messages.extend_from_slice(&[6, 0, 0, 0, 0, 0, 0, 2, 0x41, 0xff]);
         messages.extend_from_slice(&[150, 1, 0, 5, 0, 6, 0, 7, 0, 8]);
 
@@ -1197,6 +1204,9 @@ mod tests {
                     dx: 12,
                     dy: -4,
                     wheel: 2,
+                }),
+                Ok(RfbEvent::SetMouseMode {
+                    mode: RfbPointerMode::Absolute,
                 }),
                 Ok(RfbEvent::CutText(vec![0x41, 0xff])),
                 Ok(RfbEvent::EnableContinuousUpdates {

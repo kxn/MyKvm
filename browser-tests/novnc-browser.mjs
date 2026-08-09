@@ -608,10 +608,24 @@ async function assertRelativePointerMessageConstruction(page) {
       flush() {},
     };
     RFB.messages.relativePointerEvent(sock, 0b101, 10, -20, 1);
+    const relativePointerBytes = [...queue];
+    queue.length = 0;
+    RFB.messages.setMouseMode(sock, "absolute");
+    RFB.messages.setMouseMode(sock, "relative");
+    let invalidModeRejected = false;
+    try {
+      RFB.messages.setMouseMode(sock, "bogus");
+    } catch {
+      invalidModeRejected = true;
+    }
     return {
-      bytes: queue,
+      bytes: relativePointerBytes,
+      modeBytes: queue,
+      invalidModeRejected,
       hasMessageBuilder:
         typeof RFB.messages.relativePointerEvent === "function",
+      hasModeMessageBuilder:
+        typeof RFB.messages.setMouseMode === "function",
       hasModeSwitch: typeof RFB.prototype.setRelativeMode === "function",
       hasSensitivitySwitch:
         typeof RFB.prototype.setRelativeSensitivity === "function",
@@ -621,11 +635,14 @@ async function assertRelativePointerMessageConstruction(page) {
   });
 
   assert.equal(probe.hasMessageBuilder, true);
+  assert.equal(probe.hasModeMessageBuilder, true);
   assert.equal(probe.hasModeSwitch, true);
   assert.equal(probe.hasSensitivitySwitch, true);
   assert.equal(probe.hasCanvasAccessor, true);
   assert.equal(probe.hasScreenAccessor, true);
   assert.deepEqual(probe.bytes, [0x08, 0b101, 0, 10, 0xff, 0xec, 1]);
+  assert.deepEqual(probe.modeBytes, [0x09, 0, 0, 0, 0x09, 1, 0, 0]);
+  assert.equal(probe.invalidModeRejected, true);
 }
 
 async function assertRelativeScheduler(page) {
@@ -714,9 +731,11 @@ async function assertRelativeScheduler(page) {
     };
   });
   assert.deepEqual(result.messages, [
+    [0x09, 1, 0, 0],
     [0x08, 0, 0, 1, 0, 0, 0],
     [0x08, 1, 0, 0, 0, 0, 1],
     [0x08, 0, 0, 0, 0, 0, 0],
+    [0x09, 0, 0, 0],
   ]);
   assert.equal(result.hadPendingTimer, true);
   assert.equal(result.pendingCleared, true);

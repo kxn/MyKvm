@@ -217,6 +217,8 @@ mod tests {
 
         assert!(rfb.contains("relativePointerEvent"), "0x08 message builder");
         assert!(rfb.contains("sQpush8(0x08)"), "0x08 message type byte");
+        assert!(rfb.contains("setMouseMode"), "0x09 message builder");
+        assert!(rfb.contains("sQpush8(0x09)"), "0x09 message type byte");
         assert!(rfb.contains("setRelativeMode("), "relative mode switch");
         assert!(
             rfb.contains("setRelativeSensitivity("),

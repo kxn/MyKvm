@@ -116,8 +116,20 @@
 
 - `crates/ipkvm-headless/web/modules/keyboard.js:41-63` 拦截器只在 canvas 聚焦时工作，只做 `preventDefault`，不负责转发和释放。
 - noVNC 键盘状态在 canvas blur、工具栏操作、特殊键菜单、断开和 pointer lock 之间没有和后端 release 形成统一契约。
-- `crates/ipkvm-headless/src/web/service.rs:756-764` 鼠标 profile API 用 selection/settings 判断是否需要发送 `SetMouseMode`，但 input pump 会因实际收到的 Pointer/PointerRelative 自动切换模式，二者可能漂移。
-- 外部 RFB 客户端可以发送相对扩展消息使 pump 进入相对模式，但普通标准 Pointer 无法显式切回绝对；网络 RFB 路径没有模式协商事件。
+
+`#80` 后已收敛的事实：
+
+- `/api/input/mouse-profile` 以 input pump 已确认 actual mode 判断是否需要发送 `SetMouseMode`；
+  selection/settings 只在 actual mode 为 `None` 时兜底。
+- `/api/status` 的 `session.mouse_mode` 只在 actual mode 已确认时序列化；无活动控制者时
+  只返回 `mouse_profile`，前端按 profile 推导展示选择值。
+- input pump 的 mouse mode observer 在控制者获得、模式切换成功和控制者释放时发布状态，
+  并使用 `watch::Sender::send_replace()` 保证没有长期 receiver 时仍保留最新值。
+- 外部 RFB 客户端从相对回绝对的明确路径是本项目扩展 client-to-server 消息 `0x09`：
+  `mode=0` 为 absolute，`mode=1` 为 relative。标准 RFB `Pointer` 在当前为相对模式时仍被忽略，
+  不承担隐式切回绝对的语义。
+- noVNC `setRelativeMode(true/false)` 已接入 0x09，在 Pointer Lock 进入/退出时同步通知后端
+  actual mode；退出相对时顺序为先发送零按钮 `0x08` release，再发送 `0x09 absolute`。
 
 拆单判断：headless 既有浏览器硬限制，也有 noVNC patch 自身状态问题。它应作为独立子单对齐前端捕获、释放、profile API 和外部 RFB 模式协商。
 
@@ -232,14 +244,16 @@ GitHub issue：`#80`
 - Pointer Lock 状态、selected profile、actual pump mode、RFB connection state 建立统一前端状态机。
 - 画布失焦、工具栏操作、特殊键菜单、窗口 blur、pointer lock 退出时释放键鼠状态。
 - `/api/input/mouse-profile` 以实际 pump mode 为准判断是否需要 `SetMouseMode`，不能只看 selection/settings。
-- 外部 RFB 客户端的绝对/相对模式切换契约明确：标准 Pointer 是否允许切回绝对，或必须有扩展/控制 API。
+- 外部 RFB 客户端的绝对/相对模式切换契约明确：必须用 `0x09 SetMouseMode` 显式切换，
+  标准 `Pointer` 不隐式切回绝对。
 - noVNC 键盘 reject/unsupported notice 可见化。
 
 验收：
 
 - Pointer lock 退出后不会卡远端按钮。
 - headless 相对模式滚轮不会破坏持久按钮状态。
-- 外部客户端从相对回绝对有明确路径，或诊断明确提示不支持并不会静默忽略。
+- 外部客户端从相对回绝对有明确路径：发送 `0x09 absolute` 后后续标准 `Pointer` 恢复绝对输出。
+- noVNC Pointer Lock 退出后后端 actual mode 回到 absolute，后续标准 `Pointer` 不再被相对模式过滤。
 - 浏览器无法捕获的键路径有可见说明和可操作替代。
 
 ## 依赖顺序
@@ -283,8 +297,10 @@ GitHub issue：`#80`
 
 顺序与缓冲角度：
 
-- `SetMouseMode` FIFO 契约已存在，但 UI 入口并不总是发送它。
-- pointer/button/wheel 的 barrier 语义在 headless 相对滚轮和 pointer lock 退出仍不完整。
+- `SetMouseMode` FIFO 契约已存在；#80 将外部 RFB 明确切换路径补为 `0x09 SetMouseMode`，
+  并让 profile API 以 pump actual mode 判定是否发送。
+- pointer/button/wheel 的 barrier 语义在 headless 相对滚轮和 pointer lock 退出已由 noVNC 本地补丁覆盖；
+  浏览器无法捕获的系统键仍属于前端限制，不应伪装成原生捕获能力。
 
 目标 OS/硬件角度：
 

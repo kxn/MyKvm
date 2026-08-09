@@ -342,7 +342,8 @@ struct SessionStatus {
     #[serde(skip_serializing_if = "Option::is_none")]
     input_offline: Option<InputOfflineDto>,
     mouse_profile: &'static str,
-    mouse_mode: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    mouse_mode: Option<&'static str>,
     /// RFB 编码统计快照（encode 耗时与字节累计；仅活动连接存在后才有值）。
     #[serde(skip_serializing_if = "Option::is_none")]
     encode: Option<RfbEncodeStatsDto>,
@@ -527,16 +528,15 @@ async fn api_status<I: InputSink + Clone + Send + 'static>(
                 .unwrap_or(true),
             None => session_state != "absent",
         };
-    let (mouse_profile, selected_mouse_mode) = {
+    let mouse_profile = {
         let selection = state.selection.lock().await;
         let profile = selection
             .as_ref()
             .and_then(|selection| selection.mouse_profile.as_deref())
             .and_then(|value| MouseProfile::parse(value).ok())
             .unwrap_or_else(|| state.settings.get().mouse_profile);
-        (profile.as_str(), profile.resolve_mode())
+        profile.as_str()
     };
-    let mouse_mode = actual_mouse_mode.unwrap_or(selected_mouse_mode);
 
     let status = StatusResponse {
         service: ServiceStatus {
@@ -572,7 +572,7 @@ async fn api_status<I: InputSink + Clone + Send + 'static>(
             serial,
             input_offline,
             mouse_profile,
-            mouse_mode: mouse_mode_name(mouse_mode),
+            mouse_mode: actual_mouse_mode.map(mouse_mode_name),
             encode,
             updates_sent,
         },
@@ -753,7 +753,7 @@ async fn api_mouse_profile<I: InputSink + Clone + Send + 'static>(
     };
     let event_tx = session.event_tx().clone();
     let mut mode_rx = session.mouse_mode();
-    let current_profile = {
+    let selected_profile = {
         let selection = state.selection.lock().await;
         selection
             .as_ref()
@@ -761,7 +761,8 @@ async fn api_mouse_profile<I: InputSink + Clone + Send + 'static>(
             .and_then(|value| MouseProfile::parse(value).ok())
             .unwrap_or_else(|| state.settings.get().mouse_profile)
     };
-    if profile.resolve_mode() != current_profile.resolve_mode() {
+    let current_mode = (*mode_rx.borrow()).unwrap_or_else(|| selected_profile.resolve_mode());
+    if profile.resolve_mode() != current_mode {
         if event_tx
             .send(RfbServerEvent::SetMouseMode {
                 client_id: active.client_id,
