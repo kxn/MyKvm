@@ -3324,9 +3324,11 @@ mod tests {
     #[test]
     fn load_profile_file_online_syncs_active_mouse_mode() {
         let (mut app, _) = MockApp::new_mock();
-        let mut connection = ConnectionSettings::default();
-        connection.mouse_profile = MouseProfile::Linux;
-        connection.mouse_mode = MouseMode::Relative;
+        let connection = ConnectionSettings {
+            mouse_profile: MouseProfile::Linux,
+            mouse_mode: MouseMode::Relative,
+            ..ConnectionSettings::default()
+        };
         app.store
             .save_profile(&ipkvm_desktop_core::config::Profile {
                 name: "macos".into(),
@@ -3353,9 +3355,11 @@ mod tests {
     fn load_profile_file_mode_failure_does_not_commit_ui_state() {
         let (mut app, _) = MockApp::new_mock();
         let old_connection = app.connection.clone();
-        let mut connection = ConnectionSettings::default();
-        connection.mouse_profile = MouseProfile::Linux;
-        connection.mouse_mode = MouseMode::Relative;
+        let connection = ConnectionSettings {
+            mouse_profile: MouseProfile::Linux,
+            mouse_mode: MouseMode::Relative,
+            ..ConnectionSettings::default()
+        };
         app.store
             .save_profile(&ipkvm_desktop_core::config::Profile {
                 name: "failing".into(),
