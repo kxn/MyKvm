@@ -552,7 +552,11 @@ where
                 Task::none()
             }
             Message::FrameClosed => {
+                // 帧源关闭（设备出错/抖动/会话重启）。停止帧订阅并清空渲染状态，
+                // 使主画面回到"无信号"而非残留最后一帧（#52）。重连时 Connect 会
+                // 把 subscribed 重置为 true 重建订阅。
                 self.subscribed = false;
+                self.clear_frame_state();
                 Task::none()
             }
             Message::SetScaleMode(mode) => {
@@ -732,7 +736,12 @@ where
                     Ok(()) => {
                         diag::log("connect ok");
                         self.status_message = None;
+                        // #52：重连后必须重新启用帧订阅（FrameClosed 会把它置
+                        // false，若不重置，新会话的 frame_source 永远不会被订阅，
+                        // 主画面永久冻结在最后一帧）。同时清掉旧帧渲染状态，避免
+                        // 新帧到达前 video_view 显示冻结那一刻的旧画面。
                         self.subscribed = true;
+                        self.clear_frame_state();
                         self.sync_status();
                         if let Some(name) = self.active_profile.clone() {
                             if let Err(error) = self.store.add_recent_profile(&name) {
@@ -1644,14 +1653,25 @@ where
         self.sync_status();
         // 保留已探测状态：Connect 立即恢复可点，
         // 预览源保持常驻，由 PreviewTick 继续出帧。
-        self.latest_frame = None;
-        self.frame_size = None;
+        self.clear_frame_state();
         self.remote_input = false;
         self.active_keysyms.clear();
         self.last_pointer = None;
         self.last_relative_mask = 0;
         self.sync_cursor();
         self.stop_relative_source();
+    }
+
+    /// 清空主视频帧渲染状态（#52）。
+    ///
+    /// `handle`（实际渲染的图像）、`frame_size`（状态栏分辨率/无信号判定）、
+    /// `latest_frame`（截图源）三者必须一起清，避免断开/重连瞬间残留旧画面。
+    /// 注意旧实现只清了 `frame_size`/`latest_frame` 而漏了 `handle`，导致重连后
+    /// 在新帧到达前仍显示冻结那一刻的旧画面。
+    fn clear_frame_state(&mut self) {
+        self.handle = None;
+        self.frame_size = None;
+        self.latest_frame = None;
     }
 
     fn paste(&mut self) {
@@ -2872,6 +2892,61 @@ mod tests {
         assert_eq!(app.status(), &ConnectionStatus::Disconnected);
         assert!(app.selection.can_connect(), "探测状态必须保留");
         assert!(app.latest_frame.is_none(), "latest_frame 必须清空");
+        assert!(app.handle.is_none(), "handle 必须清空（#52）");
+        assert!(app.frame_size.is_none(), "frame_size 必须清空");
+    }
+
+    #[test]
+    fn frame_closed_disables_subscription_and_clears_frame_state() {
+        // #52：帧源关闭后 subscribed 置 false 且帧渲染状态清空，
+        // 主画面回到"无信号"而非残留最后一帧。
+        let (mut app, _) = MockApp::new_mock();
+        let _ = app.update(Message::FrameReady(make_bgra_frame(1, 16, 9)));
+        assert!(app.handle.is_some(), "前置：帧到达后 handle 有值");
+        assert!(app.subscribed(), "前置：初始 subscribed=true");
+        let _ = app.update(Message::FrameClosed);
+        assert!(!app.subscribed(), "FrameClosed 后 subscribed 必须变 false");
+        assert!(app.handle.is_none(), "FrameClosed 后 handle 必须清空");
+        assert!(app.frame_size.is_none(), "frame_size 必须清空");
+        assert!(app.latest_frame.is_none(), "latest_frame 必须清空");
+    }
+
+    #[test]
+    fn reconnect_after_frame_closed_resubscribes_and_clears_stale_frame() {
+        // #52 核心回归：FrameClosed 后 subscribed 恒为 false（旧 bug），重连后帧订阅
+        // 永远不重建、主画面永久冻结。修复后 Connect 必须把 subscribed 重置为 true，
+        // 并清掉旧帧状态，使新帧能正常驱动主画面。
+        let (mut app, _) = MockApp::new_mock();
+        // 先建立有效的设备选择（connect_request 依赖 selected id）。
+        let _ = app.update(Message::Disconnect);
+        let _ = app.update(Message::RefreshDevices);
+        let _ = app.update(Message::SelectVideo("Camera 0".into()));
+        let _ = app.update(Message::PreviewTick);
+        let _ = app.update(Message::SelectControl("CH9329 (COM9)".into()));
+        // 建立一帧画面并模拟帧源关闭。
+        let _ = app.update(Message::FrameReady(make_bgra_frame(1, 16, 9)));
+        assert!(app.handle.is_some());
+        let _ = app.update(Message::FrameClosed);
+        assert!(!app.subscribed(), "FrameClosed 后订阅关闭");
+        assert!(app.handle.is_none(), "冻结帧已清");
+        // 重连：mock controller 支持 stop→connect 循环。
+        let _ = app.update(Message::Connect);
+        assert!(
+            app.controller.is_control_online(),
+            "前置：mock 重连必须成功（在线），否则 subscribed 不会重置"
+        );
+        assert!(
+            app.subscribed(),
+            "重连后 subscribed 必须恢复 true，否则帧订阅永不重建（#52 核心修复）"
+        );
+        assert!(
+            app.handle.is_none(),
+            "重连后旧帧必须清空，新帧到达前不得显示冻结画面"
+        );
+        // 新会话推帧后主画面恢复。
+        let _ = app.update(Message::FrameReady(make_bgra_frame(2, 16, 9)));
+        assert!(app.handle.is_some(), "重连后新帧必须能驱动主画面");
+        assert!(app.subscribed(), "新帧到达后订阅保持开启");
     }
 
     #[test]
