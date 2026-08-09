@@ -532,10 +532,10 @@ mod tests {
         drop(session.stop().unwrap());
         assert!(!session.is_running());
 
-        // 释放是异步完成的：首次指针模式收敛释放一次，pump 停止时再释放一次，
-        // 文本键入服务收到取消后对 sink 克隆再释放一次，共享计数应为 3。
+        // 释放是异步完成的：pump 停止时释放一次，文本键入服务收到取消后
+        // 对 sink 克隆再释放一次；鼠标模式收敛不再借 release_all 释放键盘。
         assert!(
-            yield_until(|| sink.recorded.lock().unwrap().release_count == 3).await,
+            yield_until(|| sink.recorded.lock().unwrap().release_count == 2).await,
             "stop 后 release_all 未被执行（异步释放未完成）"
         );
         let _ = handle;

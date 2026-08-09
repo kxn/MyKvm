@@ -64,10 +64,10 @@ impl RfbPointerMapper {
         wheel: i8,
     ) -> Result<RfbPointerOutcome, RfbPointerError> {
         let mut events = Vec::new();
+        events.extend(button_events(self.committed_button_mask, button_mask));
         if dx != 0 || dy != 0 {
             events.push(PointerEvent::RelativeMove { dx, dy });
         }
-        events.extend(button_events(self.committed_button_mask, button_mask));
         if wheel != 0 {
             events.push(PointerEvent::Wheel {
                 delta: i16::from(wheel),
@@ -383,8 +383,8 @@ mod tests {
         assert_eq!(
             sink.batches,
             vec![vec![
-                PointerEvent::RelativeMove { dx: 12, dy: -4 },
                 button(PointerButton::Left, true),
+                PointerEvent::RelativeMove { dx: 12, dy: -4 },
             ]]
         );
     }

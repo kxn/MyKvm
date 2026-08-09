@@ -215,6 +215,9 @@ InputSink
 - CH9329 绝对坐标换算留在 sink 实现内，桌面端和 RFB 端复用同一路径。
 - 滚轮方向约定为正数向上、负数向下。
 - 滚轮值的语义是滚轮齿数；各平台的原始滚轮单位由入口适配层归一化。
+- 绝对模式滚轮在 RFB 层必须用 button 4/5 的瞬时边沿表示，即 `mask|0x08 -> mask` 或 `mask|0x10 -> mask`；不得通过 `PointerRelative` 发送，否则会触发输入泵切到相对模式。
+- 相对指针消息的按钮 mask 表示本次相对位移发生时的按钮状态，RFB 指针 mapper 必须按 `Button -> RelativeMove -> Wheel` 展开。
+- `set_mouse_mode(mode)` 是鼠标模式边界，只允许处理鼠标模式和旧模式鼠标按钮释放，不应释放键盘；输入泵在 sink 确认后重置 pointer mapper。
 - 所有输入方法返回 `Result`，队列关闭、不可映射按键、6KRO 溢出等错误必须能传回 UI 或 RFB 状态层。
 - `Result::Ok` 只表示有序命令批次已被本进程接受，不表示 CH9329 已执行。
 - 文本粘贴转模拟键入不放进物理 `InputSink`，阶段 2 由独立文本键入服务实现。
@@ -446,6 +449,7 @@ WebSocket 兼容：
 - Pointer 事件在 RFB 协议核心中固化客户端输入坐标时期，不由事件泵读取最新视频尺寸；跨越 `DesktopSize` 的半包直到解码边界清空后才切换时期。
 - 不支持的 keysym 和 Shift 冲突产生可观测拒绝，事件泵继续处理后续输入和断线释放；sink 或生命周期错误则保留原事件并停止循环，调用方可以修复后重试。
 - 控制者断线或事件发送端关闭时调用 `release_all()`；只有释放成功后才清空控制者和两个 mapper，失败时保留完整软件状态。
+- 鼠标模式切换不调用 `release_all()`；切换成功后只重置 pointer mapper，键盘 mapper 保持当前键盘状态直到真实 key-up 或控制者释放。
 - 网页相对鼠标模式需要浏览器 Pointer Lock。若 noVNC 集成无法直接提供相对位移，则需要定制 noVNC 页面层；这项不假定 noVNC 原生完成。
 
 会话和并发：

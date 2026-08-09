@@ -775,6 +775,20 @@ mod tests {
         }
     }
 
+    fn event_name(event: &RfbServerEvent) -> &'static str {
+        match event {
+            RfbServerEvent::Connected { .. } => "connected",
+            RfbServerEvent::Disconnected { .. } => "disconnected",
+            RfbServerEvent::Key { .. } => "key",
+            RfbServerEvent::Pointer { .. } => "pointer",
+            RfbServerEvent::PointerRelative { .. } => "pointer_relative",
+            RfbServerEvent::SetMouseMode { .. } => "set_mouse_mode",
+            RfbServerEvent::CutText { .. } => "cut_text",
+            RfbServerEvent::ContinuousUpdates { .. } => "continuous_updates",
+            RfbServerEvent::FrameUpdateSent { .. } => "frame_update_sent",
+        }
+    }
+
     #[test]
     fn flush_pending_events_drains_in_fifo_order() {
         let mut pending = std::collections::VecDeque::new();
@@ -834,6 +848,62 @@ mod tests {
             delivered.iter().map(keysym_of).collect::<Vec<_>>(),
             vec![1, 2, 3]
         );
+    }
+
+    #[test]
+    fn flush_pending_events_keeps_mode_switch_as_fifo_barrier() {
+        use tokio::sync::mpsc::error::TrySendError;
+
+        let mut pending = std::collections::VecDeque::new();
+        pending.push_back(RfbServerEvent::Pointer {
+            client_id: RfbClientId::local_desktop(),
+            button_mask: 1,
+            x: 10,
+            y: 20,
+            framebuffer_size: ipkvm_rfb::RfbSize::new(100, 100).unwrap(),
+        });
+        pending.push_back(RfbServerEvent::SetMouseMode {
+            client_id: RfbClientId::local_desktop(),
+            mode: MouseMode::Relative,
+        });
+        pending.push_back(RfbServerEvent::PointerRelative {
+            client_id: RfbClientId::local_desktop(),
+            button_mask: 1,
+            dx: 4,
+            dy: -2,
+            wheel: 0,
+        });
+
+        let mut delivered = Vec::new();
+        let mut accepts = 0;
+        let result = flush_pending_events(&mut pending, |next| {
+            if accepts < 2 {
+                accepts += 1;
+                delivered.push(next);
+                Ok(())
+            } else {
+                Err(TrySendError::Full(next))
+            }
+        });
+
+        assert!(result.is_ok());
+        assert_eq!(
+            delivered.iter().map(event_name).collect::<Vec<_>>(),
+            vec!["pointer", "set_mouse_mode"],
+            "模式切换必须按 FIFO 留在旧模式事件之后、新模式事件之前"
+        );
+        assert_eq!(pending.len(), 1);
+
+        flush_pending_events(&mut pending, |next| {
+            delivered.push(next);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(
+            delivered.iter().map(event_name).collect::<Vec<_>>(),
+            vec!["pointer", "set_mouse_mode", "pointer_relative"]
+        );
+        assert!(pending.is_empty());
     }
 
     #[test]

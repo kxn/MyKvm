@@ -273,6 +273,16 @@ mapper 已保证拒绝和 sink 失败时不提交内部状态。
 
 未支持按钮保持非致命、可观测；坐标越界和 sink 错误保持致命、可重试。
 
+#### 9.3 补充：相对指针与鼠标模式切换（2026-08-09）
+
+后续实现增加了 `PointerRelative` 和 `SetMouseMode`，#67 对其状态契约做如下收敛：
+
+- `PointerRelative` 要求来自活动控制者，并在进入 mapper 前确保 sink 已处于 `MouseMode::Relative`。
+- 相对 mapper 按 `Button -> RelativeMove -> Wheel` 展开事件，使本次相对位移携带消息内的新按钮 mask。
+- 显式 `SetMouseMode` 和首个指针事件触发的自动模式收敛都只调用 `InputSink::set_mouse_mode(mode)`；该方法负责按旧鼠标模式释放鼠标按钮，不释放键盘。
+- sink 成功确认新模式后，输入泵用默认 `RfbPointerMapper` 替换旧 pointer mapper，避免 mapper 继续记住切换前的按钮 mask。
+- 鼠标模式切换不得调用 `release_all()`。`release_all()` 仍只用于控制者断开、事件源关闭和显式释放控制权。
+
 ### 9.4 `CutText`
 
 要求来自活动控制者。当前不模拟键入，返回：

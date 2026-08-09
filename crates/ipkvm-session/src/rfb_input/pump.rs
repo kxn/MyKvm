@@ -565,24 +565,7 @@ impl<S: InputSink> RfbInputPump<S> {
         mode: MouseMode,
     ) -> Result<RfbInputNotice, RfbInputError> {
         self.require_active(client_id, RfbInputEventKind::SetMouseMode)?;
-        self.sink
-            .release_all()
-            .map_err(|source| RfbInputError::Sink {
-                client_id,
-                operation: RfbInputOperation::Release,
-                source,
-            })?;
-        self.sink
-            .set_mouse_mode(mode)
-            .map_err(|source| RfbInputError::Sink {
-                client_id,
-                operation: RfbInputOperation::Pointer,
-                source,
-            })?;
-        self.mouse_mode = Some(mode);
-        if let Some(observer) = &self.mouse_mode_observer {
-            let _ = observer.send(Some(mode));
-        }
+        self.switch_mouse_mode(client_id, mode)?;
         Ok(RfbInputNotice::MouseModeChanged { client_id, mode })
     }
 
@@ -594,13 +577,17 @@ impl<S: InputSink> RfbInputPump<S> {
         if self.mouse_mode == Some(mode) {
             return Ok(());
         }
-        self.sink
-            .release_all()
-            .map_err(|source| RfbInputError::Sink {
-                client_id,
-                operation: RfbInputOperation::Release,
-                source,
-            })?;
+        self.switch_mouse_mode(client_id, mode)
+    }
+
+    fn switch_mouse_mode(
+        &mut self,
+        client_id: RfbClientId,
+        mode: MouseMode,
+    ) -> Result<(), RfbInputError> {
+        if self.mouse_mode == Some(mode) {
+            return Ok(());
+        }
         self.sink
             .set_mouse_mode(mode)
             .map_err(|source| RfbInputError::Sink {
@@ -608,6 +595,7 @@ impl<S: InputSink> RfbInputPump<S> {
                 operation: RfbInputOperation::Pointer,
                 source,
             })?;
+        self.pointer = RfbPointerMapper::new();
         self.mouse_mode = Some(mode);
         if let Some(observer) = &self.mouse_mode_observer {
             let _ = observer.send(Some(mode));
@@ -1217,7 +1205,7 @@ mod tests {
             })
         );
         assert_eq!(pump.active_client(), None);
-        assert_eq!(pump.sink().release_count, 2);
+        assert_eq!(pump.sink().release_count, 1);
 
         pump.handle_event(connected(second, second_peer)).unwrap();
         pump.handle_event(RfbServerEvent::Key {
@@ -1390,7 +1378,7 @@ mod tests {
         assert_eq!(pump.active_client(), None);
         assert_eq!(pump.sink().key_batches.len(), 1);
         assert_eq!(pump.sink().pointer_batches.len(), 1);
-        assert_eq!(pump.sink().release_count, 2);
+        assert_eq!(pump.sink().release_count, 1);
         assert!(matches!(
             notices.as_slice(),
             [
@@ -1607,6 +1595,181 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn real_ch9329_absolute_drag_carries_button_on_move_frames() {
+        let client_id = client(25);
+        let queue = FakeCommandQueue::new();
+        let sink = Ch9329InputSink::new(queue.clone(), 0, MouseMode::Absolute);
+        let mut pump = RfbInputPump::new(sink);
+        let size = RfbSize::new(100, 100).unwrap();
+        pump.handle_event(connected(client_id, peer(5925))).unwrap();
+
+        for (button_mask, x, y) in [(0, 10, 20), (1, 10, 20), (1, 20, 30), (0, 20, 30)] {
+            pump.handle_event(RfbServerEvent::Pointer {
+                client_id,
+                button_mask,
+                x,
+                y,
+                framebuffer_size: size,
+            })
+            .unwrap();
+        }
+
+        let batches = queue.accepted_batches();
+        assert_eq!(batches.len(), 4);
+        assert!(
+            batches
+                .iter()
+                .flat_map(|batch| batch.frames())
+                .all(|frame| frame.command() == 0x04),
+            "绝对拖拽路径不得混入 0x05 相对鼠标帧"
+        );
+        assert_eq!(batches[0].frames()[0].data()[1], 0);
+        assert_eq!(batches[1].frames()[1].data()[1], 1);
+        assert_eq!(
+            batches[2].frames()[0].data()[1],
+            1,
+            "按住移动的绝对帧必须继续携带按钮位"
+        );
+        assert_eq!(batches[3].frames()[1].data()[1], 0);
+    }
+
+    #[tokio::test]
+    async fn real_ch9329_absolute_wheel_stays_absolute_and_allows_later_moves() {
+        let client_id = client(26);
+        let queue = FakeCommandQueue::new();
+        let sink = Ch9329InputSink::new(queue.clone(), 0, MouseMode::Absolute);
+        let mut pump = RfbInputPump::new(sink);
+        let size = RfbSize::new(100, 100).unwrap();
+        pump.handle_event(connected(client_id, peer(5926))).unwrap();
+
+        for (button_mask, x, y) in [(0, 10, 20), (0x08, 10, 20), (0, 10, 20), (0, 20, 30)] {
+            pump.handle_event(RfbServerEvent::Pointer {
+                client_id,
+                button_mask,
+                x,
+                y,
+                framebuffer_size: size,
+            })
+            .unwrap();
+        }
+
+        let batches = queue.accepted_batches();
+        assert_eq!(batches.len(), 4);
+        assert!(
+            batches
+                .iter()
+                .flat_map(|batch| batch.frames())
+                .all(|frame| frame.command() == 0x04),
+            "RFB 绝对滚轮必须保持 0x04 绝对鼠标帧，不能切成 0x05 相对帧"
+        );
+        assert_eq!(
+            batches[1].frames()[1].data()[6] as i8,
+            1,
+            "RFB wheel-up 边沿必须进入绝对帧 wheel 字段"
+        );
+        assert_eq!(
+            batches[3].frames()[0].data()[1],
+            0,
+            "滚轮释放后后续移动仍应作为普通绝对移动发出"
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_mode_switch_releases_old_buttons_before_relative_motion() {
+        let client_id = client(27);
+        let queue = FakeCommandQueue::new();
+        let sink = Ch9329InputSink::new(queue.clone(), 0, MouseMode::Absolute);
+        let mut pump = RfbInputPump::new(sink);
+        pump.handle_event(connected(client_id, peer(5927))).unwrap();
+
+        pump.handle_event(RfbServerEvent::Pointer {
+            client_id,
+            button_mask: 1,
+            x: 10,
+            y: 20,
+            framebuffer_size: RfbSize::new(100, 100).unwrap(),
+        })
+        .unwrap();
+        pump.handle_event(RfbServerEvent::SetMouseMode {
+            client_id,
+            mode: MouseMode::Relative,
+        })
+        .unwrap();
+        pump.handle_event(RfbServerEvent::PointerRelative {
+            client_id,
+            button_mask: 1,
+            dx: 4,
+            dy: -2,
+            wheel: 0,
+        })
+        .unwrap();
+
+        let batches = queue.accepted_batches();
+        assert_eq!(batches.len(), 3);
+        assert_eq!(batches[0].frames()[1].command(), 0x04);
+        assert_eq!(batches[0].frames()[1].data()[1], 1);
+        assert_eq!(
+            batches[1].frames().last().unwrap().command(),
+            0x04,
+            "切换相对模式前必须先用旧绝对模式释放按钮"
+        );
+        assert_eq!(batches[1].frames().last().unwrap().data()[1], 0);
+        let relative_frames = batches[2].frames();
+        assert_eq!(relative_frames.len(), 2);
+        assert_eq!(relative_frames[0].command(), 0x05);
+        assert_eq!(relative_frames[0].data(), &[0x01, 1, 0, 0, 0]);
+        assert_eq!(relative_frames[1].command(), 0x05);
+        assert_eq!(relative_frames[1].data(), &[0x01, 1, 4, -2i8 as u8, 0]);
+    }
+
+    #[tokio::test]
+    async fn mouse_mode_switch_preserves_keyboard_until_key_release() {
+        let client_id = client(28);
+        let queue = FakeCommandQueue::new();
+        let sink = Ch9329InputSink::new(queue.clone(), 0, MouseMode::Absolute);
+        let mut pump = RfbInputPump::new(sink);
+        pump.handle_event(connected(client_id, peer(5928))).unwrap();
+
+        pump.handle_event(RfbServerEvent::Key {
+            client_id,
+            down: true,
+            keysym: 'a' as u32,
+        })
+        .unwrap();
+        pump.handle_event(RfbServerEvent::SetMouseMode {
+            client_id,
+            mode: MouseMode::Relative,
+        })
+        .unwrap();
+        pump.handle_event(RfbServerEvent::PointerRelative {
+            client_id,
+            button_mask: 0,
+            dx: 1,
+            dy: 0,
+            wheel: 0,
+        })
+        .unwrap();
+        pump.handle_event(RfbServerEvent::Key {
+            client_id,
+            down: false,
+            keysym: 'a' as u32,
+        })
+        .unwrap();
+
+        let batches = queue.accepted_batches();
+        assert_eq!(batches.len(), 3);
+        assert_eq!(batches[0].frames()[0].command(), 0x02);
+        assert_eq!(batches[0].frames()[0].data(), &[0, 0, 4, 0, 0, 0, 0, 0]);
+        assert_eq!(
+            batches[1].frames()[0].command(),
+            0x05,
+            "鼠标模式切换不得通过 release_all 提前释放键盘"
+        );
+        assert_eq!(batches[2].frames()[0].command(), 0x02);
+        assert_eq!(batches[2].frames()[0].data(), &[0; 8]);
+    }
+
+    #[tokio::test]
     async fn ch9329_relative_mode_ignores_absolute_pointer_transition() {
         let client_id = client(19);
         let queue = FakeCommandQueue::new();
@@ -1679,11 +1842,11 @@ mod tests {
         assert_eq!(
             pump.sink().pointer_batches,
             vec![vec![
-                PointerEvent::RelativeMove { dx: 12, dy: -4 },
                 PointerEvent::Button {
                     button: PointerButton::Left,
                     down: true,
                 },
+                PointerEvent::RelativeMove { dx: 12, dy: -4 },
                 PointerEvent::Wheel { delta: 2 },
             ]]
         );
@@ -1768,7 +1931,11 @@ mod tests {
                 mode: MouseMode::Absolute,
             })
         );
-        assert_eq!(pump.sink().release_count, 1);
+        assert_eq!(
+            pump.sink().release_count,
+            0,
+            "鼠标模式切换不能借 release_all 影响键盘和非鼠标状态"
+        );
         assert_eq!(pump.sink().mouse_modes, vec![MouseMode::Absolute]);
     }
 

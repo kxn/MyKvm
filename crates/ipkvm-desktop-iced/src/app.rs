@@ -59,6 +59,8 @@ const UI_TICK_INTERVAL: Duration = Duration::from_millis(33);
 
 /// 指针最小发送间隔（#102 限频，避免高频移动刷爆串口）。
 const POINTER_MIN_INTERVAL: Duration = Duration::from_millis(8);
+const RFB_WHEEL_UP_MASK: u8 = 1 << 3;
+const RFB_WHEEL_DOWN_MASK: u8 = 1 << 4;
 
 /// 项目主页（GitHub 公开仓库）。
 pub const PROJECT_URL: &str = "https://github.com/kxn/MyKvm";
@@ -66,6 +68,8 @@ pub const PROJECT_URL: &str = "https://github.com/kxn/MyKvm";
 /// 记录型 sink：测试与 mock 连接用。
 /// 相对指针发送记录（mask, dx, dy, wheel）。
 type RelativeEvent = (u8, i16, i16, i8);
+/// 绝对指针发送记录（mask, x, y, wheel）。
+type AbsoluteEvent = (u8, u16, u16, i16);
 
 #[derive(Clone, Debug, Default)]
 pub struct RecordingSink {
@@ -75,12 +79,15 @@ pub struct RecordingSink {
     pub key_events: Arc<std::sync::Mutex<Vec<(bool, u8)>>>,
     /// 按到达顺序记录的绝对指针坐标（x, y）。
     pub absolute_moves: Arc<std::sync::Mutex<Vec<(u16, u16)>>>,
+    /// 按到达顺序记录的绝对指针发送（mask, x, y, wheel）。
+    pub absolute_events: Arc<std::sync::Mutex<Vec<AbsoluteEvent>>>,
     /// 按到达顺序记录的相对指针增量（dx, dy）。
     pub relative_deltas: Arc<std::sync::Mutex<Vec<(i16, i16)>>>,
     /// 按到达顺序记录的相对指针发送（mask, dx, dy, wheel）。
     pub relative_events: Arc<std::sync::Mutex<Vec<RelativeEvent>>>,
     /// 重建按钮掩码：sink 只收到事件流，跨批次跟踪当前掩码。
     relative_mask: Arc<std::sync::Mutex<u8>>,
+    absolute_mask: Arc<std::sync::Mutex<u8>>,
     /// release_all 调用次数。
     pub releases: Arc<std::sync::Mutex<usize>>,
     /// 测试用：置位后下一次 handle_key_batch 返回错误，模拟串口写失败让泵退出。
@@ -111,11 +118,15 @@ impl InputSink for RecordingSink {
     fn handle_pointer_batch(&mut self, _events: &[PointerEvent]) -> Result<(), InputError> {
         *self.pointer_batches.lock().unwrap() += 1;
         let mut absolute_moves = self.absolute_moves.lock().unwrap();
+        let mut absolute_events = self.absolute_events.lock().unwrap();
         let mut relative_deltas = self.relative_deltas.lock().unwrap();
         let mut relative_events = self.relative_events.lock().unwrap();
-        let mut mask = self.relative_mask.lock().unwrap();
+        let mut relative_mask = self.relative_mask.lock().unwrap();
+        let mut absolute_mask = self.absolute_mask.lock().unwrap();
         let mut has_absolute = false;
         let mut has_relative = false;
+        let mut absolute_position = None;
+        let mut absolute_wheel = 0i16;
         let mut dx = 0i16;
         let mut dy = 0i16;
         let mut wheel = 0i8;
@@ -123,6 +134,7 @@ impl InputSink for RecordingSink {
             match event {
                 PointerEvent::AbsoluteMove { x, y, .. } => {
                     has_absolute = true;
+                    absolute_position = Some((*x as u16, *y as u16));
                     absolute_moves.push((*x as u16, *y as u16));
                 }
                 PointerEvent::RelativeMove { dx: rx, dy: ry } => {
@@ -139,19 +151,25 @@ impl InputSink for RecordingSink {
                         PointerButton::Middle => 0b010,
                     };
                     if *down {
-                        *mask |= bit;
+                        *relative_mask |= bit;
+                        *absolute_mask |= bit;
                     } else {
-                        *mask &= !bit;
+                        *relative_mask &= !bit;
+                        *absolute_mask &= !bit;
                     }
                 }
                 PointerEvent::Wheel { delta } => {
                     has_relative = true;
                     wheel = wheel.saturating_add(*delta as i8);
+                    absolute_wheel = absolute_wheel.saturating_add(*delta);
                 }
             }
         }
         if has_relative && !has_absolute {
-            relative_events.push((*mask, dx, dy, wheel));
+            relative_events.push((*relative_mask, dx, dy, wheel));
+        }
+        if has_absolute && let Some((x, y)) = absolute_position {
+            absolute_events.push((*absolute_mask, x, y, absolute_wheel));
         }
         Ok(())
     }
@@ -1297,9 +1315,7 @@ where
                 if self.connection.mouse_mode == MouseMode::Relative {
                     self.poll_relative();
                     self.flush_relative_pending_with_mask(self.pointer_mask);
-                }
-                self.relative_wheel = self.relative_wheel.saturating_add(wheel_steps(delta));
-                if self.connection.mouse_mode == MouseMode::Relative {
+                    self.relative_wheel = self.relative_wheel.saturating_add(wheel_steps(delta));
                     let wheel = std::mem::take(&mut self.relative_wheel);
                     if wheel != 0 {
                         let _ =
@@ -1309,7 +1325,7 @@ where
                 } else if self.connection.mouse_mode == MouseMode::Absolute
                     && let Some(cursor) = self.last_cursor
                 {
-                    self.send_absolute(cursor);
+                    self.send_absolute_wheel(cursor, wheel_steps(delta));
                 }
             }
             _ => {}
@@ -1378,19 +1394,7 @@ where
     }
 
     fn send_absolute(&mut self, cursor: iced::Point) {
-        let Some(rect) = *self.video_bounds.borrow() else {
-            return;
-        };
-        let Some(frame) = self.frame_size else {
-            return;
-        };
-        let video_rect = crate::scale::frame_rect(
-            crate::scale::Rect::from_min_size(rect.x, rect.y, rect.width, rect.height),
-            frame,
-            self.scale_mode,
-        );
-        let Some((x, y)) = crate::scale::map_pointer((cursor.x, cursor.y), video_rect, frame)
-        else {
+        let Some((x, y, session_frame)) = self.map_absolute_cursor(cursor) else {
             return;
         };
         self.last_pointer = Some((x, y));
@@ -1402,10 +1406,6 @@ where
             || crate::input::throttle_elapsed(now, self.last_pointer_sent_at, POINTER_MIN_INTERVAL))
             && crate::input::pointer_changed((self.pointer_mask, x, y), self.last_pointer_sent)
         {
-            let session_frame = ipkvm_desktop_core::FrameSize {
-                width: frame.width,
-                height: frame.height,
-            };
             if let Err(error) = self
                 .controller
                 .send_pointer(self.pointer_mask, x, y, session_frame)
@@ -1416,17 +1416,56 @@ where
             self.last_pointer_sent = Some((self.pointer_mask, x, y));
             self.last_pointer_sent_at = Some(now);
         }
-        let wheel = self.relative_wheel;
-        if wheel != 0 {
-            if let Err(error) =
-                self.controller
-                    .send_pointer_relative(self.pointer_mask, 0, 0, wheel)
-            {
-                self.status_message =
-                    Some(t!("message.pointer_send_failed", error = error.to_string()).to_string());
-            }
-            self.relative_wheel = 0;
+    }
+
+    fn map_absolute_cursor(
+        &self,
+        cursor: iced::Point,
+    ) -> Option<(u16, u16, ipkvm_desktop_core::FrameSize)> {
+        let rect = (*self.video_bounds.borrow())?;
+        let frame = self.frame_size?;
+        let video_rect = crate::scale::frame_rect(
+            crate::scale::Rect::from_min_size(rect.x, rect.y, rect.width, rect.height),
+            frame,
+            self.scale_mode,
+        );
+        let (x, y) = crate::scale::map_pointer((cursor.x, cursor.y), video_rect, frame)?;
+        Some((
+            x,
+            y,
+            ipkvm_desktop_core::FrameSize {
+                width: frame.width,
+                height: frame.height,
+            },
+        ))
+    }
+
+    fn send_absolute_wheel(&mut self, cursor: iced::Point, wheel: i8) {
+        if wheel == 0 {
+            return;
         }
+        let Some((x, y, session_frame)) = self.map_absolute_cursor(cursor) else {
+            return;
+        };
+        let wheel_mask = if wheel > 0 {
+            RFB_WHEEL_UP_MASK
+        } else {
+            RFB_WHEEL_DOWN_MASK
+        };
+        let now = Instant::now();
+        for _ in 0..i16::from(wheel).unsigned_abs() {
+            for mask in [self.pointer_mask | wheel_mask, self.pointer_mask] {
+                if let Err(error) = self.controller.send_pointer(mask, x, y, session_frame) {
+                    self.status_message = Some(
+                        t!("message.pointer_send_failed", error = error.to_string()).to_string(),
+                    );
+                    return;
+                }
+            }
+        }
+        self.last_pointer = Some((x, y));
+        self.last_pointer_sent = Some((self.pointer_mask, x, y));
+        self.last_pointer_sent_at = Some(now);
     }
 
     /// 视频比：目标帧像素 / 视频区逻辑点；bounds 或帧未知时回退 (1,1)。
@@ -3603,6 +3642,20 @@ mod tests {
         )));
     }
 
+    fn release_button(app: &mut MockApp, button: iced::mouse::Button) {
+        let _ = app.update(Message::IcedEvent(iced::Event::Mouse(
+            iced::mouse::Event::ButtonReleased(button),
+        )));
+    }
+
+    fn scroll_lines(app: &mut MockApp, y: f32) {
+        let _ = app.update(Message::IcedEvent(iced::Event::Mouse(
+            iced::mouse::Event::WheelScrolled {
+                delta: iced::mouse::ScrollDelta::Lines { x: 0.0, y },
+            },
+        )));
+    }
+
     fn wait_relative_event(app: &MockApp, expected: RelativeEvent) {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         loop {
@@ -3655,6 +3708,23 @@ mod tests {
         }
     }
 
+    fn wait_absolute_event(app: &MockApp, expected: AbsoluteEvent) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if let Some(sink) = app.recording_sink() {
+                let events = sink.absolute_events.lock().unwrap();
+                if events.contains(&expected) {
+                    return;
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "绝对事件 {expected:?} 未达 sink"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
     #[test]
     fn absolute_cursor_move_sends_mapped_coordinates() {
         let mut app = absolute_video_app();
@@ -3677,6 +3747,59 @@ mod tests {
         move_cursor(&mut app, 80.0, 45.0);
         wait_absolute_move(&app, 80, 45, 1);
         assert!(app.remote_input, "移动不得退出远程输入");
+    }
+
+    #[test]
+    fn absolute_wheel_keeps_absolute_pointer_mode_and_allows_later_moves() {
+        let mut app = absolute_video_app();
+        app.remote_input = true;
+
+        move_cursor(&mut app, 80.0, 45.0);
+        wait_absolute_move(&app, 80, 45, 1);
+
+        std::thread::sleep(POINTER_MIN_INTERVAL + Duration::from_millis(2));
+        scroll_lines(&mut app, 1.0);
+        wait_absolute_move(&app, 80, 45, 3);
+        assert!(
+            app.recording_sink()
+                .unwrap()
+                .relative_events
+                .lock()
+                .unwrap()
+                .is_empty(),
+            "绝对模式滚轮不得下沉为 PointerRelative，否则 session 会切到相对模式"
+        );
+
+        std::thread::sleep(POINTER_MIN_INTERVAL + Duration::from_millis(2));
+        move_cursor(&mut app, 100.0, 50.0);
+        wait_absolute_move(&app, 100, 50, 1);
+    }
+
+    #[test]
+    fn absolute_drag_preserves_button_mask_across_desktop_to_sink_path() {
+        let mut app = absolute_video_app();
+        app.remote_input = true;
+
+        move_cursor(&mut app, 80.0, 45.0);
+        wait_absolute_event(&app, (0, 80, 45, 0));
+        press_button(&mut app, iced::mouse::Button::Left);
+        wait_absolute_event(&app, (0b001, 80, 45, 0));
+
+        std::thread::sleep(POINTER_MIN_INTERVAL + Duration::from_millis(2));
+        move_cursor(&mut app, 100.0, 50.0);
+        wait_absolute_event(&app, (0b001, 100, 50, 0));
+
+        release_button(&mut app, iced::mouse::Button::Left);
+        wait_absolute_event(&app, (0, 100, 50, 0));
+        assert!(
+            app.recording_sink()
+                .unwrap()
+                .relative_events
+                .lock()
+                .unwrap()
+                .is_empty(),
+            "绝对拖拽路径不得产生 PointerRelative"
+        );
     }
 
     #[test]
