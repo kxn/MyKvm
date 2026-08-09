@@ -222,6 +222,7 @@ pub struct RfbInputPump<S: InputSink> {
     pointer: RfbPointerMapper,
     text: TextInputService,
     text_actions: mpsc::Receiver<TextInputAction>,
+    text_results_pending: usize,
     mouse_mode_observer: Option<watch::Sender<Option<MouseMode>>>,
 }
 
@@ -247,6 +248,7 @@ impl<S: InputSink> RfbInputPump<S> {
             pointer: RfbPointerMapper::new(),
             text,
             text_actions,
+            text_results_pending: 0,
             mouse_mode_observer,
         }
     }
@@ -309,6 +311,7 @@ impl<S: InputSink> RfbInputPump<S> {
             RfbInputRunError::SourceClosedRelease,
             &mut observe,
         )
+        .await
     }
 
     /// 运行输入泵直到收到停止信号或事件源关闭。
@@ -360,10 +363,11 @@ impl<S: InputSink> RfbInputPump<S> {
             )
         };
         self.finish_run(reason, on_release_error, &mut observe)
+            .await
     }
 
     /// 收尾：释放活动控制器（如有）并把 release 通知交给 observe。
-    fn finish_run<F>(
+    async fn finish_run<F>(
         &mut self,
         reason: RfbControllerReleaseReason,
         on_release_error: fn(RfbInputError) -> RfbInputRunError,
@@ -374,6 +378,27 @@ impl<S: InputSink> RfbInputPump<S> {
     {
         if let Some(notice) = self.release_with_reason(reason).map_err(on_release_error)? {
             observe(&notice);
+        }
+        self.drain_text_results_before_exit(observe)
+            .await
+            .map_err(RfbInputRunError::TextInput)?;
+        Ok(())
+    }
+
+    async fn drain_text_results_before_exit<F>(
+        &mut self,
+        observe: &mut F,
+    ) -> Result<(), RfbInputError>
+    where
+        F: FnMut(&RfbInputNotice),
+    {
+        while self.text_results_pending > 0 {
+            let Some(action) = self.text_actions.recv().await else {
+                break;
+            };
+            if let Some(notice) = self.handle_text_action(action)? {
+                observe(&notice);
+            }
         }
         Ok(())
     }
@@ -428,6 +453,7 @@ impl<S: InputSink> RfbInputPump<S> {
                         client_id: *client_id,
                     }
                 })?;
+                self.text_results_pending += 1;
                 Ok(RfbInputNotice::TextDispatched {
                     client_id: *client_id,
                     char_count,
@@ -470,7 +496,7 @@ impl<S: InputSink> RfbInputPump<S> {
                 result,
             } => {
                 if !self.is_active_client(client_id) {
-                    let _ = result.send(TextInputBatchResult::Abort);
+                    let _ = result.send(TextInputBatchResult::Cancelled);
                     return Ok(None);
                 }
                 match self.sink.handle_key_batch(&events) {
@@ -482,6 +508,7 @@ impl<S: InputSink> RfbInputPump<S> {
                         let error = source.to_string();
                         let _ = result.send(TextInputBatchResult::Abort);
                         self.release_after_text_failure(client_id)?;
+                        self.mark_text_result_finished();
                         Ok(Some(RfbInputNotice::from(TextInputNotice::Error {
                             client_id,
                             error,
@@ -495,8 +522,15 @@ impl<S: InputSink> RfbInputPump<S> {
                 }
                 Ok(None)
             }
-            TextInputAction::Notice(notice) => Ok(Some(RfbInputNotice::from(notice))),
+            TextInputAction::Notice(notice) => {
+                self.mark_text_result_finished();
+                Ok(Some(RfbInputNotice::from(notice)))
+            }
         }
+    }
+
+    fn mark_text_result_finished(&mut self) {
+        self.text_results_pending = self.text_results_pending.saturating_sub(1);
     }
 
     fn is_active_client(&self, client_id: RfbClientId) -> bool {
@@ -1140,7 +1174,7 @@ mod tests {
         let (tx, mut rx) = mpsc::channel(4);
         let mut pump = RfbInputPump::new(RecordingSink::default());
         let mut notices = Vec::new();
-        // 100 个字符按默认 30ms/字符约 6s，断开发生在键入中途。
+        // 100 个字符按默认 30ms/字符约 6s，断开会取消已调度但未完成的键入。
         let long_text = "x".repeat(100);
         let driver = tokio::spawn(async move {
             tx.send(connected(client_id, peer_addr)).await.unwrap();
@@ -1150,7 +1184,6 @@ mod tests {
             })
             .await
             .unwrap();
-            tokio::time::sleep(Duration::from_millis(80)).await;
             tx.send(RfbServerEvent::Disconnected {
                 client_id,
                 peer_addr,
@@ -1158,8 +1191,6 @@ mod tests {
             })
             .await
             .unwrap();
-            // 留足余量让取消后的部分键入结果通知到达 pump。
-            tokio::time::sleep(Duration::from_millis(150)).await;
             drop(tx);
         });
         pump.run(&mut rx, |notice| notices.push(notice.clone()))
@@ -1609,6 +1640,47 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[tokio::test]
+    async fn channel_close_waits_for_text_cancel_notice() {
+        let client_id = client(32);
+        let peer_addr = peer(5932);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(2);
+        tx.send(connected(client_id, peer_addr)).await.unwrap();
+        tx.send(RfbServerEvent::CutText {
+            client_id,
+            bytes: "x".repeat(100).into_bytes(),
+        })
+        .await
+        .unwrap();
+        drop(tx);
+
+        let mut pump = RfbInputPump::new(RecordingSink::default());
+        let mut notices = Vec::new();
+        pump.run(&mut rx, |notice| notices.push(notice.clone()))
+            .await
+            .unwrap();
+
+        assert_eq!(pump.active_client(), None);
+        assert_eq!(pump.sink().release_count, 1);
+        let text_typed = notices
+            .iter()
+            .find_map(|notice| match notice {
+                RfbInputNotice::TextTyped {
+                    client_id: found,
+                    chars_typed,
+                    chars_skipped,
+                } if *found == client_id => Some((*chars_typed, *chars_skipped)),
+                _ => None,
+            })
+            .expect("text cancel result notice after channel close");
+        assert_eq!(text_typed.1, 0);
+        assert!(
+            text_typed.0 < 100,
+            "channel close should cancel typing mid-flight, typed {}",
+            text_typed.0
+        );
     }
 
     #[tokio::test]

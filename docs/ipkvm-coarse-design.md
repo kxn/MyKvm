@@ -466,6 +466,9 @@ WebSocket 兼容：
 - `TextInputService` 只生成文本键入动作；pump 收到动作后在同一个事件循环中写入主
   `InputSink`。文本失败或取消触发主 sink 的 `release_all()` 并重置键盘/指针 mapper，
   避免旧按键或按钮状态在后续输入中复活。
+- pump 在控制者释放、停止信号或事件源关闭的收尾阶段，如果存在已分发但未完成的文本键入，
+  必须继续消费文本动作直到收到终止 notice，保证 UI 能清除 paste busy 状态，也保证断开后
+  的部分键入结果可诊断。
 - RFB connection driver 向输入事件 channel 发送失败时返回 `EventChannelClosed`，不得
   静默吞掉已解码输入事件。
 - 网页相对鼠标模式需要浏览器 Pointer Lock。noVNC 本地补丁把 `movementX/Y` 映射为本项目

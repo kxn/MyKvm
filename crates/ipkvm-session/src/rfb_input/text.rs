@@ -78,6 +78,7 @@ pub(super) enum TextInputCommand {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum TextInputBatchResult {
     Continue,
+    Cancelled,
     Abort,
 }
 
@@ -144,6 +145,7 @@ enum TypeTextOutcome {
 }
 
 enum SendKeyBatchError {
+    Cancelled,
     Aborted,
     OutputClosed,
 }
@@ -227,6 +229,7 @@ async fn type_text(
         let (down_events, up_events) = key_events(mapped);
         if let Err(error) = send_key_batch(actions, client_id, down_events).await {
             return match error {
+                SendKeyBatchError::Cancelled => TypeTextOutcome::Aborted { typed, skipped },
                 SendKeyBatchError::Aborted => TypeTextOutcome::Stopped,
                 SendKeyBatchError::OutputClosed => TypeTextOutcome::OutputClosed,
             };
@@ -246,6 +249,7 @@ async fn type_text(
         }
         if let Err(error) = send_key_batch(actions, client_id, up_events).await {
             return match error {
+                SendKeyBatchError::Cancelled => TypeTextOutcome::Aborted { typed, skipped },
                 SendKeyBatchError::Aborted => TypeTextOutcome::Stopped,
                 SendKeyBatchError::OutputClosed => TypeTextOutcome::OutputClosed,
             };
@@ -326,6 +330,7 @@ async fn send_key_batch(
         .map_err(|_| SendKeyBatchError::OutputClosed)?;
     match result_rx.await {
         Ok(TextInputBatchResult::Continue) => Ok(()),
+        Ok(TextInputBatchResult::Cancelled) => Err(SendKeyBatchError::Cancelled),
         Ok(TextInputBatchResult::Abort) => Err(SendKeyBatchError::Aborted),
         Err(_) => Err(SendKeyBatchError::OutputClosed),
     }
