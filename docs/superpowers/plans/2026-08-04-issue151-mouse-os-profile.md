@@ -15,7 +15,7 @@
 - 保留 `MouseMode::Absolute` 和 `MouseMode::Relative`。
 - 默认值为 `Raw(Absolute)`；旧 `mouse_mode` 只读迁移为对应 Raw profile。
 - 不修改 egui、RFB 协议、CH9329 协议或 Pointer Lock 的用户手势约束。
-- 任何实际模式变化执行 `release_all -> set_mouse_mode`，失败回滚选择和本地状态。
+- 任何实际模式变化只执行 `set_mouse_mode`，由 sink 释放旧鼠标按钮；失败回滚选择和本地状态。
 
 ### Task 1: Shared Profile Model
 

@@ -237,7 +237,7 @@ Web 选择绝对 profile 时立即退出 Pointer Lock，并停止发送相对 RF
 
 - 状态栏选择器包含两组完整选项；
 - 连接设置和默认设置使用相同选项并写入正确作用域；
-- 选择实际模式变化时按 `release_all -> set_mouse_mode` 顺序调用；
+- 选择实际模式变化时只调用 `set_mouse_mode`；输入泵确认后重置 pointer mapper，不能通过 `release_all` 释放键盘；
 - sink 切换失败时 profile、状态栏和光标捕获状态回滚；
 - Windows/BIOS 等同模式 profile 切换不发送多余模式命令；
 - 保存/加载连接 profile 后鼠标选择保持；
@@ -248,7 +248,7 @@ Web 选择绝对 profile 时立即退出 Pointer Lock，并停止发送相对 RF
 
 - `/api/settings` 新旧字段兼容，默认 profile 正确；
 - `/api/session` 的 profile 覆盖值参与会话 sink 构造；
-- 即时切换 API 在成功和失败时都保持状态一致，并验证释放顺序；
+- 即时切换 API 在成功和失败时都保持状态一致，并验证鼠标模式切换不释放键盘；
 - `/api/status` 返回当前 profile 和实际模式；
 - 连接页、设置模态和视频状态栏显示同一套选项；
 - 选择相对 profile 不会绕过浏览器用户手势要求直接假定 Pointer Lock 已建立；
