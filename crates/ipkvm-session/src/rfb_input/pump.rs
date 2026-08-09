@@ -1690,8 +1690,47 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn relative_pointer_without_active_controller_is_rejected() {
+    async fn real_ch9329_relative_buttons_use_protocol_button_bits() {
         let client_id = client(21);
+        let queue = FakeCommandQueue::new();
+        let sink = Ch9329InputSink::new(queue.clone(), 0, MouseMode::Relative);
+        let mut pump = RfbInputPump::new(sink);
+        pump.handle_event(connected(client_id, peer(5921))).unwrap();
+
+        for (rfb_mask, ch9329_mask) in [(0b001, 0x01), (0b100, 0x02), (0b010, 0x04)] {
+            pump.handle_event(RfbServerEvent::PointerRelative {
+                client_id,
+                button_mask: rfb_mask,
+                dx: 0,
+                dy: 0,
+                wheel: 0,
+            })
+            .unwrap();
+            pump.handle_event(RfbServerEvent::PointerRelative {
+                client_id,
+                button_mask: 0,
+                dx: 0,
+                dy: 0,
+                wheel: 0,
+            })
+            .unwrap();
+
+            let batches = queue.accepted_batches();
+            let press = batches[batches.len() - 2].frames();
+            assert_eq!(press.len(), 1);
+            assert_eq!(press[0].command(), 0x05);
+            assert_eq!(press[0].data(), &[0x01, ch9329_mask, 0, 0, 0]);
+
+            let release = batches[batches.len() - 1].frames();
+            assert_eq!(release.len(), 1);
+            assert_eq!(release[0].command(), 0x05);
+            assert_eq!(release[0].data(), &[0x01, 0, 0, 0, 0]);
+        }
+    }
+
+    #[tokio::test]
+    async fn relative_pointer_without_active_controller_is_rejected() {
+        let client_id = client(24);
         let mut pump = RfbInputPump::new(RecordingSink::default());
 
         let error = pump

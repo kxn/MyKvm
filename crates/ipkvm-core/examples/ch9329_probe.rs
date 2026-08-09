@@ -9,13 +9,16 @@
 //!   info                         发送 GetInfo 并等待响应；无响应时自动尝试恢复
 //!   mouse-abs <x> <y>            绝对鼠标移动到 (x,y)，坐标按 0-4095 原始范围
 //!   mouse-rel <dx> <dy>          相对鼠标移动 (dx,dy)
-//!   click <left|middle|right>    在当前位置（绝对 2048,2048）按下并释放一次按键
+//!   click <left|middle|right>    用绝对帧在中心位置按下并释放一次按键
+//!   click-rel <left|middle|right>
+//!                                用相对帧 0x05 按下并释放一次按键，用于验证目标 OS
+//!                                是否接受零位移相对按钮报告
 //!   mouse-abs-btn <x> <y> <btn>  直接发送绝对帧 0x04 带按钮位（绕过 InputSink 的按键路由），
 //!                                用于实测「绝对帧按键位是否被目标机识别」；btn 为 0-7 掩码
 //!                                （bit0=左 bit1=右 bit2=中），按下 60ms 后原位释放
 //!   btn <left|middle|right> <down|up>
-//!                                单独按下/释放一个鼠标按键（走相对帧 0x05），
-//!                                用于组合测试拖拽：mouse-abs 移动 + btn down + mouse-abs 移动 + btn up
+//!                                发送一个相对按钮边沿（走相对帧 0x05）；进程收尾仍会
+//!                                release_all，持续按住请使用专门的单进程测试命令
 //!   drag <x1> <y1> <x2> <y2>     拖拽测试：绝对移动到 A → 左键 down → 绝对移动到 B → 左键 up，
 //!                                全程在一个进程内完成（避免命令收尾 release_all 干扰）；
 //!                                用于验证绝对移动帧期间按钮状态是否保持
@@ -41,7 +44,7 @@ fn main() {
         Err(e) => {
             eprintln!("参数错误：{e}");
             eprintln!(
-                "用法：ch9329_probe <串口路径> [波特率=9600] <key|text|info|mouse-abs|mouse-rel|click|mouse-abs-btn> [参数]"
+                "用法：ch9329_probe <串口路径> [波特率=9600] <key|text|info|mouse-abs|mouse-rel|click|click-rel|mouse-abs-btn> [参数]"
             );
             std::process::exit(2);
         }
@@ -101,6 +104,7 @@ fn main() {
             cmd_mouse_rel(&mut sink, &rest)
         }
         "click" => cmd_click(&mut sink, &rest),
+        "click-rel" => cmd_click_rel(&mut sink, &rest),
         "mouse-abs-btn" => cmd_mouse_abs_btn(&raw_queue, &rest),
         "btn" => cmd_btn(&mut sink, &rest),
         "drag" => cmd_drag(&mut sink, &rest),
@@ -258,8 +262,8 @@ fn cmd_mouse_rel<Q: CommandQueue>(
 
 /// 直接发送绝对帧 0x04 带按钮位，用于实测「绝对帧的按键位是否被目标机识别」。
 ///
-/// 与 `click` 不同，这里绕过 `Ch9329InputSink` 的按键路由（修正后按键一律走相对帧
-/// 0x05），用底层 `CommandQueue` 直接构造 `Ch9329Command::MouseAbsolute`：
+/// 与 `click` 不同，这里绕过 `Ch9329InputSink` 的严格模式路由，用底层
+/// `CommandQueue` 直接构造 `Ch9329Command::MouseAbsolute`：
 /// 按下（绝对帧 buttons=btn，坐标 (x,y)）→ 60ms 后释放（绝对帧 buttons=0，原位）。
 ///
 /// 对比观测：在目标机（如 ARM 10.10.10.21）上 `evtest /dev/input/event6`，
@@ -310,23 +314,20 @@ fn cmd_mouse_abs_btn<Q: CommandQueue>(queue: &Q, rest: &[String]) -> Result<(), 
     Ok(())
 }
 
-/// 单独按下/释放一个鼠标按键（走相对帧 0x05）。用于组合测试拖拽：
-/// `mouse-abs A && btn left down && mouse-abs B && btn left up`，
-/// 在目标机上观察绝对移动期间按钮是否被意外释放。
+/// 发送一个相对鼠标按钮边沿（走相对帧 0x05）。
+///
+/// 注意：主程序成功后会执行 release_all，所以 `down` 子命令不会跨进程保持按住；
+/// 需要一次完整相对点击时使用 `click-rel`。
 fn cmd_btn<Q: CommandQueue>(sink: &mut Ch9329InputSink<Q>, rest: &[String]) -> Result<(), String> {
-    let button = match rest.first().map(|s| s.as_str()) {
-        Some("left") => PointerButton::Left,
-        Some("middle") => PointerButton::Middle,
-        Some("right") => PointerButton::Right,
-        Some(other) => return Err(format!("未知按键：{other}（可选 left/middle/right）")),
-        None => return Err("btn 需要 left/middle/right 参数".into()),
-    };
+    let button = parse_button(rest.first(), "btn")?;
     let down = match rest.get(1).map(|s| s.as_str()) {
         Some("down") => true,
         Some("up") => false,
         Some(other) => return Err(format!("未知动作：{other}（可选 down/up）")),
         None => return Err("btn 需要 down/up 参数".into()),
     };
+    sink.set_mouse_mode(MouseMode::Relative)
+        .map_err(|e| format!("切换相对鼠标模式: {e}"))?;
     sink.handle_pointer(PointerEvent::Button { button, down })
         .map_err(|e| format!("btn {button:?} {down}: {e}"))?;
     eprintln!("[probe] {button:?} {down}");
@@ -384,13 +385,7 @@ fn cmd_click<Q: CommandQueue>(
     sink: &mut Ch9329InputSink<Q>,
     rest: &[String],
 ) -> Result<(), String> {
-    let button = match rest.first().map(|s| s.as_str()) {
-        Some("left") => PointerButton::Left,
-        Some("middle") => PointerButton::Middle,
-        Some("right") => PointerButton::Right,
-        Some(other) => return Err(format!("未知按键：{other}（可选 left/middle/right）")),
-        None => return Err("click 需要 left/middle/right 参数".into()),
-    };
+    let button = parse_button(rest.first(), "click")?;
     // 先移到屏幕中心（绝对 2048,2048），再点击。
     sink.handle_pointer(PointerEvent::AbsoluteMove {
         x: 2048,
@@ -412,6 +407,43 @@ fn cmd_click<Q: CommandQueue>(
     .map_err(|e| format!("button up: {e}"))?;
     eprintln!("[probe] 点击 {button:?}（中心位置）");
     Ok(())
+}
+
+fn cmd_click_rel<Q: CommandQueue>(
+    sink: &mut Ch9329InputSink<Q>,
+    rest: &[String],
+) -> Result<(), String> {
+    cmd_click_rel_with_hold(sink, rest, Duration::from_millis(60))
+}
+
+fn cmd_click_rel_with_hold<Q: CommandQueue>(
+    sink: &mut Ch9329InputSink<Q>,
+    rest: &[String],
+    hold: Duration,
+) -> Result<(), String> {
+    let button = parse_button(rest.first(), "click-rel")?;
+    sink.set_mouse_mode(MouseMode::Relative)
+        .map_err(|e| format!("切换相对鼠标模式: {e}"))?;
+    sink.handle_pointer(PointerEvent::Button { button, down: true })
+        .map_err(|e| format!("button down: {e}"))?;
+    std::thread::sleep(hold);
+    sink.handle_pointer(PointerEvent::Button {
+        button,
+        down: false,
+    })
+    .map_err(|e| format!("button up: {e}"))?;
+    eprintln!("[probe] 相对点击 {button:?}");
+    Ok(())
+}
+
+fn parse_button(value: Option<&String>, command: &str) -> Result<PointerButton, String> {
+    match value.map(|s| s.as_str()) {
+        Some("left") => Ok(PointerButton::Left),
+        Some("middle") => Ok(PointerButton::Middle),
+        Some("right") => Ok(PointerButton::Right),
+        Some(other) => Err(format!("未知按键：{other}（可选 left/middle/right）")),
+        None => Err(format!("{command} 需要 left/middle/right 参数")),
+    }
 }
 
 fn parse_u8(s: &str) -> Result<u8, String> {
@@ -446,6 +478,47 @@ fn ascii_to_usage(ch: char) -> Option<KeyboardUsage> {
         _ => return None,
     };
     KeyboardUsage::new(usage).ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ipkvm_core::fake_serial::FakeCommandQueue;
+
+    #[test]
+    fn btn_command_uses_relative_frame_without_absolute_position() {
+        let queue = FakeCommandQueue::new();
+        let mut sink = Ch9329InputSink::new(queue.clone(), 0, MouseMode::Absolute);
+
+        cmd_btn(&mut sink, &["left".into(), "down".into()]).unwrap();
+
+        let batches = queue.accepted_batches();
+        assert_eq!(batches.len(), 1);
+        let frame = &batches[0].frames()[0];
+        assert_eq!(
+            frame.as_bytes(),
+            &[0x57, 0xab, 0, 0x05, 0x05, 0x01, 0x01, 0, 0, 0, 0x0e]
+        );
+    }
+
+    #[test]
+    fn click_rel_command_sends_relative_down_then_up_frames() {
+        let queue = FakeCommandQueue::new();
+        let mut sink = Ch9329InputSink::new(queue.clone(), 0, MouseMode::Absolute);
+
+        cmd_click_rel_with_hold(&mut sink, &["left".into()], Duration::ZERO).unwrap();
+
+        let batches = queue.accepted_batches();
+        assert_eq!(batches.len(), 2);
+        assert_eq!(
+            batches[0].frames()[0].as_bytes(),
+            &[0x57, 0xab, 0, 0x05, 0x05, 0x01, 0x01, 0, 0, 0, 0x0e]
+        );
+        assert_eq!(
+            batches[1].frames()[0].as_bytes(),
+            &[0x57, 0xab, 0, 0x05, 0x05, 0x01, 0, 0, 0, 0, 0x0d]
+        );
+    }
 }
 
 // CommandQueue 在 example 里需要泛型约束可见。
