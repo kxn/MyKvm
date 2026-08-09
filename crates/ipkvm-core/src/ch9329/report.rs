@@ -172,6 +172,27 @@ mod tests {
     }
 
     #[test]
+    fn relative_mouse_left_click_matches_vendor_example() {
+        let down = RelativeMouseReport::new(0x01, 0, 0, 0).unwrap();
+        assert_eq!(
+            Ch9329Command::MouseRelative(down)
+                .to_frame(0)
+                .unwrap()
+                .as_bytes(),
+            &[0x57, 0xab, 0, 0x05, 0x05, 0x01, 0x01, 0, 0, 0, 0x0e]
+        );
+
+        let up = RelativeMouseReport::new(0, 0, 0, 0).unwrap();
+        assert_eq!(
+            Ch9329Command::MouseRelative(up)
+                .to_frame(0)
+                .unwrap()
+                .as_bytes(),
+            &[0x57, 0xab, 0, 0x05, 0x05, 0x01, 0, 0, 0, 0, 0x0d]
+        );
+    }
+
+    #[test]
     fn rejects_invalid_mouse_button_mask() {
         assert_eq!(
             AbsoluteMouseReport::new(0x08, 0, 0, 0),

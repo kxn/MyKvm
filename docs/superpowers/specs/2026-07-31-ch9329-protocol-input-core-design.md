@@ -408,7 +408,7 @@ cargo test --workspace --all-features
 
 ### 验证命令记录
 
-- `cargo run -p ipkvm-core --example ch9329_probe --features serial -- COM9 9600 click left`
+- `cargo run -p ipkvm-core --example ch9329_probe --features serial -- COM9 9600 click-rel left`
 - `cargo run -p ipkvm-core --example ch9329_probe --features serial -- COM9 9600 mouse-abs-btn 1500 1500 1`
 - `cargo run -p ipkvm-core --example ch9329_probe --features serial -- COM9 9600 drag 800 800 3200 2000`
 - 目标端：`evtest /dev/input/event6`（截图记录见 2026-08-02 实测）。
