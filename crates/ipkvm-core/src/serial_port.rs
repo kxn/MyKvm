@@ -13,7 +13,10 @@ use crate::ch9329::{
     Ch9329Command, Ch9329DecodeError, Ch9329Decoder, Ch9329Frame, Ch9329Response, CommandStatus,
     KeyboardReport, RelativeMouseReport,
 };
-use crate::{CommandBatch, CommandQueue, CommandQueueError, QueueStats};
+use crate::{
+    CommandBatch, CommandQueue, CommandQueueError, QueueStats,
+    diag::{self, DiagCategory, DiagLevel},
+};
 
 const DEFAULT_INTER_FRAME_DELAY: Duration = Duration::from_millis(2);
 const SERIAL_READ_TIMEOUT: Duration = Duration::from_millis(20);
@@ -165,14 +168,45 @@ impl CommandQueue for SerialCommandQueue {
                 let mut stats = self.stats.lock().map_err(|_| CommandQueueError::Closed)?;
                 stats.batches_accepted = stats.batches_accepted.saturating_add(1);
                 stats.frames_accepted = stats.frames_accepted.saturating_add(frame_count);
+                diag::log(
+                    DiagLevel::Trace,
+                    DiagCategory::SERIAL,
+                    "core.serial",
+                    "enqueue_batch",
+                    &[
+                        ("result", "accepted".into()),
+                        ("frames", frame_count.to_string()),
+                        ("queued", self.health().queued_batches.to_string()),
+                    ],
+                );
                 Ok(())
             }
             Err(TrySendError::Full(_)) => {
                 decrement_queued_batches(&self.health);
+                diag::log(
+                    DiagLevel::Warn,
+                    DiagCategory::SERIAL,
+                    "core.serial",
+                    "enqueue_batch",
+                    &[
+                        ("result", "full".into()),
+                        ("frames", frame_count.to_string()),
+                    ],
+                );
                 Err(CommandQueueError::Full)
             }
             Err(TrySendError::Disconnected(_)) => {
                 decrement_queued_batches(&self.health);
+                diag::log(
+                    DiagLevel::Warn,
+                    DiagCategory::SERIAL,
+                    "core.serial",
+                    "enqueue_batch",
+                    &[
+                        ("result", "closed".into()),
+                        ("frames", frame_count.to_string()),
+                    ],
+                );
                 Err(CommandQueueError::Closed)
             }
         }
@@ -330,6 +364,16 @@ fn run_worker(
                             Ok(frame) => match Ch9329Response::parse(&frame) {
                                 Ok(response) => match transport.accept_response(&response) {
                                     Ok(command) => {
+                                        diag::log(
+                                            DiagLevel::Trace,
+                                            DiagCategory::SERIAL,
+                                            "core.serial",
+                                            "frame_ack",
+                                            &[
+                                                ("command", format_command(command)),
+                                                ("pending", transport.pending.len().to_string()),
+                                            ],
+                                        );
                                         if command == 0x01 {
                                             transport.kind = TransportStateKind::Ready;
                                             set_health_state(
@@ -480,6 +524,17 @@ fn write_available(
         if let Err(error) = port.write_all(frame.as_bytes()).and_then(|_| port.flush()) {
             return Some(TransportFault::Io(error.to_string()));
         }
+        diag::log(
+            DiagLevel::Trace,
+            DiagCategory::SERIAL,
+            "core.serial",
+            "frame_tx",
+            &[
+                ("command", format_command(frame.command())),
+                ("bytes", frame.as_bytes().len().to_string()),
+                ("summary", frame_summary(&frame)),
+            ],
+        );
         transport.record_sent(frame.command(), Instant::now());
         update_pending(health, outbound.len() + transport.pending.len());
         if !DEFAULT_INTER_FRAME_DELAY.is_zero() && !outbound.is_empty() {
@@ -633,6 +688,43 @@ fn reset_frame() -> Ch9329Frame {
         .expect("Reset frame is valid")
 }
 
+fn format_command(command: u8) -> String {
+    format!("0x{command:02x}")
+}
+
+fn frame_summary(frame: &Ch9329Frame) -> String {
+    match frame.command() {
+        0x04 => {
+            let data = frame.data();
+            if data.len() >= 7 && data[0] == 0x02 {
+                let x = u16::from_le_bytes([data[2], data[3]]);
+                let y = u16::from_le_bytes([data[4], data[5]]);
+                format!(
+                    "mouse_abs buttons=0x{:02x} x={} y={} wheel={}",
+                    data[1], x, y, data[6] as i8
+                )
+            } else {
+                format!("mouse_abs len={}", data.len())
+            }
+        }
+        0x05 => {
+            let data = frame.data();
+            if data.len() >= 5 && data[0] == 0x01 {
+                format!(
+                    "mouse_rel buttons=0x{:02x} dx={} dy={} wheel={}",
+                    data[1], data[2] as i8, data[3] as i8, data[4] as i8
+                )
+            } else {
+                format!("mouse_rel len={}", data.len())
+            }
+        }
+        0x02 => "keyboard".into(),
+        0x01 => "get_info".into(),
+        0x0f => "reset".into(),
+        command => format!("command={}", format_command(command)),
+    }
+}
+
 fn clear_queued_batches(rx: &Receiver<CommandBatch>, health: &Arc<Mutex<SerialHealth>>) {
     while rx.try_recv().is_ok() {
         increment_health(health, |health| {
@@ -675,7 +767,14 @@ fn log_fault(path: &str, health: &Arc<Mutex<SerialHealth>>, fault: &TransportFau
         }
         _ => health.protocol_errors = health.protocol_errors.saturating_add(1),
     });
-    eprintln!("[ch9329:{path}] transport fault: {fault}")
+    eprintln!("[ch9329:{path}] transport fault: {fault}");
+    diag::log(
+        DiagLevel::Warn,
+        DiagCategory::SERIAL,
+        "core.serial",
+        "transport_fault",
+        &[("path", path.into()), ("fault", fault.to_string())],
+    );
 }
 
 fn set_offline(health: &Arc<Mutex<SerialHealth>>, _fault: &TransportFault) {

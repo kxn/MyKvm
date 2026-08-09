@@ -6,7 +6,7 @@
 
 use std::fs::OpenOptions;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -54,6 +54,34 @@ pub fn ui_tick() {
 /// 诊断日志文件路径：Windows 用 `%TEMP%`（回退 `%TMP%`），Unix 用 `$TMPDIR`，
 /// 均未设置时 Windows 回退当前目录、Unix 回退 `/tmp`。
 pub fn log_path() -> PathBuf {
+    log_dir().join("ipkvm-iced-diag.log")
+}
+
+pub fn default_input_log_path() -> PathBuf {
+    log_dir().join("ipkvm-input-diag.log")
+}
+
+pub fn enable_input_log(path: &Path) -> std::io::Result<()> {
+    ipkvm_core::diag::configure(
+        ipkvm_core::diag::DiagConfig::file(path)
+            .level(ipkvm_core::diag::DiagLevel::Trace)
+            .categories(input_log_categories()),
+    )
+}
+
+pub fn disable_input_log() {
+    ipkvm_core::diag::disable();
+}
+
+fn input_log_categories() -> ipkvm_core::diag::DiagCategory {
+    ipkvm_core::diag::DiagCategory::INPUT
+        | ipkvm_core::diag::DiagCategory::POINTER
+        | ipkvm_core::diag::DiagCategory::QUEUE
+        | ipkvm_core::diag::DiagCategory::SERIAL
+        | ipkvm_core::diag::DiagCategory::LIFECYCLE
+}
+
+fn log_dir() -> PathBuf {
     let dir = std::env::var_os("TMPDIR")
         .or_else(|| std::env::var_os("TEMP"))
         .or_else(|| std::env::var_os("TMP"))
@@ -64,7 +92,7 @@ pub fn log_path() -> PathBuf {
                 std::ffi::OsString::from("/tmp")
             }
         });
-    PathBuf::from(dir).join("ipkvm-iced-diag.log")
+    PathBuf::from(dir)
 }
 
 #[cfg(test)]

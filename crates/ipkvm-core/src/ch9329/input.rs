@@ -1,3 +1,4 @@
+use crate::diag::{self, DiagCategory, DiagLevel};
 use crate::geometry::map_framebuffer_axis;
 use crate::input::{
     FramebufferSize, InputError, InputResult, InputSink, KeyEvent, MouseMode, PointerButton,
@@ -311,10 +312,12 @@ impl<Q: CommandQueue> Ch9329InputSink<Q> {
     }
 
     pub fn handle_pointer_batch(&mut self, events: &[PointerEvent]) -> InputResult<()> {
+        let before = self.mouse;
         let (next, commands) = self.mouse.apply_events(events)?;
         if commands.is_empty() {
             return Ok(());
         }
+        log_pointer_batch(&before, &next, events.len(), &commands);
         self.enqueue_commands(commands)?;
         self.mouse = next;
         Ok(())
@@ -324,6 +327,20 @@ impl<Q: CommandQueue> Ch9329InputSink<Q> {
         let mut commands = vec![Ch9329Command::Keyboard(KeyboardState::default().report())];
         if let Some(command) = self.mouse.release_command()? {
             commands.push(command);
+        }
+        if diag::is_enabled(DiagLevel::Warn, DiagCategory::LIFECYCLE) {
+            diag::log(
+                DiagLevel::Warn,
+                DiagCategory::LIFECYCLE,
+                "core.ch9329",
+                "release_all",
+                &[
+                    ("mode", mouse_mode_name(self.mouse.mode).into()),
+                    ("buttons_before", format_mask(self.mouse.buttons)),
+                    ("last_abs", format_absolute(self.mouse.last_absolute)),
+                    ("commands", commands.len().to_string()),
+                ],
+            );
         }
         self.enqueue_commands(commands)?;
         self.keyboard = KeyboardState::default();
@@ -381,6 +398,77 @@ impl<Q: CommandQueue> InputSink for Ch9329InputSink<Q> {
     }
 }
 
+fn log_pointer_batch(
+    before: &MouseState,
+    after: &MouseState,
+    event_count: usize,
+    commands: &[Ch9329Command],
+) {
+    if !diag::is_enabled(DiagLevel::Trace, DiagCategory::POINTER) {
+        return;
+    }
+    diag::log(
+        DiagLevel::Trace,
+        DiagCategory::POINTER,
+        "core.ch9329",
+        "pointer_batch",
+        &[
+            ("mode", mouse_mode_name(after.mode).into()),
+            ("events", event_count.to_string()),
+            ("commands", commands.len().to_string()),
+            ("buttons_before", format_mask(before.buttons)),
+            ("buttons_after", format_mask(after.buttons)),
+            ("last_abs_before", format_absolute(before.last_absolute)),
+            ("last_abs_after", format_absolute(after.last_absolute)),
+        ],
+    );
+    for (index, command) in commands.iter().enumerate() {
+        log_pointer_command(index, command);
+    }
+}
+
+fn log_pointer_command(index: usize, command: &Ch9329Command) {
+    match command {
+        Ch9329Command::MouseAbsolute(report) => {
+            let data = report.data();
+            let x = u16::from_le_bytes([data[2], data[3]]);
+            let y = u16::from_le_bytes([data[4], data[5]]);
+            diag::log(
+                DiagLevel::Trace,
+                DiagCategory::POINTER,
+                "core.ch9329",
+                "pointer_report",
+                &[
+                    ("index", index.to_string()),
+                    ("report", "absolute".into()),
+                    ("buttons", format_mask(data[1])),
+                    ("x", x.to_string()),
+                    ("y", y.to_string()),
+                    ("wheel", (data[6] as i8).to_string()),
+                ],
+            );
+        }
+        Ch9329Command::MouseRelative(report) => {
+            let data = report.data();
+            diag::log(
+                DiagLevel::Trace,
+                DiagCategory::POINTER,
+                "core.ch9329",
+                "pointer_report",
+                &[
+                    ("index", index.to_string()),
+                    ("report", "relative".into()),
+                    ("buttons", format_mask(data[1])),
+                    ("dx", (data[2] as i8).to_string()),
+                    ("dy", (data[3] as i8).to_string()),
+                    ("wheel", (data[4] as i8).to_string()),
+                ],
+            );
+        }
+        _ => {}
+    }
+}
+
 fn map_absolute_position(
     x: u32,
     y: u32,
@@ -417,6 +505,24 @@ fn relative_commands(buttons: u8, chunks: Vec<(i8, i8, i8)>) -> InputResult<Vec<
         .collect()
 }
 
+fn mouse_mode_name(mode: MouseMode) -> &'static str {
+    match mode {
+        MouseMode::Absolute => "absolute",
+        MouseMode::Relative => "relative",
+    }
+}
+
+fn format_mask(mask: u8) -> String {
+    format!("0x{mask:02x}")
+}
+
+fn format_absolute(position: Option<(u16, u16)>) -> String {
+    match position {
+        Some((x, y)) => format!("{x},{y}"),
+        None => "none".into(),
+    }
+}
+
 fn split_relative(mut dx: i16, mut dy: i16, mut wheel: i16) -> Vec<(i8, i8, i8)> {
     let mut chunks = Vec::new();
     while dx != 0 || dy != 0 || wheel != 0 {
@@ -434,14 +540,21 @@ fn split_relative(mut dx: i16, mut dy: i16, mut wheel: i16) -> Vec<(i8, i8, i8)>
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeSet;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::sync::Mutex;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
+    use crate::diag::{self, DiagCategory, DiagConfig, DiagLevel};
     use crate::fake_serial::FakeCommandQueue;
     use crate::{
         Ch9329Frame, CommandQueueError, FramebufferSize, InputError, InputSink, KeyEvent,
         KeyboardUsage, MouseMode, PointerButton, PointerEvent,
     };
     use proptest::prelude::*;
+
+    static DIAG_TEST_LOCK: Mutex<()> = Mutex::new(());
 
     fn expected_frame(command: u8, data: &[u8]) -> Vec<u8> {
         let mut bytes = vec![0x57, 0xab, 0x00, command, data.len() as u8];
@@ -463,6 +576,17 @@ mod tests {
         (0xe0..=0xe7)
             .contains(&usage)
             .then(|| 1u8 << (usage - 0xe0))
+    }
+
+    fn temp_log_path(name: &str) -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "ipkvm-core-ch9329-diag-{name}-{}-{suffix}.log",
+            std::process::id()
+        ))
     }
 
     /// 独立参考模型：只按协议语义维护“修饰键位 + 普通键集合”，
@@ -1193,6 +1317,54 @@ mod tests {
             queue.accepted_batches().last().unwrap().frames()[0].data()[1],
             0x01
         );
+    }
+
+    #[test]
+    fn pointer_batch_logs_final_ch9329_button_state() {
+        let _guard = DIAG_TEST_LOCK.lock().unwrap();
+        let path = temp_log_path("pointer-batch");
+        diag::configure(
+            DiagConfig::file(path.clone())
+                .level(DiagLevel::Trace)
+                .categories(DiagCategory::POINTER),
+        )
+        .unwrap();
+        let queue = FakeCommandQueue::new();
+        let mut sink = Ch9329InputSink::new(queue, 0, MouseMode::Absolute);
+        let size = FramebufferSize {
+            width: 1280,
+            height: 720,
+        };
+
+        sink.handle_pointer_batch(&[
+            PointerEvent::AbsoluteMove {
+                x: 100,
+                y: 100,
+                framebuffer_size: size,
+            },
+            PointerEvent::Button {
+                button: PointerButton::Left,
+                down: true,
+            },
+            PointerEvent::AbsoluteMove {
+                x: 200,
+                y: 100,
+                framebuffer_size: size,
+            },
+        ])
+        .unwrap();
+        diag::disable();
+
+        let body = fs::read_to_string(path).unwrap();
+        assert!(body.contains("component=core.ch9329"));
+        assert!(body.contains("event=pointer_batch"));
+        assert!(body.contains("mode=absolute"));
+        assert!(body.contains("events=3"));
+        assert!(body.contains("buttons_before=0x00"));
+        assert!(body.contains("buttons_after=0x01"));
+        assert!(body.contains("event=pointer_report"));
+        assert!(body.contains("report=absolute"));
+        assert!(body.contains("buttons=0x01"));
     }
 
     #[test]

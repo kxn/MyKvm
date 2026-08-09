@@ -1,4 +1,5 @@
 mod ch9329;
+pub mod diag;
 mod geometry;
 mod input;
 mod serial;

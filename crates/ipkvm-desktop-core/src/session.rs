@@ -3,7 +3,10 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use ipkvm_core::{InputSink, MouseMode, MouseProfile};
+use ipkvm_core::{
+    InputSink, MouseMode, MouseProfile,
+    diag::{self, DiagCategory, DiagLevel},
+};
 use ipkvm_session::rfb_connection::{
     RfbClientId, RfbConnectionGate, RfbDisconnectReason, RfbServerEvent,
 };
@@ -392,16 +395,30 @@ where
     }
 
     fn send_event(&self, event: RfbServerEvent) -> Result<(), DesktopSessionError> {
+        let kind = event_kind(&event);
         let mut pending = self
             .pending_events
             .lock()
             .map_err(|_| DesktopSessionError::Input("pending event queue poisoned".into()))?;
+        let pending_before = pending.len();
         pending.push_back(event);
         let Some(tx) = &self.event_tx else {
             pending.clear();
             return Err(DesktopSessionError::NoEventSender);
         };
-        flush_pending_events(&mut pending, |next| tx.try_send(next))
+        let result = flush_pending_events(&mut pending, |next| tx.try_send(next));
+        diag::log(
+            DiagLevel::Trace,
+            DiagCategory::QUEUE,
+            "desktop_core.queue",
+            "send_event",
+            &[
+                ("kind", kind.into()),
+                ("pending_before", pending_before.to_string()),
+                ("pending_after", pending.len().to_string()),
+            ],
+        );
+        result
     }
 
     fn refresh_event_sender(&mut self) -> Result<(), DesktopSessionError> {
@@ -438,14 +455,43 @@ fn flush_pending_events(
         RfbServerEvent,
     ) -> Result<(), tokio::sync::mpsc::error::TrySendError<RfbServerEvent>>,
 ) -> Result<(), DesktopSessionError> {
+    let mut sent = 0usize;
     while let Some(next) = pending.front().cloned() {
+        let next_kind = event_kind(&next);
         match try_send(next) {
             Ok(()) => {
                 pending.pop_front();
+                sent += 1;
             }
-            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => break,
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                diag::log(
+                    DiagLevel::Warn,
+                    DiagCategory::QUEUE,
+                    "desktop_core.queue",
+                    "flush_pending",
+                    &[
+                        ("result", "full".into()),
+                        ("sent", sent.to_string()),
+                        ("remaining", pending.len().to_string()),
+                        ("next", next_kind.into()),
+                    ],
+                );
+                break;
+            }
             Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
                 pending.clear();
+                diag::log(
+                    DiagLevel::Warn,
+                    DiagCategory::QUEUE,
+                    "desktop_core.queue",
+                    "flush_pending",
+                    &[
+                        ("result", "closed".into()),
+                        ("sent", sent.to_string()),
+                        ("remaining", "0".into()),
+                        ("next", next_kind.into()),
+                    ],
+                );
                 return Err(DesktopSessionError::Input("event channel closed".into()));
             }
         }
@@ -453,21 +499,51 @@ fn flush_pending_events(
     Ok(())
 }
 
+fn event_kind(event: &RfbServerEvent) -> &'static str {
+    match event {
+        RfbServerEvent::Connected { .. } => "connected",
+        RfbServerEvent::Disconnected { .. } => "disconnected",
+        RfbServerEvent::Key { .. } => "key",
+        RfbServerEvent::Pointer { .. } => "pointer",
+        RfbServerEvent::PointerRelative { .. } => "pointer_relative",
+        RfbServerEvent::SetMouseMode { .. } => "set_mouse_mode",
+        RfbServerEvent::CutText { .. } => "cut_text",
+        RfbServerEvent::ContinuousUpdates { .. } => "continuous_updates",
+        RfbServerEvent::FrameUpdateSent { .. } => "frame_update_sent",
+    }
+}
+
 const LOCAL_PEER: SocketAddr =
     SocketAddr::new(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST), 0);
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::path::PathBuf;
     use std::sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
     };
-    use std::time::Duration;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-    use ipkvm_core::{InputResult, KeyEvent, MouseMode, PointerEvent};
+    use ipkvm_core::{
+        InputResult, KeyEvent, MouseMode, PointerEvent,
+        diag::{self, DiagCategory, DiagConfig, DiagLevel},
+    };
     use ipkvm_video::mock::MockFrameSource;
 
     use super::*;
+
+    fn temp_log_path(name: &str) -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "ipkvm-desktop-core-diag-{name}-{}-{suffix}.log",
+            std::process::id()
+        ))
+    }
 
     #[derive(Clone)]
     struct TestSessionFactory {
@@ -848,6 +924,42 @@ mod tests {
             delivered.iter().map(keysym_of).collect::<Vec<_>>(),
             vec![1, 2, 3]
         );
+    }
+
+    #[test]
+    fn flush_pending_events_logs_full_queue_remainder() {
+        use tokio::sync::mpsc::error::TrySendError;
+
+        let path = temp_log_path("queue-full");
+        diag::configure(
+            DiagConfig::file(path.clone())
+                .level(DiagLevel::Trace)
+                .categories(DiagCategory::QUEUE),
+        )
+        .unwrap();
+        let mut pending = std::collections::VecDeque::new();
+        pending.push_back(key_event(1));
+        pending.push_back(key_event(2));
+        let mut accepts = 0;
+
+        flush_pending_events(&mut pending, |next| {
+            if accepts == 0 {
+                accepts += 1;
+                Ok(())
+            } else {
+                Err(TrySendError::Full(next))
+            }
+        })
+        .unwrap();
+        diag::disable();
+
+        let body = fs::read_to_string(path).unwrap();
+        assert!(body.contains("component=desktop_core.queue"));
+        assert!(body.contains("event=flush_pending"));
+        assert!(body.contains("result=full"));
+        assert!(body.contains("sent=1"));
+        assert!(body.contains("remaining=1"));
+        assert!(body.contains("next=key"));
     }
 
     #[test]
