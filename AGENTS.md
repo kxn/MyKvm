@@ -43,8 +43,10 @@ Get-Content -Raw -Encoding UTF8 AGENTS.md
   - 创建 issue：`gh issue create --repo kxn/MyKvm --title "..." --body-file <UTF-8 文件>`
   - 列出 PR：`gh pr list --repo kxn/MyKvm`
   - 创建 PR：`gh pr create --repo kxn/MyKvm --base main --head <branch> --title "..." --body-file <UTF-8 文件>`
-  - 合并 PR：`gh pr merge <PR编号> --repo kxn/MyKvm --squash`
+  - 合并 PR 并删除分支：`gh pr merge <PR编号> --repo kxn/MyKvm --squash --delete-branch`
   - 关闭 issue：`gh issue close <编号> --repo kxn/MyKvm`
+  - 删除远端分支：`git push origin --delete <branch>`
+  - 确认远端分支不存在：`git ls-remote --heads origin <branch>`
 - 通过 `gh` 写入中文标题或正文时，用 `--body-file` 传 UTF-8 文件（不要用管道直接传中文，避免编码问题），并在写入后用 `gh issue view` / `gh pr view` 读回确认中文内容。
 
 ## 工作入口
@@ -80,9 +82,12 @@ cargo test --workspace --all-features
 2. 已按 TDD 要求补充失败测试（适用时），完成实现、回归测试和必要的人工验证。
 3. 已创建英文 conventional commit，提交信息包含 `#编号`；不能只修改工作区而不提交。
 4. 默认分支开发流程必须推送 issue 分支、创建 PR，并在 PR 描述中填写 `Closes #编号`、改动摘要、根因或设计依据、测试证据、文档影响和人工验证例外。
-5. PR 合并后必须确认 issue 已自动关闭；如果 issue 仍为 open，必须使用 `gh issue close <issue编号> --repo kxn/MyKvm` 关闭，并读回确认状态为 `closed`。
-6. 如果用户明确授权直接推送 `main`，不能创建 PR 的 `Closes` 收口不会自动生效；推送成功后必须手动关闭 issue，并读回确认 issue 状态。
-7. 收口前必须核对本地 commit 与远端目标分支一致、PR/issue 状态正确、工作区没有误纳入的文件；必要时同步 `HANDOFF.md`、台账和长期文档。
+5. PR 合并必须默认使用 `gh pr merge <PR编号> --repo kxn/MyKvm --squash --delete-branch`；如果 GitHub 没有自动删除 head 分支，必须立即使用 `git push origin --delete <branch>` 删除。
+6. PR 合并后必须确认 issue 已自动关闭；如果 issue 仍为 open，必须使用 `gh issue close <issue编号> --repo kxn/MyKvm` 关闭，并读回确认状态为 `closed`。
+7. 工作分支删除后必须读回确认：使用 `git ls-remote --heads origin <branch>`、`gh api repos/kxn/MyKvm/branches` 或等价 GitHub 读回方式确认该分支不再存在。远端分支仍存在时，不能声称任务完成或收口完成。
+8. 如果用户明确授权直接推送 `main`，不能创建 PR 的 `Closes` 收口不会自动生效；推送成功后必须手动关闭 issue，并读回确认 issue 状态；如果为该 issue 推送过远端工作分支，也必须按第 7 条删除并确认。
+9. 关闭未合并 PR、放弃工作或清理旧单时，除非存在 open PR、open issue 或用户明确要求保留 WIP 分支，否则必须删除对应远端工作分支并读回确认；私有备份远端不纳入默认删除范围，除非用户明确要求。
+10. 收口前必须核对本地 commit 与远端目标分支一致、PR/issue/分支状态正确、工作区没有误纳入的文件；必要时同步 `HANDOFF.md`、台账和长期文档。
 
 没有完成上述步骤时，只能报告为“实现完成但尚未收口”，不能报告为任务完成。
 
