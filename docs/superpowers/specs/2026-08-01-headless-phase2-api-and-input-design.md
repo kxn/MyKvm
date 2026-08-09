@@ -104,6 +104,7 @@ headless 只通过 `FrameSource` 方法消费，不看具体变体。
 - pump 收到 `RfbServerEvent::CutText` → 校验活动控制者 → 文本通过 mpsc channel 发给独立的 `TextInputService` task（不能阻塞 pump 事件循环，逐字符节流是异步慢操作）。
 - 服务逐字符：`字符 → keysym → 键盘映射器 → HID usage + shift 状态`（复用现有 en-US 键盘映射器）→ 生成 `KeyBatch` 动作 → 节流间隔 → 生成 release `KeyBatch` 动作 → 节流间隔。
 - pump 在同一个输入事件循环中消费文本动作；过期控制者的 key/release 动作被忽略，结果 notice 仍可上报，便于断开后看到部分键入结果。
+- pump 因控制者释放、停止信号或事件源关闭退出时，如果仍有已分发但未完成的文本结果，必须先向文本服务发送取消并继续消费文本动作，直到收到对应 `TextTyped`/`TextInputFailed` 终止 notice；不能依赖固定 sleep 或事件 channel 继续存活。
 - **锁定键状态源**：设计为注入点（trait），当前返回「未锁定」假设（硬件未到、GetInfo 不可靠）；未来接 `Ch9329InputSink` 的 GetInfo 查询 LED。
 - **节流**：可配置参数，默认按 9600 波特留足余量（每字符约 30ms）；硬件到货后验证实际波特率再调。
 
