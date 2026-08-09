@@ -9,7 +9,7 @@ use std::{
     time::Duration,
 };
 
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use ipkvm_core::{InputResult, InputSink, KeyEvent, MouseMode, PointerEvent};
 use ipkvm_device::StaticDeviceInventoryProvider;
 use ipkvm_headless::{
@@ -32,7 +32,7 @@ use tokio::{
     time::timeout,
 };
 use tokio_tungstenite::{
-    connect_async,
+    MaybeTlsStream, WebSocketStream, connect_async,
     tungstenite::{Error as WebSocketError, Message},
 };
 
@@ -195,6 +195,76 @@ struct HttpResponse {
     status: u16,
     headers: HashMap<String, String>,
     body: Vec<u8>,
+}
+
+struct WsRfbClient {
+    socket: WebSocketStream<MaybeTlsStream<TcpStream>>,
+    buffered: Vec<u8>,
+}
+
+impl WsRfbClient {
+    async fn connect(url: String) -> Self {
+        let (socket, response) = connect_async(url).await.unwrap();
+        assert_eq!(response.status().as_u16(), 101);
+        Self {
+            socket,
+            buffered: Vec::new(),
+        }
+    }
+
+    async fn handshake(&mut self) -> (u16, u16) {
+        assert_eq!(self.read_exact(12).await, b"RFB 003.008\n");
+        self.send_bytes(b"RFB 003.008\n").await;
+        assert_eq!(self.read_exact(2).await, [1, 1]);
+        self.send_bytes(&[1]).await;
+        assert_eq!(self.read_exact(4).await, [0, 0, 0, 0]);
+        self.send_bytes(&[1]).await;
+
+        let header = self.read_exact(24).await;
+        let width = u16::from_be_bytes([header[0], header[1]]);
+        let height = u16::from_be_bytes([header[2], header[3]]);
+        let name_length =
+            u32::from_be_bytes([header[20], header[21], header[22], header[23]]) as usize;
+        self.read_exact(name_length).await;
+        (width, height)
+    }
+
+    async fn send_relative_pointer(&mut self, buttons: u8, dx: i16, dy: i16, wheel: i8) {
+        let mut message = vec![8, buttons];
+        message.extend_from_slice(&dx.to_be_bytes());
+        message.extend_from_slice(&dy.to_be_bytes());
+        message.push(wheel as u8);
+        self.send_bytes(&message).await;
+    }
+
+    async fn send_key(&mut self, down: bool, keysym: u32) {
+        let mut message = vec![4, u8::from(down), 0, 0];
+        message.extend_from_slice(&keysym.to_be_bytes());
+        self.send_bytes(&message).await;
+    }
+
+    async fn close(mut self) {
+        self.socket.close(None).await.unwrap();
+    }
+
+    async fn send_bytes(&mut self, bytes: &[u8]) {
+        self.socket
+            .send(Message::Binary(bytes.to_vec().into()))
+            .await
+            .unwrap();
+    }
+
+    async fn read_exact(&mut self, length: usize) -> Vec<u8> {
+        while self.buffered.len() < length {
+            match self.socket.next().await.unwrap().unwrap() {
+                Message::Binary(bytes) => self.buffered.extend_from_slice(bytes.as_ref()),
+                Message::Ping(bytes) => self.socket.send(Message::Pong(bytes)).await.unwrap(),
+                other => panic!("expected binary RFB data, got {other:?}"),
+            }
+        }
+        let tail = self.buffered.split_off(length);
+        std::mem::replace(&mut self.buffered, tail)
+    }
 }
 
 /// 测试专用临时设置目录：进程内自增避免并行测试互踩，Drop 时清理。
@@ -615,6 +685,56 @@ async fn request_with_headers_and_body(
     parse_http_response(&response)
 }
 
+async fn wait_for_status_mouse_mode(server: &TestWebServer, expected: &str) -> serde_json::Value {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+    loop {
+        let response = server.request("GET", "/api/status").await;
+        assert_eq!(
+            response.status,
+            200,
+            "{}",
+            String::from_utf8_lossy(&response.body)
+        );
+        let body: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
+        let actual = body["session"]["mouse_mode"].as_str().unwrap_or("-");
+        if actual == expected {
+            return body;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "session mouse_mode did not become {expected}, last={}",
+            actual
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
+async fn wait_for_status_input_events_at_least(
+    server: &TestWebServer,
+    expected: u64,
+) -> serde_json::Value {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+    loop {
+        let response = server.request("GET", "/api/status").await;
+        assert_eq!(
+            response.status,
+            200,
+            "{}",
+            String::from_utf8_lossy(&response.body)
+        );
+        let body: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
+        let actual = body["session"]["input_events"].as_u64().unwrap_or(0);
+        if actual >= expected {
+            return body;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "session input_events did not reach {expected}, last={actual}"
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+}
+
 #[tokio::test]
 async fn serves_fixed_novnc_modules_with_explicit_headers() {
     let server = TestWebServer::start().await;
@@ -825,6 +945,10 @@ async fn api_status_reports_video_and_controller() {
         "无活动 RFB 连接时 encode 不应序列化"
     );
     assert!(
+        status["session"].get("mouse_mode").is_none(),
+        "无活动控制者时 mouse_mode 不应伪装成已确认 actual mode"
+    );
+    assert!(
         status["session"].get("last_input_ns").is_none(),
         "无输入时 last_input_ns 不应序列化"
     );
@@ -837,6 +961,44 @@ async fn api_status_reports_video_and_controller() {
         "默认未手动停止时 manual_stop 必须恒序列化为 false"
     );
 
+    server.stop().await;
+}
+
+#[tokio::test]
+async fn api_mouse_profile_switches_from_actual_mode_when_selection_is_stale() {
+    let server = TestWebServer::start().await;
+    let mut client = WsRfbClient::connect(server.websocket_url()).await;
+    assert_eq!(client.handshake().await, (2, 1));
+
+    client.send_key(true, 'a' as u32).await;
+    client.send_key(false, 'a' as u32).await;
+    wait_for_status_input_events_at_least(&server, 2).await;
+
+    client.send_relative_pointer(0, 12, -7, 0).await;
+    wait_for_status_input_events_at_least(&server, 3).await;
+    wait_for_status_mouse_mode(&server, "relative").await;
+
+    let response = server
+        .request_with_body(
+            "POST",
+            "/api/input/mouse-profile",
+            br#"{"mouse_profile":"raw_absolute"}"#,
+        )
+        .await;
+    assert_eq!(
+        response.status,
+        200,
+        "{}",
+        String::from_utf8_lossy(&response.body)
+    );
+    let body: serde_json::Value = serde_json::from_slice(&response.body).unwrap();
+    assert_eq!(body["mouse_profile"], "raw_absolute");
+    assert_eq!(body["mouse_mode"], "absolute");
+
+    let status = wait_for_status_mouse_mode(&server, "absolute").await;
+    assert_eq!(status["session"]["mouse_profile"], "raw_absolute");
+
+    client.close().await;
     server.stop().await;
 }
 

@@ -547,6 +547,9 @@ impl<S: InputSink> RfbInputPump<S> {
                 ("shared", shared.to_string()),
             ],
         );
+        if let Some(observer) = &self.mouse_mode_observer {
+            observer.send_replace(self.mouse_mode);
+        }
         Ok(RfbInputNotice::ControllerAcquired {
             client_id,
             peer_addr,
@@ -738,7 +741,7 @@ impl<S: InputSink> RfbInputPump<S> {
             ],
         );
         if let Some(observer) = &self.mouse_mode_observer {
-            let _ = observer.send(Some(mode));
+            observer.send_replace(Some(mode));
         }
         Ok(())
     }
@@ -822,7 +825,7 @@ impl<S: InputSink> RfbInputPump<S> {
         self.active = None;
         self.mouse_mode = None;
         if let Some(observer) = &self.mouse_mode_observer {
-            let _ = observer.send(None);
+            observer.send_replace(None);
         }
         self.keyboard = RfbKeyboardMapper::new();
         self.pointer = RfbPointerMapper::new();
@@ -864,6 +867,7 @@ mod tests {
         key_batches: Vec<Vec<KeyEvent>>,
         pointer_batches: Vec<Vec<PointerEvent>>,
         mouse_modes: Vec<MouseMode>,
+        initial_mouse_mode: Option<MouseMode>,
         release_count: usize,
         fail_next_key: bool,
         fail_next_pointer: bool,
@@ -871,6 +875,10 @@ mod tests {
     }
 
     impl InputSink for RecordingSink {
+        fn initial_mouse_mode(&self) -> Option<MouseMode> {
+            self.initial_mouse_mode
+        }
+
         fn set_mouse_mode(&mut self, mode: MouseMode) -> InputResult<()> {
             self.mouse_modes.push(mode);
             Ok(())
@@ -2244,7 +2252,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn confirmed_mouse_mode_is_published_only_after_sink_update() {
+    async fn controller_acquired_publishes_known_initial_mouse_mode() {
+        let client_id = client(23);
+        let peer_addr = peer(5923);
+        let (mode_tx, mode_rx) = watch::channel(None);
+        let mut pump = RfbInputPump::with_mouse_mode_observer(
+            RecordingSink {
+                initial_mouse_mode: Some(MouseMode::Absolute),
+                ..RecordingSink::default()
+            },
+            Some(mode_tx),
+        );
+
+        pump.handle_event(connected(client_id, peer_addr)).unwrap();
+
+        assert_eq!(*mode_rx.borrow(), Some(MouseMode::Absolute));
+    }
+
+    #[tokio::test]
+    async fn confirmed_mouse_mode_is_published_after_sink_update() {
         let client_id = client(23);
         let peer_addr = peer(5923);
         let (mode_tx, mode_rx) = watch::channel(None);

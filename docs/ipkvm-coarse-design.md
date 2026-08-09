@@ -460,12 +460,17 @@ WebSocket 兼容：
 - 不支持的 keysym 和 Shift 冲突产生可观测拒绝，事件泵继续处理后续输入和断线释放；sink 或生命周期错误则保留原事件并停止循环，调用方可以修复后重试。
 - 控制者断线或事件发送端关闭时调用 `release_all()`；只有释放成功后才清空控制者和两个 mapper，失败时保留完整软件状态。
 - 鼠标模式切换不调用 `release_all()`；切换成功后只重置 pointer mapper，键盘 mapper 保持当前键盘状态直到真实 key-up 或控制者释放。
+- 输入泵已确认的鼠标模式通过 session mouse mode observer 暴露给控制面；`/api/status`
+  的 `session.mouse_mode` 只在 actual mode 已确认时序列化，`/api/input/mouse-profile`
+  以 actual mode 判断是否需要切换，selection/settings 只在尚未收敛时兜底。
 - `TextInputService` 只生成文本键入动作；pump 收到动作后在同一个事件循环中写入主
   `InputSink`。文本失败或取消触发主 sink 的 `release_all()` 并重置键盘/指针 mapper，
   避免旧按键或按钮状态在后续输入中复活。
 - RFB connection driver 向输入事件 channel 发送失败时返回 `EventChannelClosed`，不得
   静默吞掉已解码输入事件。
-- 网页相对鼠标模式需要浏览器 Pointer Lock。若 noVNC 集成无法直接提供相对位移，则需要定制 noVNC 页面层；这项不假定 noVNC 原生完成。
+- 网页相对鼠标模式需要浏览器 Pointer Lock。noVNC 本地补丁把 `movementX/Y` 映射为本项目
+  RFB `0x08 PointerRelative` 扩展，并在 `setRelativeMode(true/false)` 时发送
+  `0x09 SetMouseMode` 显式模式切换消息；标准 RFB `Pointer` 在相对模式下不隐式切回绝对。
 
 会话和并发：
 

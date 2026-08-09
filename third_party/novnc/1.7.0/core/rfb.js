@@ -1309,6 +1309,9 @@ export default class RFB extends EventTargetMixin {
             return;
         }
         this._relativeMode = on;
+        if (this._rfbConnectionState === 'connected' && !this._viewOnly) {
+            RFB.messages.setMouseMode(this._sock, on ? "relative" : "absolute");
+        }
         this._ignoreNextRelativeMove = on;
         this._clearRelativeMoveState();
         this._clearWheelState();
@@ -3300,6 +3303,23 @@ RFB.messages = {
 
         sock.sQpush8(wheel);
 
+        sock.flush();
+    },
+
+    // my_ipkvm local patch: explicit mouse mode message (type 0x09).
+    // 4 bytes: mode u8 (0 absolute, 1 relative) + 2 padding bytes.
+    setMouseMode(sock, mode) {
+        let wireMode;
+        if (mode === "absolute" || mode === 0) {
+            wireMode = 0;
+        } else if (mode === "relative" || mode === 1) {
+            wireMode = 1;
+        } else {
+            throw new Error(`unsupported mouse mode: ${mode}`);
+        }
+        sock.sQpush8(0x09); // msg-type
+        sock.sQpush8(wireMode);
+        sock.sQpush16(0);
         sock.flush();
     },
 

@@ -66,6 +66,10 @@
 - noVNC 相对移动先按灵敏度累积浮点余量，再取整数部分进入相对 delta 队列；低灵敏度或高频小位移不能因为逐事件 `trunc` 永久丢失。
 - noVNC 相对滚轮在发送 `PointerRelative(mask,0,0,wheel)` 时使用持久 `_mouseButtonMask`，不能用 `WheelEvent.buttons` 覆盖当前按钮状态。
 - Pointer Lock 退出、`pointerlockerror`、窗口 `blur` 和显式退出相对模式都必须先请求 noVNC 发送零按钮相对包，再清本地锁定状态和隐藏光标状态。
+- noVNC 本地补丁提供 `RFB.messages.setMouseMode(sock, mode)`，发送本项目扩展
+  client-to-server 消息 `0x09`：`mode=0` 表示 absolute，`mode=1` 表示 relative，
+  后两字节为 padding。`setRelativeMode(true/false)` 会在连接可输入时同步发送
+  `0x09 relative/absolute`，使网页 Pointer Lock 生命周期和后端 actual mode 对齐。
 
 ### 桌面会话控制器
 
@@ -78,6 +82,11 @@
 
 - `RfbInputPump` 串行处理单活动控制者事件。
 - `mouse_mode` 是已确认/已使用的指针协议模式，首个指针事件也可以触发模式收敛。
+- 显式 `SetMouseMode` 可以来自桌面控制器、headless API 或 RFB `0x09` 扩展消息；它只表示
+  “请求切换到目标模式”，真正的 actual mode 必须等 `InputSink::set_mouse_mode()` 成功后提交。
+- `mouse_mode_observer` 是控制面读取 actual mode 的事实源：控制者获得时发布 sink 已知初始模式，
+  模式切换成功后发布新模式，控制者释放后发布 `None`。发布必须使用 `watch::Sender::send_replace()`，
+  因为控制面通常临时 subscribe 读取最新值，不能依赖已有长期 receiver。
 - `TextInputService` 只负责文本映射、节流和生成动作；文本 key batch、取消释放和结果
   notice 都回到 `RfbInputPump` 的事件循环处理，主 `InputSink` 是唯一状态提交点。
 - 标准 `Pointer` 在 pump 当前为相对模式时必须被忽略，避免绝对事件污染相对捕获。
@@ -141,7 +150,8 @@
 
 | 状态字段 | 更新事件 | 必须满足的契约 |
 | --- | --- | --- |
-| `mouse_mode` | 首个指针事件、显式 `SetMouseMode`、释放 | 只记录 sink 已确认的模式；`None` 表示等待收敛。 |
+| `mouse_mode` | 首个指针事件、显式 `SetMouseMode`、释放 | 只记录 sink 已确认的模式；`None` 表示等待收敛或无活动控制者。 |
+| `mouse_mode_observer` | controller acquire、模式切换成功、释放 | `/api/status` 和 `/api/input/mouse-profile` 读取的 actual mode SSOT；`/api/status` 仅在 actual 已确认时序列化 `mouse_mode`，`/api/input/mouse-profile` 只在 actual 为 `None` 时用 selection/settings 兜底。 |
 | `pointer` mapper | 指针事件、模式切换、控制者释放 | 模式切换成功后重置；释放成功后重置。 |
 | `keyboard` mapper | 键盘事件、控制者释放 | 鼠标模式切换不得重置键盘。 |
 | `active` | connected/disconnected | 只有活动控制者可改变输入状态。 |
@@ -248,6 +258,12 @@ PointerRelative(button_mask=1, dx, dy)
 | RFB 相对 mapper 顺序 | `relative_move_emits_delta_and_preserves_buttons` | 相对 batch 顺序为 ButtonDown 后 RelativeMove。 |
 | CH9329 输入核心属性 | `ch9329::input` 测试组 | 键盘/鼠标状态失败回滚、拆包和报告模型匹配参考模型。 |
 | noVNC 相对 pointer builder | `novnc_relative_pointer_preserves_fractional_move_and_persistent_button_mask`、`headless_pointer_controller_releases_remote_buttons_on_lock_loss` | 相对移动保留小数余量，滚轮使用持久按钮 mask，pointer lock 丢失时释放远端按钮。 |
+| RFB `0x09` 模式消息解码 | `decodes_mouse_mode_message`、`rejects_unknown_mouse_mode_message_value`、`applies_pixel_format_and_emits_remaining_messages_in_order` | `mode=0/1` 解码为 absolute/relative，未知值拒绝；与其他 client message 保持 FIFO。 |
+| RFB connection 转发模式消息 | `mouse_mode_message_emits_set_mouse_mode_event` | 网络层把 `0x09` 转成带当前 client_id 的 `RfbServerEvent::SetMouseMode`。 |
+| RFB pump actual mode 发布 | `controller_acquired_publishes_known_initial_mouse_mode`、`confirmed_mouse_mode_is_published_after_sink_update` | 控制者获得时发布已知初始模式，切换成功后发布新模式。 |
+| headless profile API 使用 actual mode | `api_mouse_profile_switches_from_actual_mode_when_selection_is_stale` | selection/settings 与 pump actual 漂移时，API 以 actual mode 判断是否需要发送 `SetMouseMode`。 |
+| 外部 RFB 相对后显式切回绝对 | `real_tcp_relative_client_can_explicitly_switch_back_to_absolute_pointer` | 客户端发送 `PointerRelative` 后必须通过 `0x09 absolute` 恢复标准 `Pointer` 输出。 |
+| noVNC `0x09` builder 与资产门禁 | `assertRelativePointerMessageConstruction`、`assertRelativeScheduler`、`web::assets` noVNC 断言 | vendored `core/rfb.js` 暴露 `setMouseMode()`，非法 mode 被拒绝，进入/退出相对发送路径产生 `0x09 relative/absolute`，静态资产清单覆盖 `0x09` builder。 |
 
 ## macOS 拖拽验证矩阵
 
@@ -278,11 +294,15 @@ PointerRelative(button_mask=1, dx, dy)
 
 - 绝对滚轮回到 RFB 标准 button 4/5 边沿，没有再混用 `PointerRelative`。
 - 相对扩展消息的按钮 mask 被视为本次位移状态，而不是位移后的补充边沿。
+- 标准 RFB `Pointer` 不隐式承担“切回绝对模式”语义；相对模式下仍被忽略，外部客户端必须用
+  本地扩展 `0x09 SetMouseMode` 明确切换。
 
 状态机角度：
 
 - 每个状态清零都有对应层：sink 切模式清鼠标，pump 重置 pointer mapper；控制者释放才清键盘 mapper。
 - `release_all()` 不再被鼠标模式切换滥用，避免键盘状态暗中漂移。
+- headless 控制面不再用 selection/settings 猜 actual mode；pump observer 只在 sink 已确认后发布，
+  `/api/status` 的 `mouse_mode` 只表达 actual，profile 切换 API 在 actual 为 `None` 时才回退到用户选择。
 
 顺序和缓冲角度：
 

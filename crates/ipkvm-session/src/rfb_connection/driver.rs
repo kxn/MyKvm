@@ -2,7 +2,8 @@ use std::net::SocketAddr;
 
 use ipkvm_rfb::{
     FramebufferUpdateOutcome, FramebufferUpdateRequest, RfbConfigError, RfbConnectionConfig,
-    RfbConnectionCore, RfbConnectionState, RfbEncodeError, RfbEvent, RfbProtocolError, RfbSize,
+    RfbConnectionCore, RfbConnectionState, RfbEncodeError, RfbEvent, RfbPointerMode,
+    RfbProtocolError, RfbSize,
 };
 use ipkvm_video::{FrameReceiver, PixelFormat, SharedVideoFrame};
 use thiserror::Error;
@@ -258,6 +259,10 @@ impl ConnectionState {
                     dy,
                     wheel,
                 },
+                RfbEvent::SetMouseMode { mode } => RfbServerEvent::SetMouseMode {
+                    client_id: self.client_id,
+                    mode: map_pointer_mode(mode),
+                },
                 RfbEvent::CutText(bytes) => RfbServerEvent::CutText {
                     client_id: self.client_id,
                     bytes,
@@ -410,6 +415,13 @@ fn update_last_sent_sequence(
 ) {
     if !matches!(outcome, FramebufferUpdateOutcome::ResizeAnnounced { .. }) {
         *last_sent_seq = Some(frame_seq);
+    }
+}
+
+fn map_pointer_mode(mode: RfbPointerMode) -> ipkvm_core::MouseMode {
+    match mode {
+        RfbPointerMode::Absolute => ipkvm_core::MouseMode::Absolute,
+        RfbPointerMode::Relative => ipkvm_core::MouseMode::Relative,
     }
 }
 
@@ -996,6 +1008,38 @@ mod tests {
                 dx: 12,
                 dy: -4,
                 wheel: 2,
+            })
+        );
+
+        drop(client);
+        assert!(matches!(task.await.unwrap(), ConnectionEnd::ClientClosed));
+    }
+
+    #[tokio::test]
+    async fn mouse_mode_message_emits_set_mouse_mode_event() {
+        let frame_source = MockFrameSource::new();
+        frame_source.publish_frame(shared_bgra_frame(1, 2, 1, &[0; 6]));
+        let (task, mut client, mut events, _shutdown) = completed_connection(
+            RfbClientId(31),
+            &frame_source,
+            RfbConnectionSettings::default(),
+        )
+        .await;
+
+        client.write_all(&[9, 0, 0, 0, 9, 1, 0, 0]).await.unwrap();
+
+        assert_eq!(
+            events.recv().await,
+            Some(RfbServerEvent::SetMouseMode {
+                client_id: RfbClientId(31),
+                mode: MouseMode::Absolute,
+            })
+        );
+        assert_eq!(
+            events.recv().await,
+            Some(RfbServerEvent::SetMouseMode {
+                client_id: RfbClientId(31),
+                mode: MouseMode::Relative,
             })
         );
 

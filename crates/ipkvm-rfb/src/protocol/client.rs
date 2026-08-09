@@ -9,6 +9,12 @@ pub struct FramebufferUpdateRequest {
     pub rectangle: RfbRectangle,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RfbPointerMode {
+    Absolute,
+    Relative,
+}
+
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum RfbProtocolError {
     #[error("unsupported RFB protocol version {0:?}")]
@@ -17,6 +23,8 @@ pub enum RfbProtocolError {
     UnsupportedSecurityType(u8),
     #[error("unsupported client message type {0}")]
     UnsupportedClientMessageType(u8),
+    #[error("unsupported pointer mode {0}")]
+    UnsupportedPointerMode(u8),
     #[error("client declared {declared} encodings, maximum is {maximum}")]
     TooManyEncodings { declared: usize, maximum: usize },
     #[error("client cut text has {declared} bytes, maximum is {maximum}")]
@@ -52,6 +60,9 @@ pub(crate) enum ClientMessage {
         dx: i16,
         dy: i16,
         wheel: i8,
+    },
+    SetMouseMode {
+        mode: RfbPointerMode,
     },
     CutText(Vec<u8>),
     EnableContinuousUpdates {
@@ -145,6 +156,7 @@ fn decode_one(bytes: &[u8], limits: RfbProtocolLimits) -> DecodeOne {
         4 => decode_key(bytes),
         5 => decode_pointer(bytes),
         8 => decode_relative_pointer(bytes),
+        9 => decode_mouse_mode(bytes),
         6 => decode_cut_text(bytes, limits),
         150 => decode_continuous_updates(bytes),
         other => DecodeOne::Error(RfbProtocolError::UnsupportedClientMessageType(other)),
@@ -294,6 +306,21 @@ fn decode_relative_pointer(bytes: &[u8]) -> DecodeOne {
     }
 }
 
+fn decode_mouse_mode(bytes: &[u8]) -> DecodeOne {
+    if bytes.len() < 4 {
+        return DecodeOne::Incomplete;
+    }
+    let mode = match bytes[1] {
+        0 => RfbPointerMode::Absolute,
+        1 => RfbPointerMode::Relative,
+        other => return DecodeOne::Error(RfbProtocolError::UnsupportedPointerMode(other)),
+    };
+    DecodeOne::Message {
+        value: ClientMessage::SetMouseMode { mode },
+        length: 4,
+    }
+}
+
 fn decode_continuous_updates(bytes: &[u8]) -> DecodeOne {
     if bytes.len() < 10 {
         return DecodeOne::Incomplete;
@@ -340,6 +367,7 @@ mod tests {
             vec![4, 1, 0, 0, 0, 0, 0xff, 0x0d],
             vec![5, 3, 0, 10, 0, 20],
             vec![8, 3, 0x00, 0x0c, 0xff, 0xfc, 0x02],
+            vec![9, 1, 0, 0],
             vec![6, 0, 0, 0, 0, 0, 0, 2, 0x41, 0xff],
             vec![150, 1, 0, 5, 0, 6, 0, 7, 0, 8],
         ]
@@ -490,6 +518,33 @@ mod tests {
                 dy: -4,
                 wheel: 2,
             })]
+        );
+        assert_eq!(decoder.buffered_len(), 0);
+    }
+
+    #[test]
+    fn decodes_mouse_mode_message() {
+        let mut decoder = ClientMessageDecoder::new(RfbProtocolLimits::default());
+        assert_eq!(
+            decoder.push(&[9, 0, 0xaa, 0xbb, 9, 1, 0, 0]),
+            vec![
+                Ok(ClientMessage::SetMouseMode {
+                    mode: RfbPointerMode::Absolute,
+                }),
+                Ok(ClientMessage::SetMouseMode {
+                    mode: RfbPointerMode::Relative,
+                }),
+            ]
+        );
+        assert_eq!(decoder.buffered_len(), 0);
+    }
+
+    #[test]
+    fn rejects_unknown_mouse_mode_message_value() {
+        let mut decoder = ClientMessageDecoder::new(RfbProtocolLimits::default());
+        assert_eq!(
+            decoder.push(&[9, 2, 0, 0]),
+            vec![Err(RfbProtocolError::UnsupportedPointerMode(2))]
         );
         assert_eq!(decoder.buffered_len(), 0);
     }

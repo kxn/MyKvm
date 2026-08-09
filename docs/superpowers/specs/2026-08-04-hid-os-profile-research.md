@@ -147,7 +147,7 @@ Iced 的光标控制目前是 Windows `ShowCursor` 加 `ClipCursor`。`ClipCurso
 
 当前 egui 路径已经调用 egui 的 `CursorGrab::Locked` 和 `CursorVisible(false)`，其语义比简单裁剪更接近真正的窗口级 pointer lock，但仍需在不同 Windows、窗口管理器和输入设备上做人工验证。
 
-网页端已经使用浏览器 Pointer Lock API，并在锁定后通过 `movementX/movementY` 发送相对指针扩展消息。noVNC 的本地修改把这类增量映射到仓库扩展的 RFB 相对指针消息 `0x08`。该路径更接近浏览器平台定义的相对输入模型，但 Pointer Lock 仍受用户手势、焦点、浏览器策略和 `Esc` 退出行为约束。
+网页端已经使用浏览器 Pointer Lock API，并在锁定后通过 `movementX/movementY` 发送相对指针扩展消息。noVNC 的本地修改把这类增量映射到仓库扩展的 RFB 相对指针消息 `0x08`，并通过 `0x09 SetMouseMode` 显式切换 absolute/relative。该路径更接近浏览器平台定义的相对输入模型，但 Pointer Lock 仍受用户手势、焦点、浏览器策略和 `Esc` 退出行为约束。
 
 ## 5. 为什么 Windows 10 与 Ubuntu 可能不同
 

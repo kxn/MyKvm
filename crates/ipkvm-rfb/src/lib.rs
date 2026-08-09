@@ -10,7 +10,7 @@ pub use connection::{
     RfbConnectionCore, RfbConnectionState, RfbEncodeError, RfbEncodeStatsSnapshot, RfbEvent,
 };
 pub use framebuffer::{BgraFrameView, RfbFramebufferError, RfbRectangle, RfbSize, RgbFrameView};
-pub use protocol::client::{FramebufferUpdateRequest, RfbProtocolError};
+pub use protocol::client::{FramebufferUpdateRequest, RfbPointerMode, RfbProtocolError};
 pub use protocol::pixel_format::{RfbColorChannel, RfbPixelFormat, RfbPixelFormatError};
 pub use security::RfbSecurity;
 
