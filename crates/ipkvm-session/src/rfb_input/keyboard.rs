@@ -31,12 +31,7 @@ impl RfbKeyboardMapper {
 
         let mut next_active = self.active_keys.clone();
         if down {
-            match map_keysym(keysym)? {
-                MappedKey::IgnoredLock => return Ok(RfbKeyboardOutcome::IgnoredLock),
-                mapped => {
-                    next_active.insert(keysym, mapped);
-                }
-            }
+            next_active.insert(keysym, map_keysym(keysym)?);
         } else {
             next_active.remove(&keysym);
         }
@@ -72,7 +67,6 @@ fn target_usages(
                     ShiftRequirement::NotRequired => forbids_shift = true,
                 }
             }
-            MappedKey::IgnoredLock => {}
         }
     }
 
@@ -280,6 +274,26 @@ mod tests {
             Ok(RfbKeyboardOutcome::UnknownRelease)
         );
         assert_eq!(sink.batches, vec![vec![down(0x04)]]);
+    }
+
+    #[test]
+    fn lock_keysyms_reach_sink_as_explicit_hid_keys() {
+        for (keysym, usage) in [(0xffe5, 0x39), (0xff7f, 0x53), (0xff14, 0x47)] {
+            let mut mapper = RfbKeyboardMapper::new();
+            let mut sink = RecordingSink::default();
+
+            assert_eq!(
+                mapper.handle_key(&mut sink, true, keysym),
+                Ok(RfbKeyboardOutcome::Applied),
+                "lock keysym {keysym:#x} down 必须应用"
+            );
+            assert_eq!(
+                mapper.handle_key(&mut sink, false, keysym),
+                Ok(RfbKeyboardOutcome::Applied),
+                "lock keysym {keysym:#x} up 必须应用"
+            );
+            assert_eq!(sink.batches, vec![vec![down(usage)], vec![up(usage)]]);
+        }
     }
 
     #[test]

@@ -218,7 +218,7 @@ async fn type_text(
     let mut skipped = 0usize;
     for character in text.chars() {
         let mapped = match map_keysym(char_to_keysym(character)) {
-            Ok(MappedKey::IgnoredLock) | Err(_) => {
+            Err(_) => {
                 skipped += 1;
                 continue;
             }
@@ -364,7 +364,6 @@ fn key_events(mapped: MappedKey) -> (Vec<KeyEvent>, Vec<KeyEvent>) {
                 (vec![KeyEvent::Down { usage }], vec![KeyEvent::Up { usage }])
             }
         },
-        MappedKey::IgnoredLock => unreachable!("chars never map to lock keys"),
     }
 }
 

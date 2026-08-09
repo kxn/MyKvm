@@ -107,6 +107,22 @@ pub fn key_event_to_keysym(code: Code, modified_key: &Key) -> Option<u32> {
     modified_character_to_keysym(modified_key).or_else(|| physical_code_to_keysym(code))
 }
 
+/// iced 的 `ModifiersChanged` 是远程修饰键状态唯一入口；物理修饰键事件只用于
+/// 本地快捷键判定，避免同一 Shift/Ctrl/Alt/Logo 被物理事件和聚合事件重复发送。
+pub fn is_physical_modifier_code(code: Code) -> bool {
+    matches!(
+        code,
+        Code::ShiftLeft
+            | Code::ShiftRight
+            | Code::ControlLeft
+            | Code::ControlRight
+            | Code::AltLeft
+            | Code::AltRight
+            | Code::SuperLeft
+            | Code::SuperRight
+    )
+}
+
 fn modified_character_to_keysym(modified_key: &Key) -> Option<u32> {
     let Key::Character(text) = modified_key else {
         return None;
@@ -178,6 +194,31 @@ mod tests {
             key_event_to_keysym(Code::ArrowUp, &Key::Unidentified),
             Some(XK_UP)
         );
+    }
+
+    #[test]
+    fn identifies_only_physical_modifier_codes() {
+        for code in [
+            Code::ShiftLeft,
+            Code::ShiftRight,
+            Code::ControlLeft,
+            Code::ControlRight,
+            Code::AltLeft,
+            Code::AltRight,
+            Code::SuperLeft,
+            Code::SuperRight,
+        ] {
+            assert!(
+                is_physical_modifier_code(code),
+                "{code:?} 应识别为物理修饰键"
+            );
+        }
+        for code in [Code::CapsLock, Code::NumLock, Code::ScrollLock, Code::KeyA] {
+            assert!(
+                !is_physical_modifier_code(code),
+                "{code:?} 不是聚合 ModifiersChanged 管理的物理修饰键"
+            );
+        }
     }
 
     #[test]

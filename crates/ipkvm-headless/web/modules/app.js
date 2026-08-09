@@ -235,6 +235,7 @@ export function initApp(root) {
           message(t("video.rfbFailed"), "error");
         }
         pointer.setRfb(null);
+        keyboard.releaseLocalState();
         specialKeys.updateEnabled();
         if (lastStatus?.session?.state !== "running") {
           setConnectionState("disconnected", t("status.disconnected"));
@@ -271,6 +272,7 @@ export function initApp(root) {
       pointer.setRfb(null);
       specialKeys.updateEnabled();
       current.disconnect();
+      keyboard.releaseLocalState();
     }
     cleanupRfbDom();
     rfbState = "idle";
@@ -417,6 +419,9 @@ export function initApp(root) {
     getRfb: () => rfb,
   });
 
+  const keyboard = installKeyboardInterceptor({ getRfb: () => rfb });
+  el.openSettings.addEventListener("click", () => keyboard.releaseRemoteState(), true);
+
   const applySessionProfile = async () => {
     const profile = el.videoMouseProfile.value;
     const previous = lastStatus?.session?.mouse_profile ?? settings.mouse_profile;
@@ -451,6 +456,7 @@ export function initApp(root) {
     menu: el.specialKeysMenu,
     message,
     getRfb: () => rfb,
+    heldModifiers: () => keyboard.heldModifiers(),
   });
 
   const screenshot = new ScreenshotController({
@@ -513,8 +519,6 @@ export function initApp(root) {
       message(t("clipboard.pasteFail", { detail: errorText(error) }), "error");
     }
   });
-
-  installKeyboardInterceptor({ getRfb: () => rfb });
 
   const applyUiLanguage = () => {
     applyLanguage(document);

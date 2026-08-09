@@ -26,7 +26,6 @@ pub(super) enum MappedKey {
         usage: KeyboardUsage,
         shift: ShiftRequirement,
     },
-    IgnoredLock,
 }
 
 const UNSHIFTED_PUNCTUATION: &[(char, u8)] = &[
@@ -122,7 +121,8 @@ pub(super) fn map_keysym(keysym: u32) -> Result<MappedKey, RfbKeyboardError> {
         0xffe8 | 0xffec => return Ok(direct(0xe7)),
         0xffe9 => return Ok(direct(0xe2)),
         0xffea => return Ok(direct(0xe6)),
-        0xff7f | 0xffe5 => return Ok(MappedKey::IgnoredLock),
+        0xff7f => return Ok(direct(0x53)),
+        0xffe5 => return Ok(direct(0x39)),
         0xffff => return Ok(direct(0x4c)),
         _ => {}
     }
@@ -262,6 +262,17 @@ mod tests {
             assert_eq!(
                 map_keysym(keysym).unwrap(),
                 MappedKey::Direct(KeyboardUsage::new(0x68 + (keysym - 0xffca) as u8).unwrap())
+            );
+        }
+    }
+
+    #[test]
+    fn maps_lock_keys_to_explicit_usb_hid_usages() {
+        for (keysym, usage) in [(0xffe5, 0x39), (0xff7f, 0x53), (0xff14, 0x47)] {
+            assert_eq!(
+                map_keysym(keysym).unwrap(),
+                MappedKey::Direct(KeyboardUsage::new(usage).unwrap()),
+                "lock keysym {keysym:#x} 必须映射到明确 HID usage"
             );
         }
     }

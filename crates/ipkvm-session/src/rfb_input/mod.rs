@@ -21,7 +21,6 @@ pub enum RfbKeyboardOutcome {
     Applied,
     DuplicateDown,
     UnknownRelease,
-    IgnoredLock,
 }
 
 #[derive(Clone, Debug, Error, Eq, PartialEq)]

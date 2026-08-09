@@ -411,6 +411,125 @@ async function assertKeyboardCapture(page, fixture) {
   );
 }
 
+async function assertKeyboardCoordinatorModules(page) {
+  const special = await page.evaluate(async () => {
+    const { SpecialKeysController } = await import("/assets/modules/special-keys.js");
+    const button = document.createElement("button");
+    const menu = document.createElement("div");
+    const sent = [];
+    document.body.append(button, menu);
+    const controller = new SpecialKeysController({
+      button,
+      menu,
+      message: () => {},
+      getRfb: () => ({
+        sendKey: (_keysym, code, down) => {
+          sent.push(`${down ? "DOWN" : "UP"}:${code}`);
+        },
+      }),
+      heldModifiers: () => new Set(["control"]),
+    });
+    controller.openMenu();
+    menu.querySelector("#special-ctrl-alt-del").click();
+    button.remove();
+    menu.remove();
+    return sent;
+  });
+  assert.deepEqual(
+    special,
+    ["DOWN:AltLeft", "DOWN:Delete", "UP:Delete", "UP:AltLeft"],
+    "special key menu must not release a modifier held by the normal keyboard path",
+  );
+
+  const keyboard = await page.evaluate(async () => {
+    const { installKeyboardInterceptor } = await import("/assets/modules/keyboard.js");
+    const canvas = document.createElement("canvas");
+    const button = document.createElement("button");
+    canvas.tabIndex = 0;
+    button.type = "button";
+    document.body.append(canvas, button);
+    const released = [];
+    const rfb = {
+      canvas,
+      _keyboard: {
+        _keyDownList: { ControlLeft: 0xffe3 },
+        _sendKeyEvent: (keysym, code, down) => released.push({ keysym, code, down }),
+      },
+    };
+    const capture = installKeyboardInterceptor({ getRfb: () => rfb });
+    canvas.focus();
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        code: "ControlLeft",
+        key: "Control",
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    const heldAfterDown = Array.from(capture.heldModifiers());
+    button.focus();
+    button.dispatchEvent(
+      new KeyboardEvent("keyup", {
+        code: "ControlLeft",
+        key: "Control",
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    const heldAfterUp = Array.from(capture.heldModifiers());
+    capture.dispose();
+    canvas.remove();
+    button.remove();
+    return { heldAfterDown, heldAfterUp, released };
+  });
+  assert.deepEqual(keyboard.heldAfterDown, ["control"]);
+  assert.deepEqual(keyboard.heldAfterUp, []);
+  assert.deepEqual(
+    keyboard.released,
+    [{ keysym: 0xffe3, code: "ControlLeft", down: false }],
+    "non-canvas keyup must release the key held by noVNC's normal keyboard path",
+  );
+
+  const releaseAll = await page.evaluate(async () => {
+    const { installKeyboardInterceptor } = await import("/assets/modules/keyboard.js");
+    const canvas = document.createElement("canvas");
+    canvas.tabIndex = 0;
+    document.body.append(canvas);
+    const released = [];
+    const rfb = {
+      canvas,
+      _keyboard: {
+        _keyDownList: { ControlLeft: 0xffe3, KeyA: 0x61 },
+        _sendKeyEvent: (_keysym, code, down) =>
+          released.push(`${down ? "DOWN" : "UP"}:${code}`),
+        _allKeysUp: () => released.push("ALL"),
+      },
+    };
+    const capture = installKeyboardInterceptor({ getRfb: () => rfb });
+    canvas.focus();
+    window.dispatchEvent(
+      new KeyboardEvent("keydown", {
+        code: "ControlLeft",
+        key: "Control",
+        ctrlKey: true,
+        bubbles: true,
+        cancelable: true,
+      }),
+    );
+    capture.releaseRemoteState();
+    const heldAfterRelease = Array.from(capture.heldModifiers());
+    capture.dispose();
+    canvas.remove();
+    return { released, heldAfterRelease };
+  });
+  assert.deepEqual(
+    releaseAll,
+    { released: ["ALL"], heldAfterRelease: [] },
+    "explicit remote keyboard release must flush noVNC's full key state, not only tracked modifiers",
+  );
+}
+
 async function assertPointer(page, fixture, fractionX, fractionY) {
   const geometry = await page.locator("#screen canvas").evaluate(
     (canvas, fractions) => {
@@ -928,6 +1047,7 @@ async function run() {
     }
     await assertKeyboard(page, fixture);
     await assertKeyboardCapture(page, fixture);
+    await assertKeyboardCoordinatorModules(page);
     await assertPointer(page, fixture, 0.73, 0.31);
     await assertLayout(page, { width: 1280, height: 800 });
     await assertNoVncCursorRendering(page);

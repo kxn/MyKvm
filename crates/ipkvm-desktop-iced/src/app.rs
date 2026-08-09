@@ -33,9 +33,9 @@ use crate::diag;
 use crate::frames::{FrameUpdate, frame_subscription};
 use crate::input::{
     KeyAction, SpecialKey, WheelStepAccumulator, is_mode_toggle_combo, is_remote_exit_combo,
-    modifier_diff, special_key_from_menu, special_key_sequence,
+    modifier_diff, special_key_from_menu, special_key_sequence_for_modifiers,
 };
-use crate::keymap::{key_event_to_keysym, physical_code_to_keysym};
+use crate::keymap::{is_physical_modifier_code, key_event_to_keysym, physical_code_to_keysym};
 use crate::locale::AppLanguage;
 use crate::menu::{MenuAction, menu_bar};
 use crate::modal::{ModalAction, ModalKind, ModalState};
@@ -584,6 +584,7 @@ where
     }
 
     fn open_modal(&mut self, kind: ModalKind) {
+        self.exit_remote_input();
         match kind {
             ModalKind::Settings => {
                 let connection = self.default_connection.clone();
@@ -1010,8 +1011,13 @@ where
                 Task::none()
             }
             MenuAction::Simple("release_all") => {
-                let _ = self.controller.release_all();
-                self.active_keysyms.clear();
+                if let Err(error) = self.controller.release_all() {
+                    self.status_message = Some(
+                        t!("message.keyboard_send_failed", error = error.to_string()).to_string(),
+                    );
+                } else {
+                    self.clear_local_capture_state();
+                }
                 Task::none()
             }
             MenuAction::Simple(_) => Task::none(),
@@ -1294,6 +1300,9 @@ where
                 if repeat {
                     return;
                 }
+                if is_physical_modifier_code(code) {
+                    return;
+                }
                 let Some(keysym) = key_event_to_keysym(code, &modified_key) else {
                     self.status_message = Some(t!("message.unsupported_key").to_string());
                     return;
@@ -1310,6 +1319,9 @@ where
                 let iced::keyboard::key::Physical::Code(code) = physical_key else {
                     return;
                 };
+                if is_physical_modifier_code(code) {
+                    return;
+                }
                 if let Some(keysym) = self
                     .active_keysyms
                     .remove(&code)
@@ -1789,7 +1801,7 @@ where
     }
 
     fn send_special(&mut self, key: SpecialKey) {
-        for action in special_key_sequence(key) {
+        for action in special_key_sequence_for_modifiers(key, self.last_modifiers) {
             self.send_key_action(action);
         }
     }
@@ -3702,6 +3714,12 @@ mod tests {
         modifiers
     }
 
+    fn ctrl_modifiers() -> iced::keyboard::Modifiers {
+        let mut modifiers = iced::keyboard::Modifiers::empty();
+        modifiers.set(iced::keyboard::Modifiers::CTRL, true);
+        modifiers
+    }
+
     fn press_character_key(
         code: iced::keyboard::key::Code,
         key: &str,
@@ -3829,6 +3847,34 @@ mod tests {
         }
     }
 
+    fn settled_key_events(app: &mut MockApp, min_count: usize) -> Vec<(bool, u8)> {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let mut last_len = None;
+        let mut stable_polls = 0;
+        loop {
+            let _ = app.update(Message::UiTick);
+            if let Some(sink) = app.recording_sink() {
+                let recorded = sink.key_events.lock().unwrap();
+                if recorded.len() >= min_count {
+                    if last_len == Some(recorded.len()) {
+                        stable_polls += 1;
+                    } else {
+                        last_len = Some(recorded.len());
+                        stable_polls = 0;
+                    }
+                    if stable_polls >= 3 {
+                        return recorded.clone();
+                    }
+                }
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "sink 事件未稳定到至少 {min_count} 个"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
     #[test]
     fn keyboard_press_release_reaches_sink_in_order() {
         let (mut app, _) = MockApp::new_mock();
@@ -3929,6 +3975,83 @@ mod tests {
             recorded,
             vec![(true, 0xe1), (true, 0x04), (false, 0x04), (false, 0xe1)],
             "字母抬起必须释放按下时登记的 keysym，不能受当前 modifiers 改变"
+        );
+    }
+
+    #[test]
+    fn physical_modifier_events_do_not_duplicate_modifiers_changed_state() {
+        let (mut app, _) = MockApp::new_mock();
+        enter_remote(&mut app);
+        let shift = keyboard_modifiers(true);
+
+        let _ = app.update(Message::Keyboard(iced::keyboard::Event::ModifiersChanged(
+            shift,
+        )));
+        let _ = app.update(Message::Keyboard(iced::keyboard::Event::KeyPressed {
+            key: iced::keyboard::Key::Unidentified,
+            modified_key: iced::keyboard::Key::Unidentified,
+            physical_key: iced::keyboard::key::Physical::Code(
+                iced::keyboard::key::Code::ShiftRight,
+            ),
+            location: iced::keyboard::Location::Right,
+            modifiers: shift,
+            text: None,
+            repeat: false,
+        }));
+        let _ = app.update(release_key(iced::keyboard::key::Code::ShiftRight));
+        let _ = app.update(Message::Keyboard(iced::keyboard::Event::ModifiersChanged(
+            iced::keyboard::Modifiers::empty(),
+        )));
+
+        let recorded = settled_key_events(&mut app, 2);
+        assert_eq!(
+            recorded,
+            vec![(true, 0xe1), (false, 0xe1)],
+            "修饰键远端状态必须只由 ModifiersChanged 驱动，物理 press/release 不得重复发送"
+        );
+        assert!(app.active_keysyms.is_empty());
+    }
+
+    #[test]
+    fn special_key_preserves_user_held_modifier_until_local_release() {
+        let (mut app, _) = MockApp::new_mock();
+        enter_remote(&mut app);
+        let ctrl = ctrl_modifiers();
+
+        let _ = app.update(Message::Keyboard(iced::keyboard::Event::ModifiersChanged(
+            ctrl,
+        )));
+        let _ = app.update(Message::Menu(MenuAction::SpecialKey("CtrlAltDel".into())));
+        let _ = app.update(press_character_key(
+            iced::keyboard::key::Code::KeyC,
+            "c",
+            "c",
+            ctrl,
+        ));
+        let _ = app.update(release_character_key(
+            iced::keyboard::key::Code::KeyC,
+            "c",
+            "c",
+            ctrl,
+        ));
+        let _ = app.update(Message::Keyboard(iced::keyboard::Event::ModifiersChanged(
+            iced::keyboard::Modifiers::empty(),
+        )));
+
+        let recorded = settled_key_events(&mut app, 8);
+        assert_eq!(
+            recorded,
+            vec![
+                (true, 0xe0),
+                (true, 0xe2),
+                (true, 0x4c),
+                (false, 0x4c),
+                (false, 0xe2),
+                (true, 0x06),
+                (false, 0x06),
+                (false, 0xe0),
+            ],
+            "特殊键菜单只能释放自己按下的 modifier，不能提前释放用户仍按住的 Ctrl"
         );
     }
 
@@ -4321,6 +4444,78 @@ mod tests {
         assert_eq!(recorded[3], (false, 0x4c));
         assert_eq!(recorded[4], (false, 0xe2));
         assert_eq!(recorded[5], (false, 0xe0));
+    }
+
+    #[test]
+    fn opening_modal_releases_remote_keyboard_and_blocks_forwarding() {
+        let (mut app, _) = MockApp::new_mock();
+        enter_remote(&mut app);
+        let shift = keyboard_modifiers(true);
+        let _ = app.update(Message::Keyboard(iced::keyboard::Event::ModifiersChanged(
+            shift,
+        )));
+        let _ = app.update(press_key(iced::keyboard::key::Code::KeyA));
+        let _ = wait_sink(&app, 2);
+
+        let _ = app.update(Message::OpenModal(ModalKind::Settings));
+
+        assert!(!app.remote_input, "打开模态必须退出远程输入");
+        assert_eq!(app.last_modifiers, iced::keyboard::Modifiers::empty());
+        assert!(app.active_keysyms.is_empty());
+        wait_releases(&app, 1);
+        let before = app
+            .recording_sink()
+            .expect("recording sink")
+            .key_events
+            .lock()
+            .unwrap()
+            .len();
+
+        let _ = app.update(press_key(iced::keyboard::key::Code::KeyB));
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        assert_eq!(
+            app.recording_sink()
+                .expect("recording sink")
+                .key_events
+                .lock()
+                .unwrap()
+                .len(),
+            before,
+            "模态打开后 UI TextInput/按钮焦点不得继续转发远程键盘"
+        );
+    }
+
+    #[test]
+    fn release_all_menu_clears_local_capture_state_without_exiting_remote_input() {
+        let mut app = absolute_video_app();
+        app.remote_input = true;
+        app.pointer_mask = 0b101;
+        app.last_relative_mask = 0b101;
+        app.relative_wheel = 2;
+        app.absolute_wheel = 2;
+        app.absolute_wheel_release_pending = true;
+        app.last_modifiers = keyboard_modifiers(true);
+        app.active_keysyms
+            .insert(iced::keyboard::key::Code::KeyA, 0x04);
+        app.last_pointer = Some((10, 20));
+        app.last_pointer_sent = Some((0b101, 10, 20));
+        app.last_pointer_sent_at = Some(Instant::now());
+
+        let _ = app.update(Message::Menu(MenuAction::Simple("release_all")));
+
+        assert!(app.remote_input, "Release all 不应退出远程输入");
+        wait_releases(&app, 1);
+        assert_eq!(app.pointer_mask, 0);
+        assert_eq!(app.last_relative_mask, 0);
+        assert_eq!(app.relative_wheel, 0);
+        assert_eq!(app.absolute_wheel, 0);
+        assert!(!app.absolute_wheel_release_pending);
+        assert_eq!(app.last_modifiers, iced::keyboard::Modifiers::empty());
+        assert!(app.active_keysyms.is_empty());
+        assert_eq!(app.last_pointer, None);
+        assert_eq!(app.last_pointer_sent, None);
+        assert_eq!(app.last_pointer_sent_at, None);
     }
 
     #[test]
