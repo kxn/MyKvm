@@ -1,6 +1,9 @@
 use std::net::SocketAddr;
 
-use ipkvm_core::{FramebufferSize, InputError, InputSink, MouseMode};
+use ipkvm_core::{
+    FramebufferSize, InputError, InputSink, MouseMode,
+    diag::{self, DiagCategory, DiagLevel},
+};
 use ipkvm_rfb::RfbRectangle;
 use thiserror::Error;
 use tokio::sync::{mpsc, watch};
@@ -469,6 +472,17 @@ impl<S: InputSink> RfbInputPump<S> {
             client_id,
             peer_addr,
         });
+        diag::log(
+            DiagLevel::Info,
+            DiagCategory::LIFECYCLE,
+            "session.input_pump",
+            "controller_acquired",
+            &[
+                ("client", format!("{client_id:?}")),
+                ("peer", peer_addr.to_string()),
+                ("shared", shared.to_string()),
+            ],
+        );
         Ok(RfbInputNotice::ControllerAcquired {
             client_id,
             peer_addr,
@@ -483,6 +497,17 @@ impl<S: InputSink> RfbInputPump<S> {
         keysym: u32,
     ) -> Result<RfbInputNotice, RfbInputError> {
         self.require_active(client_id, RfbInputEventKind::Key)?;
+        diag::log(
+            DiagLevel::Trace,
+            DiagCategory::KEYBOARD,
+            "session.input_pump",
+            "key",
+            &[
+                ("client", format!("{client_id:?}")),
+                ("down", down.to_string()),
+                ("keysym", format!("0x{keysym:08x}")),
+            ],
+        );
         match self.keyboard.handle_key(&mut self.sink, down, keysym) {
             Ok(outcome) => Ok(RfbInputNotice::Keyboard { client_id, outcome }),
             Err(RfbKeyboardError::UnsupportedKeysym(keysym)) => {
@@ -514,7 +539,35 @@ impl<S: InputSink> RfbInputPump<S> {
         framebuffer_size: FramebufferSize,
     ) -> Result<RfbInputNotice, RfbInputError> {
         self.require_active(client_id, RfbInputEventKind::Pointer)?;
+        diag::log(
+            DiagLevel::Trace,
+            DiagCategory::POINTER,
+            "session.input_pump",
+            "pointer_absolute",
+            &[
+                ("client", format!("{client_id:?}")),
+                ("mask", format_mask(button_mask)),
+                ("x", x.to_string()),
+                ("y", y.to_string()),
+                (
+                    "fb",
+                    format!("{}x{}", framebuffer_size.width, framebuffer_size.height),
+                ),
+            ],
+        );
         if self.mouse_mode == Some(MouseMode::Relative) {
+            diag::log(
+                DiagLevel::Warn,
+                DiagCategory::POINTER,
+                "session.input_pump",
+                "pointer_ignored",
+                &[
+                    ("client", format!("{client_id:?}")),
+                    ("kind", "absolute".into()),
+                    ("mode", "relative".into()),
+                    ("mask", format_mask(button_mask)),
+                ],
+            );
             return Ok(RfbInputNotice::Pointer {
                 client_id,
                 outcome: RfbPointerOutcome::IgnoredForMouseMode {
@@ -545,6 +598,19 @@ impl<S: InputSink> RfbInputPump<S> {
         wheel: i8,
     ) -> Result<RfbInputNotice, RfbInputError> {
         self.require_active(client_id, RfbInputEventKind::PointerRelative)?;
+        diag::log(
+            DiagLevel::Trace,
+            DiagCategory::POINTER,
+            "session.input_pump",
+            "pointer_relative",
+            &[
+                ("client", format!("{client_id:?}")),
+                ("mask", format_mask(button_mask)),
+                ("dx", dx.to_string()),
+                ("dy", dy.to_string()),
+                ("wheel", wheel.to_string()),
+            ],
+        );
         self.ensure_mouse_mode(client_id, MouseMode::Relative)?;
         match self
             .pointer
@@ -597,6 +663,16 @@ impl<S: InputSink> RfbInputPump<S> {
             })?;
         self.pointer = RfbPointerMapper::new();
         self.mouse_mode = Some(mode);
+        diag::log(
+            DiagLevel::Info,
+            DiagCategory::LIFECYCLE,
+            "session.input_pump",
+            "mouse_mode",
+            &[
+                ("client", format!("{client_id:?}")),
+                ("mode", mouse_mode_name(mode).into()),
+            ],
+        );
         if let Some(observer) = &self.mouse_mode_observer {
             let _ = observer.send(Some(mode));
         }
@@ -659,6 +735,17 @@ impl<S: InputSink> RfbInputPump<S> {
         let Some(active) = self.active else {
             return Ok(None);
         };
+        diag::log(
+            DiagLevel::Warn,
+            DiagCategory::LIFECYCLE,
+            "session.input_pump",
+            "release_all",
+            &[
+                ("client", format!("{:?}", active.client_id)),
+                ("peer", active.peer_addr.to_string()),
+                ("reason", format!("{reason:?}")),
+            ],
+        );
         self.sink
             .release_all()
             .map_err(|source| RfbInputError::Sink {
@@ -681,6 +768,17 @@ impl<S: InputSink> RfbInputPump<S> {
             reason,
         }))
     }
+}
+
+fn mouse_mode_name(mode: MouseMode) -> &'static str {
+    match mode {
+        MouseMode::Absolute => "absolute",
+        MouseMode::Relative => "relative",
+    }
+}
+
+fn format_mask(mask: u8) -> String {
+    format!("0x{mask:02x}")
 }
 
 #[cfg(test)]

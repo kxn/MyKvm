@@ -221,6 +221,9 @@ InputSink
 - 所有输入方法返回 `Result`，队列关闭、不可映射按键、6KRO 溢出等错误必须能传回 UI 或 RFB 状态层。
 - `Result::Ok` 只表示有序命令批次已被本进程接受，不表示 CH9329 已执行。
 - 文本粘贴转模拟键入不放进物理 `InputSink`，阶段 2 由独立文本键入服务实现。
+- 输入诊断日志由 `ipkvm-core::diag` 统一提供文件 logger，各入口只负责启用配置；日志按
+  `input`、`pointer`、`keyboard`、`queue`、`serial`、`lifecycle` 分类过滤，默认不打开
+  `keyboard` 详细类别，避免复现鼠标问题时记录不必要的按键信息。
 
 CH9329 协议与输入核心的详细设计见：
 
@@ -804,6 +807,9 @@ WebSocket 兼容：
   不依赖目标机分辨率（BIOS/启动菜单用）；Ctrl+Alt+M 切换并通过重连应用；
   灵敏度可在高级设置调整（默认 1.0）。
 - 鼠标事件遵循严格模式：绝对模式下移动、按钮、滚轮和释放均走绝对报告；相对模式下均走相对报告。
+- 「输入日志」开关只影响诊断文件输出，不改变输入链路行为。打开后应能从日志里确认：
+  桌面入口的按钮 mask、RFB mapper 的 committed/incoming mask、pending 队列是否阻塞、
+  CH9329 最终 mouse report 的按钮位与串口 frame/ack 是否连续。
 
 ## 2026-08-04 #159 crate 边界收敛
 

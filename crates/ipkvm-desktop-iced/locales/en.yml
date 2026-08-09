@@ -122,6 +122,9 @@ status:
   video_no_signal: "No signal"
   video_stalled: "Stalled / no signal"
 
+diagnostics:
+  input_log: "Input log"
+
 control_status:
   not_selected: "Not selected"
   checking: "Rechecking"
@@ -165,6 +168,9 @@ message:
   screenshot_save_failed: "Screenshot save failed: %{error}"
   keyboard_send_failed: "Keyboard send failed: %{error}"
   pointer_send_failed: "Pointer send failed: %{error}"
+  input_log_enabled: "Input log writing to %{path}"
+  input_log_disabled: "Input log disabled"
+  input_log_failed: "Input log failed: %{error}"
 
 dialog:
   jpeg_filter: "JPEG image"

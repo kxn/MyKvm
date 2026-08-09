@@ -371,6 +371,65 @@ fn build_source(
     Ok(source)
 }
 
+fn configure_input_log(options: &Options) -> Result<(), String> {
+    let config = input_log_config(
+        options,
+        std::env::var_os("IPKVM_LOG_FILE").map(PathBuf::from),
+        std::env::var("IPKVM_LOG_LEVEL").ok(),
+        std::env::var("IPKVM_LOG_CATEGORIES").ok(),
+    )?;
+    let Some(config) = config else {
+        return Ok(());
+    };
+    let path = config.path().to_path_buf();
+    ipkvm_core::diag::configure(config)
+        .map_err(|error| format!("打开输入诊断日志 {} 失败：{error}", path.display()))?;
+    ipkvm_core::diag::log(
+        ipkvm_core::diag::DiagLevel::Info,
+        ipkvm_core::diag::DiagCategory::LIFECYCLE,
+        "headless.app",
+        "input_log",
+        &[
+            ("result", "enabled".into()),
+            ("path", path.display().to_string()),
+        ],
+    );
+    Ok(())
+}
+
+fn input_log_config(
+    options: &Options,
+    env_file: Option<PathBuf>,
+    env_level: Option<String>,
+    env_categories: Option<String>,
+) -> Result<Option<ipkvm_core::diag::DiagConfig>, String> {
+    let Some(path) = options.log_file.clone().or(env_file) else {
+        return Ok(None);
+    };
+    let level_text = options
+        .log_level
+        .as_deref()
+        .or(env_level.as_deref())
+        .unwrap_or("trace");
+    let Some(level) = ipkvm_core::diag::DiagLevel::parse(level_text) else {
+        return Err(format!(
+            "无效日志级别：{level_text}（可用 error/warn/info/debug/trace）"
+        ));
+    };
+    let categories_text = options
+        .log_categories
+        .as_deref()
+        .or(env_categories.as_deref())
+        .unwrap_or("input,pointer,queue,serial,lifecycle");
+    let categories = ipkvm_core::diag::DiagCategory::parse_list(categories_text)
+        .map_err(|category| format!("无效日志类别：{category}"))?;
+    Ok(Some(
+        ipkvm_core::diag::DiagConfig::file(path)
+            .level(level)
+            .categories(categories),
+    ))
+}
+
 type SessionComponents = (Arc<dyn FrameSource>, HeadlessSink);
 
 #[cfg(test)]
@@ -398,6 +457,9 @@ mod tests {
             vnc_password: None,
             dirty_rects: false,
             dirty_rect_tile_size: None,
+            log_file: None,
+            log_level: None,
+            log_categories: None,
             install_service: None,
             uninstall_service: None,
         }
@@ -417,6 +479,65 @@ mod tests {
         let mut assets = options();
         assets.assets_dir = Some(PathBuf::from("assets"));
         assert!(initial_video_source_requested(&assets));
+    }
+
+    #[test]
+    fn input_log_config_uses_file_level_and_categories() {
+        let mut options = options();
+        options.log_file = Some(PathBuf::from("/tmp/ipkvm-headless-input.log"));
+        options.log_level = Some("debug".to_string());
+        options.log_categories = Some("pointer,queue".to_string());
+
+        let config = input_log_config(&options, None, None, None)
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(
+            config.path(),
+            PathBuf::from("/tmp/ipkvm-headless-input.log")
+        );
+        assert_eq!(
+            config.configured_level(),
+            ipkvm_core::diag::DiagLevel::Debug
+        );
+        assert!(
+            config
+                .configured_categories()
+                .contains(ipkvm_core::diag::DiagCategory::POINTER)
+        );
+        assert!(
+            config
+                .configured_categories()
+                .contains(ipkvm_core::diag::DiagCategory::QUEUE)
+        );
+        assert!(
+            !config
+                .configured_categories()
+                .contains(ipkvm_core::diag::DiagCategory::SERIAL)
+        );
+    }
+
+    #[test]
+    fn input_log_config_can_be_enabled_from_environment_values() {
+        let config = input_log_config(
+            &options(),
+            Some(PathBuf::from("/tmp/ipkvm-headless-env.log")),
+            Some("trace".to_string()),
+            Some("all".to_string()),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(config.path(), PathBuf::from("/tmp/ipkvm-headless-env.log"));
+        assert_eq!(
+            config.configured_level(),
+            ipkvm_core::diag::DiagLevel::Trace
+        );
+        assert!(
+            config
+                .configured_categories()
+                .contains(ipkvm_core::diag::DiagCategory::SERIAL)
+        );
     }
 }
 
@@ -473,6 +594,10 @@ async fn main() {
             std::process::exit(2);
         }
     };
+    if let Err(error) = configure_input_log(&options) {
+        eprintln!("配置错误：{error}");
+        std::process::exit(2);
+    }
 
     if options.list_cameras {
         match print_cameras() {

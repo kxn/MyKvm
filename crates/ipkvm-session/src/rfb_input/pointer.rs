@@ -1,4 +1,7 @@
-use ipkvm_core::{FramebufferSize, InputSink, PointerButton, PointerEvent};
+use ipkvm_core::{
+    FramebufferSize, InputSink, PointerButton, PointerEvent,
+    diag::{self, DiagCategory, DiagLevel},
+};
 
 use super::{RfbPointerError, RfbPointerOutcome};
 
@@ -43,6 +46,23 @@ impl RfbPointerMapper {
             events.push(PointerEvent::Wheel { delta: -1 });
         }
 
+        diag::log(
+            DiagLevel::Trace,
+            DiagCategory::POINTER,
+            "session.rfb_pointer",
+            "absolute_map",
+            &[
+                ("committed_mask", format_mask(self.committed_button_mask)),
+                ("incoming_mask", format_mask(button_mask)),
+                ("x", x.to_string()),
+                ("y", y.to_string()),
+                (
+                    "fb",
+                    format!("{}x{}", framebuffer_size.width, framebuffer_size.height),
+                ),
+                ("events", events.len().to_string()),
+            ],
+        );
         sink.handle_pointer_batch(&events)?;
         self.committed_button_mask = button_mask;
         let ignored = button_mask & UNSUPPORTED_BUTTON_MASK;
@@ -74,6 +94,20 @@ impl RfbPointerMapper {
             });
         }
 
+        diag::log(
+            DiagLevel::Trace,
+            DiagCategory::POINTER,
+            "session.rfb_pointer",
+            "relative_map",
+            &[
+                ("committed_mask", format_mask(self.committed_button_mask)),
+                ("incoming_mask", format_mask(button_mask)),
+                ("dx", dx.to_string()),
+                ("dy", dy.to_string()),
+                ("wheel", wheel.to_string()),
+                ("events", events.len().to_string()),
+            ],
+        );
         sink.handle_pointer_batch(&events)?;
         self.committed_button_mask = button_mask;
         let ignored = button_mask & UNSUPPORTED_BUTTON_MASK;
@@ -105,11 +139,20 @@ fn button_events(committed: u8, new_mask: u8) -> Vec<PointerEvent> {
     events
 }
 
+fn format_mask(mask: u8) -> String {
+    format!("0x{mask:02x}")
+}
+
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use ipkvm_core::{
         FramebufferSize, InputError, InputResult, InputSink, KeyEvent, MouseMode, PointerButton,
         PointerEvent,
+        diag::{self, DiagCategory, DiagConfig, DiagLevel},
     };
 
     use super::*;
@@ -162,6 +205,17 @@ mod tests {
         PointerEvent::Button { button, down }
     }
 
+    fn temp_log_path(name: &str) -> PathBuf {
+        let suffix = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "ipkvm-session-diag-{name}-{}-{suffix}.log",
+            std::process::id()
+        ))
+    }
+
     #[test]
     fn first_left_press_moves_before_pressing_button() {
         let mut mapper = RfbPointerMapper::new();
@@ -178,6 +232,33 @@ mod tests {
                 button(PointerButton::Left, true),
             ]]
         );
+    }
+
+    #[test]
+    fn absolute_pointer_mapper_logs_committed_and_incoming_masks() {
+        let path = temp_log_path("pointer-map");
+        diag::configure(
+            DiagConfig::file(path.clone())
+                .level(DiagLevel::Trace)
+                .categories(DiagCategory::POINTER),
+        )
+        .unwrap();
+        let mut mapper = RfbPointerMapper::new();
+        let mut sink = RecordingSink::default();
+
+        mapper
+            .handle_pointer(&mut sink, 0x01, 100, 200, size())
+            .unwrap();
+        diag::disable();
+
+        let body = fs::read_to_string(path).unwrap();
+        assert!(body.contains("component=session.rfb_pointer"));
+        assert!(body.contains("event=absolute_map"));
+        assert!(body.contains("committed_mask=0x00"));
+        assert!(body.contains("incoming_mask=0x01"));
+        assert!(body.contains("x=100"));
+        assert!(body.contains("y=200"));
+        assert!(body.contains("events=2"));
     }
 
     #[test]

@@ -271,6 +271,7 @@ pub enum Message {
     ProfilePath(Option<std::path::PathBuf>),
     Keyboard(iced::keyboard::Event),
     IcedEvent(iced::Event),
+    SetInputLogEnabled(bool),
     UiTick,
     FontsLoaded(Result<(), iced::font::Error>),
 }
@@ -325,6 +326,8 @@ where
     last_pointer_sent: Option<(u8, u16, u16)>,
     last_pointer_sent_at: Option<std::time::Instant>,
     last_pointer: Option<(u16, u16)>,
+    input_log_enabled: bool,
+    input_log_path: std::path::PathBuf,
     paste_busy: bool,
     recording: Option<RecordingSink>,
     clipboard: Arc<dyn ClipboardReader>,
@@ -401,6 +404,11 @@ impl App<RecordingSink, MockFactory> {
             last_pointer_sent: None,
             last_pointer_sent_at: None,
             last_pointer: None,
+            input_log_enabled: false,
+            input_log_path: std::env::temp_dir().join(format!(
+                "ipkvm-input-diag-mock-{}-{seq}.log",
+                std::process::id()
+            )),
             paste_busy: false,
             recording: Some(recording),
             clipboard: Arc::new(SystemClipboard),
@@ -468,6 +476,8 @@ impl App<Ch9329InputSink<SerialCommandQueue>, ProductionSessionFactory> {
             last_pointer_sent: None,
             last_pointer_sent_at: None,
             last_pointer: None,
+            input_log_enabled: false,
+            input_log_path: crate::diag::default_input_log_path(),
             paste_busy: false,
             recording: None,
             clipboard: Arc::new(SystemClipboard),
@@ -847,6 +857,10 @@ where
             }
             Message::IcedEvent(event) => {
                 self.handle_iced_event(event);
+                Task::none()
+            }
+            Message::SetInputLogEnabled(enabled) => {
+                self.set_input_log_enabled(enabled);
                 Task::none()
             }
             Message::UiTick => {
@@ -1271,20 +1285,49 @@ where
         }
         match event {
             iced::Event::Window(iced::window::Event::Unfocused) => {
+                self.log_desktop_input(
+                    ipkvm_core::diag::DiagLevel::Warn,
+                    "window_unfocused",
+                    &[
+                        ("mask", format_mask(self.pointer_mask)),
+                        ("remote", self.remote_input.to_string()),
+                    ],
+                );
                 self.exit_remote_input();
             }
             iced::Event::Mouse(iced::mouse::Event::CursorMoved { position }) => {
                 self.last_cursor = Some(position);
+                self.log_desktop_input(
+                    ipkvm_core::diag::DiagLevel::Trace,
+                    "cursor_moved",
+                    &[
+                        ("x_ui", format!("{:.1}", position.x)),
+                        ("y_ui", format!("{:.1}", position.y)),
+                        ("mask", format_mask(self.pointer_mask)),
+                        ("remote", self.remote_input.to_string()),
+                    ],
+                );
                 if self.remote_input && self.connection.mouse_mode == MouseMode::Absolute {
                     self.send_absolute(position);
                 }
             }
             iced::Event::Mouse(iced::mouse::Event::ButtonPressed(button)) => {
+                let mask_before = self.pointer_mask;
                 if self.remote_input && self.connection.mouse_mode == MouseMode::Relative {
                     self.poll_relative();
                     self.flush_relative_pending_with_mask(self.pointer_mask);
                 }
                 self.pointer_mask |= mouse_button_bit(button);
+                self.log_desktop_input(
+                    ipkvm_core::diag::DiagLevel::Trace,
+                    "mouse_button",
+                    &[
+                        ("action", "pressed".into()),
+                        ("button", mouse_button_name(button).into()),
+                        ("mask_before", format_mask(mask_before)),
+                        ("mask_after", format_mask(self.pointer_mask)),
+                    ],
+                );
                 if self.pointer_inside_video() {
                     if !self.remote_input {
                         self.enter_remote_input();
@@ -1303,11 +1346,22 @@ where
                 }
             }
             iced::Event::Mouse(iced::mouse::Event::ButtonReleased(button)) => {
+                let mask_before = self.pointer_mask;
                 if self.remote_input && self.connection.mouse_mode == MouseMode::Relative {
                     self.poll_relative();
                     self.flush_relative_pending_with_mask(self.pointer_mask);
                 }
                 self.pointer_mask &= !mouse_button_bit(button);
+                self.log_desktop_input(
+                    ipkvm_core::diag::DiagLevel::Trace,
+                    "mouse_button",
+                    &[
+                        ("action", "released".into()),
+                        ("button", mouse_button_name(button).into()),
+                        ("mask_before", format_mask(mask_before)),
+                        ("mask_after", format_mask(self.pointer_mask)),
+                    ],
+                );
                 if self.remote_input
                     && self.connection.mouse_mode == MouseMode::Absolute
                     && let Some(cursor) = self.last_cursor
@@ -1359,12 +1413,21 @@ where
         self.remote_input = true;
         self.active_keysyms.clear();
         self.sync_cursor();
+        self.log_desktop_input(
+            ipkvm_core::diag::DiagLevel::Info,
+            "remote_input",
+            &[
+                ("state", "entered".into()),
+                ("mask", format_mask(self.pointer_mask)),
+            ],
+        );
     }
 
     fn exit_remote_input(&mut self) {
         if !self.remote_input {
             return;
         }
+        let mask_before = self.pointer_mask;
         self.remote_input = false;
         self.sync_cursor();
         self.pointer_mask = 0;
@@ -1377,6 +1440,36 @@ where
         self.relative_sampler.reset();
         self.stop_relative_source();
         let _ = self.controller.release_all();
+        self.log_desktop_input(
+            ipkvm_core::diag::DiagLevel::Warn,
+            "remote_input",
+            &[
+                ("state", "exited".into()),
+                ("mask_before", format_mask(mask_before)),
+                ("release_all", "true".into()),
+            ],
+        );
+    }
+
+    fn log_desktop_input(
+        &self,
+        level: ipkvm_core::diag::DiagLevel,
+        event: &str,
+        fields: &[(&str, String)],
+    ) {
+        let mut owned = Vec::with_capacity(fields.len() + 2);
+        owned.push(("mode", mouse_mode_name(self.connection.mouse_mode).into()));
+        if let Some(cursor) = self.last_cursor {
+            owned.push(("cursor", format!("{:.1},{:.1}", cursor.x, cursor.y)));
+        }
+        owned.extend(fields.iter().map(|(key, value)| (*key, value.clone())));
+        ipkvm_core::diag::log(
+            level,
+            ipkvm_core::diag::DiagCategory::INPUT,
+            "desktop.iced",
+            event,
+            &owned,
+        );
     }
 
     /// 按当前模式/远程输入状态同步光标（相对+远程=隐藏裁剪；否则恢复）。
@@ -1404,6 +1497,16 @@ where
 
     fn send_absolute(&mut self, cursor: iced::Point) {
         let Some((x, y, session_frame)) = self.map_absolute_cursor(cursor) else {
+            self.log_desktop_input(
+                ipkvm_core::diag::DiagLevel::Warn,
+                "absolute_map_failed",
+                &[
+                    ("x_ui", format!("{:.1}", cursor.x)),
+                    ("y_ui", format!("{:.1}", cursor.y)),
+                    ("mask", format_mask(self.pointer_mask)),
+                    ("reason", "outside_or_unready".into()),
+                ],
+            );
             return;
         };
         self.last_pointer = Some((x, y));
@@ -1415,6 +1518,17 @@ where
             || crate::input::throttle_elapsed(now, self.last_pointer_sent_at, POINTER_MIN_INTERVAL))
             && crate::input::pointer_changed((self.pointer_mask, x, y), self.last_pointer_sent)
         {
+            self.log_desktop_input(
+                ipkvm_core::diag::DiagLevel::Trace,
+                "absolute_pointer",
+                &[
+                    ("decision", "sent".into()),
+                    ("mask", format_mask(self.pointer_mask)),
+                    ("x", x.to_string()),
+                    ("y", y.to_string()),
+                    ("mask_changed", mask_changed.to_string()),
+                ],
+            );
             if let Err(error) = self
                 .controller
                 .send_pointer(self.pointer_mask, x, y, session_frame)
@@ -1424,6 +1538,18 @@ where
             }
             self.last_pointer_sent = Some((self.pointer_mask, x, y));
             self.last_pointer_sent_at = Some(now);
+        } else {
+            self.log_desktop_input(
+                ipkvm_core::diag::DiagLevel::Trace,
+                "absolute_pointer",
+                &[
+                    ("decision", "suppressed".into()),
+                    ("mask", format_mask(self.pointer_mask)),
+                    ("x", x.to_string()),
+                    ("y", y.to_string()),
+                    ("mask_changed", mask_changed.to_string()),
+                ],
+            );
         }
     }
 
@@ -1462,6 +1588,16 @@ where
             RFB_WHEEL_DOWN_MASK
         };
         let now = Instant::now();
+        self.log_desktop_input(
+            ipkvm_core::diag::DiagLevel::Trace,
+            "absolute_wheel",
+            &[
+                ("mask", format_mask(self.pointer_mask)),
+                ("x", x.to_string()),
+                ("y", y.to_string()),
+                ("wheel", wheel.to_string()),
+            ],
+        );
         for _ in 0..i16::from(wheel).unsigned_abs() {
             for mask in [self.pointer_mask | wheel_mask, self.pointer_mask] {
                 if let Err(error) = self.controller.send_pointer(mask, x, y, session_frame) {
@@ -1524,6 +1660,54 @@ where
                 }
                 _ => {}
             }
+        }
+    }
+
+    fn set_input_log_enabled(&mut self, enabled: bool) {
+        if enabled == self.input_log_enabled {
+            return;
+        }
+        if enabled {
+            match crate::diag::enable_input_log(&self.input_log_path) {
+                Ok(()) => {
+                    self.input_log_enabled = true;
+                    ipkvm_core::diag::log(
+                        ipkvm_core::diag::DiagLevel::Info,
+                        ipkvm_core::diag::DiagCategory::LIFECYCLE,
+                        "desktop.iced",
+                        "input_log",
+                        &[
+                            ("result", "enabled".into()),
+                            ("path", self.input_log_path.display().to_string()),
+                        ],
+                    );
+                    self.status_message = Some(
+                        t!(
+                            "message.input_log_enabled",
+                            path = self.input_log_path.display().to_string()
+                        )
+                        .to_string(),
+                    );
+                }
+                Err(error) => {
+                    self.status_message =
+                        Some(t!("message.input_log_failed", error = error.to_string()).to_string());
+                }
+            }
+        } else {
+            ipkvm_core::diag::log(
+                ipkvm_core::diag::DiagLevel::Info,
+                ipkvm_core::diag::DiagCategory::LIFECYCLE,
+                "desktop.iced",
+                "input_log",
+                &[
+                    ("result", "disabled".into()),
+                    ("path", self.input_log_path.display().to_string()),
+                ],
+            );
+            crate::diag::disable_input_log();
+            self.input_log_enabled = false;
+            self.status_message = Some(t!("message.input_log_disabled").to_string());
         }
     }
 
@@ -1926,7 +2110,7 @@ where
     }
 
     fn status_line(&self) -> Element<'_, Message> {
-        use iced::widget::{PickList, container, text};
+        use iced::widget::{PickList, checkbox, container, text};
         let control = if self.controller.is_control_online() {
             self.control_status_value()
         } else {
@@ -1966,7 +2150,12 @@ where
             .push(text(t!("status.keyboard", value = keyboard)).font(crate::fonts::ui_font()))
             .push(text(t!("status.pointer", value = pointer)).font(crate::fonts::ui_font()))
             .push(profile)
-            .push(text(t!("status.video", value = video)).font(crate::fonts::ui_font()));
+            .push(text(t!("status.video", value = video)).font(crate::fonts::ui_font()))
+            .push(
+                checkbox(self.input_log_enabled)
+                    .label(t!("diagnostics.input_log"))
+                    .on_toggle(Message::SetInputLogEnabled),
+            );
         if let Some(message) = &self.status_message {
             fields = fields
                 .push(text(t!("status.message", message = message)).font(crate::fonts::ui_font()));
@@ -2205,6 +2394,28 @@ fn mouse_button_bit(button: iced::mouse::Button) -> u8 {
         iced::mouse::Button::Middle => 0b010,
         _ => 0,
     }
+}
+
+fn mouse_button_name(button: iced::mouse::Button) -> &'static str {
+    match button {
+        iced::mouse::Button::Left => "left",
+        iced::mouse::Button::Right => "right",
+        iced::mouse::Button::Middle => "middle",
+        iced::mouse::Button::Back => "back",
+        iced::mouse::Button::Forward => "forward",
+        iced::mouse::Button::Other(_) => "other",
+    }
+}
+
+fn mouse_mode_name(mode: MouseMode) -> &'static str {
+    match mode {
+        MouseMode::Absolute => "absolute",
+        MouseMode::Relative => "relative",
+    }
+}
+
+fn format_mask(mask: u8) -> String {
+    format!("0x{mask:02x}")
 }
 
 fn app_mouse_profile_label(profile: MouseProfile) -> String {
@@ -3888,6 +4099,35 @@ mod tests {
     #[test]
     fn absolute_pointer_throttle_allows_120hz_updates() {
         assert_eq!(POINTER_MIN_INTERVAL, Duration::from_millis(8));
+    }
+
+    #[test]
+    fn input_log_toggle_enables_file_logger_from_ui() {
+        let mut app = absolute_video_app();
+        let path = app.input_log_path.clone();
+
+        let _ = app.update(Message::SetInputLogEnabled(true));
+        assert!(app.input_log_enabled);
+        assert_eq!(
+            app.status_message.as_deref(),
+            Some(
+                t!(
+                    "message.input_log_enabled",
+                    path = path.display().to_string()
+                )
+                .as_ref()
+            )
+        );
+        move_cursor(&mut app, 80.0, 45.0);
+        press_button(&mut app, iced::mouse::Button::Left);
+        ipkvm_core::diag::disable();
+
+        let body = std::fs::read_to_string(path).unwrap();
+        assert!(body.contains("component=desktop.iced"));
+        assert!(body.contains("event=input_log"));
+        assert!(body.contains("result=enabled"));
+        assert!(body.contains("event=mouse_button"));
+        assert!(body.contains("mask_after=0x01"));
     }
 
     #[test]

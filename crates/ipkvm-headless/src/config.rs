@@ -32,6 +32,9 @@ pub const USAGE: &str = "\
                    [auth] RFB VNC 密码（1-8 个 ASCII 字符）；未配置时 TCP 仅允许本机连接
   --encoding <模式> RFB 编码：raw（无压缩）/ tight（Tight+JPEG）/ auto（默认，客户端支持则 Tight）
   --jpeg-quality <N> Tight+JPEG 质量 1-100，默认 85（仅 --encoding tight/auto 时生效）
+  --log-file <路径> 输入诊断日志文件；指定后启用文件日志
+  --log-level <级别> 日志级别：error/warn/info/debug/trace，默认 trace
+  --log-categories <列表> 日志类别：input,pointer,keyboard,queue,serial,lifecycle,all
   --install [名称] 安装为系统服务（自动检测 systemd/openrc），默认服务名 mykvm
   --uninstall [名称] 卸载系统服务
 ";
@@ -57,6 +60,9 @@ pub struct CliOptions {
     pub jpeg_quality: Option<u8>,
     pub dirty_rects: bool,
     pub dirty_rect_tile_size: Option<u32>,
+    pub log_file: Option<PathBuf>,
+    pub log_level: Option<String>,
+    pub log_categories: Option<String>,
 }
 
 /// 合并后的最终配置（CLI > 文件 > 运行时设置 > 默认）。`assets_dir`/
@@ -82,6 +88,9 @@ pub struct Options {
     pub jpeg_quality: Option<u8>,
     pub dirty_rects: bool,
     pub dirty_rect_tile_size: Option<u32>,
+    pub log_file: Option<PathBuf>,
+    pub log_level: Option<String>,
+    pub log_categories: Option<String>,
 }
 
 /// 配置文件顶层。`deny_unknown_fields` 保证未知字段确定性报错。
@@ -92,6 +101,7 @@ pub struct FileConfig {
     pub video: Option<VideoSection>,
     pub input: Option<InputSection>,
     pub auth: Option<AuthSection>,
+    pub logging: Option<LoggingSection>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -128,6 +138,14 @@ pub struct AuthSection {
     pub vnc_password: Option<String>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LoggingSection {
+    pub file: Option<PathBuf>,
+    pub level: Option<String>,
+    pub categories: Option<String>,
+}
+
 /// 读取并解析配置文件。错误信息含文件路径（TOML 解析错误自带行列号）。
 pub fn load_config(path: &std::path::Path) -> Result<FileConfig, String> {
     let text = std::fs::read_to_string(path)
@@ -142,6 +160,7 @@ pub fn resolve(cli: CliOptions, file: Option<FileConfig>) -> Result<Options, Str
     let video = file.video.as_ref();
     let input = file.input.as_ref();
     let auth = file.auth.as_ref();
+    let logging = file.logging.as_ref();
 
     let camera_name = cli
         .camera_name
@@ -216,6 +235,18 @@ pub fn resolve(cli: CliOptions, file: Option<FileConfig>) -> Result<Options, Str
         dirty_rect_tile_size: cli
             .dirty_rect_tile_size
             .or_else(|| video.and_then(|v| v.dirty_rect_tile_size)),
+        log_file: cli
+            .log_file
+            .clone()
+            .or_else(|| logging.and_then(|logging| logging.file.clone())),
+        log_level: cli
+            .log_level
+            .clone()
+            .or_else(|| logging.and_then(|logging| logging.level.clone())),
+        log_categories: cli
+            .log_categories
+            .clone()
+            .or_else(|| logging.and_then(|logging| logging.categories.clone())),
         token,
         vnc_password,
     })
@@ -350,6 +381,29 @@ fn parse_cli_from<S: AsRef<str>>(args: &[S]) -> Result<CliOptions, String> {
                         .map_err(|error| format!("无效 tile size：{error}"))?,
                 );
             }
+            "--log-file" => {
+                options.log_file = Some(PathBuf::from(
+                    args.next()
+                        .ok_or_else(|| "--log-file 需要一个路径参数".to_string())?
+                        .as_ref(),
+                ));
+            }
+            "--log-level" => {
+                options.log_level = Some(
+                    args.next()
+                        .ok_or_else(|| "--log-level 需要一个级别参数".to_string())?
+                        .as_ref()
+                        .to_string(),
+                );
+            }
+            "--log-categories" => {
+                options.log_categories = Some(
+                    args.next()
+                        .ok_or_else(|| "--log-categories 需要一个类别列表参数".to_string())?
+                        .as_ref()
+                        .to_string(),
+                );
+            }
             "--serial" => {
                 options.serial_path = Some(
                     args.next()
@@ -444,6 +498,11 @@ baud = 115200
 [auth]
 token = "secret"
 vnc_password = "abc12345"
+
+[logging]
+file = "/tmp/ipkvm-input-diag.log"
+level = "debug"
+categories = "pointer,queue"
 "#,
         );
         let options = resolve(CliOptions::default(), Some(file)).unwrap();
@@ -457,6 +516,12 @@ vnc_password = "abc12345"
         assert_eq!(options.serial_baud, Some(115200));
         assert_eq!(options.token, Some("secret".to_string()));
         assert_eq!(options.vnc_password, Some("abc12345".to_string()));
+        assert_eq!(
+            options.log_file,
+            Some(PathBuf::from("/tmp/ipkvm-input-diag.log"))
+        );
+        assert_eq!(options.log_level, Some("debug".to_string()));
+        assert_eq!(options.log_categories, Some("pointer,queue".to_string()));
     }
 
     #[test]
@@ -479,6 +544,11 @@ baud = 115200
 [auth]
 token = "secret"
 vnc_password = "filepass"
+
+[logging]
+file = "/tmp/file.log"
+level = "info"
+categories = "serial"
 "#,
         );
         let cli = CliOptions {
@@ -500,6 +570,9 @@ vnc_password = "filepass"
             jpeg_quality: None,
             dirty_rects: false,
             dirty_rect_tile_size: None,
+            log_file: Some(PathBuf::from("/tmp/cli.log")),
+            log_level: Some("trace".to_string()),
+            log_categories: Some("input,pointer,queue".to_string()),
         };
         let options = resolve(cli, Some(file)).unwrap();
         assert_eq!(options.bind_address, "10.0.0.1");
@@ -511,6 +584,12 @@ vnc_password = "filepass"
         assert_eq!(options.serial_baud, Some(115200));
         assert_eq!(options.token, Some("secret".to_string()));
         assert_eq!(options.vnc_password, Some("clipass".to_string())); // CLI 覆盖文件
+        assert_eq!(options.log_file, Some(PathBuf::from("/tmp/cli.log")));
+        assert_eq!(options.log_level, Some("trace".to_string()));
+        assert_eq!(
+            options.log_categories,
+            Some("input,pointer,queue".to_string())
+        );
     }
 
     #[test]
@@ -616,6 +695,12 @@ vnc_password = "filepass"
             "secret",
             "--vnc-password",
             "abc12345",
+            "--log-file",
+            "/tmp/ipkvm-input.log",
+            "--log-level",
+            "trace",
+            "--log-categories",
+            "input,pointer,queue,serial",
         ])
         .unwrap();
         assert_eq!(cli.camera_name, Some("OBS".to_string()));
@@ -629,6 +714,12 @@ vnc_password = "filepass"
         assert_eq!(cli.config_path, Some(PathBuf::from("my.toml")));
         assert_eq!(cli.token, Some("secret".to_string()));
         assert_eq!(cli.vnc_password, Some("abc12345".to_string()));
+        assert_eq!(cli.log_file, Some(PathBuf::from("/tmp/ipkvm-input.log")));
+        assert_eq!(cli.log_level, Some("trace".to_string()));
+        assert_eq!(
+            cli.log_categories,
+            Some("input,pointer,queue,serial".to_string())
+        );
         assert!(!cli.list_cameras);
     }
 

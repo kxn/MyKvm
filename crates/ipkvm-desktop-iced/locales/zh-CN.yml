@@ -122,6 +122,9 @@ status:
   video_no_signal: "无信号"
   video_stalled: "断流/无信号"
 
+diagnostics:
+  input_log: "输入日志"
+
 control_status:
   not_selected: "未选择"
   checking: "重新探测中"
@@ -165,6 +168,9 @@ message:
   screenshot_save_failed: "截图保存失败：%{error}"
   keyboard_send_failed: "键盘发送失败：%{error}"
   pointer_send_failed: "指针发送失败：%{error}"
+  input_log_enabled: "输入日志已写入 %{path}"
+  input_log_disabled: "输入日志已关闭"
+  input_log_failed: "输入日志打开失败：%{error}"
 
 dialog:
   jpeg_filter: "JPEG 图片"

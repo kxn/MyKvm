@@ -59,6 +59,7 @@ cargo run -p ipkvm-desktop-iced --all-features
 - 控制菜单可发送 Ctrl+Alt+Del、Esc、F1-F12、Insert/Delete/Home/End/PageUp/PageDown、方向键，粘贴剪贴板文本，释放所有按键，截图复制到剪贴板（Windows 还可保存 JPEG）。
 - 重新选择设备或停止连接不退出 app；切换设备采用会话级停旧启新。
 - 底部状态栏显示控制设备、键盘输入、鼠标坐标和视频状态（无信号/断流/分辨率）。
+- 底部状态栏的「输入日志」开关会把输入诊断写入本机临时目录下的 `ipkvm-input-diag.log`，用于复现拖拽、滚轮、模式切换和串口队列问题；默认不记录键盘详细类别。
 - 视频断流连续 2 秒显示「无信号」，app 不退出；CH9329 掉线后输入进入「控制设备离线」，刷新检测重新探测后可手动重新连接。
 
 ## 设计文档
@@ -164,6 +165,12 @@ cargo run -p ipkvm-headless-app --bin ipkvm-headless --list-cameras
 # 配置与鉴权：--config 读取 TOML 文件，CLI 参数覆盖文件字段（CLI > 文件 > 默认）
 cargo run -p ipkvm-headless-app --bin ipkvm-headless \
     --assets .cache/demo-assets --config config.toml --token abc12345 --vnc-password abc12345
+
+# 打开输入诊断日志（写文件，不依赖 console）
+cargo run -p ipkvm-headless-app --bin ipkvm-headless \
+    --assets .cache/demo-assets --tcp 5900 --http 6080 \
+    --log-file /tmp/ipkvm-input-diag.log --log-level trace \
+    --log-categories input,pointer,queue,serial,lifecycle
 ```
 
 启动后用浏览器打开 `http://127.0.0.1:6080`，或用标准 VNC 客户端连接 `127.0.0.1:5900`。素材按文件名排序循环播放，切换分辨率时已连接客户端收到 `DesktopSize` 更新。`--bind` 可指定监听地址（默认 `127.0.0.1`）。`--camera` 与 `--assets` 互斥；相机未就绪时可用 `--assets` 的 Y4M 模拟帧源验证画面与键鼠链路。
@@ -200,7 +207,18 @@ baud = 9600
 [auth]
 token = "..."                    # 可选；HTTP/WS 鉴权 token（非空，仅含字母数字与 - _ . ~）
 vnc_password = "abc12345"        # 可选；RFB VNC 密码（1-8 个 ASCII 字符）
+
+[logging]
+file = "/tmp/ipkvm-input-diag.log"        # 可选；指定后启用输入诊断文件日志
+level = "trace"                           # error/warn/info/debug/trace
+categories = "input,pointer,queue,serial,lifecycle"
 ```
+
+### 输入诊断日志
+
+输入诊断日志用于复现键鼠链路问题，所有记录都是单行 `logfmt`，写入文件，不依赖控制台滚屏。桌面 iced 版可直接在底部状态栏打开「输入日志」，默认路径为系统临时目录下的 `ipkvm-input-diag.log`。headless 版通过 `--log-file` 启用，也可用环境变量 `IPKVM_LOG_FILE`、`IPKVM_LOG_LEVEL`、`IPKVM_LOG_CATEGORIES`。
+
+默认诊断类别为 `input,pointer,queue,serial,lifecycle`，覆盖桌面入口、RFB 指针映射、pending 队列、CH9329 报告和串口收发。`keyboard` 类别会记录更细的按键路径，默认不启用；需要排查键盘映射时再显式加入。
 
 ### 鉴权（最小）
 

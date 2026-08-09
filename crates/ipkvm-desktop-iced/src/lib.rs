@@ -426,6 +426,7 @@ pub fn translate_key(key: &str) -> String {
         "status.relative_mode" => t!("status.relative_mode").to_string(),
         "status.video_no_signal" => t!("status.video_no_signal").to_string(),
         "status.video_stalled" => t!("status.video_stalled").to_string(),
+        "diagnostics.input_log" => t!("diagnostics.input_log").to_string(),
         "control_status.not_selected" => t!("control_status.not_selected").to_string(),
         "control_status.checking" => t!("control_status.checking").to_string(),
         "control_status.ready" => t!("control_status.ready", port = "x").to_string(),
@@ -478,6 +479,9 @@ pub fn translate_key(key: &str) -> String {
             t!("message.keyboard_send_failed", error = "x").to_string()
         }
         "message.pointer_send_failed" => t!("message.pointer_send_failed", error = "x").to_string(),
+        "message.input_log_enabled" => t!("message.input_log_enabled", path = "x").to_string(),
+        "message.input_log_disabled" => t!("message.input_log_disabled").to_string(),
+        "message.input_log_failed" => t!("message.input_log_failed", error = "x").to_string(),
         "common.cancel" => t!("common.cancel").to_string(),
         "common.not_selected" => t!("common.not_selected").to_string(),
         _ => key.to_string(),
@@ -566,6 +570,7 @@ pub const I18N_KEYS: &[&str] = &[
     "status.relative_mode",
     "status.video_no_signal",
     "status.video_stalled",
+    "diagnostics.input_log",
     "control_status.not_selected",
     "control_status.checking",
     "control_status.ready",
@@ -602,6 +607,9 @@ pub const I18N_KEYS: &[&str] = &[
     "message.screenshot_save_failed",
     "message.keyboard_send_failed",
     "message.pointer_send_failed",
+    "message.input_log_enabled",
+    "message.input_log_disabled",
+    "message.input_log_failed",
     "common.cancel",
     "common.not_selected",
 ];
