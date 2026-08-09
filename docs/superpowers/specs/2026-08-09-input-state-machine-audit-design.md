@@ -104,7 +104,7 @@
 - 输入是 X11 keysym，输出是 USB HID usage。
 - ASCII 大写字符通过 `ShiftRequirement::Required` 合成左 Shift；小写字符通过 `ShiftRequirement::NotRequired` 抑制远端 Shift。
 - 直接修饰键 keysym 映射到 HID modifier usage：Ctrl、Shift、Alt、Logo 都进入 modifier byte。
-- Caps Lock 和 Num Lock 当前映射为 `IgnoredLock`，因为锁定键状态应由宿主 `modified_key` 或目标机 LED/profile 后续处理，不能在 mapper 内盲目切换目标锁定状态。
+- CapsLock、NumLock、ScrollLock 映射为明确 HID lock usage（`0x39`、`0x53`、`0x47`），down/up 都进入 sink；CH9329 仍无法回读目标 LED 状态，字符大小写继续由客户端 keysym 表达。
 - F1..F12 映射 HID `0x3a..0x45`，F13..F20 映射 HID `0x68..0x6f`。
 - 同一 usage 的别名会合并，最后一个 keysym release 才释放 usage。
 

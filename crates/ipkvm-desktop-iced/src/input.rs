@@ -83,6 +83,27 @@ pub fn special_key_sequence(key: SpecialKey) -> Vec<KeyAction> {
     }
 }
 
+/// 特殊键菜单注入只拥有自己按下的修饰键。用户已经通过本地键盘按住的
+/// Ctrl/Alt/Logo 不在菜单序列结束时释放，避免破坏 `ModifiersChanged` 维护的状态。
+pub fn special_key_sequence_for_modifiers(key: SpecialKey, held: Modifiers) -> Vec<KeyAction> {
+    special_key_sequence(key)
+        .into_iter()
+        .filter(|action| match *action {
+            KeyAction::Down(keysym) | KeyAction::Up(keysym) => !modifier_held(keysym, held),
+        })
+        .collect()
+}
+
+fn modifier_held(keysym: u32, held: Modifiers) -> bool {
+    match keysym {
+        XK_SHIFT_L => held.shift(),
+        XK_CONTROL_L => held.control(),
+        XK_ALT_L => held.alt(),
+        XK_SUPER_L => held.logo(),
+        _ => false,
+    }
+}
+
 /// Ctrl+Alt+K：本地退出远程输入模式（本地拦截，不转发远端）。
 pub fn is_remote_exit_combo(code: Code, modifiers: Modifiers, repeat: bool) -> bool {
     code == Code::KeyK && !repeat && modifiers.control() && modifiers.alt()
@@ -215,6 +236,22 @@ mod tests {
                 KeyAction::Down(0xffe9),
                 KeyAction::Down(0xff09),
                 KeyAction::Up(0xff09),
+                KeyAction::Up(0xffe9),
+            ]
+        );
+    }
+
+    #[test]
+    fn special_key_sequence_for_modifiers_does_not_release_held_modifiers() {
+        let mut ctrl = Modifiers::empty();
+        ctrl.set(Modifiers::CTRL, true);
+
+        assert_eq!(
+            special_key_sequence_for_modifiers(SpecialKey::CtrlAltDel, ctrl),
+            vec![
+                KeyAction::Down(0xffe9),
+                KeyAction::Down(0xffff),
+                KeyAction::Up(0xffff),
                 KeyAction::Up(0xffe9),
             ]
         );

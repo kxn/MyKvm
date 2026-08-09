@@ -160,21 +160,22 @@ fn iso_left_tab_synthesizes_shift_and_tab_atomically() {
 }
 
 #[test]
-fn lock_keysyms_do_not_reach_the_input_sink() {
+fn lock_keysyms_reach_the_input_sink_as_explicit_hid_keys() {
     let mut mapper = RfbKeyboardMapper::new();
     let mut sink = RecordingSink::default();
 
-    for keysym in [0xff7f, 0xffe5] {
+    for (keysym, usage) in [(0xffe5, 0x39), (0xff7f, 0x53), (0xff14, 0x47)] {
         assert_eq!(
             mapper.handle_key(&mut sink, true, keysym),
-            Ok(RfbKeyboardOutcome::IgnoredLock)
+            Ok(RfbKeyboardOutcome::Applied)
         );
         assert_eq!(
             mapper.handle_key(&mut sink, false, keysym),
-            Ok(RfbKeyboardOutcome::UnknownRelease)
+            Ok(RfbKeyboardOutcome::Applied)
         );
+        assert_eq!(sink.batches, vec![vec![down(usage)], vec![up(usage)]]);
+        sink.batches.clear();
     }
-    assert!(sink.batches.is_empty());
 }
 
 #[test]

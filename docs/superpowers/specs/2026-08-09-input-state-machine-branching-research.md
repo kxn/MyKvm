@@ -102,7 +102,7 @@
 已确认风险：
 
 - `crates/ipkvm-desktop-iced/src/keymap.rs:101-108` 使用 `modified_key` 得到 Shift/Caps 后字符，session 的 `crates/ipkvm-session/src/rfb_input/keyboard.rs:56-91` 又按 keysym 合成或抑制 Shift。该路径解决了部分大写问题，但锁定键状态仍未建模。
-- `crates/ipkvm-session/src/rfb_input/keymap.rs` 中 CapsLock/NumLock/ScrollLock 被映射为 `IgnoredLock`，桌面和 noVNC 仍会发送这些 keysym，远端锁定状态无法通过输入链路控制。
+- `#81` 前 `crates/ipkvm-session/src/rfb_input/keymap.rs` 中 CapsLock/NumLock 被映射为 `IgnoredLock`；`#81` 后锁定键策略收敛为 CapsLock/NumLock/ScrollLock 分别真实发送 HID usage `0x39`/`0x53`/`0x47`，不再静默吞掉。
 - `crates/ipkvm-desktop-iced/src/app.rs:1220-1273` 中 `KeyPressed` 可按物理键发送右侧修饰键，而 `ModifiersChanged` 通过 `crates/ipkvm-desktop-iced/src/input.rs:96-109` 统一发左侧修饰键，右 Alt/AltGr/Option 和右 Shift 可能形成重复或不一致事件。
 - `crates/ipkvm-desktop-iced/src/app.rs:1215-1218` 全局键盘监听只检查 `remote_input`，没有检查模态和 UI TextInput 焦点；远程输入模式下打开设置或保存 profile 时，UI 输入可能同时转发到远端。
 - `crates/ipkvm-desktop-iced/src/input.rs:63-83` 和 `crates/ipkvm-headless/web/modules/special-keys.js:320-331` 特殊键直接发送完整 Down/Up 序列，没有和用户当前按住的修饰键做所有权/引用计数协调。

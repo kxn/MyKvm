@@ -4,6 +4,17 @@
 import KeyTable from "/vendor/novnc/core/input/keysym.js";
 import { t } from "./i18n.js";
 
+const MODIFIER_KIND_BY_CODE = new Map([
+  ["ShiftLeft", "shift"],
+  ["ShiftRight", "shift"],
+  ["ControlLeft", "control"],
+  ["ControlRight", "control"],
+  ["AltLeft", "alt"],
+  ["AltRight", "alt"],
+  ["MetaLeft", "meta"],
+  ["MetaRight", "meta"],
+]);
+
 const GROUPS = [
   {
     key: "special.desktop",
@@ -252,11 +263,12 @@ const GROUPS = [
 ];
 
 export class SpecialKeysController {
-  constructor({ button, menu, message, getRfb }) {
+  constructor({ button, menu, message, getRfb, heldModifiers = () => new Set() }) {
     this.button = button;
     this.menu = menu;
     this.message = message;
     this.getRfb = getRfb;
+    this.heldModifiers = heldModifiers;
     this.open = false;
 
     this.button.addEventListener("click", () => this.toggle());
@@ -323,13 +335,20 @@ export class SpecialKeysController {
       this.message(t("special.unsent"), "error");
       return;
     }
-    for (const [code, keysym] of item.keys) {
+    const held = this.heldModifiers();
+    const ownedKeys = item.keys.filter(([code]) => !isHeldModifier(code, held));
+    for (const [code, keysym] of ownedKeys) {
       rfb.sendKey(keysym, code, true);
     }
-    for (const [code, keysym] of [...item.keys].reverse()) {
+    for (const [code, keysym] of [...ownedKeys].reverse()) {
       rfb.sendKey(keysym, code, false);
     }
     this.message(t("special.sent", { name: item.label }), "ok");
     this.close();
   }
+}
+
+function isHeldModifier(code, heldModifiers) {
+  const kind = MODIFIER_KIND_BY_CODE.get(code);
+  return Boolean(kind && heldModifiers?.has(kind));
 }

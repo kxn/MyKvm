@@ -30,7 +30,7 @@ RFC 6143 第 7.5.4 节规定：
 - 大写和小写 keysym 不等价。收到大写 `A` 时，即使客户端没有发送 Shift，也应产生大写 `A`。
 - Shift 状态只是解释字符的提示。目标布局需要 Shift 而客户端未按 Shift 时，server 应内部合成 Shift。
 - Control 和 Alt 是组合键语义的一部分，不应像 Shift 一样根据字符自动消除。
-- CapsLock 和 NumLock 等锁定键应尽可能忽略，字符应按自身 keysym 的大小写解释。
+- CapsLock 和 NumLock 等锁定状态不应用来重新解释字符，字符应按自身 keysym 的大小写解释；显式锁定键事件仍可作为用户主动切换目标状态的按键事件处理。
 - `ISO_Left_Tab` 应兼容为 Shift+Tab。
 
 因此，简单的 `keysym -> KeyboardUsage` 无状态查表不符合协议要求。
@@ -178,13 +178,11 @@ enum MappedKey {
         usage: KeyboardUsage,
         shift: ShiftRequirement,
     },
-    IgnoredLock,
 }
 ```
 
-- `Direct`：修饰键、导航键、功能键、系统键和数字小键盘键。
+- `Direct`：修饰键、锁定键、导航键、功能键、系统键和数字小键盘键。
 - `Character`：en-US 可打印 ASCII 和 `ISO_Left_Tab`，包含目标字符是否需要 Shift。
-- `IgnoredLock`：CapsLock 和 NumLock。
 
 映射常量使用 X11 `keysymdef.h` 和 USB HID Usage Tables 的数值。项目不复制第三方实现代码。
 
@@ -227,10 +225,9 @@ Control 和 Alt 永远按客户端状态转发，不参与字符 Shift 修正。
 - `ISO_Left_Tab` 作为需要 Shift 的 Tab。
 - KP Enter、KP Divide、Multiply、Subtract、Add、Decimal、Equal 和 KP 0-9。
 - KP Home/End/PageUp/PageDown/Insert/Delete/方向键映射为不依赖 NumLock 的普通导航 usage。
+- CapsLock、NumLock、ScrollLock 分别映射到 HID usage `0x39`、`0x53`、`0x47`，down/up 都进入 sink。CH9329 无法回读目标 LED 状态，因此字符大小写仍优先由客户端 keysym 表达；显式 lock key 只负责用户主动切换目标锁定状态。
 
 F21 及以上、媒体键、XF86 键、Compose、ModeSwitch 和语言输入键返回 `UnsupportedKeysym`。
-
-CapsLock 和 NumLock 的 down/up 都返回 `IgnoredLock`，不改变 mapper 或 sink。字符正确性仍以 keysym 为准。
 
 ## 7. 状态和 Shift 算法
 
@@ -248,7 +245,7 @@ CapsLock 和 NumLock 的 down/up 都返回 `IgnoredLock`，不改变 mapper 或 
 down：
 
 1. 如果 keysym 已活动，返回 `DuplicateDown`，不调用 sink。
-2. 解析 keysym；锁定键返回 `IgnoredLock`。
+2. 解析 keysym；锁定键作为 `Direct` HID usage 处理。
 3. 在活动状态副本中加入该键。
 4. 计算目标 HID 状态。
 5. 生成差异批次；非空时调用 sink。
@@ -298,7 +295,6 @@ pub enum RfbKeyboardOutcome {
     Applied,
     DuplicateDown,
     UnknownRelease,
-    IgnoredLock,
 }
 
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
@@ -359,7 +355,7 @@ pub enum RfbKeyboardError {
 - 导航键、F1-F20 和系统键逐项映射。
 - 主键区数字和 KP 数字使用不同 usage。
 - `ISO_Left_Tab` 产生 Shift+Tab。
-- CapsLock 和 NumLock 被忽略。
+- CapsLock、NumLock、ScrollLock 作为显式 HID lock usage 发送。
 - F21、Unicode keysym 和未知 keysym 被拒绝。
 
 ### 10.4 状态测试
