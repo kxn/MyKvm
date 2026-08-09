@@ -59,7 +59,7 @@ cargo run -p ipkvm-desktop-iced --all-features
 - 控制菜单可发送 Ctrl+Alt+Del、Esc、F1-F12、Insert/Delete/Home/End/PageUp/PageDown、方向键，粘贴剪贴板文本，释放所有按键，截图复制到剪贴板（Windows 还可保存 JPEG）。
 - 重新选择设备或停止连接不退出 app；切换设备采用会话级停旧启新。
 - 底部状态栏显示控制设备、键盘输入、鼠标坐标和视频状态（无信号/断流/分辨率）。
-- 底部状态栏的「输入日志」开关会把输入诊断写入本机临时目录下的 `ipkvm-input-diag.log`，用于复现拖拽、滚轮、模式切换和串口队列问题；默认不记录键盘详细类别。
+- 底部状态栏的「输入日志」开关会把输入诊断写入应用同目录下的 `ipkvm-input-diag.log`，用于复现拖拽、滚轮、模式切换和串口队列问题；默认不记录键盘详细类别。
 - 视频断流连续 2 秒显示「无信号」，app 不退出；CH9329 掉线后输入进入「控制设备离线」，刷新检测重新探测后可手动重新连接。
 
 ## 设计文档
@@ -216,7 +216,7 @@ categories = "input,pointer,queue,serial,lifecycle"
 
 ### 输入诊断日志
 
-输入诊断日志用于复现键鼠链路问题，所有记录都是单行 `logfmt`，写入文件，不依赖控制台滚屏。桌面 iced 版可直接在底部状态栏打开「输入日志」，默认路径为系统临时目录下的 `ipkvm-input-diag.log`。headless 版通过 `--log-file` 启用，也可用环境变量 `IPKVM_LOG_FILE`、`IPKVM_LOG_LEVEL`、`IPKVM_LOG_CATEGORIES`。
+输入诊断日志用于复现键鼠链路问题，所有记录都是单行 `logfmt`，写入文件，不依赖控制台滚屏。桌面 iced 版可直接在底部状态栏打开「输入日志」，默认路径为当前可执行文件所在目录下的 `ipkvm-input-diag.log`。headless 版通过 `--log-file` 启用，也可用环境变量 `IPKVM_LOG_FILE`、`IPKVM_LOG_LEVEL`、`IPKVM_LOG_CATEGORIES`。
 
 默认诊断类别为 `input,pointer,queue,serial,lifecycle`，覆盖桌面入口、RFB 指针映射、pending 队列、CH9329 报告和串口收发。`keyboard` 类别会记录更细的按键路径，默认不启用；需要排查键盘映射时再显式加入。
 
