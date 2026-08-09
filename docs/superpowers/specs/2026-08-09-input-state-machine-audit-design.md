@@ -42,6 +42,7 @@
 - 相对鼠标模式发送扩展 RFB `PointerRelative`：`button_mask + dx/dy + wheel`。
 - 绝对移动保留 `POINTER_MIN_INTERVAL = 8 ms` 的移动限频；按钮 mask 变化和滚轮边沿不应被降级为相对事件。
 - 绝对滚轮必须用 RFB button 4/5 的瞬时边沿表达：`mask|0x08 -> mask` 或 `mask|0x10 -> mask`，不能发送 `PointerRelative`。
+- 桌面滚轮 Pixel 增量不再逐事件四舍五入；绝对和相对模式各自持有 `WheelStepAccumulator`，小步滚轮跨事件累积到 50 pixel 后才产生一个 wheel step。`Lines` 滚轮事件按操作系统已经离散化后的单次步进处理，不跨事件累计。
 - 当前连接鼠标设置以 `MouseProfile` 为用户选择事实源，`MouseMode` 是 `profile.resolve_mode()`
   的运行时解析结果。状态栏选择、连接模态、Ctrl+Alt+M、加载 profile 和恢复默认值都必须
   通过同一个当前连接事务提交；设置模态只修改默认连接。
@@ -50,14 +51,21 @@
 - 如果当前连接事务已在远程输入中成功发送 `release_all()`，但后续 `set_mouse_mode()` 失败，
   本地必须退出远程输入并清空按钮、键盘修饰键、相对采样和绝对去重状态；此时仍不得提交新的
   UI profile/mode。
-- 当前连接事务成功切换模式后统一清空 `pointer_mask`、`last_relative_mask`、`relative_wheel`、
-  `last_modifiers`、`active_keysyms`、`last_pointer`、`last_pointer_sent`、
-  `last_pointer_sent_at`、`relative_sampler`、`relative_source` 和 `relative_rx`，再同步 cursor。
+- 当前连接事务成功切换模式后统一清空 `pointer_mask`、`last_relative_mask`、`relative_wheel`、`absolute_wheel`、
+  `absolute_wheel_release_pending`、`relative_wheel_accumulator`、`absolute_wheel_accumulator`、`last_modifiers`、
+  `active_keysyms`、`last_pointer`、`last_pointer_sent`、`last_pointer_sent_at`、
+  `relative_sampler`、`relative_source` 和 `relative_rx`，再同步 cursor。
 - 视频区外按下在进入远程输入前不会更新 `pointer_mask`；已在远程输入时视频区外按下会先退出
   远程输入并 release，不把 UI 点击泄漏为远端按钮。
 - 菜单退出应用在关闭窗口前必须先退出远程输入，复用同一 release 和本地状态清理路径。
 - Windows Raw Input 初始化失败必须释放全局 `TX`、join 初始化线程，并清理已创建窗口/窗口类；
   `ClipCursor` 在只能使用前台窗口兜底时必须确认前台窗口属于当前进程，避免裁剪其他应用。
+
+### Headless/noVNC 入口
+
+- noVNC 相对移动先按灵敏度累积浮点余量，再取整数部分进入相对 delta 队列；低灵敏度或高频小位移不能因为逐事件 `trunc` 永久丢失。
+- noVNC 相对滚轮在发送 `PointerRelative(mask,0,0,wheel)` 时使用持久 `_mouseButtonMask`，不能用 `WheelEvent.buttons` 覆盖当前按钮状态。
+- Pointer Lock 退出、`pointerlockerror`、窗口 `blur` 和显式退出相对模式都必须先请求 noVNC 发送零按钮相对包，再清本地锁定状态和隐藏光标状态。
 
 ### 桌面会话控制器
 
@@ -120,8 +128,12 @@
 | `connection.mouse_mode` | iced | 用户切换/profile | 决定发 `Pointer` 还是 `PointerRelative`。 |
 | `pointer_mask` | iced | 鼠标按钮 down/up | 持久按钮位，绝对和相对共享。 |
 | `relative_wheel` | iced | 相对滚轮 | 只允许在相对模式累计；绝对滚轮不得写入该状态。 |
+| `absolute_wheel` | iced | 绝对滚轮待发送 step | wheel press 成功后即向 0 扣减；release 失败由 `absolute_wheel_release_pending` 表达，避免重试重复滚轮边沿。 |
+| `absolute_wheel_release_pending` | iced | 绝对滚轮欠释放状态 | 下一次绝对滚轮 flush 必须先发送普通 `pointer_mask` 释放 wheel bit，再处理后续 step；退出/断开/切模式统一清零。 |
 | `last_pointer_sent` | iced | 绝对移动/绝对滚轮 | 用于绝对移动去重和限频，滚轮后应回到持久 mask。 |
 | `relative_sampler` | iced | 相对移动采样 | 只处理相对位移，控制边沿前必须 flush。 |
+| `absolute_wheel_accumulator` | iced | 绝对滚轮 Pixel 事件 | 只累计绝对模式滚轮小步；进入/退出/切模式清零。 |
+| `relative_wheel_accumulator` | iced | 相对滚轮 Pixel 事件 | 只累计相对模式滚轮小步；进入/退出/切模式清零。 |
 | `last_modifiers` | iced | 宿主修饰键变化 | 进入/退出/断开/模式切换边界清零，避免重新进入后产生旧修饰键 diff。 |
 | `relative_source` / `relative_rx` | iced | 相对捕获启动/停止 | 只有远程输入且相对模式下存在；退出、断开或切到绝对必须停止。 |
 
@@ -218,7 +230,10 @@ PointerRelative(button_mask=1, dx, dy)
 | 场景 | 自动化覆盖 | 断言 |
 | --- | --- | --- |
 | 桌面绝对滚轮后继续移动 | `absolute_wheel_keeps_absolute_pointer_mode_and_allows_later_moves` | 不产生 `PointerRelative`，后续绝对 move 到达。 |
+| 桌面绝对滚轮发送失败 | `absolute_wheel_send_failure_keeps_pending_step`、`absolute_pending_wheel_retries_on_next_mapped_pointer`、`absolute_wheel_drain_keeps_only_unsent_steps_after_partial_failure` | 坐标不可映射或同步发送失败时保留 pending；部分 step 已完成后只重试剩余 step。 |
+| 桌面 Pixel 滚轮累计 | `wheel_step_accumulator_carries_pixel_remainder_across_events`、`absolute_pixel_wheel_accumulates_small_steps_before_sending`、`relative_pixel_wheel_accumulates_small_steps_with_current_mask` | 多个不足一步的 Pixel 事件累计成 wheel step，且相对 wheel 使用当前持久按钮 mask。 |
 | 桌面绝对拖拽 | `absolute_drag_preserves_button_mask_across_desktop_to_sink_path` | 按住移动的绝对事件保留按钮 mask。 |
+| macOS 拖拽日志回放 | `macos_absolute_drag_log_keeps_left_button_through_output_chain` | 长拖拽 fixture 中入口 mask、mapper incoming mask、CH9329 report buttons 和串口绝对帧持续携带左键。 |
 | 桌面当前连接事务 | `load_profile_file_online_syncs_active_mouse_mode`、`restore_defaults_online_syncs_active_mouse_mode`、`load_profile_file_mode_failure_does_not_commit_ui_state` | 在线 profile/defaults 同步活动输入泵；失败不提交 UI 假状态。 |
 | 桌面本地捕获清理 | `exit_remote_input_clears_all_local_capture_state`、`disconnect_clears_same_local_capture_state_as_exit`、`entering_relative_mode_resets_old_capture_state` | 退出、断开、进入相对模式清同一组本地键鼠/cursor/capture 状态。 |
 | 桌面模式切换失败边界 | `mode_change_failure_after_release_abandons_remote_capture` | `release_all` 已成功后 `set_mouse_mode` 失败时退出远程输入并清本地状态，但不提交新模式。 |
@@ -232,6 +247,21 @@ PointerRelative(button_mask=1, dx, dy)
 | 鼠标模式切换不释放键盘 | `mouse_mode_switch_preserves_keyboard_until_key_release` | 键盘 release 在真实 key-up 时发生，不被 set mode 提前触发。 |
 | RFB 相对 mapper 顺序 | `relative_move_emits_delta_and_preserves_buttons` | 相对 batch 顺序为 ButtonDown 后 RelativeMove。 |
 | CH9329 输入核心属性 | `ch9329::input` 测试组 | 键盘/鼠标状态失败回滚、拆包和报告模型匹配参考模型。 |
+| noVNC 相对 pointer builder | `novnc_relative_pointer_preserves_fractional_move_and_persistent_button_mask`、`headless_pointer_controller_releases_remote_buttons_on_lock_loss` | 相对移动保留小数余量，滚轮使用持久按钮 mask，pointer lock 丢失时释放远端按钮。 |
+
+## macOS 拖拽验证矩阵
+
+自动化日志回放只能证明软件链路持续输出左键按住的绝对报告，不能证明目标 macOS 接受该 HID 语义。#82 的实机结果记录在
+`docs/superpowers/specs/2026-08-09-macos-pointer-manual-verification.md`；当前状态为未执行，不把自动化回放伪记为 macOS 实机通过。
+后续人工验证按以下矩阵记录结果和日志文件：
+
+| 场景 | 操作 | 预期 | 需要保留的日志证据 |
+| --- | --- | --- | --- |
+| Finder 标题栏拖拽 | 绝对模式按住标题栏移动 2 秒以上再释放 | 窗口持续跟随指针直到释放 | `desktop.iced absolute_pointer mask=0x01`、`core.ch9329 pointer_report buttons=0x01`、串口 `mouse_abs buttons=0x01` |
+| Finder 列表项拖拽 | 绝对模式按住文件/列表项移动到另一区域 | 项目进入拖拽状态并跟随 | 同上，并标记目标控件是否跨过系统拖拽阈值 |
+| 滚轮后继续拖拽 | 先滚轮，再立即按住标题栏拖拽 | 滚轮不改变鼠标模式，拖拽仍持续 | 日志中无 `PointerRelative`，滚轮后仍有绝对移动 |
+| 按住滚轮移动 | 按住中键移动并释放 | 中键状态不污染左键拖拽状态 | CH9329 buttons 与 RFB mask 位序一致 |
+| 视频边缘坐标拖拽 | 从视频区边缘开始按住并向内/向外移动 | 出界日志可解释，入界报告不丢按钮 | `absolute_map_failed` 与成功 report 的时间边界 |
 
 ## 后续兼容性验证建议
 

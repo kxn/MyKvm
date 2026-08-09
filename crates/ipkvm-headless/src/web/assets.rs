@@ -236,4 +236,50 @@ mod tests {
             "public screen accessor"
         );
     }
+
+    #[test]
+    fn novnc_relative_pointer_preserves_fractional_move_and_persistent_button_mask() {
+        let rfb =
+            std::str::from_utf8(find_asset("/vendor/novnc/core/rfb.js").unwrap().bytes()).unwrap();
+
+        assert!(
+            rfb.contains("_relativeRemainderX"),
+            "relative movement must keep sub-integer X remainder across events"
+        );
+        assert!(
+            rfb.contains("_relativeRemainderY"),
+            "relative movement must keep sub-integer Y remainder across events"
+        );
+        assert!(
+            rfb.contains("this._mouseButtonMask, 0, 0, step"),
+            "relative wheel must use the persistent button mask, not WheelEvent.buttons"
+        );
+        assert!(
+            !rfb.contains("relativePointerEvent(this._sock, bmask, 0, 0"),
+            "relative wheel must not regress to the transient browser button mask"
+        );
+        assert!(
+            rfb.contains("_clearWheelState"),
+            "relative/absolute mode switch must clear shared wheel accumulation"
+        );
+    }
+
+    #[test]
+    fn headless_pointer_controller_releases_remote_buttons_on_lock_loss() {
+        let pointer =
+            std::str::from_utf8(find_asset("/assets/modules/pointer.js").unwrap().bytes()).unwrap();
+
+        assert!(
+            pointer.contains("releaseRelativePointerState"),
+            "pointer lock exit/blur must have a single remote release helper"
+        );
+        assert!(
+            pointer.contains("sendRelativePointerRelease"),
+            "pointer lock loss must ask noVNC to send a zero-button relative packet"
+        );
+        assert!(
+            pointer.contains("this.releaseRelativePointerState()"),
+            "exit and pointerlockerror paths must release before clearing local lock state"
+        );
+    }
 }

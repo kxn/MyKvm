@@ -205,6 +205,8 @@ export default class RFB extends EventTargetMixin {
         this._ignoreNextRelativeMove = false;
         this._relativeDeltaX = 0;
         this._relativeDeltaY = 0;
+        this._relativeRemainderX = 0;
+        this._relativeRemainderY = 0;
         this._relativeMoveTimer = null;
         this._relativeLastMoveTime = 0;
 
@@ -1238,8 +1240,12 @@ export default class RFB extends EventTargetMixin {
             return;
         }
 
-        dx = Math.trunc(dx * this._relativeSensitivity);
-        dy = Math.trunc(dy * this._relativeSensitivity);
+        this._relativeRemainderX += dx * this._relativeSensitivity;
+        this._relativeRemainderY += dy * this._relativeSensitivity;
+        dx = Math.trunc(this._relativeRemainderX);
+        dy = Math.trunc(this._relativeRemainderY);
+        this._relativeRemainderX -= dx;
+        this._relativeRemainderY -= dy;
         this._relativeDeltaX += dx;
         this._relativeDeltaY += dy;
         const elapsed = Date.now() - this._relativeLastMoveTime;
@@ -1286,7 +1292,14 @@ export default class RFB extends EventTargetMixin {
         }
         this._relativeDeltaX = 0;
         this._relativeDeltaY = 0;
+        this._relativeRemainderX = 0;
+        this._relativeRemainderY = 0;
         this._relativeLastMoveTime = 0;
+    }
+
+    _clearWheelState() {
+        this._accumulatedWheelDeltaX = 0;
+        this._accumulatedWheelDeltaY = 0;
     }
 
     // my_ipkvm local patch: switch absolute/relative pointer sending.
@@ -1298,6 +1311,7 @@ export default class RFB extends EventTargetMixin {
         this._relativeMode = on;
         this._ignoreNextRelativeMove = on;
         this._clearRelativeMoveState();
+        this._clearWheelState();
         if (!on && this._mouseMoveTimer !== null) {
             clearTimeout(this._mouseMoveTimer);
             this._mouseMoveTimer = null;
@@ -1310,6 +1324,20 @@ export default class RFB extends EventTargetMixin {
         const value = Number(sensitivity);
         this._relativeSensitivity =
             Number.isFinite(value) && value > 0 ? value : 1.0;
+    }
+
+    // my_ipkvm local patch: pointer lock can disappear without a matching
+    // mouseup. Send an explicit zero-button relative packet before disabling
+    // relative mode so the remote target cannot keep a stale drag/click state.
+    sendRelativePointerRelease() {
+        if (this._rfbConnectionState !== 'connected') { return; }
+        if (this._viewOnly) { return; }
+        if (!this._relativeMode) { return; }
+
+        this._flushRelativeMove(true);
+        this._mouseButtonMask = 0;
+        RFB.messages.relativePointerEvent(this._sock, this._mouseButtonMask,
+                                          0, 0, 0);
     }
 
     _handleDelayedMouseMove() {
@@ -1383,8 +1411,8 @@ export default class RFB extends EventTargetMixin {
             this._accumulatedWheelDeltaX = 0;
             if (Math.abs(this._accumulatedWheelDeltaY) >= WHEEL_STEP) {
                 const step = this._accumulatedWheelDeltaY < 0 ? 1 : -1;
-                RFB.messages.relativePointerEvent(this._sock, bmask, 0, 0,
-                                                  step);
+                RFB.messages.relativePointerEvent(this._sock,
+                                                  this._mouseButtonMask, 0, 0, step);
                 this._accumulatedWheelDeltaY = 0;
             }
             return;

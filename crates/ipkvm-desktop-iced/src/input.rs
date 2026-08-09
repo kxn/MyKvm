@@ -117,13 +117,41 @@ fn diff_modifier(previous: bool, current: bool, keysym: u32, actions: &mut Vec<K
     }
 }
 
+const WHEEL_PIXELS_PER_STEP: f32 = 50.0;
+
 /// 滚轮增量换算成滚轮步数（Lines 直接取整，Pixels 按 50 点一步）。
 pub fn wheel_steps(delta: ScrollDelta) -> i8 {
     let steps = match delta {
         ScrollDelta::Lines { y, .. } => y,
-        ScrollDelta::Pixels { y, .. } => y / 50.0,
+        ScrollDelta::Pixels { y, .. } => (y / WHEEL_PIXELS_PER_STEP).trunc(),
     };
     steps.round().clamp(i8::MIN as f32, i8::MAX as f32) as i8
+}
+
+/// 有状态滚轮步进累计器：高精度设备的小 Pixel 事件跨事件累积成标准 RFB wheel step。
+#[derive(Clone, Copy, Debug, Default)]
+pub struct WheelStepAccumulator {
+    pixel_y: f32,
+}
+
+impl WheelStepAccumulator {
+    pub fn steps(&mut self, delta: ScrollDelta) -> i8 {
+        match delta {
+            ScrollDelta::Lines { .. } => wheel_steps(delta),
+            ScrollDelta::Pixels { y, .. } => {
+                self.pixel_y += y;
+                let steps = (self.pixel_y / WHEEL_PIXELS_PER_STEP)
+                    .trunc()
+                    .clamp(i8::MIN as f32, i8::MAX as f32) as i8;
+                self.pixel_y -= f32::from(steps) * WHEEL_PIXELS_PER_STEP;
+                steps
+            }
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.pixel_y = 0.0;
+    }
 }
 
 /// 指针位置或按钮掩码是否变化。
@@ -287,7 +315,29 @@ mod tests {
         assert_eq!(wheel_steps(ScrollDelta::Lines { x: 0.0, y: 2.0 }), 2);
         assert_eq!(wheel_steps(ScrollDelta::Lines { x: 0.0, y: -1.0 }), -1);
         assert_eq!(wheel_steps(ScrollDelta::Pixels { x: 0.0, y: -100.0 }), -2);
-        assert_eq!(wheel_steps(ScrollDelta::Pixels { x: 0.0, y: 25.0 }), 1);
+        assert_eq!(wheel_steps(ScrollDelta::Pixels { x: 0.0, y: 25.0 }), 0);
+    }
+
+    #[test]
+    fn wheel_step_accumulator_carries_pixel_remainder_across_events() {
+        let mut accumulator = WheelStepAccumulator::default();
+
+        assert_eq!(
+            accumulator.steps(ScrollDelta::Pixels { x: 0.0, y: 20.0 }),
+            0
+        );
+        assert_eq!(
+            accumulator.steps(ScrollDelta::Pixels { x: 0.0, y: 20.0 }),
+            0
+        );
+        assert_eq!(
+            accumulator.steps(ScrollDelta::Pixels { x: 0.0, y: 10.0 }),
+            1
+        );
+        assert_eq!(
+            accumulator.steps(ScrollDelta::Pixels { x: 0.0, y: -100.0 }),
+            -2
+        );
     }
 
     #[test]

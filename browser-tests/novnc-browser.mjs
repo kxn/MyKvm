@@ -186,7 +186,15 @@ function findBrowserExecutable() {
   return executable;
 }
 
-async function installApiMocks(context, postedSettings) {
+async function waitForCondition(condition, label, milliseconds = DEADLINE_MS) {
+  const deadline = Date.now() + milliseconds;
+  while (!condition()) {
+    assert(Date.now() < deadline, `${label} timed out after ${milliseconds} ms`);
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+}
+
+async function installApiMocks(context, postedSettings, settingsGets) {
   const storedSettings = { ...DEFAULT_SETTINGS };
   await context.route("**/api/devices", (route) => {
     return route.fulfill({
@@ -196,6 +204,7 @@ async function installApiMocks(context, postedSettings) {
   await context.route("**/api/settings", async (route) => {
     const request = route.request();
     if (request.method() === "GET") {
+      settingsGets.count += 1;
       return route.fulfill({ json: { ...storedSettings } });
     }
     const posted = request.postDataJSON();
@@ -214,11 +223,13 @@ async function openConsole(browser, url, options = {}) {
   } = options;
   const context = await browser.newContext({
     viewport: { width: 1280, height: 800 },
+    locale: "zh-CN",
     permissions,
   });
   const postedSettings = [];
+  const settingsGets = { count: 0 };
   if (mockApi) {
-    await installApiMocks(context, postedSettings);
+    await installApiMocks(context, postedSettings, settingsGets);
   }
   if (beforeGoto) {
     await beforeGoto(context, postedSettings);
@@ -242,7 +253,7 @@ async function openConsole(browser, url, options = {}) {
   const response = await page.goto(url, { waitUntil: "domcontentloaded" });
   assert(response, "root navigation did not produce a response");
   assert.equal(response.status(), 200);
-  return { context, page, postedSettings, browserErrors };
+  return { context, page, postedSettings, settingsGets, browserErrors };
 }
 
 async function waitForConnectionView(page) {
@@ -267,24 +278,80 @@ async function waitForVideoView(page) {
   });
 }
 
+async function waitForInitialView(page) {
+  await page
+    .locator('#console:not([data-connection-state="connecting"])')
+    .waitFor({ state: "attached" });
+  const view = await page.locator("#console").getAttribute("data-view");
+  assert.ok(view === "connection" || view === "video", `unexpected view ${view}`);
+  return view;
+}
+
 async function assertFramePixels(page) {
-  await page.waitForFunction(() => {
+  const readSamples = () => {
     const canvas = document.querySelector("#screen canvas");
     if (!(canvas instanceof HTMLCanvasElement)) {
-      return false;
+      return { ready: false, reason: "missing canvas" };
     }
     const context = canvas.getContext("2d");
     const points = [
-      [80, 45, [255, 0, 0, 255]],
-      [240, 45, [0, 255, 0, 255]],
-      [80, 135, [0, 0, 255, 255]],
-      [240, 135, [255, 255, 255, 255]],
+      ["topLeft", 80, 45],
+      ["topRight", 240, 45],
+      ["bottomLeft", 80, 135],
+      ["bottomRight", 240, 135],
     ];
-    return points.every(([x, y, expected]) => {
+    const samples = points.map(([name, x, y]) => {
       const actual = [...context.getImageData(x, y, 1, 1).data];
-      return actual.every((value, index) => value === expected[index]);
+      return { name, x, y, actual };
     });
-  });
+    const sample = (name) => samples.find((item) => item.name === name).actual;
+    const isRed = ([r, g, b]) => r > 80 && r > g + 30 && r > b + 30;
+    const isGreen = ([r, g, b]) => g > 180 && g > r + 30 && g > b + 30;
+    const isBlue = ([r, g, b]) => b > 80 && b > r + 30 && b > g + 30;
+    const isWhite = ([r, g, b]) => r > 180 && g > 180 && b > 180;
+    const topLeft = sample("topLeft");
+    const topRight = sample("topRight");
+    const bottomLeft = sample("bottomLeft");
+    const bottomRight = sample("bottomRight");
+    return {
+      ready:
+        ((isRed(topLeft) && isBlue(bottomLeft)) ||
+          (isBlue(topLeft) && isRed(bottomLeft))) &&
+        isGreen(topRight) &&
+        isWhite(bottomRight),
+      width: canvas.width,
+      height: canvas.height,
+      samples,
+    };
+  };
+  try {
+    await page.waitForFunction(() => {
+      const canvas = document.querySelector("#screen canvas");
+      if (!(canvas instanceof HTMLCanvasElement)) {
+        return false;
+      }
+      const context = canvas.getContext("2d");
+      const topLeft = [...context.getImageData(80, 45, 1, 1).data];
+      const topRight = [...context.getImageData(240, 45, 1, 1).data];
+      const bottomLeft = [...context.getImageData(80, 135, 1, 1).data];
+      const bottomRight = [...context.getImageData(240, 135, 1, 1).data];
+      const isRed = ([r, g, b]) => r > 80 && r > g + 30 && r > b + 30;
+      const isGreen = ([r, g, b]) => g > 180 && g > r + 30 && g > b + 30;
+      const isBlue = ([r, g, b]) => b > 80 && b > r + 30 && b > g + 30;
+      const isWhite = ([r, g, b]) => r > 180 && g > 180 && b > 180;
+      return (
+        ((isRed(topLeft) && isBlue(bottomLeft)) ||
+          (isBlue(topLeft) && isRed(bottomLeft))) &&
+        isGreen(topRight) &&
+        isWhite(bottomRight)
+      );
+    });
+  } catch (error) {
+    const samples = await page.evaluate(readSamples);
+    throw new Error(`frame pixels did not match: ${JSON.stringify(samples)}`, {
+      cause: error,
+    });
+  }
 }
 
 async function assertLayout(page, viewport) {
@@ -389,6 +456,17 @@ async function connectSession(page) {
   await assertFramePixels(page);
 }
 
+async function openSettingsModal(page, settingsGets) {
+  const before = settingsGets.count;
+  await page.locator("#open-settings").click();
+  await page.locator("#settings-modal:not([hidden])").waitFor({ state: "attached" });
+  await waitForCondition(
+    () => settingsGets.count > before,
+    "settings GET after opening modal",
+  );
+  await page.waitForTimeout(50);
+}
+
 async function assertRelativePointerMessageConstruction(page) {
   const probe = await page.evaluate(async () => {
     const { default: RFB } = await import("/vendor/novnc/core/rfb.js");
@@ -440,16 +518,27 @@ async function assertRelativeScheduler(page) {
       _rfbConnectionState: "connected",
       _viewOnly: false,
       _relativeMode: false,
-      _relativeSensitivity: 1.0,
+      _relativeSensitivity: 0.4,
       _relativeDeltaX: 0,
       _relativeDeltaY: 0,
+      _relativeRemainderX: 0,
+      _relativeRemainderY: 0,
       _relativeMoveTimer: null,
       _relativeLastMoveTime: 0,
       _ignoreNextRelativeMove: false,
       _mouseButtonMask: 0,
       _mouseMoveTimer: null,
+      _accumulatedWheelDeltaX: 7,
+      _accumulatedWheelDeltaY: 11,
+      _canvas: {
+        getBoundingClientRect() {
+          return { left: 0, top: 0, right: 100, bottom: 100, width: 100, height: 100 };
+        },
+      },
       _flushMouseMoveTimer() {},
       _flushRelativeMove: RFB.prototype._flushRelativeMove,
+      _clearWheelState: RFB.prototype._clearWheelState,
+      _handleWheel: RFB.prototype._handleWheel,
       _clearRelativeMoveState() {
         if (this._relativeMoveTimer !== null) {
           clearTimeout(this._relativeMoveTimer);
@@ -457,6 +546,8 @@ async function assertRelativeScheduler(page) {
         }
         this._relativeDeltaX = 0;
         this._relativeDeltaY = 0;
+        this._relativeRemainderX = 0;
+        this._relativeRemainderY = 0;
         this._relativeLastMoveTime = 0;
       },
       _sock: {
@@ -472,23 +563,45 @@ async function assertRelativeScheduler(page) {
     };
     RFB.prototype.setRelativeMode.call(fake, true);
     fake._ignoreNextRelativeMove = false;
-    RFB.prototype._handleRelativeMouseMove.call(fake, 4, 2);
-    RFB.prototype._handleRelativeMouseMove.call(fake, 3, 1);
+    RFB.prototype._handleRelativeMouseMove.call(fake, 1, 0);
+    RFB.prototype._handleRelativeMouseMove.call(fake, 1, 0);
+    RFB.prototype._handleRelativeMouseMove.call(fake, 1, 0);
+    RFB.prototype._handleRelativeMouseMove.call(fake, 1, 0);
     const pendingTimer = fake._relativeMoveTimer;
     RFB.prototype._flushRelativeMove.call(fake, true);
-    RFB.messages.relativePointerEvent(fake._sock, 1, 0, 0, 0);
+    fake._mouseButtonMask = 1;
+    RFB.prototype._handleWheel.call(fake, {
+      buttons: 0,
+      clientX: 3,
+      clientY: 4,
+      deltaMode: 0,
+      deltaX: 0,
+      deltaY: -80,
+      stopPropagation() {},
+      preventDefault() {},
+    });
+    RFB.prototype.sendRelativePointerRelease.call(fake);
     RFB.prototype.setRelativeMode.call(fake, false);
-    return { messages, pendingCleared: fake._relativeDeltaX === 0 &&
-      fake._relativeDeltaY === 0 && fake._relativeMoveTimer === null,
-      hadPendingTimer: pendingTimer !== null };
+    return {
+      messages,
+      pendingCleared: fake._relativeDeltaX === 0 &&
+        fake._relativeDeltaY === 0 &&
+        fake._relativeRemainderX === 0 &&
+        fake._relativeRemainderY === 0 &&
+        fake._relativeMoveTimer === null,
+      wheelCleared: fake._accumulatedWheelDeltaX === 0 &&
+        fake._accumulatedWheelDeltaY === 0,
+      hadPendingTimer: pendingTimer !== null,
+    };
   });
   assert.deepEqual(result.messages, [
-    [0x08, 0, 0, 4, 0, 2, 0],
-    [0x08, 0, 0, 3, 0, 1, 0],
-    [0x08, 1, 0, 0, 0, 0, 0],
+    [0x08, 0, 0, 1, 0, 0, 0],
+    [0x08, 1, 0, 0, 0, 0, 1],
+    [0x08, 0, 0, 0, 0, 0, 0],
   ]);
   assert.equal(result.hadPendingTimer, true);
   assert.equal(result.pendingCleared, true);
+  assert.equal(result.wheelCleared, true);
 }
 
 async function assertNoVncCursorRendering(page) {
@@ -548,6 +661,7 @@ async function assertPointerLockFallback(page) {
     let attempt = 0;
     const rfb = {
       canvas: {
+        style: {},
         requestPointerLock(options) {
           requests.push(options ?? null);
           attempt += 1;
@@ -558,6 +672,7 @@ async function assertPointerLockFallback(page) {
       },
       setRelativeMode() {},
       setRelativeSensitivity() {},
+      sendRelativePointerRelease() {},
     };
     const controller = new PointerController({
       button,
@@ -573,6 +688,140 @@ async function assertPointerLockFallback(page) {
   });
   assert.deepEqual(result.requests, [{ unadjustedMovement: true }, null]);
   assert.deepEqual(result.messages, []);
+}
+
+async function assertPointerReleaseOnDetach(page) {
+  const result = await page.evaluate(async () => {
+    const { PointerController } = await import("/assets/modules/pointer.js");
+    const button = document.createElement("button");
+    const canvas = document.createElement("canvas");
+    let releases = 0;
+    const modes = [];
+    const rfb = {
+      canvas,
+      setRelativeMode(mode) { modes.push(mode); },
+      setRelativeSensitivity() {},
+      sendRelativePointerRelease() { releases += 1; },
+    };
+    const controller = new PointerController({
+      button,
+      message() {},
+      getRfb: () => rfb,
+    });
+    controller.supported = true;
+    controller.setRfb(rfb);
+    controller.locked = true;
+    controller.setRfb(null);
+    return { releases, modes, locked: controller.locked };
+  });
+
+  assert.equal(result.releases, 1);
+  assert.deepEqual(result.modes, [false]);
+  assert.equal(result.locked, false);
+}
+
+async function assertPointerReleaseOnLockLossEvents(page) {
+  const result = await page.evaluate(async () => {
+    const { PointerController } = await import("/assets/modules/pointer.js");
+    const button = document.createElement("button");
+    const canvas = document.createElement("canvas");
+    let releases = 0;
+    let exits = 0;
+    const modes = [];
+    let pointerLockElement = null;
+    const originalPointerLockElement = Object.getOwnPropertyDescriptor(
+      document,
+      "pointerLockElement",
+    );
+    const originalExitPointerLock = document.exitPointerLock;
+    Object.defineProperty(document, "pointerLockElement", {
+      configurable: true,
+      get() {
+        return pointerLockElement;
+      },
+    });
+    document.exitPointerLock = () => {
+      exits += 1;
+      pointerLockElement = null;
+    };
+    const rfb = {
+      canvas,
+      setRelativeMode(mode) { modes.push(mode); },
+      setRelativeSensitivity() {},
+      sendRelativePointerRelease() { releases += 1; },
+    };
+    try {
+      const controller = new PointerController({
+        button,
+        message() {},
+        getRfb: () => rfb,
+      });
+      controller.supported = true;
+      controller.setRfb(rfb);
+
+      const snapshot = () => ({
+        releases,
+        modes: modes.length,
+        exits,
+      });
+      const delta = (before) => ({
+        releases: releases - before.releases,
+        modes: modes.slice(before.modes),
+        exits: exits - before.exits,
+        locked: controller.locked,
+        cursor: canvas.style.cursor,
+      });
+
+      pointerLockElement = null;
+      controller.locked = true;
+      let before = snapshot();
+      document.dispatchEvent(new Event("pointerlockchange"));
+      const pointerlockchange = delta(before);
+
+      pointerLockElement = canvas;
+      controller.locked = true;
+      before = snapshot();
+      document.dispatchEvent(new Event("pointerlockerror"));
+      const pointerlockerror = delta(before);
+
+      pointerLockElement = canvas;
+      controller.locked = true;
+      before = snapshot();
+      window.dispatchEvent(new Event("blur"));
+      const blur = delta(before);
+
+      return { pointerlockchange, pointerlockerror, blur };
+    } finally {
+      if (originalPointerLockElement) {
+        Object.defineProperty(document, "pointerLockElement", originalPointerLockElement);
+      } else {
+        delete document.pointerLockElement;
+      }
+      document.exitPointerLock = originalExitPointerLock;
+    }
+  });
+
+  assert.deepEqual(result.pointerlockchange, {
+    releases: 1,
+    modes: [false],
+    exits: 0,
+    locked: false,
+    cursor: "",
+  });
+  assert.deepEqual(result.pointerlockerror, {
+    releases: 1,
+    modes: [false],
+    exits: 0,
+    locked: false,
+    cursor: "",
+  });
+  assert.deepEqual(result.blur, {
+    releases: 1,
+    modes: [false],
+    exits: 1,
+    locked: false,
+    cursor: "",
+  });
 }
 
 async function assertCanvasRelativeCapture(page) {
@@ -601,6 +850,7 @@ async function assertCanvasRelativeCapture(page) {
       canvas,
       setRelativeMode() {},
       setRelativeSensitivity() {},
+      sendRelativePointerRelease() {},
     };
     const controller = new PointerController({
       button: document.createElement("button"),
@@ -654,21 +904,28 @@ async function run() {
     });
     process.stdout.write(`Browser: ${browserPath} (${await browser.version()})\n`);
 
-    // ---- 连接页：枚举 / 选择 / 连接 ----
-    const { context, page, postedSettings, browserErrors } = await openConsole(
+    // ---- 初始页：fixture 可能已运行会话，也可能显示连接页 ----
+    const { context, page, postedSettings, settingsGets, browserErrors } = await openConsole(
       browser,
       url,
     );
     contexts.push(context);
+    await waitForCondition(
+      () => settingsGets.count >= 1,
+      "initial settings GET",
+    );
     assert.equal(await page.locator("html").getAttribute("lang"), "zh-CN");
-    await waitForConnectionView(page);
-    assert.equal(await page.locator("#video-select option").count(), 1);
-    assert.equal(await page.locator("#serial-select option").count(), 1);
-    assert.match(await page.locator("#video-probe").textContent(), /就绪|Ready/);
-    assert.match(await page.locator("#serial-probe").textContent(), /就绪|Ready/);
-    assert.equal(await page.locator("#connect-button").isEnabled(), true);
-
-    await connectSession(page);
+    if ((await waitForInitialView(page)) === "connection") {
+      assert.equal(await page.locator("#video-select option").count(), 1);
+      assert.equal(await page.locator("#serial-select option").count(), 1);
+      assert.match(await page.locator("#video-probe").textContent(), /就绪|Ready/);
+      assert.match(await page.locator("#serial-probe").textContent(), /就绪|Ready/);
+      assert.equal(await page.locator("#connect-button").isEnabled(), true);
+      await connectSession(page);
+    } else {
+      await waitForVideoView(page);
+      await assertFramePixels(page);
+    }
     await assertKeyboard(page, fixture);
     await assertKeyboardCapture(page, fixture);
     await assertPointer(page, fixture, 0.73, 0.31);
@@ -676,6 +933,8 @@ async function run() {
     await assertNoVncCursorRendering(page);
     await assertClipboardImageConversion(page);
     await assertPointerLockFallback(page);
+    await assertPointerReleaseOnDetach(page);
+    await assertPointerReleaseOnLockLossEvents(page);
     await assertCanvasRelativeCapture(page);
     assert.equal(await page.locator(".toolbar #paste-button").count(), 1);
     assert.equal(await page.locator("#video-status-bar #paste-button").count(), 0);
@@ -699,8 +958,7 @@ async function run() {
     );
 
     // ---- 设置读写 ----
-    await page.locator("#open-settings").click();
-    await page.locator("#settings-modal:not([hidden])").waitFor({ state: "attached" });
+    await openSettingsModal(page, settingsGets);
     assert.equal(
       await page.locator("#setting-baud-rate").inputValue(),
       "115200",
@@ -713,8 +971,7 @@ async function run() {
     assert.equal(postedSettings[0].preview_fps, 30);
 
     // ---- 设置：恢复默认值只改表单，取消还原旧值 ----
-    await page.locator("#open-settings").click();
-    await page.locator("#settings-modal:not([hidden])").waitFor({ state: "attached" });
+    await openSettingsModal(page, settingsGets);
     await page.locator("#setting-baud-rate").fill("12345");
     await page.locator("#settings-reset").click();
     assert.equal(
@@ -725,8 +982,7 @@ async function run() {
     await page.locator("#setting-baud-rate").fill("9600");
     await page.locator("#settings-cancel").click();
     await page.locator("#settings-modal[hidden]").waitFor({ state: "attached" });
-    await page.locator("#open-settings").click();
-    await page.locator("#settings-modal:not([hidden])").waitFor({ state: "attached" });
+    await openSettingsModal(page, settingsGets);
     assert.equal(
       await page.locator("#setting-baud-rate").inputValue(),
       "9600",
@@ -762,8 +1018,7 @@ async function run() {
       .locator('#console[data-connection-state="connected"]')
       .waitFor({ state: "attached" });
 
-    await page.locator("#open-settings").click();
-    await page.locator("#settings-modal:not([hidden])").waitFor({ state: "attached" });
+    await openSettingsModal(page, settingsGets);
     await page.locator("#setting-mouse-mode").selectOption("absolute");
     await page.locator("#settings-save").click();
     await page.locator("#settings-modal[hidden]").waitFor({ state: "attached" });
@@ -826,55 +1081,11 @@ async function run() {
 
     // ---- 重新连接 ----
     await fixture.lines.waitForLine(
-      (line) => line === "CONTROLLER_RELEASED",
-      "controller release after disconnect",
+      (line) => line === "RELEASE",
+      "remote input release after disconnect",
       releaseMarker,
     );
     await connectSession(page);
-
-    // ---- 手动切回连接页（会话仍 running）：不自动重连、控制器保持空闲 ----
-    const switchMarker = fixture.lines.mark();
-    await page.locator("#toolbar-connect").click();
-    await page
-      .locator("#connection-view:not([hidden])")
-      .waitFor({ state: "attached" });
-    await fixture.lines.waitForLine(
-      (line) => line === "CONTROLLER_RELEASED",
-      "controller release after manual switch to connection page",
-      switchMarker,
-    );
-    assert.equal(
-      await page.locator("#screen canvas").count(),
-      0,
-      "old RFB DOM should be removed after switching to the connection page",
-    );
-    await page.waitForTimeout(2500);
-    assert.deepEqual(
-      browserErrors,
-      [],
-      "no RFB retry or 409/1006 while the session is running on the connection page",
-    );
-    // 控制器保持空闲：另一标签可接管。
-    const taker = await openConsole(browser, url);
-    contexts.push(taker.context);
-    await taker.page
-      .locator("#video-view:not([hidden])")
-      .waitFor({ state: "attached" });
-    await taker.page
-      .locator('#console[data-connection-state="connected"]')
-      .waitFor({ state: "attached", timeout: DEADLINE_MS });
-    await taker.page.waitForFunction(() => {
-      const canvas = document.querySelector("#screen canvas");
-      return (
-        canvas instanceof HTMLCanvasElement &&
-        canvas.width === 320 &&
-        canvas.height === 180
-      );
-    });
-    await taker.context.close();
-    // 回到视频页：连接按钮（restart）恢复本页控制。
-    await page.locator("#connect-button").click();
-    await waitForVideoView(page);
 
     // ---- 单控制器竞态：显式断言 409/1006 且失败后不再盲试 ----
     let mockStatusBusy = true;

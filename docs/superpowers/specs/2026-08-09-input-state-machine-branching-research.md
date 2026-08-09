@@ -170,6 +170,13 @@ GitHub issue：`#82`
 - pointer lock/blur/退出相对模式要释放或归零远端按钮状态。
 - macOS 拖拽建立日志回放和实机验证步骤。
 
+落地记录（#82）：
+
+- 桌面端新增滚轮步进累计器，绝对/相对模式分别累计 Pixel 小步；按钮和滚轮边沿仍作为 barrier，不跨越 pending move。
+- noVNC 相对移动改为保留浮点余量后取整，避免低灵敏度小位移永久丢失。
+- noVNC 相对滚轮改用持久 `_mouseButtonMask`，pointer lock 丢失、窗口 blur 或显式退出时先发送零按钮相对包释放远端状态。
+- 新增 `macos_absolute_drag_diag.logfmt` fixture 和日志回放测试，固定用户第二份日志中 `mono_ms=3844..5064` 的长拖拽链路事实：入口、mapper、CH9329 report 与串口绝对帧在按住期间持续携带左键。
+
 验收：
 
 - 桌面和 headless 在相同抽象序列下产生一致的 RFB 指针事件。

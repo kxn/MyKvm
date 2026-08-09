@@ -20,7 +20,7 @@ use ipkvm_session::supervisor::{
     ControlRuntimeStatus, RecoveryPolicy, SessionIntent, SessionSupervisor, SupervisorStatus,
     VideoRuntimeStatus,
 };
-use ipkvm_video::{FrameSource, PixelFormat, VideoSourceKind};
+use ipkvm_video::{FrameSource, PixelFormat, VideoFrame, VideoSourceKind};
 use serde::Deserialize;
 use thiserror::Error;
 use tokio::{
@@ -835,20 +835,19 @@ async fn api_screenshot<I: InputSink + Clone + Send + 'static>(
             .expect("screenshot response headers are valid");
     }
 
-    // RGB：编码为 JPEG。
-    if frame.pixel_format != PixelFormat::Rgb888 {
-        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-    }
     let Ok(width) = u16::try_from(frame.width) else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
     let Ok(height) = u16::try_from(frame.height) else {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };
+    let Some(rgb) = screenshot_rgb(&frame) else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
 
     let mut jpeg = Vec::new();
     if jpeg_encoder::Encoder::new(&mut jpeg, JPEG_QUALITY)
-        .encode(&frame.data, width, height, jpeg_encoder::ColorType::Rgb)
+        .encode(&rgb, width, height, jpeg_encoder::ColorType::Rgb)
         .is_err()
     {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
@@ -861,8 +860,42 @@ async fn api_screenshot<I: InputSink + Clone + Send + 'static>(
         .expect("screenshot response headers are valid")
 }
 
-/// 把帧数据整理成 jpeg-encoder 需要的紧凑行布局（每行 width*4 字节）。
-///
+/// 把帧数据整理成 jpeg-encoder 需要的紧凑 RGB 行布局。
+fn screenshot_rgb(frame: &VideoFrame) -> Option<Vec<u8>> {
+    let width = usize::try_from(frame.width).ok()?;
+    let height = usize::try_from(frame.height).ok()?;
+    let stride = usize::try_from(frame.stride).ok()?;
+    let output_len = width.checked_mul(height)?.checked_mul(3)?;
+    let mut rgb = Vec::with_capacity(output_len);
+    match frame.pixel_format {
+        PixelFormat::Rgb888 => {
+            let row_len = width.checked_mul(3)?;
+            for row in 0..height {
+                let start = row.checked_mul(stride)?;
+                let end = start.checked_add(row_len)?;
+                rgb.extend_from_slice(frame.data.get(start..end)?);
+            }
+        }
+        PixelFormat::Bgra8888 => {
+            let row_len = width.checked_mul(4)?;
+            for row in 0..height {
+                let start = row.checked_mul(stride)?;
+                let end = start.checked_add(row_len)?;
+                let row = frame.data.get(start..end)?;
+                for pixel in row.chunks_exact(4) {
+                    rgb.extend_from_slice(&[pixel[2], pixel[1], pixel[0]]);
+                }
+            }
+        }
+        PixelFormat::Mjpeg
+        | PixelFormat::Yuy2
+        | PixelFormat::Nv12
+        | PixelFormat::H264
+        | PixelFormat::Unknown => return None,
+    }
+    Some(rgb)
+}
+
 // ---- /api/devices ----
 
 #[derive(serde::Serialize)]

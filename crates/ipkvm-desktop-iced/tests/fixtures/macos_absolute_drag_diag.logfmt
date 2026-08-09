@@ -1,0 +1,33 @@
+ts_ms=1786249466081 mono_ms=3844 level=trace category=input component=desktop.iced event=mouse_button mode=absolute cursor="327.6,56.0" action=pressed button=left mask_before=0x00 mask_after=0x01
+ts_ms=1786249466081 mono_ms=3844 level=info category=input component=desktop.iced event=remote_input mode=absolute cursor="327.6,56.0" state=entered mask=0x01
+ts_ms=1786249466081 mono_ms=3844 level=trace category=input component=desktop.iced event=absolute_pointer mode=absolute cursor="327.6,56.0" decision=sent mask=0x01 x=533 y=44 mask_changed=false
+ts_ms=1786249466081 mono_ms=3844 level=trace category=queue component=desktop_core.queue event=send_event kind=pointer pending_before=0 pending_after=0
+ts_ms=1786249466081 mono_ms=3844 level=trace category=pointer component=session.input_pump event=pointer_absolute client="RfbClientId(18446744073709551615)" mask=0x01 x=533 y=44 fb=1920x1080
+ts_ms=1786249466081 mono_ms=3844 level=trace category=pointer component=session.rfb_pointer event=absolute_map committed_mask=0x00 incoming_mask=0x01 x=533 y=44 fb=1920x1080 events=2
+ts_ms=1786249466081 mono_ms=3844 level=trace category=pointer component=core.ch9329 event=pointer_batch mode=absolute events=2 commands=2 buttons_before=0x00 buttons_after=0x01 last_abs_before=none last_abs_after="1137,166"
+ts_ms=1786249466081 mono_ms=3844 level=trace category=pointer component=core.ch9329 event=pointer_report index=0 report=absolute buttons=0x00 x=1137 y=166 wheel=0
+ts_ms=1786249466081 mono_ms=3844 level=trace category=pointer component=core.ch9329 event=pointer_report index=1 report=absolute buttons=0x01 x=1137 y=166 wheel=0
+ts_ms=1786249466102 mono_ms=3865 level=trace category=serial component=core.serial event=frame_tx command=0x04 bytes=13 summary="mouse_abs buttons=0x01 x=1137 y=166 wheel=0"
+ts_ms=1786249466181 mono_ms=3944 level=trace category=input component=desktop.iced event=cursor_moved mode=absolute cursor="329.2,56.0" x_ui=329.2 y_ui=56.0 mask=0x01 remote=true
+ts_ms=1786249466181 mono_ms=3944 level=trace category=input component=desktop.iced event=absolute_pointer mode=absolute cursor="329.2,56.0" decision=sent mask=0x01 x=536 y=44 mask_changed=false
+ts_ms=1786249466181 mono_ms=3944 level=trace category=queue component=desktop_core.queue event=send_event kind=pointer pending_before=0 pending_after=0
+ts_ms=1786249466181 mono_ms=3944 level=trace category=pointer component=session.input_pump event=pointer_absolute client="RfbClientId(18446744073709551615)" mask=0x01 x=536 y=44 fb=1920x1080
+ts_ms=1786249466181 mono_ms=3944 level=trace category=pointer component=session.rfb_pointer event=absolute_map committed_mask=0x01 incoming_mask=0x01 x=536 y=44 fb=1920x1080 events=1
+ts_ms=1786249466181 mono_ms=3944 level=trace category=pointer component=core.ch9329 event=pointer_batch mode=absolute events=1 commands=1 buttons_before=0x01 buttons_after=0x01 last_abs_before="1137,166" last_abs_after="1143,166"
+ts_ms=1786249466181 mono_ms=3944 level=trace category=pointer component=core.ch9329 event=pointer_report index=0 report=absolute buttons=0x01 x=1143 y=166 wheel=0
+ts_ms=1786249466181 mono_ms=3944 level=trace category=serial component=core.serial event=frame_tx command=0x04 bytes=13 summary="mouse_abs buttons=0x01 x=1143 y=166 wheel=0"
+ts_ms=1786249466189 mono_ms=3952 level=trace category=input component=desktop.iced event=cursor_moved mode=absolute cursor="330.4,56.0" x_ui=330.4 y_ui=56.0 mask=0x01 remote=true
+ts_ms=1786249466189 mono_ms=3952 level=trace category=input component=desktop.iced event=absolute_pointer mode=absolute cursor="330.4,56.0" decision=sent mask=0x01 x=538 y=44 mask_changed=false
+ts_ms=1786249466189 mono_ms=3952 level=trace category=queue component=desktop_core.queue event=send_event kind=pointer pending_before=0 pending_after=0
+ts_ms=1786249466189 mono_ms=3952 level=trace category=pointer component=session.input_pump event=pointer_absolute client="RfbClientId(18446744073709551615)" mask=0x01 x=538 y=44 fb=1920x1080
+ts_ms=1786249466190 mono_ms=3952 level=trace category=pointer component=session.rfb_pointer event=absolute_map committed_mask=0x01 incoming_mask=0x01 x=538 y=44 fb=1920x1080 events=1
+ts_ms=1786249466190 mono_ms=3952 level=trace category=pointer component=core.ch9329 event=pointer_batch mode=absolute events=1 commands=1 buttons_before=0x01 buttons_after=0x01 last_abs_before="1143,166" last_abs_after="1147,166"
+ts_ms=1786249466190 mono_ms=3953 level=trace category=pointer component=core.ch9329 event=pointer_report index=0 report=absolute buttons=0x01 x=1147 y=166 wheel=0
+ts_ms=1786249466203 mono_ms=3966 level=trace category=serial component=core.serial event=frame_tx command=0x04 bytes=13 summary="mouse_abs buttons=0x01 x=1147 y=166 wheel=0"
+ts_ms=1786249467301 mono_ms=5064 level=trace category=input component=desktop.iced event=mouse_button mode=absolute cursor="776.8,181.2" action=released button=left mask_before=0x01 mask_after=0x00
+ts_ms=1786249467301 mono_ms=5064 level=trace category=input component=desktop.iced event=absolute_pointer mode=absolute cursor="776.8,181.2" decision=sent mask=0x00 x=1272 y=224 mask_changed=true
+ts_ms=1786249467301 mono_ms=5064 level=trace category=pointer component=session.input_pump event=pointer_absolute client="RfbClientId(18446744073709551615)" mask=0x00 x=1272 y=224 fb=1920x1080
+ts_ms=1786249467301 mono_ms=5064 level=trace category=pointer component=session.rfb_pointer event=absolute_map committed_mask=0x01 incoming_mask=0x00 x=1272 y=224 fb=1920x1080 events=2
+ts_ms=1786249467301 mono_ms=5064 level=trace category=pointer component=core.ch9329 event=pointer_batch mode=absolute events=2 commands=2 buttons_before=0x01 buttons_after=0x00 last_abs_before="2698,940" last_abs_after="2698,940"
+ts_ms=1786249467301 mono_ms=5064 level=trace category=pointer component=core.ch9329 event=pointer_report index=0 report=absolute buttons=0x01 x=2698 y=940 wheel=0
+ts_ms=1786249467301 mono_ms=5064 level=trace category=pointer component=core.ch9329 event=pointer_report index=1 report=absolute buttons=0x00 x=2698 y=940 wheel=0
