@@ -45,6 +45,14 @@ pub struct QueueStats {
 pub trait CommandQueue: Send + Sync {
     fn enqueue_batch(&self, batch: CommandBatch) -> CommandQueueResult<()>;
     fn stats(&self) -> QueueStats;
+
+    /// 传输层完成恢复、已向设备写入零键鼠报告并丢弃恢复期间积压批次后递增。
+    ///
+    /// 默认队列没有恢复语义，返回 0。状态化 sink 可用该值在下一次输入前把
+    /// 软件键鼠状态同步到设备实际的 released 状态。
+    fn recovery_generation(&self) -> u64 {
+        0
+    }
 }
 
 #[cfg(test)]

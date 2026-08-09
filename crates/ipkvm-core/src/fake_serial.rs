@@ -7,6 +7,7 @@ struct FakeCommandQueueState {
     accepted_batches: Vec<CommandBatch>,
     fail_next: Option<CommandQueueError>,
     stats: QueueStats,
+    recovery_generation: u64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -33,6 +34,11 @@ impl FakeCommandQueue {
             .expect("fake command queue lock poisoned")
             .fail_next = Some(error);
     }
+
+    pub fn bump_recovery_generation(&self) {
+        let mut state = self.state.lock().expect("fake command queue lock poisoned");
+        state.recovery_generation = state.recovery_generation.saturating_add(1);
+    }
 }
 
 impl CommandQueue for FakeCommandQueue {
@@ -56,6 +62,13 @@ impl CommandQueue for FakeCommandQueue {
             .lock()
             .expect("fake command queue lock poisoned")
             .stats
+    }
+
+    fn recovery_generation(&self) -> u64 {
+        self.state
+            .lock()
+            .expect("fake command queue lock poisoned")
+            .recovery_generation
     }
 }
 

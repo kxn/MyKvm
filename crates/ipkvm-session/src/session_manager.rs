@@ -479,12 +479,8 @@ mod tests {
             "wait_stopped 返回时 pump 自身 release_all 必须已完成"
         );
 
-        // 文本键入服务对 sink 克隆的第二次 release 在 pump 收尾后异步到达，
-        // 用轮询观察（纯轮询断言不足以判别屏障，仅覆盖异步收尾本身）。
-        assert!(
-            yield_until(|| sink.recorded.lock().unwrap().release_count == 2).await,
-            "wait_stopped 后文本服务 release_all 未执行完成"
-        );
+        // TextInputService 不再持有 sink 克隆；wait_stopped 的屏障只需要证明
+        // pump 主 sink 的 release_all 已完成。
     }
 
     // ---- 零会话启动与 create ----

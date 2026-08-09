@@ -8,7 +8,9 @@ use ipkvm_rfb::RfbRectangle;
 use thiserror::Error;
 use tokio::sync::{mpsc, watch};
 
-use super::text::{TextInputConfig, TextInputNotice, TextInputService};
+use super::text::{
+    TextInputAction, TextInputBatchResult, TextInputConfig, TextInputNotice, TextInputService,
+};
 use super::{
     RfbKeyboardError, RfbKeyboardMapper, RfbKeyboardOutcome, RfbPointerError, RfbPointerMapper,
     RfbPointerOutcome,
@@ -198,6 +200,8 @@ pub enum RfbInputRunError {
     SourceClosedRelease(#[source] RfbInputError),
     #[error("failed to release RFB input after the session stopped")]
     StopRelease(#[source] RfbInputError),
+    #[error("failed to apply RFB text input")]
+    TextInput(#[source] RfbInputError),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -216,18 +220,15 @@ pub struct RfbInputPump<S: InputSink> {
     mouse_mode: Option<MouseMode>,
     keyboard: RfbKeyboardMapper,
     pointer: RfbPointerMapper,
-    text: TextInputService<S>,
-    text_notices: mpsc::Receiver<TextInputNotice>,
+    text: TextInputService,
+    text_actions: mpsc::Receiver<TextInputAction>,
     mouse_mode_observer: Option<watch::Sender<Option<MouseMode>>>,
 }
 
 impl<S: InputSink> RfbInputPump<S> {
-    /// 创建输入泵；内部以 `sink` 的克隆启动独立文本键入服务（见 `TextInputService`）。
+    /// 创建输入泵；文本键入服务只产生动作，实际键盘状态提交仍由本泵的主 sink 执行。
     /// 调用方必须运行在 tokio runtime 上下文中（内部 `tokio::spawn`）。
-    pub fn new(sink: S) -> Self
-    where
-        S: Clone + Send + 'static,
-    {
+    pub fn new(sink: S) -> Self {
         Self::with_mouse_mode_observer(sink, None)
     }
 
@@ -235,12 +236,9 @@ impl<S: InputSink> RfbInputPump<S> {
     pub fn with_mouse_mode_observer(
         sink: S,
         mouse_mode_observer: Option<watch::Sender<Option<MouseMode>>>,
-    ) -> Self
-    where
-        S: Clone + Send + 'static,
-    {
+    ) -> Self {
         let initial_mouse_mode = sink.initial_mouse_mode();
-        let (text, text_notices) = TextInputService::new(sink.clone(), TextInputConfig::default());
+        let (text, text_actions) = TextInputService::new(TextInputConfig::default());
         Self {
             sink,
             active: None,
@@ -248,7 +246,7 @@ impl<S: InputSink> RfbInputPump<S> {
             keyboard: RfbKeyboardMapper::new(),
             pointer: RfbPointerMapper::new(),
             text,
-            text_notices,
+            text_actions,
             mouse_mode_observer,
         }
     }
@@ -289,9 +287,13 @@ impl<S: InputSink> RfbInputPump<S> {
         loop {
             let event = tokio::select! {
                 event = receiver.recv() => event,
-                notice = self.text_notices.recv() => {
-                    if let Some(notice) = notice {
-                        observe(&RfbInputNotice::from(notice));
+                action = self.text_actions.recv() => {
+                    if let Some(action) = action
+                        && let Some(notice) = self
+                            .handle_text_action(action)
+                            .map_err(RfbInputRunError::TextInput)?
+                    {
+                        observe(&notice);
                     }
                     continue;
                 }
@@ -334,9 +336,13 @@ impl<S: InputSink> RfbInputPump<S> {
                     let notice = self.handle_event(event)?;
                     observe(&notice);
                 }
-                notice = self.text_notices.recv() => {
-                    if let Some(notice) = notice {
-                        observe(&RfbInputNotice::from(notice));
+                action = self.text_actions.recv() => {
+                    if let Some(action) = action
+                        && let Some(notice) = self
+                            .handle_text_action(action)
+                            .map_err(RfbInputRunError::TextInput)?
+                    {
+                        observe(&notice);
                     }
                 }
                 _ = stop.changed() => break,
@@ -451,6 +457,64 @@ impl<S: InputSink> RfbInputPump<S> {
                 reason,
             } => self.disconnect(*client_id, *peer_addr, reason.clone()),
         }
+    }
+
+    fn handle_text_action(
+        &mut self,
+        action: TextInputAction,
+    ) -> Result<Option<RfbInputNotice>, RfbInputError> {
+        match action {
+            TextInputAction::KeyBatch {
+                client_id,
+                events,
+                result,
+            } => {
+                if !self.is_active_client(client_id) {
+                    let _ = result.send(TextInputBatchResult::Abort);
+                    return Ok(None);
+                }
+                match self.sink.handle_key_batch(&events) {
+                    Ok(()) => {
+                        let _ = result.send(TextInputBatchResult::Continue);
+                        Ok(None)
+                    }
+                    Err(source) => {
+                        let error = source.to_string();
+                        let _ = result.send(TextInputBatchResult::Abort);
+                        self.release_after_text_failure(client_id)?;
+                        Ok(Some(RfbInputNotice::from(TextInputNotice::Error {
+                            client_id,
+                            error,
+                        })))
+                    }
+                }
+            }
+            TextInputAction::ReleaseAll { client_id } => {
+                if self.is_active_client(client_id) {
+                    self.release_after_text_failure(client_id)?;
+                }
+                Ok(None)
+            }
+            TextInputAction::Notice(notice) => Ok(Some(RfbInputNotice::from(notice))),
+        }
+    }
+
+    fn is_active_client(&self, client_id: RfbClientId) -> bool {
+        self.active
+            .is_some_and(|active| active.client_id == client_id)
+    }
+
+    fn release_after_text_failure(&mut self, client_id: RfbClientId) -> Result<(), RfbInputError> {
+        self.sink
+            .release_all()
+            .map_err(|source| RfbInputError::Sink {
+                client_id,
+                operation: RfbInputOperation::Release,
+                source,
+            })?;
+        self.keyboard = RfbKeyboardMapper::new();
+        self.pointer = RfbPointerMapper::new();
+        Ok(())
     }
 
     fn connect(
@@ -753,7 +817,7 @@ impl<S: InputSink> RfbInputPump<S> {
                 operation: RfbInputOperation::Release,
                 source,
             })?;
-        // 取消进行中的文本键入（服务内部 release_all 复位其 sink）。
+        // 取消进行中的文本键入；释放动作回到 pump 主 sink 执行。
         let _ = self.text.try_cancel(active.client_id);
         self.active = None;
         self.mouse_mode = None;
@@ -788,8 +852,8 @@ mod tests {
     use std::time::Duration;
 
     use ipkvm_core::{
-        Ch9329InputSink, CommandQueueError, FramebufferSize, InputResult, KeyEvent, MouseMode,
-        PointerButton, PointerEvent, fake_serial::FakeCommandQueue,
+        Ch9329InputSink, CommandQueueError, FramebufferSize, InputResult, KeyEvent, KeyboardUsage,
+        MouseMode, PointerButton, PointerEvent, fake_serial::FakeCommandQueue,
     };
     use ipkvm_rfb::RfbSize;
 
@@ -850,6 +914,18 @@ mod tests {
             client_id,
             peer_addr,
             shared: true,
+        }
+    }
+
+    fn key_down(usage: u8) -> KeyEvent {
+        KeyEvent::Down {
+            usage: KeyboardUsage::new(usage).unwrap(),
+        }
+    }
+
+    fn key_up(usage: u8) -> KeyEvent {
+        KeyEvent::Up {
+            usage: KeyboardUsage::new(usage).unwrap(),
         }
     }
 
@@ -1036,8 +1112,16 @@ mod tests {
             .expect("text typed notice");
         assert!(dispatched < typed);
         assert_eq!(pump.sink().release_count, 1);
-        // 键入走服务自己的 sink 副本，不触碰 pump 的 sink。
-        assert!(pump.sink().key_batches.is_empty());
+        assert_eq!(
+            pump.sink().key_batches,
+            vec![
+                vec![key_down(0x04)],
+                vec![key_up(0x04)],
+                vec![key_down(0x05)],
+                vec![key_up(0x05)],
+            ],
+            "CutText 键入必须经过 pump 主 sink，不能由 TextInputService 持有第二套 sink 状态"
+        );
         assert_eq!(pump.active_client(), None);
     }
 
@@ -1101,6 +1185,128 @@ mod tests {
         );
         assert_eq!(pump.sink().release_count, 1);
         assert_eq!(pump.active_client(), None);
+    }
+
+    #[tokio::test]
+    async fn text_input_failure_resets_keyboard_mapper_before_continued_input() {
+        let client_id = client(29);
+        let peer_addr = peer(5929);
+        let queue = FakeCommandQueue::new();
+        let sink = Ch9329InputSink::new(queue.clone(), 0, MouseMode::Absolute);
+        let mut pump = RfbInputPump::new(sink);
+        pump.handle_event(connected(client_id, peer_addr)).unwrap();
+        pump.handle_event(RfbServerEvent::Key {
+            client_id,
+            down: true,
+            keysym: 'a' as u32,
+        })
+        .unwrap();
+        queue.fail_next(CommandQueueError::Closed);
+        pump.handle_event(RfbServerEvent::CutText {
+            client_id,
+            bytes: b"b".to_vec(),
+        })
+        .unwrap();
+
+        let action = pump.text_actions.recv().await.expect("text action");
+        assert!(matches!(
+            pump.handle_text_action(action).unwrap(),
+            Some(RfbInputNotice::TextInputFailed { .. })
+        ));
+        pump.handle_event(RfbServerEvent::Key {
+            client_id,
+            down: true,
+            keysym: 'a' as u32,
+        })
+        .unwrap();
+
+        let batches = queue.accepted_batches();
+        assert_eq!(batches.len(), 3);
+        assert_eq!(batches[0].frames()[0].data(), &[0, 0, 4, 0, 0, 0, 0, 0]);
+        assert_eq!(batches[1].frames()[0].data(), &[0; 8]);
+        assert_eq!(
+            batches[2].frames()[0].data(),
+            &[0, 0, 4, 0, 0, 0, 0, 0],
+            "文本失败后的继续输入必须重新发送按键 down，不能被旧 mapper 当成 duplicate"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn text_input_sink_error_discards_remaining_text_actions() {
+        let client_id = client(31);
+        let peer_addr = peer(5931);
+        let queue = FakeCommandQueue::new();
+        let sink = Ch9329InputSink::new(queue.clone(), 0, MouseMode::Absolute);
+        let mut pump = RfbInputPump::new(sink);
+        pump.handle_event(connected(client_id, peer_addr)).unwrap();
+        queue.fail_next(CommandQueueError::Closed);
+
+        pump.handle_event(RfbServerEvent::CutText {
+            client_id,
+            bytes: b"ab".to_vec(),
+        })
+        .unwrap();
+        let action = pump.text_actions.recv().await.expect("first text action");
+        assert!(matches!(
+            pump.handle_text_action(action).unwrap(),
+            Some(RfbInputNotice::TextInputFailed { .. })
+        ));
+
+        tokio::time::advance(Duration::from_millis(200)).await;
+        for _ in 0..4 {
+            tokio::task::yield_now().await;
+        }
+        assert!(
+            pump.text_actions.try_recv().is_err(),
+            "文本失败后必须丢弃剩余文本，不能在 release_all 后继续生成 key batch 或 Typed notice"
+        );
+    }
+
+    #[tokio::test]
+    async fn text_input_failure_resets_pointer_mapper_before_continued_drag() {
+        let client_id = client(30);
+        let peer_addr = peer(5930);
+        let queue = FakeCommandQueue::new();
+        let sink = Ch9329InputSink::new(queue.clone(), 0, MouseMode::Absolute);
+        let mut pump = RfbInputPump::new(sink);
+        let size = RfbSize::new(100, 100).unwrap();
+        pump.handle_event(connected(client_id, peer_addr)).unwrap();
+        pump.handle_event(RfbServerEvent::Pointer {
+            client_id,
+            button_mask: 1,
+            x: 10,
+            y: 10,
+            framebuffer_size: size,
+        })
+        .unwrap();
+        queue.fail_next(CommandQueueError::Closed);
+        pump.handle_event(RfbServerEvent::CutText {
+            client_id,
+            bytes: b"b".to_vec(),
+        })
+        .unwrap();
+
+        let action = pump.text_actions.recv().await.expect("text action");
+        assert!(matches!(
+            pump.handle_text_action(action).unwrap(),
+            Some(RfbInputNotice::TextInputFailed { .. })
+        ));
+        pump.handle_event(RfbServerEvent::Pointer {
+            client_id,
+            button_mask: 1,
+            x: 20,
+            y: 20,
+            framebuffer_size: size,
+        })
+        .unwrap();
+
+        let batches = queue.accepted_batches();
+        let continued = batches.last().expect("continued pointer batch").frames();
+        assert_eq!(
+            continued.last().unwrap().data()[1],
+            1,
+            "文本失败 release_all 后，下一次仍按住的 pointer 事件必须重新发送按钮按下边沿"
+        );
     }
 
     #[tokio::test]

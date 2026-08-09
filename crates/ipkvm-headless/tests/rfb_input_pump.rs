@@ -166,9 +166,10 @@ async fn real_tcp_client_drives_ch9329_input_and_disconnect_release() {
     client.send_pointer(1, 1, 0).await;
     drop(client);
 
-    // 键盘、指针、pump 释放、文本服务取消时的释放，共 4 个批次。
+    // 键盘、指针、pump 主 sink 释放，共 3 个批次。TextInputService 不再持有
+    // 独立 sink 克隆，因此不会再产生第四个释放批次。
     tokio::time::timeout(Duration::from_secs(1), async {
-        while queue.stats().batches_accepted < 4 {
+        while queue.stats().batches_accepted < 3 {
             tokio::task::yield_now().await;
         }
     })
@@ -180,7 +181,7 @@ async fn real_tcp_client_drives_ch9329_input_and_disconnect_release() {
     let (notices, active_client) = pump_task.await.unwrap();
 
     assert_eq!(active_client, None);
-    assert_eq!(queue.accepted_batches().len(), 4);
+    assert_eq!(queue.accepted_batches().len(), 3);
     assert!(matches!(
         notices.as_slice(),
         [
@@ -194,8 +195,7 @@ async fn real_tcp_client_drives_ch9329_input_and_disconnect_release() {
         ]
     ));
     let release = queue.accepted_batches();
-    // 第 3 个批次是 RFB pump 的断连释放；最后一个批次来自文本服务取消时的
-    // 防御性 release_all，其独立 sink 没有绝对坐标，严格模式下只释放键盘。
+    // 第 3 个批次是 RFB pump 的断连释放。
     let release_frames = release[2].frames();
     assert_eq!(release_frames[0].data(), &[0; 8]);
     assert_eq!(release_frames[1].command(), 0x04);

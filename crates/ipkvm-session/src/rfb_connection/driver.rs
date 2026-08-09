@@ -420,16 +420,19 @@ async fn send_event(
     let Some(sender) = sender else {
         return Ok(());
     };
-    let _ = sender.send(event).await;
-    Ok(())
+    sender
+        .send(event)
+        .await
+        .map_err(|_| RfbConnectionError::EventChannelClosed)
 }
 
 /// 成功发送一次 FramebufferUpdate 后，把 encode 统计快照通知给上层（updates/sec
 /// 与 encode 耗时/字节），供 `/api/status` 聚合。调研阶段 0 埋点。
 ///
-/// 用 `try_send`：统计通知是 best-effort，channel 满时丢弃，绝不阻塞驱动循环
-/// （统计精度优先级低于核心路径活性）。返回值恒为 `Ok`，仅保留 `Result` 签名
-/// 以与调用点的 `?` 一致。
+/// 用 `try_send`：统计通知是 best-effort，channel 满或 receiver 已关闭时丢弃，
+/// 绝不阻塞驱动循环（统计精度优先级低于核心路径活性）。真实输入事件仍通过
+/// `send_event()` 传播 receiver 关闭错误；`FrameUpdateSent` 不是输入事件，会话替换
+/// 时旧 viewer 也需要继续保持到客户端主动断开。
 fn emit_frame_update_sent(
     sender: Option<&mpsc::Sender<RfbServerEvent>>,
     client_id: RfbClientId,
@@ -998,6 +1001,27 @@ mod tests {
 
         drop(client);
         assert!(matches!(task.await.unwrap(), ConnectionEnd::ClientClosed));
+    }
+
+    #[tokio::test]
+    async fn input_event_channel_closed_ends_connection() {
+        let frame_source = MockFrameSource::new();
+        frame_source.publish_frame(shared_bgra_frame(1, 2, 1, &[0; 6]));
+        let (task, mut client, events, _shutdown) = completed_connection(
+            RfbClientId(32),
+            &frame_source,
+            RfbConnectionSettings::default(),
+        )
+        .await;
+
+        drop(events);
+        send_key(&mut client, true, 0x41).await;
+        drop(client);
+
+        assert!(matches!(
+            task.await.unwrap(),
+            ConnectionEnd::Failed(RfbConnectionError::EventChannelClosed)
+        ));
     }
 
     #[tokio::test]

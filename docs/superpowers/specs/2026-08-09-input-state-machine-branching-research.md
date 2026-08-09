@@ -88,6 +88,13 @@
 - `crates/ipkvm-core/src/input.rs` 的 `InputSink::set_mouse_mode()` 契约只声明切换模式，pump 额外假设成功后旧模式按钮已释放并重置 pointer mapper。该假设目前只由 CH9329 sink 隐式满足。
 - 队列 full、无效 pointer 坐标和真实 sink 错误目前都可能被提升为输入泵致命错误，缺少“瞬时背压/坏事件/设备故障”的错误分类。
 
+`#78` 已收敛的事实：
+
+- `TextInputService` 不再持有 `InputSink` clone；它只输出文本键入动作，`RfbInputPump` 在主事件循环中把动作串行提交到主 sink。
+- 文本动作失败或取消后，pump 在主 sink 上执行 `release_all()`，并重置键盘/指针 mapper，避免旧按键或旧按钮状态复活。
+- RFB connection driver 在输入事件 channel receiver 关闭时返回 `EventChannelClosed`，不再静默吞掉已解码输入事件。
+- `CommandQueue::recovery_generation()` 暴露串口恢复完成代数；真实串口 worker 只在恢复写入零键鼠报告、丢弃恢复期间积压批次并重新进入 `Ready` 后递增，不使用 reset/reopen 尝试次数。`Ch9329InputSink` 发现代数变化后清空本地键盘状态、鼠标按钮和已知绝对坐标，使串口恢复后的 key-up/button-up 不依赖旧软件状态猜测。
+
 拆单判断：这是核心层最大的 SSOT 缺口，必须独立成子单；它会影响鼠标、键盘、文本和恢复状态，不应夹在 UI 修复里完成。
 
 ### 键盘、锁定键与特殊键
