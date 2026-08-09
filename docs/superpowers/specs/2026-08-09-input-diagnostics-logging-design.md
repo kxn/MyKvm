@@ -46,7 +46,7 @@ ts_ms=<unix毫秒> mono_ms=<进程单调毫秒> level=<级别> category=<类别>
 桌面 iced：
 
 - 底部状态栏提供「输入日志」复选框。
-- 打开后写入系统临时目录下 `ipkvm-input-diag.log`。
+- 打开后写入当前可执行文件所在目录下 `ipkvm-input-diag.log`。
 - 默认级别 `trace`，类别为 `input,pointer,queue,serial,lifecycle`。
 
 headless：

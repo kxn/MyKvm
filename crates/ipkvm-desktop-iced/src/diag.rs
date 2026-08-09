@@ -1,6 +1,6 @@
 //! 真机取证诊断日志（#89）：轻量、可开关。
 //!
-//! 启用：环境变量 `IPKVM_ICED_DIAG=1`；输出追加到 `%TEMP%\ipkvm-iced-diag.log`。
+//! 启用：环境变量 `IPKVM_ICED_DIAG=1`；输出追加到应用同目录的 `ipkvm-iced-diag.log`。
 //! 日志点：启动参数 / RefreshDevices / PreviewTick 每 tick / FrameReady 每帧 /
 //! UiTick 聚合（每 60 tick 一行）/ 在线状态跳变 / 连接断开时间点。
 
@@ -51,8 +51,7 @@ pub fn ui_tick() {
     }
 }
 
-/// 诊断日志文件路径：Windows 用 `%TEMP%`（回退 `%TMP%`），Unix 用 `$TMPDIR`，
-/// 均未设置时 Windows 回退当前目录、Unix 回退 `/tmp`。
+/// 诊断日志文件路径：默认写到当前可执行文件所在目录，便于用户复现后找到日志。
 pub fn log_path() -> PathBuf {
     log_dir().join("ipkvm-iced-diag.log")
 }
@@ -82,17 +81,11 @@ fn input_log_categories() -> ipkvm_core::diag::DiagCategory {
 }
 
 fn log_dir() -> PathBuf {
-    let dir = std::env::var_os("TMPDIR")
-        .or_else(|| std::env::var_os("TEMP"))
-        .or_else(|| std::env::var_os("TMP"))
-        .unwrap_or_else(|| {
-            if cfg!(windows) {
-                std::ffi::OsString::from(".")
-            } else {
-                std::ffi::OsString::from("/tmp")
-            }
-        });
-    PathBuf::from(dir)
+    std::env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(Path::to_path_buf))
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."))
 }
 
 #[cfg(test)]
@@ -100,12 +93,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn log_path_uses_temp_dir_and_fixed_name() {
+    fn log_path_uses_app_dir_and_fixed_name() {
+        let exe_dir = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
         let path = log_path();
         assert_eq!(
             path.file_name().and_then(|n| n.to_str()),
             Some("ipkvm-iced-diag.log")
         );
-        assert!(path.is_absolute(), "诊断日志必须落在系统临时目录");
+        assert_eq!(path.parent(), Some(exe_dir.as_path()));
+
+        let input_path = default_input_log_path();
+        assert_eq!(
+            input_path.file_name().and_then(|n| n.to_str()),
+            Some("ipkvm-input-diag.log")
+        );
+        assert_eq!(input_path.parent(), Some(exe_dir.as_path()));
     }
 }
