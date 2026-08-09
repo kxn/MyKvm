@@ -64,14 +64,30 @@ impl RelativePointerSource for WindowsRawInput {
         drop(guard);
 
         let (init_tx, init_rx) = sync_channel::<Result<isize, String>>(1);
-        let handle = thread::Builder::new()
+        let handle = match thread::Builder::new()
             .name("raw-input".into())
             .spawn(move || raw_input_thread(init_tx))
-            .map_err(|e| format!("spawn raw input thread: {e}"))?;
+        {
+            Ok(handle) => handle,
+            Err(error) => {
+                clear_tx();
+                return Err(format!("spawn raw input thread: {error}"));
+            }
+        };
 
-        let hwnd = init_rx
-            .recv_timeout(std::time::Duration::from_secs(5))
-            .map_err(|e| format!("raw input init timeout: {e}"))??;
+        let hwnd = match init_rx.recv() {
+            Ok(Ok(hwnd)) => hwnd,
+            Ok(Err(error)) => {
+                let _ = handle.join();
+                clear_tx();
+                return Err(error);
+            }
+            Err(error) => {
+                let _ = handle.join();
+                clear_tx();
+                return Err(format!("raw input init channel closed: {error}"));
+            }
+        };
 
         self.started = true;
         self.hwnd = Some(hwnd);
@@ -88,7 +104,7 @@ impl RelativePointerSource for WindowsRawInput {
             let _ = handle.join();
         }
         self.started = false;
-        *TX.lock().unwrap_or_else(|p| p.into_inner()) = None;
+        clear_tx();
     }
 }
 
@@ -98,18 +114,26 @@ impl Drop for WindowsRawInput {
     }
 }
 
+fn clear_tx() {
+    *TX.lock().unwrap_or_else(|p| p.into_inner()) = None;
+}
+
 fn raw_input_thread(init_tx: SyncSender<Result<isize, String>>) {
+    let mut hinstance: Option<HINSTANCE> = None;
+    let mut class_registered = false;
+    let mut hwnd: Option<HWND> = None;
     let result = (|| -> Result<isize, String> {
-        let hinstance: HINSTANCE = unsafe { GetModuleHandleW(None) }
+        let instance: HINSTANCE = unsafe { GetModuleHandleW(None) }
             .map_err(|e| format!("GetModuleHandleW: {e}"))?
             .into();
+        hinstance = Some(instance);
         let class = WNDCLASSEXW {
             cbSize: size_of::<WNDCLASSEXW>() as u32,
             style: Default::default(),
             lpfnWndProc: Some(wnd_proc),
             cbClsExtra: 0,
             cbWndExtra: 0,
-            hInstance: hinstance,
+            hInstance: instance,
             hIcon: Default::default(),
             hCursor: Default::default(),
             hbrBackground: Default::default(),
@@ -120,8 +144,9 @@ fn raw_input_thread(init_tx: SyncSender<Result<isize, String>>) {
         if unsafe { RegisterClassExW(&class) } == 0 {
             return Err("RegisterClassExW failed".into());
         }
+        class_registered = true;
 
-        let hwnd = unsafe {
+        let created = unsafe {
             CreateWindowExW(
                 WINDOW_EX_STYLE::default(),
                 w!("IpkvmRawInputClass"),
@@ -133,22 +158,23 @@ fn raw_input_thread(init_tx: SyncSender<Result<isize, String>>) {
                 0,
                 None,
                 None,
-                Some(hinstance),
+                Some(instance),
                 None,
             )
         }
         .map_err(|e| format!("CreateWindowExW: {e}"))?;
+        hwnd = Some(created);
 
         let device = RAWINPUTDEVICE {
             usUsagePage: 0x01, // HID_USAGE_PAGE_GENERIC
             usUsage: 0x02,     // HID_USAGE_GENERIC_MOUSE
             dwFlags: RIDEV_INPUTSINK,
-            hwndTarget: hwnd,
+            hwndTarget: created,
         };
         unsafe { RegisterRawInputDevices(&[device], size_of::<RAWINPUTDEVICE>() as u32) }
             .map_err(|e| format!("RegisterRawInputDevices: {e}"))?;
 
-        Ok(hwnd.0 as isize)
+        Ok(created.0 as isize)
     })();
 
     let hwnd_raw = match result {
@@ -157,6 +183,7 @@ fn raw_input_thread(init_tx: SyncSender<Result<isize, String>>) {
             raw
         }
         Err(e) => {
+            cleanup_window(hwnd.take(), hinstance, class_registered);
             let _ = init_tx.send(Err(e));
             return;
         }
@@ -169,10 +196,19 @@ fn raw_input_thread(init_tx: SyncSender<Result<isize, String>>) {
             DispatchMessageW(&msg);
         }
     }
+    cleanup_window(
+        Some(HWND(hwnd_raw as *mut c_void)),
+        hinstance,
+        class_registered,
+    );
+}
+
+fn cleanup_window(hwnd: Option<HWND>, hinstance: Option<HINSTANCE>, class_registered: bool) {
     unsafe {
-        let _ = DestroyWindow(HWND(hwnd_raw as *mut c_void));
-        let hinstance: Option<HINSTANCE> = GetModuleHandleW(None).ok().map(Into::into);
-        if let Some(hinstance) = hinstance {
+        if let Some(hwnd) = hwnd {
+            let _ = DestroyWindow(hwnd);
+        }
+        if class_registered && let Some(hinstance) = hinstance {
             let _ = UnregisterClassW(w!("IpkvmRawInputClass"), Some(hinstance));
         }
     }

@@ -42,6 +42,22 @@
 - 相对鼠标模式发送扩展 RFB `PointerRelative`：`button_mask + dx/dy + wheel`。
 - 绝对移动保留 `POINTER_MIN_INTERVAL = 8 ms` 的移动限频；按钮 mask 变化和滚轮边沿不应被降级为相对事件。
 - 绝对滚轮必须用 RFB button 4/5 的瞬时边沿表达：`mask|0x08 -> mask` 或 `mask|0x10 -> mask`，不能发送 `PointerRelative`。
+- 当前连接鼠标设置以 `MouseProfile` 为用户选择事实源，`MouseMode` 是 `profile.resolve_mode()`
+  的运行时解析结果。状态栏选择、连接模态、Ctrl+Alt+M、加载 profile 和恢复默认值都必须
+  通过同一个当前连接事务提交；设置模态只修改默认连接。
+- 当前连接事务在在线且模式变化时先等待 `DesktopSessionController::set_mouse_mode()` 确认；
+  失败时不提交 UI profile/mode、`active_profile`、cursor 或相对捕获状态。
+- 如果当前连接事务已在远程输入中成功发送 `release_all()`，但后续 `set_mouse_mode()` 失败，
+  本地必须退出远程输入并清空按钮、键盘修饰键、相对采样和绝对去重状态；此时仍不得提交新的
+  UI profile/mode。
+- 当前连接事务成功切换模式后统一清空 `pointer_mask`、`last_relative_mask`、`relative_wheel`、
+  `last_modifiers`、`active_keysyms`、`last_pointer`、`last_pointer_sent`、
+  `last_pointer_sent_at`、`relative_sampler`、`relative_source` 和 `relative_rx`，再同步 cursor。
+- 视频区外按下在进入远程输入前不会更新 `pointer_mask`；已在远程输入时视频区外按下会先退出
+  远程输入并 release，不把 UI 点击泄漏为远端按钮。
+- 菜单退出应用在关闭窗口前必须先退出远程输入，复用同一 release 和本地状态清理路径。
+- Windows Raw Input 初始化失败必须释放全局 `TX`、join 初始化线程，并清理已创建窗口/窗口类；
+  `ClipCursor` 在只能使用前台窗口兜底时必须确认前台窗口属于当前进程，避免裁剪其他应用。
 
 ### 桌面会话控制器
 
@@ -106,6 +122,8 @@
 | `relative_wheel` | iced | 相对滚轮 | 只允许在相对模式累计；绝对滚轮不得写入该状态。 |
 | `last_pointer_sent` | iced | 绝对移动/绝对滚轮 | 用于绝对移动去重和限频，滚轮后应回到持久 mask。 |
 | `relative_sampler` | iced | 相对移动采样 | 只处理相对位移，控制边沿前必须 flush。 |
+| `last_modifiers` | iced | 宿主修饰键变化 | 进入/退出/断开/模式切换边界清零，避免重新进入后产生旧修饰键 diff。 |
+| `relative_source` / `relative_rx` | iced | 相对捕获启动/停止 | 只有远程输入且相对模式下存在；退出、断开或切到绝对必须停止。 |
 
 ### RFB pump 指针状态
 
@@ -201,6 +219,12 @@ PointerRelative(button_mask=1, dx, dy)
 | --- | --- | --- |
 | 桌面绝对滚轮后继续移动 | `absolute_wheel_keeps_absolute_pointer_mode_and_allows_later_moves` | 不产生 `PointerRelative`，后续绝对 move 到达。 |
 | 桌面绝对拖拽 | `absolute_drag_preserves_button_mask_across_desktop_to_sink_path` | 按住移动的绝对事件保留按钮 mask。 |
+| 桌面当前连接事务 | `load_profile_file_online_syncs_active_mouse_mode`、`restore_defaults_online_syncs_active_mouse_mode`、`load_profile_file_mode_failure_does_not_commit_ui_state` | 在线 profile/defaults 同步活动输入泵；失败不提交 UI 假状态。 |
+| 桌面本地捕获清理 | `exit_remote_input_clears_all_local_capture_state`、`disconnect_clears_same_local_capture_state_as_exit`、`entering_relative_mode_resets_old_capture_state` | 退出、断开、进入相对模式清同一组本地键鼠/cursor/capture 状态。 |
+| 桌面模式切换失败边界 | `mode_change_failure_after_release_abandons_remote_capture` | `release_all` 已成功后 `set_mouse_mode` 失败时退出远程输入并清本地状态，但不提交新模式。 |
+| 桌面 UI 点击隔离 | `outside_button_press_when_not_remote_does_not_pollute_pointer_mask` | 未进入远程输入时视频区外点击不污染远端按钮 mask。 |
+| 桌面模态初始化 | `menu_and_direct_open_modal_use_same_mouse_profile_state` | 菜单与直接消息打开模态使用同一 profile/mode 状态。 |
+| 桌面应用退出 | `exit_menu_releases_remote_input_before_closing_window` | 关闭窗口前先释放远端并清本地 capture 状态。 |
 | desktop-core pending 屏障 | `flush_pending_events_keeps_mode_switch_as_fifo_barrier` | `SetMouseMode` 不跨旧/新模式事件重排。 |
 | RFB 绝对拖拽到 CH9329 | `real_ch9329_absolute_drag_carries_button_on_move_frames` | 全部为 `0x04`，按住移动携带按钮位。 |
 | RFB 绝对滚轮到 CH9329 | `real_ch9329_absolute_wheel_stays_absolute_and_allows_later_moves` | wheel up 进入绝对帧 wheel 字段，后续 move 仍为绝对。 |

@@ -85,6 +85,8 @@ pub struct RecordingSink {
     pub relative_deltas: Arc<std::sync::Mutex<Vec<(i16, i16)>>>,
     /// 按到达顺序记录的相对指针发送（mask, dx, dy, wheel）。
     pub relative_events: Arc<std::sync::Mutex<Vec<RelativeEvent>>>,
+    /// 按到达顺序记录的模式切换确认。
+    pub mouse_modes: Arc<std::sync::Mutex<Vec<MouseMode>>>,
     /// 重建按钮掩码：sink 只收到事件流，跨批次跟踪当前掩码。
     relative_mask: Arc<std::sync::Mutex<u8>>,
     absolute_mask: Arc<std::sync::Mutex<u8>>,
@@ -92,10 +94,17 @@ pub struct RecordingSink {
     pub releases: Arc<std::sync::Mutex<usize>>,
     /// 测试用：置位后下一次 handle_key_batch 返回错误，模拟串口写失败让泵退出。
     pub fail_next_key: Arc<std::sync::Mutex<bool>>,
+    /// 测试用：置位后下一次 set_mouse_mode 返回错误，模拟 sink 拒绝模式切换。
+    pub fail_next_mouse_mode: Arc<std::sync::Mutex<bool>>,
 }
 
 impl InputSink for RecordingSink {
-    fn set_mouse_mode(&mut self, _mode: MouseMode) -> Result<(), InputError> {
+    fn set_mouse_mode(&mut self, mode: MouseMode) -> Result<(), InputError> {
+        if *self.fail_next_mouse_mode.lock().unwrap() {
+            *self.fail_next_mouse_mode.lock().unwrap() = false;
+            return Err(InputError::PointerPositionUnknown);
+        }
+        self.mouse_modes.lock().unwrap().push(mode);
         Ok(())
     }
 
@@ -537,6 +546,37 @@ where
         self.last_preview_seq = None;
     }
 
+    fn open_modal(&mut self, kind: ModalKind) {
+        match kind {
+            ModalKind::Settings => {
+                let connection = self.default_connection.clone();
+                self.load_modal_connection_settings(&connection);
+                self.modal.scale_mode = self.scale_mode;
+            }
+            ModalKind::Connection => {
+                let connection = self.connection.clone();
+                self.load_modal_connection_settings(&connection);
+            }
+            ModalKind::SaveProfile => {
+                self.modal.confirm_overwrite = false;
+            }
+            ModalKind::About => {}
+        }
+        self.modal.open(kind);
+    }
+
+    fn load_modal_connection_settings(&mut self, connection: &ConnectionSettings) {
+        self.modal.baud_rate = connection.baud_rate;
+        self.modal.preview_fps = connection.preview_fps;
+        self.modal.auto_baud = connection.auto_baud;
+        self.modal.mouse_profile = connection.mouse_profile;
+        self.modal.mouse_mode = connection.mouse_mode;
+        self.modal.relative_sensitivity = connection.relative_sensitivity;
+        self.modal.baud_text = connection.baud_rate.to_string();
+        self.modal.fps_text = connection.preview_fps.to_string();
+        self.modal.sensitivity_text = connection.relative_sensitivity.to_string();
+    }
+
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
             Message::FrameReady(frame) => {
@@ -610,34 +650,7 @@ where
                 Task::none()
             }
             Message::OpenModal(kind) => {
-                if kind == ModalKind::Settings {
-                    self.modal.baud_rate = self.default_connection.baud_rate;
-                    self.modal.preview_fps = self.default_connection.preview_fps;
-                    self.modal.auto_baud = self.default_connection.auto_baud;
-                    self.modal.mouse_mode = self.default_connection.mouse_mode;
-                    self.modal.mouse_profile = self.default_connection.mouse_profile;
-                    self.modal.relative_sensitivity = self.default_connection.relative_sensitivity;
-                    self.modal.baud_text = self.default_connection.baud_rate.to_string();
-                    self.modal.fps_text = self.default_connection.preview_fps.to_string();
-                    self.modal.sensitivity_text =
-                        self.default_connection.relative_sensitivity.to_string();
-                    self.modal.scale_mode = self.scale_mode;
-                }
-                if kind == ModalKind::Connection {
-                    self.modal.baud_rate = self.connection.baud_rate;
-                    self.modal.preview_fps = self.connection.preview_fps;
-                    self.modal.auto_baud = self.connection.auto_baud;
-                    self.modal.mouse_mode = self.connection.mouse_mode;
-                    self.modal.mouse_profile = self.connection.mouse_profile;
-                    self.modal.relative_sensitivity = self.connection.relative_sensitivity;
-                    self.modal.baud_text = self.connection.baud_rate.to_string();
-                    self.modal.fps_text = self.connection.preview_fps.to_string();
-                    self.modal.sensitivity_text = self.connection.relative_sensitivity.to_string();
-                }
-                if kind == ModalKind::SaveProfile {
-                    self.modal.confirm_overwrite = false;
-                }
-                self.modal.open(kind);
+                self.open_modal(kind);
                 Task::none()
             }
             Message::SelectVideo(label) => {
@@ -896,32 +909,7 @@ where
     fn handle_menu_action(&mut self, action: MenuAction) -> Task<Message> {
         match action {
             MenuAction::OpenModal(kind) => {
-                if kind == ModalKind::Settings {
-                    self.modal.baud_rate = self.default_connection.baud_rate;
-                    self.modal.preview_fps = self.default_connection.preview_fps;
-                    self.modal.auto_baud = self.default_connection.auto_baud;
-                    self.modal.mouse_mode = self.default_connection.mouse_mode;
-                    self.modal.relative_sensitivity = self.default_connection.relative_sensitivity;
-                    self.modal.baud_text = self.default_connection.baud_rate.to_string();
-                    self.modal.fps_text = self.default_connection.preview_fps.to_string();
-                    self.modal.sensitivity_text =
-                        self.default_connection.relative_sensitivity.to_string();
-                    self.modal.scale_mode = self.scale_mode;
-                }
-                if kind == ModalKind::Connection {
-                    self.modal.baud_rate = self.connection.baud_rate;
-                    self.modal.preview_fps = self.connection.preview_fps;
-                    self.modal.auto_baud = self.connection.auto_baud;
-                    self.modal.mouse_mode = self.connection.mouse_mode;
-                    self.modal.relative_sensitivity = self.connection.relative_sensitivity;
-                    self.modal.baud_text = self.connection.baud_rate.to_string();
-                    self.modal.fps_text = self.connection.preview_fps.to_string();
-                    self.modal.sensitivity_text = self.connection.relative_sensitivity.to_string();
-                }
-                if kind == ModalKind::SaveProfile {
-                    self.modal.confirm_overwrite = false;
-                }
-                self.modal.open(kind);
+                self.open_modal(kind);
                 Task::none()
             }
             MenuAction::SetLanguage(choice) => {
@@ -973,6 +961,7 @@ where
                 Message::ProfilePath,
             ),
             MenuAction::Simple("exit") => {
+                self.exit_remote_input();
                 if let Some(id) = self.window_id {
                     iced::window::close(id)
                 } else {
@@ -1009,11 +998,13 @@ where
             }
             ModalAction::CancelOverwrite => self.modal.confirm_overwrite = false,
             ModalAction::RestoreDefaults => {
-                self.connection = self.default_connection.clone();
-                self.active_profile = None;
-                self.modal.baud_text = self.connection.baud_rate.to_string();
-                self.modal.fps_text = self.connection.preview_fps.to_string();
-                self.modal.sensitivity_text = self.connection.relative_sensitivity.to_string();
+                if self.apply_current_connection(self.default_connection.clone(), None) {
+                    self.modal.baud_text = self.connection.baud_rate.to_string();
+                    self.modal.fps_text = self.connection.preview_fps.to_string();
+                    self.modal.sensitivity_text = self.connection.relative_sensitivity.to_string();
+                    self.modal.mouse_profile = self.connection.mouse_profile;
+                    self.modal.mouse_mode = self.connection.mouse_mode;
+                }
             }
             ModalAction::SetBaudRate(baud) => {
                 self.apply_modal_connection_field(|c| c.baud_rate = baud);
@@ -1082,43 +1073,70 @@ where
     /// 将当前连接的 profile 作为唯一选择值应用；实际模式变化时经同一条
     /// RFB 输入事件路径释放旧状态并切换，发送失败则保留旧值。
     fn apply_mouse_profile(&mut self, profile: MouseProfile) {
-        let mode = profile.resolve_mode();
-        if mode != self.connection.mouse_mode
-            && self.controller.is_control_online()
-            && let Err(error) = self.controller.set_mouse_mode(mode)
-        {
-            self.status_message =
-                Some(t!("message.pointer_send_failed", error = error.to_string()).to_string());
-            return;
-        }
-        self.connection.mouse_profile = profile;
-        self.connection.mouse_mode = mode;
-        self.active_profile = None;
-        self.sync_cursor();
+        let _ = self.apply_current_mouse_profile(profile, None);
     }
 
     /// 设置模态修改默认值；连接设置模态还需把模式切换发送到当前会话。
     fn apply_modal_mouse_profile(&mut self, profile: MouseProfile) {
         let mode = profile.resolve_mode();
         let is_defaults = self.modal.open == Some(ModalKind::Settings);
-        if !is_defaults
-            && mode != self.connection.mouse_mode
-            && self.controller.is_control_online()
-            && let Err(error) = self.controller.set_mouse_mode(mode)
+        if is_defaults {
+            self.default_connection.mouse_profile = profile;
+            self.default_connection.mouse_mode = mode;
+        } else if !self.apply_current_mouse_profile(profile, None) {
+            return;
+        }
+        self.modal.mouse_profile = profile;
+        self.modal.mouse_mode = mode;
+    }
+
+    /// 当前连接的模式/profile 事务入口。所有会影响活动输入泵的当前连接
+    /// 模式变化都先等待 sink 确认；失败时不提交 UI 连接事实，也不改捕获状态。
+    fn apply_current_mouse_profile(
+        &mut self,
+        profile: MouseProfile,
+        active_profile: Option<String>,
+    ) -> bool {
+        let mut next = self.connection.clone();
+        next.mouse_profile = profile;
+        next.mouse_mode = profile.resolve_mode();
+        self.apply_current_connection(next, active_profile)
+    }
+
+    fn apply_current_connection(
+        &mut self,
+        mut next: ConnectionSettings,
+        active_profile: Option<String>,
+    ) -> bool {
+        normalize_connection_mouse_fields(&mut next);
+        let mode_changed = next.mouse_mode != self.connection.mouse_mode;
+        if mode_changed
+            && self.remote_input
+            && let Err(error) = self.controller.release_all()
         {
             self.status_message =
                 Some(t!("message.pointer_send_failed", error = error.to_string()).to_string());
-            return;
+            return false;
         }
-        self.apply_modal_connection_field(|connection| {
-            connection.mouse_profile = profile;
-            connection.mouse_mode = mode;
-        });
-        self.modal.mouse_profile = profile;
-        self.modal.mouse_mode = mode;
-        if !is_defaults {
-            self.sync_cursor();
+        if mode_changed
+            && self.controller.is_control_online()
+            && let Err(error) = self.controller.set_mouse_mode(next.mouse_mode)
+        {
+            if self.remote_input {
+                self.abandon_remote_input_after_release("set_mouse_mode_failed");
+            }
+            self.status_message =
+                Some(t!("message.pointer_send_failed", error = error.to_string()).to_string());
+            return false;
         }
+
+        self.connection = next;
+        self.active_profile = active_profile;
+        if mode_changed {
+            self.clear_local_capture_state();
+        }
+        self.sync_cursor();
+        true
     }
 
     fn load_profile(&mut self, name: &str) {
@@ -1142,9 +1160,10 @@ where
     }
 
     fn apply_profile(&mut self, profile: ipkvm_desktop_core::config::Profile) {
+        if !self.apply_current_connection(profile.connection.clone(), Some(profile.name.clone())) {
+            return;
+        }
         let missing = apply_profile_to_selection(&mut self.selection, &profile);
-        self.connection = profile.connection;
-        self.active_profile = Some(profile.name);
         self.preview.reset();
         self.reset_preview_handle();
         self.probe_loaded_control();
@@ -1312,6 +1331,25 @@ where
                 }
             }
             iced::Event::Mouse(iced::mouse::Event::ButtonPressed(button)) => {
+                if !self.pointer_inside_video() {
+                    self.log_desktop_input(
+                        ipkvm_core::diag::DiagLevel::Trace,
+                        "mouse_button",
+                        &[
+                            ("action", "pressed_outside".into()),
+                            ("button", mouse_button_name(button).into()),
+                            ("mask", format_mask(self.pointer_mask)),
+                            ("remote", self.remote_input.to_string()),
+                        ],
+                    );
+                    if self.remote_input {
+                        self.exit_remote_input();
+                    }
+                    return;
+                }
+                if !self.remote_input {
+                    self.enter_remote_input();
+                }
                 let mask_before = self.pointer_mask;
                 if self.remote_input && self.connection.mouse_mode == MouseMode::Relative {
                     self.poll_relative();
@@ -1328,13 +1366,6 @@ where
                         ("mask_after", format_mask(self.pointer_mask)),
                     ],
                 );
-                if self.pointer_inside_video() {
-                    if !self.remote_input {
-                        self.enter_remote_input();
-                    }
-                } else if self.remote_input {
-                    self.exit_remote_input();
-                }
                 if self.remote_input
                     && self.connection.mouse_mode == MouseMode::Absolute
                     && let Some(cursor) = self.last_cursor
@@ -1346,6 +1377,9 @@ where
                 }
             }
             iced::Event::Mouse(iced::mouse::Event::ButtonReleased(button)) => {
+                if !self.remote_input {
+                    return;
+                }
                 let mask_before = self.pointer_mask;
                 if self.remote_input && self.connection.mouse_mode == MouseMode::Relative {
                     self.poll_relative();
@@ -1410,8 +1444,11 @@ where
     }
 
     fn enter_remote_input(&mut self) {
+        if self.remote_input {
+            return;
+        }
+        self.clear_local_capture_state();
         self.remote_input = true;
-        self.active_keysyms.clear();
         self.sync_cursor();
         self.log_desktop_input(
             ipkvm_core::diag::DiagLevel::Info,
@@ -1429,16 +1466,8 @@ where
         }
         let mask_before = self.pointer_mask;
         self.remote_input = false;
+        self.clear_local_capture_state();
         self.sync_cursor();
-        self.pointer_mask = 0;
-        self.last_pointer = None;
-        self.last_relative_mask = 0;
-        // 复位去重/限频状态，避免重进同位置点击被节流吞掉。
-        self.last_pointer_sent = None;
-        self.last_pointer_sent_at = None;
-        self.active_keysyms.clear();
-        self.relative_sampler.reset();
-        self.stop_relative_source();
         let _ = self.controller.release_all();
         self.log_desktop_input(
             ipkvm_core::diag::DiagLevel::Warn,
@@ -1447,6 +1476,26 @@ where
                 ("state", "exited".into()),
                 ("mask_before", format_mask(mask_before)),
                 ("release_all", "true".into()),
+            ],
+        );
+    }
+
+    fn abandon_remote_input_after_release(&mut self, reason: &'static str) {
+        if !self.remote_input {
+            return;
+        }
+        let mask_before = self.pointer_mask;
+        self.remote_input = false;
+        self.clear_local_capture_state();
+        self.sync_cursor();
+        self.log_desktop_input(
+            ipkvm_core::diag::DiagLevel::Warn,
+            "remote_input",
+            &[
+                ("state", "aborted".into()),
+                ("reason", reason.into()),
+                ("mask_before", format_mask(mask_before)),
+                ("release_all", "already_sent".into()),
             ],
         );
     }
@@ -1493,6 +1542,20 @@ where
             // 视频矩形后再锁定，不能把整个前台窗口当作视频区域。
             self.cursor.set_clip_rect(None);
         }
+    }
+
+    fn clear_local_capture_state(&mut self) {
+        self.pointer_mask = 0;
+        self.last_pointer = None;
+        self.last_relative_mask = 0;
+        self.relative_wheel = 0;
+        // 复位去重/限频状态，避免重进同位置点击被节流吞掉。
+        self.last_pointer_sent = None;
+        self.last_pointer_sent_at = None;
+        self.active_keysyms.clear();
+        self.last_modifiers = iced::keyboard::Modifiers::empty();
+        self.relative_sampler.reset();
+        self.stop_relative_source();
     }
 
     fn send_absolute(&mut self, cursor: iced::Point) {
@@ -1811,17 +1874,11 @@ where
             MouseMode::Absolute => MouseMode::Relative,
             MouseMode::Relative => MouseMode::Absolute,
         };
-        if let Ok(()) = self.controller.set_mouse_mode(next) {
-            self.connection.mouse_mode = next;
-            self.connection.mouse_profile = match next {
-                MouseMode::Absolute => MouseProfile::RawAbsolute,
-                MouseMode::Relative => MouseProfile::RawRelative,
-            };
-            if next != MouseMode::Relative {
-                self.stop_relative_source();
-            }
-            self.sync_cursor();
-        }
+        let profile = match next {
+            MouseMode::Absolute => MouseProfile::RawAbsolute,
+            MouseMode::Relative => MouseProfile::RawRelative,
+        };
+        let _ = self.apply_current_mouse_profile(profile, None);
     }
 
     fn stop_relative_source(&mut self) {
@@ -1839,11 +1896,8 @@ where
         // 预览源保持常驻，由 PreviewTick 继续出帧。
         self.clear_frame_state();
         self.remote_input = false;
-        self.active_keysyms.clear();
-        self.last_pointer = None;
-        self.last_relative_mask = 0;
+        self.clear_local_capture_state();
         self.sync_cursor();
-        self.stop_relative_source();
     }
 
     /// 清空主视频帧渲染状态（#52）。
@@ -2412,6 +2466,10 @@ fn mouse_mode_name(mode: MouseMode) -> &'static str {
         MouseMode::Absolute => "absolute",
         MouseMode::Relative => "relative",
     }
+}
+
+fn normalize_connection_mouse_fields(connection: &mut ConnectionSettings) {
+    connection.mouse_mode = connection.mouse_profile.resolve_mode();
 }
 
 fn format_mask(mask: u8) -> String {
@@ -3264,12 +3322,124 @@ mod tests {
     }
 
     #[test]
+    fn load_profile_file_online_syncs_active_mouse_mode() {
+        let (mut app, _) = MockApp::new_mock();
+        let mut connection = ConnectionSettings::default();
+        connection.mouse_profile = MouseProfile::Linux;
+        connection.mouse_mode = MouseMode::Relative;
+        app.store
+            .save_profile(&ipkvm_desktop_core::config::Profile {
+                name: "macos".into(),
+                video_device: None,
+                control_device: None,
+                connection,
+            })
+            .expect("保存测试 profile");
+        let path = app.store.profiles_dir().join("macos.toml");
+        take_mouse_modes(&app);
+
+        let _ = app.update(Message::ProfilePath(Some(path)));
+
+        assert_eq!(app.connection.mouse_profile, MouseProfile::Linux);
+        assert_eq!(app.connection.mouse_mode, MouseMode::Relative);
+        assert_eq!(
+            take_mouse_modes(&app),
+            vec![MouseMode::Relative],
+            "在线加载 profile 必须同步活动输入泵，不能只更新 UI 配置"
+        );
+    }
+
+    #[test]
+    fn load_profile_file_mode_failure_does_not_commit_ui_state() {
+        let (mut app, _) = MockApp::new_mock();
+        let old_connection = app.connection.clone();
+        let mut connection = ConnectionSettings::default();
+        connection.mouse_profile = MouseProfile::Linux;
+        connection.mouse_mode = MouseMode::Relative;
+        app.store
+            .save_profile(&ipkvm_desktop_core::config::Profile {
+                name: "failing".into(),
+                video_device: None,
+                control_device: None,
+                connection,
+            })
+            .expect("保存测试 profile");
+        let path = app.store.profiles_dir().join("failing.toml");
+        *app.recording_sink()
+            .expect("recording sink")
+            .fail_next_mouse_mode
+            .lock()
+            .unwrap() = true;
+
+        let _ = app.update(Message::ProfilePath(Some(path)));
+
+        assert_eq!(
+            app.connection, old_connection,
+            "模式切换失败不得提交 profile 中的新连接配置"
+        );
+        assert_eq!(
+            app.active_profile, None,
+            "模式切换失败不得提交新的 active_profile"
+        );
+        assert_eq!(
+            last_visible(&app),
+            None,
+            "模式切换失败不得按失败的新模式改光标状态"
+        );
+    }
+
+    #[test]
+    fn restore_defaults_online_syncs_active_mouse_mode() {
+        let (mut app, _) = MockApp::new_mock();
+        app.default_connection.mouse_profile = MouseProfile::RawRelative;
+        app.default_connection.mouse_mode = MouseMode::Relative;
+        take_mouse_modes(&app);
+
+        let _ = app.update(Message::Modal(ModalAction::RestoreDefaults));
+
+        assert_eq!(app.connection.mouse_profile, MouseProfile::RawRelative);
+        assert_eq!(app.connection.mouse_mode, MouseMode::Relative);
+        assert_eq!(
+            take_mouse_modes(&app),
+            vec![MouseMode::Relative],
+            "恢复默认值在线改模式时必须同步活动输入泵"
+        );
+    }
+
+    #[test]
     fn menu_action_opens_and_closes_modal() {
         let (mut app, _) = MockApp::new_mock();
         let _ = app.update(Message::Menu(MenuAction::OpenModal(ModalKind::Settings)));
         assert_eq!(app.modal.open, Some(ModalKind::Settings));
         let _ = app.update(Message::Modal(ModalAction::Close));
         assert!(app.modal.open.is_none());
+    }
+
+    #[test]
+    fn menu_and_direct_open_modal_use_same_mouse_profile_state() {
+        let (mut app, _) = MockApp::new_mock();
+        app.default_connection.mouse_profile = MouseProfile::Linux;
+        app.default_connection.mouse_mode = MouseMode::Relative;
+
+        let _ = app.update(Message::Menu(MenuAction::OpenModal(ModalKind::Settings)));
+        assert_eq!(app.modal.mouse_profile, MouseProfile::Linux);
+        assert_eq!(app.modal.mouse_mode, MouseMode::Relative);
+        let _ = app.update(Message::Modal(ModalAction::Close));
+
+        app.connection.mouse_profile = MouseProfile::MacOs;
+        app.connection.mouse_mode = MouseMode::Absolute;
+
+        let _ = app.update(Message::Menu(MenuAction::OpenModal(ModalKind::Connection)));
+        assert_eq!(app.modal.mouse_profile, MouseProfile::MacOs);
+        assert_eq!(app.modal.mouse_mode, MouseMode::Absolute);
+        let _ = app.update(Message::Modal(ModalAction::Close));
+
+        app.connection.mouse_profile = MouseProfile::RawRelative;
+        app.connection.mouse_mode = MouseMode::Relative;
+
+        let _ = app.update(Message::OpenModal(ModalKind::Connection));
+        assert_eq!(app.modal.mouse_profile, MouseProfile::RawRelative);
+        assert_eq!(app.modal.mouse_mode, MouseMode::Relative);
     }
 
     #[test]
@@ -3320,6 +3490,23 @@ mod tests {
         app.window_id = Some(iced::window::Id::unique());
         let task = app.update(Message::Menu(MenuAction::Simple("exit")));
         assert_eq!(task.units(), 1, "exit 必须返回有效 window close task");
+    }
+
+    #[test]
+    fn exit_menu_releases_remote_input_before_closing_window() {
+        let (mut app, _) = MockApp::new_mock();
+        app.window_id = Some(iced::window::Id::unique());
+        app.remote_input = true;
+        app.pointer_mask = 0b001;
+        app.active_keysyms
+            .insert(iced::keyboard::key::Code::KeyA, 0x04);
+
+        let task = app.update(Message::Menu(MenuAction::Simple("exit")));
+
+        assert_eq!(task.units(), 1, "exit 仍必须返回窗口关闭 task");
+        assert!(!app.remote_input);
+        assert_eq!(app.pointer_mask, 0);
+        wait_releases(&app, 1);
     }
 
     #[test]
@@ -3456,6 +3643,17 @@ mod tests {
 
     fn last_clipped(app: &MockApp) -> Option<bool> {
         app.cursor_records.clipped.lock().unwrap().last().copied()
+    }
+
+    fn take_mouse_modes(app: &MockApp) -> Vec<MouseMode> {
+        std::mem::take(
+            &mut *app
+                .recording_sink()
+                .expect("recording sink")
+                .mouse_modes
+                .lock()
+                .unwrap(),
+        )
     }
 
     /// 发送 Ctrl+Alt+M（切换鼠标模式）。
@@ -3857,6 +4055,142 @@ mod tests {
     }
 
     #[test]
+    fn exit_remote_input_clears_all_local_capture_state() {
+        let mut app = absolute_video_app();
+        app.remote_input = true;
+        app.pointer_mask = 0b101;
+        app.last_relative_mask = 0b101;
+        app.relative_wheel = 2;
+        app.last_modifiers = keyboard_modifiers(true);
+        app.active_keysyms
+            .insert(iced::keyboard::key::Code::KeyA, 0x04);
+        app.last_pointer = Some((10, 20));
+        app.last_pointer_sent = Some((0b101, 10, 20));
+        app.last_pointer_sent_at = Some(Instant::now());
+
+        app.exit_remote_input();
+
+        assert!(!app.remote_input);
+        assert_eq!(app.pointer_mask, 0);
+        assert_eq!(app.last_relative_mask, 0);
+        assert_eq!(app.relative_wheel, 0);
+        assert_eq!(app.last_modifiers, iced::keyboard::Modifiers::empty());
+        assert!(app.active_keysyms.is_empty());
+        assert_eq!(app.last_pointer, None);
+        assert_eq!(app.last_pointer_sent, None);
+        assert_eq!(app.last_pointer_sent_at, None);
+    }
+
+    #[test]
+    fn disconnect_clears_same_local_capture_state_as_exit() {
+        let mut app = absolute_video_app();
+        app.remote_input = true;
+        app.pointer_mask = 0b111;
+        app.last_relative_mask = 0b111;
+        app.relative_wheel = -2;
+        app.last_modifiers = keyboard_modifiers(true);
+        app.active_keysyms
+            .insert(iced::keyboard::key::Code::KeyA, 0x04);
+        app.last_pointer = Some((30, 40));
+        app.last_pointer_sent = Some((0b111, 30, 40));
+        app.last_pointer_sent_at = Some(Instant::now());
+
+        let _ = app.update(Message::Disconnect);
+
+        assert!(!app.remote_input);
+        assert_eq!(app.pointer_mask, 0);
+        assert_eq!(app.last_relative_mask, 0);
+        assert_eq!(app.relative_wheel, 0);
+        assert_eq!(app.last_modifiers, iced::keyboard::Modifiers::empty());
+        assert!(app.active_keysyms.is_empty());
+        assert_eq!(app.last_pointer, None);
+        assert_eq!(app.last_pointer_sent, None);
+        assert_eq!(app.last_pointer_sent_at, None);
+    }
+
+    #[test]
+    fn entering_relative_mode_resets_old_capture_state() {
+        let mut app = absolute_video_app();
+        app.remote_input = true;
+        app.pointer_mask = 0b001;
+        app.last_relative_mask = 0b001;
+        app.relative_wheel = 1;
+        app.last_modifiers = keyboard_modifiers(true);
+        app.active_keysyms
+            .insert(iced::keyboard::key::Code::KeyA, 0x04);
+        app.last_pointer = Some((80, 45));
+        app.last_pointer_sent = Some((0b001, 80, 45));
+        app.last_pointer_sent_at = Some(Instant::now());
+
+        let _ = app.update(Message::SetMouseMode(MouseMode::Relative));
+
+        assert_eq!(app.connection.mouse_mode, MouseMode::Relative);
+        assert_eq!(app.pointer_mask, 0);
+        assert_eq!(app.last_relative_mask, 0);
+        assert_eq!(app.relative_wheel, 0);
+        assert_eq!(app.last_modifiers, iced::keyboard::Modifiers::empty());
+        assert!(app.active_keysyms.is_empty());
+        assert_eq!(app.last_pointer, None);
+        assert_eq!(app.last_pointer_sent, None);
+        assert_eq!(app.last_pointer_sent_at, None);
+    }
+
+    #[test]
+    fn mode_change_releases_remote_state_before_clearing_local_capture() {
+        let mut app = absolute_video_app();
+        app.remote_input = true;
+        app.pointer_mask = 0b001;
+        app.last_modifiers = keyboard_modifiers(true);
+        app.active_keysyms
+            .insert(iced::keyboard::key::Code::KeyA, 0x04);
+        take_mouse_modes(&app);
+
+        let _ = app.update(Message::SetMouseMode(MouseMode::Relative));
+
+        wait_releases(&app, 1);
+        assert_eq!(take_mouse_modes(&app), vec![MouseMode::Relative]);
+        assert_eq!(app.connection.mouse_mode, MouseMode::Relative);
+    }
+
+    #[test]
+    fn mode_change_failure_after_release_abandons_remote_capture() {
+        let mut app = absolute_video_app();
+        let old_connection = app.connection.clone();
+        app.remote_input = true;
+        app.pointer_mask = 0b001;
+        app.last_relative_mask = 0b001;
+        app.relative_wheel = 1;
+        app.last_modifiers = keyboard_modifiers(true);
+        app.active_keysyms
+            .insert(iced::keyboard::key::Code::KeyA, 0x04);
+        app.last_pointer = Some((80, 45));
+        app.last_pointer_sent = Some((0b001, 80, 45));
+        app.last_pointer_sent_at = Some(Instant::now());
+        *app.recording_sink()
+            .expect("recording sink")
+            .fail_next_mouse_mode
+            .lock()
+            .unwrap() = true;
+
+        let _ = app.update(Message::SetMouseMode(MouseMode::Relative));
+
+        wait_releases(&app, 1);
+        assert_eq!(app.connection, old_connection);
+        assert!(
+            !app.remote_input,
+            "release_all 已成功后 set_mouse_mode 失败，不能继续保持远程输入伪状态"
+        );
+        assert_eq!(app.pointer_mask, 0);
+        assert_eq!(app.last_relative_mask, 0);
+        assert_eq!(app.relative_wheel, 0);
+        assert_eq!(app.last_modifiers, iced::keyboard::Modifiers::empty());
+        assert!(app.active_keysyms.is_empty());
+        assert_eq!(app.last_pointer, None);
+        assert_eq!(app.last_pointer_sent, None);
+        assert_eq!(app.last_pointer_sent_at, None);
+    }
+
+    #[test]
     fn special_key_menu_sends_sequence() {
         let (mut app, _) = MockApp::new_mock();
         enter_remote(&mut app);
@@ -4151,6 +4485,20 @@ mod tests {
         press_button(&mut app, iced::mouse::Button::Left);
         assert!(!app.remote_input, "点击视频区外必须退出远程输入");
         wait_releases(&app, 1);
+    }
+
+    #[test]
+    fn outside_button_press_when_not_remote_does_not_pollute_pointer_mask() {
+        let mut app = absolute_video_app();
+        move_cursor(&mut app, 500.0, 500.0);
+
+        press_button(&mut app, iced::mouse::Button::Left);
+
+        assert!(!app.remote_input);
+        assert_eq!(
+            app.pointer_mask, 0,
+            "非远程输入状态下的视频区外点击不得污染之后发送给远端的按钮 mask"
+        );
     }
 
     #[test]
