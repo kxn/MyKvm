@@ -95,11 +95,9 @@ impl CursorController for WindowsCursorController {
 
     fn set_clipped(&self, clipped: bool) {
         unsafe {
-            use windows::Win32::UI::WindowsAndMessaging::{
-                ClipCursor, GetForegroundWindow, GetWindowRect,
-            };
+            use windows::Win32::UI::WindowsAndMessaging::{ClipCursor, GetWindowRect};
             if clipped {
-                let hwnd = GetForegroundWindow();
+                let hwnd = foreground_window_for_current_process();
                 if !hwnd.is_invalid() {
                     let mut rect = windows::Win32::Foundation::RECT::default();
                     if GetWindowRect(hwnd, &mut rect).is_ok() {
@@ -116,9 +114,9 @@ impl CursorController for WindowsCursorController {
         unsafe {
             use windows::Win32::Foundation::RECT;
             use windows::Win32::Graphics::Gdi::ClientToScreen;
-            use windows::Win32::UI::WindowsAndMessaging::{ClipCursor, GetForegroundWindow};
+            use windows::Win32::UI::WindowsAndMessaging::ClipCursor;
             if let Some(clip) = clip.filter(|rect| rect.is_valid()) {
-                let hwnd = GetForegroundWindow();
+                let hwnd = foreground_window_for_current_process();
                 if !hwnd.is_invalid() {
                     let mut origin = windows::Win32::Foundation::POINT { x: 0, y: 0 };
                     if ClientToScreen(hwnd, &mut origin).as_bool() {
@@ -140,6 +138,26 @@ impl CursorController for WindowsCursorController {
                 let _ = ClipCursor(None);
             }
         }
+    }
+}
+
+#[cfg(target_os = "windows")]
+unsafe fn foreground_window_for_current_process() -> windows::Win32::Foundation::HWND {
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
+
+    let hwnd = unsafe { GetForegroundWindow() };
+    if hwnd.is_invalid() {
+        return hwnd;
+    }
+
+    let mut window_pid = 0;
+    unsafe {
+        GetWindowThreadProcessId(hwnd, Some(&mut window_pid));
+    }
+    if window_pid == std::process::id() {
+        hwnd
+    } else {
+        windows::Win32::Foundation::HWND(std::ptr::null_mut())
     }
 }
 
