@@ -265,19 +265,23 @@ pub struct Ch9329InputSink<Q> {
     address: u8,
     keyboard: KeyboardState,
     mouse: MouseState,
+    recovery_generation: u64,
 }
 
 impl<Q: CommandQueue> Ch9329InputSink<Q> {
     pub fn new(queue: Q, address: u8, mouse_mode: MouseMode) -> Self {
+        let recovery_generation = queue.recovery_generation();
         Self {
             queue,
             address,
             keyboard: KeyboardState::default(),
             mouse: MouseState::new(mouse_mode),
+            recovery_generation,
         }
     }
 
     pub fn set_mouse_mode(&mut self, mode: MouseMode) -> InputResult<()> {
+        self.sync_recovery_generation();
         if self.mouse.mode == mode {
             return Ok(());
         }
@@ -299,6 +303,7 @@ impl<Q: CommandQueue> Ch9329InputSink<Q> {
     }
 
     pub fn handle_key_batch(&mut self, events: &[KeyEvent]) -> InputResult<()> {
+        self.sync_recovery_generation();
         let Some((next, report)) = self.keyboard.apply_keys(events)? else {
             return Ok(());
         };
@@ -312,6 +317,7 @@ impl<Q: CommandQueue> Ch9329InputSink<Q> {
     }
 
     pub fn handle_pointer_batch(&mut self, events: &[PointerEvent]) -> InputResult<()> {
+        self.sync_recovery_generation();
         let before = self.mouse;
         let (next, commands) = self.mouse.apply_events(events)?;
         if commands.is_empty() {
@@ -324,6 +330,7 @@ impl<Q: CommandQueue> Ch9329InputSink<Q> {
     }
 
     pub fn release_all(&mut self) -> InputResult<()> {
+        self.sync_recovery_generation();
         let mut commands = vec![Ch9329Command::Keyboard(KeyboardState::default().report())];
         if let Some(command) = self.mouse.release_command()? {
             commands.push(command);
@@ -350,6 +357,29 @@ impl<Q: CommandQueue> Ch9329InputSink<Q> {
 
     pub fn queue_stats(&self) -> QueueStats {
         self.queue.stats()
+    }
+
+    fn sync_recovery_generation(&mut self) {
+        let generation = self.queue.recovery_generation();
+        if generation == self.recovery_generation {
+            return;
+        }
+        self.recovery_generation = generation;
+        self.keyboard = KeyboardState::default();
+        self.mouse.buttons = 0;
+        self.mouse.last_absolute = None;
+        if diag::is_enabled(DiagLevel::Warn, DiagCategory::LIFECYCLE) {
+            diag::log(
+                DiagLevel::Warn,
+                DiagCategory::LIFECYCLE,
+                "core.ch9329",
+                "sync_after_recovery",
+                &[
+                    ("mode", mouse_mode_name(self.mouse.mode).into()),
+                    ("generation", generation.to_string()),
+                ],
+            );
+        }
     }
 
     fn enqueue_commands(&self, commands: Vec<Ch9329Command>) -> InputResult<()> {
@@ -1604,6 +1634,60 @@ mod tests {
         let batches = queue.accepted_batches();
         assert_eq!(batches.len(), 3);
         assert_eq!(batches.last().unwrap().frames()[0].command(), 0x02);
+    }
+
+    #[test]
+    fn recovery_generation_resets_keyboard_state_before_later_events() {
+        let queue = FakeCommandQueue::new();
+        let mut sink = Ch9329InputSink::new(queue.clone(), 0, MouseMode::Absolute);
+        let key = KeyboardUsage::new(4).unwrap();
+        sink.handle_key(KeyEvent::Down { usage: key }).unwrap();
+
+        queue.bump_recovery_generation();
+        sink.handle_key(KeyEvent::Up { usage: key }).unwrap();
+        sink.handle_key(KeyEvent::Down { usage: key }).unwrap();
+
+        let batches = queue.accepted_batches();
+        assert_eq!(
+            batches.len(),
+            2,
+            "恢复后 key-up 只能更新 mapper 状态，不能再向设备发送旧按键释放"
+        );
+        assert_eq!(batches[0].frames()[0].data(), &[0, 0, 4, 0, 0, 0, 0, 0]);
+        assert_eq!(batches[1].frames()[0].data(), &[0, 0, 4, 0, 0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn recovery_generation_resets_mouse_buttons_before_later_events() {
+        let queue = FakeCommandQueue::new();
+        let mut sink = Ch9329InputSink::new(queue.clone(), 0, MouseMode::Relative);
+        sink.handle_pointer(PointerEvent::Button {
+            button: PointerButton::Left,
+            down: true,
+        })
+        .unwrap();
+
+        queue.bump_recovery_generation();
+        sink.handle_pointer(PointerEvent::Button {
+            button: PointerButton::Left,
+            down: false,
+        })
+        .unwrap();
+        sink.handle_pointer(PointerEvent::RelativeMove { dx: 3, dy: 0 })
+            .unwrap();
+
+        let batches = queue.accepted_batches();
+        assert_eq!(
+            batches.len(),
+            2,
+            "恢复后 button-up 不能再向设备发送旧按钮释放"
+        );
+        assert_eq!(batches[0].frames()[0].data(), &[1, 1, 0, 0, 0]);
+        assert_eq!(
+            batches[1].frames()[0].data(),
+            &[1, 0, 3, 0, 0],
+            "恢复后的相对移动必须使用 released 按钮状态"
+        );
     }
 
     proptest! {

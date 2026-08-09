@@ -44,6 +44,7 @@ pub struct SerialHealth {
     pub device_errors: u64,
     pub resets: u64,
     pub reopens: u64,
+    pub recovery_generation: u64,
     pub dropped_batches: u64,
 }
 
@@ -58,6 +59,7 @@ impl Default for SerialHealth {
             device_errors: 0,
             resets: 0,
             reopens: 0,
+            recovery_generation: 0,
             dropped_batches: 0,
         }
     }
@@ -215,6 +217,10 @@ impl CommandQueue for SerialCommandQueue {
     fn stats(&self) -> QueueStats {
         self.stats.lock().map(|stats| *stats).unwrap_or_default()
     }
+
+    fn recovery_generation(&self) -> u64 {
+        self.health().recovery_generation
+    }
 }
 
 struct PendingCommand {
@@ -344,12 +350,14 @@ fn run_worker(
                 if let Some(recovered_port) =
                     recover(path.as_str(), baud, port, &health, allow_reset)
                 {
-                    port = recovered_port;
-                    transport = TransportState::new(RESPONSE_TIMEOUT);
-                    transport.kind = TransportStateKind::Ready;
-                    decoder = Ch9329Decoder::new();
-                    outbound.clear();
-                    clear_queued_batches(&rx, &health);
+                    port = finish_successful_recovery(
+                        recovered_port,
+                        &mut transport,
+                        &mut decoder,
+                        &mut outbound,
+                        &rx,
+                        &health,
+                    );
                     continue;
                 }
                 set_offline(&health, &fault);
@@ -393,12 +401,14 @@ fn run_worker(
                                         if let Some(recovered_port) =
                                             recover(path.as_str(), baud, port, &health, true)
                                         {
-                                            port = recovered_port;
-                                            transport = TransportState::new(RESPONSE_TIMEOUT);
-                                            transport.kind = TransportStateKind::Ready;
-                                            decoder = Ch9329Decoder::new();
-                                            outbound.clear();
-                                            clear_queued_batches(&rx, &health);
+                                            port = finish_successful_recovery(
+                                                recovered_port,
+                                                &mut transport,
+                                                &mut decoder,
+                                                &mut outbound,
+                                                &rx,
+                                                &health,
+                                            );
                                             break;
                                         }
                                         set_offline(&health, &fault);
@@ -411,12 +421,14 @@ fn run_worker(
                                     if let Some(recovered_port) =
                                         recover(path.as_str(), baud, port, &health, true)
                                     {
-                                        port = recovered_port;
-                                        transport = TransportState::new(RESPONSE_TIMEOUT);
-                                        transport.kind = TransportStateKind::Ready;
-                                        decoder = Ch9329Decoder::new();
-                                        outbound.clear();
-                                        clear_queued_batches(&rx, &health);
+                                        port = finish_successful_recovery(
+                                            recovered_port,
+                                            &mut transport,
+                                            &mut decoder,
+                                            &mut outbound,
+                                            &rx,
+                                            &health,
+                                        );
                                         break;
                                     }
                                     set_offline(&health, &fault);
@@ -432,12 +444,14 @@ fn run_worker(
                                 if let Some(recovered_port) =
                                     recover(path.as_str(), baud, port, &health, true)
                                 {
-                                    port = recovered_port;
-                                    transport = TransportState::new(RESPONSE_TIMEOUT);
-                                    transport.kind = TransportStateKind::Ready;
-                                    decoder = Ch9329Decoder::new();
-                                    outbound.clear();
-                                    clear_queued_batches(&rx, &health);
+                                    port = finish_successful_recovery(
+                                        recovered_port,
+                                        &mut transport,
+                                        &mut decoder,
+                                        &mut outbound,
+                                        &rx,
+                                        &health,
+                                    );
                                     break;
                                 }
                                 set_offline(&health, &fault);
@@ -454,12 +468,14 @@ fn run_worker(
                     log_fault(&path, &health, &fault);
                     if let Some(recovered_port) = recover(path.as_str(), baud, port, &health, false)
                     {
-                        port = recovered_port;
-                        transport = TransportState::new(RESPONSE_TIMEOUT);
-                        transport.kind = TransportStateKind::Ready;
-                        decoder = Ch9329Decoder::new();
-                        outbound.clear();
-                        clear_queued_batches(&rx, &health);
+                        port = finish_successful_recovery(
+                            recovered_port,
+                            &mut transport,
+                            &mut decoder,
+                            &mut outbound,
+                            &rx,
+                            &health,
+                        );
                         continue;
                     }
                     set_offline(&health, &fault);
@@ -470,11 +486,14 @@ fn run_worker(
             if let Some(fault) = transport.check_timeout(Instant::now()) {
                 log_fault(&path, &health, &fault);
                 if let Some(recovered_port) = recover(path.as_str(), baud, port, &health, true) {
-                    port = recovered_port;
-                    transport = TransportState::new(RESPONSE_TIMEOUT);
-                    transport.kind = TransportStateKind::Ready;
-                    decoder = Ch9329Decoder::new();
-                    clear_queued_batches(&rx, &health);
+                    port = finish_successful_recovery(
+                        recovered_port,
+                        &mut transport,
+                        &mut decoder,
+                        &mut outbound,
+                        &rx,
+                        &health,
+                    );
                     continue;
                 }
                 set_offline(&health, &fault);
@@ -486,6 +505,23 @@ fn run_worker(
             return;
         }
     }
+}
+
+fn finish_successful_recovery(
+    recovered_port: Box<dyn SerialPort>,
+    transport: &mut TransportState,
+    decoder: &mut Ch9329Decoder,
+    outbound: &mut VecDeque<Ch9329Frame>,
+    rx: &Receiver<CommandBatch>,
+    health: &Arc<Mutex<SerialHealth>>,
+) -> Box<dyn SerialPort> {
+    *transport = TransportState::new(RESPONSE_TIMEOUT);
+    *decoder = Ch9329Decoder::new();
+    outbound.clear();
+    clear_queued_batches(rx, health);
+    mark_recovery_ready(health);
+    transport.kind = TransportStateKind::Ready;
+    recovered_port
 }
 
 fn receive_batches(
@@ -585,7 +621,6 @@ fn recover_with_timing(
             thread::sleep(recovery_delay);
             if reset_ack && probe_and_release(&mut port, response_timeout) {
                 eprintln!("[ch9329:{path}] recovery ready");
-                set_health_state(health, SerialHealthState::Ready, 0);
                 return Some(port);
             }
         }
@@ -609,7 +644,6 @@ fn recover_with_timing(
         && probe_and_release(&mut reopened, response_timeout)
     {
         eprintln!("[ch9329:{path}] recovery ready after reopen");
-        set_health_state(health, SerialHealthState::Ready, 0);
         Some(reopened)
     } else {
         None
@@ -734,6 +768,14 @@ fn clear_queued_batches(rx: &Receiver<CommandBatch>, health: &Arc<Mutex<SerialHe
     }
 }
 
+fn mark_recovery_ready(health: &Arc<Mutex<SerialHealth>>) {
+    if let Ok(mut health) = health.lock() {
+        health.recovery_generation = health.recovery_generation.saturating_add(1);
+        health.state = SerialHealthState::Ready;
+        health.pending_frames = 0;
+    }
+}
+
 fn set_health_state(health: &Arc<Mutex<SerialHealth>>, state: SerialHealthState, pending: usize) {
     if let Ok(mut health) = health.lock() {
         health.state = state;
@@ -792,6 +834,7 @@ mod tests {
     struct FakeSerialState {
         writes: Vec<Vec<u8>>,
         reads: VecDeque<Vec<u8>>,
+        fail_next_ack_for_command: Option<u8>,
     }
 
     struct FakeSerialPort {
@@ -834,14 +877,18 @@ mod tests {
         fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
             let frame = Ch9329Frame::parse(buffer)
                 .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
-            let response = match frame.command() {
+            let command = frame.command();
+            let mut state = self.state.lock().expect("fake state lock");
+            let fail_ack = (state.fail_next_ack_for_command == Some(command))
+                .then(|| state.fail_next_ack_for_command.take())
+                .flatten();
+            let response = match command {
                 0x0f => Ch9329Frame::new(0, 0x8f, &[0]).ok(),
                 0x01 => Ch9329Frame::new(0, 0x81, &[1, 1, 0, 0, 0, 0, 0, 0]).ok(),
-                0x02 => Ch9329Frame::new(0, 0x82, &[0]).ok(),
-                0x05 => Ch9329Frame::new(0, 0x85, &[0]).ok(),
+                0x02 => Ch9329Frame::new(0, 0x82, &[fail_ack.map_or(0, |_| 0xe6)]).ok(),
+                0x05 => Ch9329Frame::new(0, 0x85, &[fail_ack.map_or(0, |_| 0xe6)]).ok(),
                 _ => None,
             };
-            let mut state = self.state.lock().expect("fake state lock");
             state.writes.push(buffer.to_vec());
             if self.respond
                 && let Some(response) = response
@@ -1035,10 +1082,42 @@ mod tests {
             .map(|bytes| Ch9329Frame::parse(bytes).expect("fake frame").command())
             .collect();
         assert_eq!(commands, vec![0x0f, 0x01, 0x02, 0x05]);
-        let health = health.lock().expect("health lock");
-        assert_eq!(health.state, SerialHealthState::Ready);
-        assert_eq!(health.resets, 1);
-        assert_eq!(health.reopens, 0);
+        let snapshot = health.lock().expect("health lock");
+        assert_eq!(snapshot.state, SerialHealthState::Recovering);
+        assert_eq!(snapshot.resets, 1);
+        assert_eq!(snapshot.reopens, 0);
+        assert_eq!(snapshot.recovery_generation, 0);
+        drop(snapshot);
+
+        mark_recovery_ready(&health);
+        let snapshot = health.lock().expect("health lock");
+        assert_eq!(snapshot.state, SerialHealthState::Ready);
+        assert_eq!(snapshot.recovery_generation, 1);
+    }
+
+    #[test]
+    fn worker_recovery_after_response_error_bumps_recovery_generation() {
+        let (port, state) = FakeSerialPort::new();
+        state
+            .lock()
+            .expect("fake state lock")
+            .fail_next_ack_for_command = Some(0x02);
+        let health = Arc::new(Mutex::new(SerialHealth::default()));
+        let (tx, rx) = mpsc::sync_channel(1);
+        let keyboard = Ch9329Command::Keyboard(KeyboardReport::new(0, [4, 0, 0, 0, 0, 0]))
+            .to_frame(0)
+            .expect("keyboard report is valid");
+        tx.send(CommandBatch::new(vec![keyboard]).unwrap()).unwrap();
+        drop(tx);
+
+        run_worker("fake".into(), 9600, Box::new(port), rx, Arc::clone(&health));
+
+        let snapshot = health.lock().expect("health lock");
+        assert_eq!(snapshot.state, SerialHealthState::Ready);
+        assert_eq!(
+            snapshot.recovery_generation, 1,
+            "任意恢复成功路径都必须发布恢复完成代数"
+        );
     }
 
     #[test]
@@ -1062,5 +1141,26 @@ mod tests {
         assert_eq!(health.state, SerialHealthState::Recovering);
         assert_eq!(health.resets, 1);
         assert_eq!(health.reopens, 1);
+    }
+
+    #[test]
+    fn recovery_generation_ignores_recovery_attempt_counters() {
+        let (tx, _rx) = mpsc::sync_channel(1);
+        let health = Arc::new(Mutex::new(SerialHealth {
+            resets: 1,
+            reopens: 1,
+            ..SerialHealth::default()
+        }));
+        let queue = SerialCommandQueue {
+            tx,
+            stats: Arc::new(Mutex::new(QueueStats::default())),
+            health,
+        };
+
+        assert_eq!(
+            queue.recovery_generation(),
+            0,
+            "recovery_generation 必须表示零键鼠报告已成功写入后的完成代数，不能使用 reset/reopen 尝试次数"
+        );
     }
 }

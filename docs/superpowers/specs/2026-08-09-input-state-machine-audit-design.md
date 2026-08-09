@@ -54,11 +54,17 @@
 
 - `RfbInputPump` 串行处理单活动控制者事件。
 - `mouse_mode` 是已确认/已使用的指针协议模式，首个指针事件也可以触发模式收敛。
+- `TextInputService` 只负责文本映射、节流和生成动作；文本 key batch、取消释放和结果
+  notice 都回到 `RfbInputPump` 的事件循环处理，主 `InputSink` 是唯一状态提交点。
 - 标准 `Pointer` 在 pump 当前为相对模式时必须被忽略，避免绝对事件污染相对捕获。
 - `PointerRelative` 进入前必须确保 sink 已切到相对模式。
 - 鼠标模式切换只应调用 `InputSink::set_mouse_mode(mode)`，由 sink 在硬件层释放旧模式鼠标按钮；pump 不应借 `release_all()` 释放键盘。
 - 鼠标模式切换成功后必须重置 `RfbPointerMapper`，因为 sink 的鼠标按钮状态已被切模式边界清零。
 - 控制者断开、事件源关闭或显式释放才调用 `release_all()`，并在释放成功后重置键盘和指针 mapper。
+- 文本动作在主 sink 上失败或取消后，pump 必须调用 `release_all()` 并重置键盘和指针
+  mapper，避免旧按键或旧按钮 mask 在后续输入中复活。
+- RFB connection driver 向输入事件 channel 发送失败时必须返回 `EventChannelClosed`，
+  让连接明确失败退出；只有没有输入发送端的 view-only 连接可以跳过输入事件。
 
 ### RFB 指针 mapper
 

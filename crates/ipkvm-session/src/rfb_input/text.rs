@@ -1,17 +1,17 @@
 //! 文本键入服务：把 RFB 剪切板文本逐字符转模拟键入（en-US 键盘映射）。
 //!
-//! 独立于物理键盘状态机运行（异步逐字符节流是慢操作，不阻塞 pump 事件循环）。
-//! 非 ASCII / 不可映射字符跳过并计入 `chars_skipped`；设备错误立即停止并
-//! `release_all`；控制者断开/释放时取消进行中的键入。
+//! 服务只负责映射、节流和生成动作，不直接持有 `InputSink`。所有键盘状态提交
+//! 都回到 `RfbInputPump` 的主 sink，避免文本键入与物理/RFB 输入维护两套 CH9329
+//! 状态机。非 ASCII / 不可映射字符跳过并计入 `chars_skipped`；控制者断开/释放
+//! 时取消进行中的键入，并让 pump 在主 sink 上执行 release。
 //!
 //! 锁定键状态源设计为注入点但本轮不实现：当前总是假设锁定键未按下。
 
 use std::collections::VecDeque;
-use std::marker::PhantomData;
 use std::time::Duration;
 
-use ipkvm_core::{InputError, InputSink, KeyEvent, KeyboardUsage};
-use tokio::sync::mpsc;
+use ipkvm_core::{KeyEvent, KeyboardUsage};
+use tokio::sync::{mpsc, oneshot};
 
 use super::keymap::{MappedKey, ShiftRequirement, map_keysym};
 use crate::rfb_connection::RfbClientId;
@@ -40,7 +40,7 @@ pub enum TextInputNotice {
         chars_typed: usize,
         chars_skipped: usize,
     },
-    /// 设备/队列错误：键入已停止并 release_all，剩余文本丢弃。
+    /// pump 应用文本动作时遇到设备/队列错误：键入已停止并 release_all，剩余文本丢弃。
     Error {
         client_id: RfbClientId,
         error: String,
@@ -48,23 +48,19 @@ pub enum TextInputNotice {
 }
 
 /// 文本键入服务句柄：向独立任务发送键入/取消命令。
-///
-/// `S` 仅作为 sink 类型的标记（sink 本身已移入独立任务）。
 #[derive(Debug)]
-pub struct TextInputService<S: InputSink> {
+pub struct TextInputService {
     tx: mpsc::UnboundedSender<TextInputCommand>,
     // 持有任务句柄以便 task 存活，任务终止依赖命令通道关闭。
     _task: Option<tokio::task::JoinHandle<()>>,
-    marker: PhantomData<S>,
 }
 
-impl<S: InputSink> Clone for TextInputService<S> {
+impl Clone for TextInputService {
     fn clone(&self) -> Self {
         Self {
             tx: self.tx.clone(),
             // 克隆句柄不需要重复持有任务句柄。
             _task: None,
-            marker: PhantomData,
         }
     }
 }
@@ -79,13 +75,32 @@ pub(super) enum TextInputCommand {
     },
 }
 
-impl<S: InputSink> TextInputService<S> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum TextInputBatchResult {
+    Continue,
+    Abort,
+}
+
+#[derive(Debug)]
+pub(super) enum TextInputAction {
+    KeyBatch {
+        client_id: RfbClientId,
+        events: Vec<KeyEvent>,
+        result: oneshot::Sender<TextInputBatchResult>,
+    },
+    ReleaseAll {
+        client_id: RfbClientId,
+    },
+    Notice(TextInputNotice),
+}
+
+impl TextInputService {
     /// 请求把文本逐字符转模拟键入（不等待键入完成）。
     pub async fn type_text(&self, client_id: RfbClientId, text: String) {
         let _ = self.tx.send(TextInputCommand::TypeText { client_id, text });
     }
 
-    /// 取消指定控制者的进行中键入并 release_all。
+    /// 取消指定控制者的进行中键入，并请求 pump 在主 sink 上 release_all。
     pub async fn cancel(&self, client_id: RfbClientId) {
         let _ = self.tx.send(TextInputCommand::Cancel { client_id });
     }
@@ -105,21 +120,18 @@ impl<S: InputSink> TextInputService<S> {
     ) -> Result<(), mpsc::error::SendError<TextInputCommand>> {
         self.tx.send(TextInputCommand::Cancel { client_id })
     }
-}
 
-impl<S: InputSink + Send + 'static> TextInputService<S> {
-    /// 启动独立键入任务，返回服务句柄与处理结果通知接收端。
-    pub fn new(sink: S, config: TextInputConfig) -> (Self, mpsc::Receiver<TextInputNotice>) {
+    /// 启动独立键入任务，返回服务句柄与文本动作接收端。
+    pub(super) fn new(config: TextInputConfig) -> (Self, mpsc::Receiver<TextInputAction>) {
         let (command_tx, command_rx) = mpsc::unbounded_channel();
-        let (notice_tx, notice_rx) = mpsc::channel(16);
-        let task = tokio::spawn(run_service(sink, config, command_rx, notice_tx));
+        let (action_tx, action_rx) = mpsc::channel(16);
+        let task = tokio::spawn(run_service(config, command_rx, action_tx));
         (
             Self {
                 tx: command_tx,
                 _task: Some(task),
-                marker: PhantomData,
             },
-            notice_rx,
+            action_rx,
         )
     }
 }
@@ -127,15 +139,20 @@ impl<S: InputSink + Send + 'static> TextInputService<S> {
 enum TypeTextOutcome {
     Completed { typed: usize, skipped: usize },
     Aborted { typed: usize, skipped: usize },
-    Failed { error: InputError },
+    Stopped,
+    OutputClosed,
+}
+
+enum SendKeyBatchError {
+    Aborted,
+    OutputClosed,
 }
 
 /// 独立任务：顺序消费命令，逐字符节流键入。
-async fn run_service<S: InputSink>(
-    mut sink: S,
+async fn run_service(
     config: TextInputConfig,
     mut commands: mpsc::UnboundedReceiver<TextInputCommand>,
-    notices: mpsc::Sender<TextInputNotice>,
+    actions: mpsc::Sender<TextInputAction>,
 ) {
     // 键入节流期间提前取出的命令，保证 FIFO 顺序不丢。
     let mut stash: VecDeque<TextInputCommand> = VecDeque::new();
@@ -150,12 +167,12 @@ async fn run_service<S: InputSink>(
         match command {
             TextInputCommand::TypeText { client_id, text } => {
                 let outcome = type_text(
-                    &mut sink,
                     config.inter_char_delay,
                     client_id,
                     &text,
                     &mut commands,
                     &mut stash,
+                    &actions,
                 )
                 .await;
                 let notice = match outcome {
@@ -165,19 +182,21 @@ async fn run_service<S: InputSink>(
                         chars_typed: typed,
                         chars_skipped: skipped,
                     },
-                    TypeTextOutcome::Failed { error } => {
-                        let _ = sink.release_all();
-                        TextInputNotice::Error {
-                            client_id,
-                            error: error.to_string(),
-                        }
-                    }
+                    TypeTextOutcome::Stopped => continue,
+                    TypeTextOutcome::OutputClosed => return,
                 };
-                let _ = notices.send(notice).await;
+                if actions.send(TextInputAction::Notice(notice)).await.is_err() {
+                    return;
+                }
             }
-            TextInputCommand::Cancel { .. } => {
-                // 防御性复位：中止路径已 release_all 时这里多写一次复位报告，无害。
-                let _ = sink.release_all();
+            TextInputCommand::Cancel { client_id } => {
+                if actions
+                    .send(TextInputAction::ReleaseAll { client_id })
+                    .await
+                    .is_err()
+                {
+                    return;
+                }
             }
         }
     }
@@ -185,15 +204,15 @@ async fn run_service<S: InputSink>(
 
 /// 逐字符：press 批次 → 节流 → release 批次 → 节流。
 ///
-/// 节流间隔内收到匹配的 Cancel 或命令通道关闭时立即中止（当前按下的键由
-/// `release_all` 复位），剩余文本丢弃。
-async fn type_text<S: InputSink>(
-    sink: &mut S,
+/// 节流间隔内收到匹配的 Cancel 或命令通道关闭时立即中止，请求 pump 用
+/// `release_all` 复位当前按下的键，剩余文本丢弃。
+async fn type_text(
     inter_char_delay: Duration,
     client_id: RfbClientId,
     text: &str,
     commands: &mut mpsc::UnboundedReceiver<TextInputCommand>,
     stash: &mut VecDeque<TextInputCommand>,
+    actions: &mpsc::Sender<TextInputAction>,
 ) -> TypeTextOutcome {
     let mut typed = 0usize;
     let mut skipped = 0usize;
@@ -206,34 +225,40 @@ async fn type_text<S: InputSink>(
             Ok(mapped) => mapped,
         };
         let (down_events, up_events) = key_events(mapped);
-        if let Err(error) = sink.handle_key_batch(&down_events) {
-            return TypeTextOutcome::Failed { error };
+        if let Err(error) = send_key_batch(actions, client_id, down_events).await {
+            return match error {
+                SendKeyBatchError::Aborted => TypeTextOutcome::Stopped,
+                SendKeyBatchError::OutputClosed => TypeTextOutcome::OutputClosed,
+            };
         }
         if let Some(outcome) = check_throttle(
-            sink,
             client_id,
             typed,
             skipped,
             inter_char_delay,
             commands,
             stash,
+            actions,
         )
         .await
         {
             return outcome;
         }
-        if let Err(error) = sink.handle_key_batch(&up_events) {
-            return TypeTextOutcome::Failed { error };
+        if let Err(error) = send_key_batch(actions, client_id, up_events).await {
+            return match error {
+                SendKeyBatchError::Aborted => TypeTextOutcome::Stopped,
+                SendKeyBatchError::OutputClosed => TypeTextOutcome::OutputClosed,
+            };
         }
         typed += 1;
         if let Some(outcome) = check_throttle(
-            sink,
             client_id,
             typed,
             skipped,
             inter_char_delay,
             commands,
             stash,
+            actions,
         )
         .await
         {
@@ -244,32 +269,65 @@ async fn type_text<S: InputSink>(
 }
 
 /// 节流间隔内监听取消命令；返回 `Some(outcome)` 表示键入被中止。
-async fn check_throttle<S: InputSink>(
-    sink: &mut S,
+async fn check_throttle(
     client_id: RfbClientId,
     typed: usize,
     skipped: usize,
     delay: Duration,
     commands: &mut mpsc::UnboundedReceiver<TextInputCommand>,
     stash: &mut VecDeque<TextInputCommand>,
+    actions: &mpsc::Sender<TextInputAction>,
 ) -> Option<TypeTextOutcome> {
     match tokio::time::timeout(delay, commands.recv()).await {
         Err(_elapsed) => None,
         Ok(None) => {
             // 命令通道关闭：服务句柄被丢弃，立即复位并结束。
-            let _ = sink.release_all();
+            if actions
+                .send(TextInputAction::ReleaseAll { client_id })
+                .await
+                .is_err()
+            {
+                return Some(TypeTextOutcome::OutputClosed);
+            }
             Some(TypeTextOutcome::Aborted { typed, skipped })
         }
         Ok(Some(TextInputCommand::Cancel {
             client_id: cancelled,
         })) if cancelled == client_id => {
-            let _ = sink.release_all();
+            if actions
+                .send(TextInputAction::ReleaseAll { client_id })
+                .await
+                .is_err()
+            {
+                return Some(TypeTextOutcome::OutputClosed);
+            }
             Some(TypeTextOutcome::Aborted { typed, skipped })
         }
         Ok(Some(other)) => {
             stash.push_back(other);
             None
         }
+    }
+}
+
+async fn send_key_batch(
+    actions: &mpsc::Sender<TextInputAction>,
+    client_id: RfbClientId,
+    events: Vec<KeyEvent>,
+) -> Result<(), SendKeyBatchError> {
+    let (result_tx, result_rx) = oneshot::channel();
+    actions
+        .send(TextInputAction::KeyBatch {
+            client_id,
+            events,
+            result: result_tx,
+        })
+        .await
+        .map_err(|_| SendKeyBatchError::OutputClosed)?;
+    match result_rx.await {
+        Ok(TextInputBatchResult::Continue) => Ok(()),
+        Ok(TextInputBatchResult::Abort) => Err(SendKeyBatchError::Aborted),
+        Err(_) => Err(SendKeyBatchError::OutputClosed),
     }
 }
 
@@ -316,76 +374,10 @@ fn left_shift() -> KeyboardUsage {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
-
-    use ipkvm_core::{
-        InputError, InputResult, InputSink, KeyEvent, KeyboardUsage, MouseMode, PointerEvent,
-    };
+    use ipkvm_core::{KeyEvent, KeyboardUsage};
+    use tokio::sync::mpsc;
 
     use super::*;
-
-    #[derive(Clone, Default)]
-    struct RecordingSink {
-        state: Arc<Mutex<RecordingSinkState>>,
-    }
-
-    #[derive(Default)]
-    struct RecordingSinkState {
-        key_batches: Vec<Vec<KeyEvent>>,
-        release_count: usize,
-        fail_next: bool,
-    }
-
-    impl RecordingSink {
-        fn key_batches(&self) -> Vec<Vec<KeyEvent>> {
-            self.state
-                .lock()
-                .expect("recording sink lock poisoned")
-                .key_batches
-                .clone()
-        }
-
-        fn release_count(&self) -> usize {
-            self.state
-                .lock()
-                .expect("recording sink lock poisoned")
-                .release_count
-        }
-
-        fn fail_next(&self) {
-            self.state
-                .lock()
-                .expect("recording sink lock poisoned")
-                .fail_next = true;
-        }
-    }
-
-    impl InputSink for RecordingSink {
-        fn set_mouse_mode(&mut self, _mode: MouseMode) -> InputResult<()> {
-            Ok(())
-        }
-
-        fn handle_key_batch(&mut self, events: &[KeyEvent]) -> InputResult<()> {
-            let mut state = self.state.lock().expect("recording sink lock poisoned");
-            if std::mem::take(&mut state.fail_next) {
-                return Err(InputError::RolloverLimitExceeded);
-            }
-            state.key_batches.push(events.to_vec());
-            Ok(())
-        }
-
-        fn handle_pointer_batch(&mut self, _events: &[PointerEvent]) -> InputResult<()> {
-            Ok(())
-        }
-
-        fn release_all(&mut self) -> InputResult<()> {
-            self.state
-                .lock()
-                .expect("recording sink lock poisoned")
-                .release_count += 1;
-            Ok(())
-        }
-    }
 
     fn down(usage: u8) -> KeyEvent {
         KeyEvent::Down {
@@ -403,25 +395,60 @@ mod tests {
         RfbClientId::for_test(value)
     }
 
-    async fn receive_notice(notices: &mut mpsc::Receiver<TextInputNotice>) -> TextInputNotice {
-        tokio::time::timeout(Duration::from_secs(1), notices.recv())
+    async fn receive_action(actions: &mut mpsc::Receiver<TextInputAction>) -> TextInputAction {
+        tokio::time::timeout(Duration::from_secs(1), actions.recv())
             .await
-            .expect("typed notice within timeout")
-            .expect("notice channel open")
+            .expect("text action within timeout")
+            .expect("action channel open")
+    }
+
+    async fn collect_key_batches_until_notice(
+        actions: &mut mpsc::Receiver<TextInputAction>,
+    ) -> (Vec<Vec<KeyEvent>>, TextInputNotice) {
+        let mut batches = Vec::new();
+        loop {
+            match receive_action(actions).await {
+                TextInputAction::KeyBatch { events, result, .. } => {
+                    result
+                        .send(TextInputBatchResult::Continue)
+                        .expect("text service should wait for batch result");
+                    batches.push(events);
+                }
+                TextInputAction::ReleaseAll { .. } => panic!("unexpected release action"),
+                TextInputAction::Notice(notice) => return (batches, notice),
+            }
+        }
+    }
+
+    async fn expect_key_batch(
+        actions: &mut mpsc::Receiver<TextInputAction>,
+        expected_client: RfbClientId,
+        expected_events: Vec<KeyEvent>,
+    ) {
+        match receive_action(actions).await {
+            TextInputAction::KeyBatch {
+                client_id,
+                events,
+                result,
+            } => {
+                assert_eq!(client_id, expected_client);
+                assert_eq!(events, expected_events);
+                result
+                    .send(TextInputBatchResult::Continue)
+                    .expect("text service should wait for batch result");
+            }
+            other => panic!("expected key batch, got {other:?}"),
+        }
     }
 
     #[tokio::test]
     async fn text_input_typing_presses_and_releases_each_char() {
-        let sink = RecordingSink::default();
-        let (service, mut notices) = TextInputService::new(
-            sink.clone(),
-            TextInputConfig {
-                inter_char_delay: Duration::ZERO,
-            },
-        );
+        let (service, mut actions) = TextInputService::new(TextInputConfig {
+            inter_char_delay: Duration::ZERO,
+        });
         service.type_text(client(1), "ab".to_string()).await;
 
-        let notice = receive_notice(&mut notices).await;
+        let (batches, notice) = collect_key_batches_until_notice(&mut actions).await;
         assert_eq!(
             notice,
             TextInputNotice::Typed {
@@ -431,7 +458,7 @@ mod tests {
             }
         );
         assert_eq!(
-            sink.key_batches(),
+            batches,
             vec![
                 vec![down(0x04)],
                 vec![up(0x04)],
@@ -443,16 +470,12 @@ mod tests {
 
     #[tokio::test]
     async fn text_input_synthesizes_shift_for_required_characters() {
-        let sink = RecordingSink::default();
-        let (service, mut notices) = TextInputService::new(
-            sink.clone(),
-            TextInputConfig {
-                inter_char_delay: Duration::ZERO,
-            },
-        );
+        let (service, mut actions) = TextInputService::new(TextInputConfig {
+            inter_char_delay: Duration::ZERO,
+        });
         service.type_text(client(1), "A!".to_string()).await;
 
-        let notice = receive_notice(&mut notices).await;
+        let (batches, notice) = collect_key_batches_until_notice(&mut actions).await;
         assert_eq!(
             notice,
             TextInputNotice::Typed {
@@ -462,7 +485,7 @@ mod tests {
             }
         );
         assert_eq!(
-            sink.key_batches(),
+            batches,
             vec![
                 vec![down(0xe1), down(0x04)],
                 vec![up(0x04), up(0xe1)],
@@ -474,16 +497,12 @@ mod tests {
 
     #[tokio::test]
     async fn text_input_maps_newline_and_tab_to_enter_and_tab() {
-        let sink = RecordingSink::default();
-        let (service, mut notices) = TextInputService::new(
-            sink.clone(),
-            TextInputConfig {
-                inter_char_delay: Duration::ZERO,
-            },
-        );
+        let (service, mut actions) = TextInputService::new(TextInputConfig {
+            inter_char_delay: Duration::ZERO,
+        });
         service.type_text(client(1), "a\nb\tc".to_string()).await;
 
-        let notice = receive_notice(&mut notices).await;
+        let (batches, notice) = collect_key_batches_until_notice(&mut actions).await;
         assert_eq!(
             notice,
             TextInputNotice::Typed {
@@ -493,7 +512,7 @@ mod tests {
             }
         );
         assert_eq!(
-            sink.key_batches(),
+            batches,
             vec![
                 vec![down(0x04)],
                 vec![up(0x04)],
@@ -511,19 +530,15 @@ mod tests {
 
     #[tokio::test]
     async fn text_input_skips_unmappable_characters() {
-        let sink = RecordingSink::default();
-        let (service, mut notices) = TextInputService::new(
-            sink.clone(),
-            TextInputConfig {
-                inter_char_delay: Duration::ZERO,
-            },
-        );
+        let (service, mut actions) = TextInputService::new(TextInputConfig {
+            inter_char_delay: Duration::ZERO,
+        });
         // 'é' 与 '中' 非 ASCII、'\r' 不可映射 → 全部跳过。
         service
             .type_text(client(1), "a\u{e9}\u{4e2d}\r".to_string())
             .await;
 
-        let notice = receive_notice(&mut notices).await;
+        let (batches, notice) = collect_key_batches_until_notice(&mut actions).await;
         assert_eq!(
             notice,
             TextInputNotice::Typed {
@@ -532,50 +547,14 @@ mod tests {
                 chars_skipped: 3,
             }
         );
-        assert_eq!(sink.key_batches(), vec![vec![down(0x04)], vec![up(0x04)]]);
-    }
-
-    #[tokio::test]
-    async fn text_input_device_error_stops_releases_and_reports_error() {
-        let sink = RecordingSink::default();
-        let (service, mut notices) = TextInputService::new(
-            sink.clone(),
-            TextInputConfig {
-                inter_char_delay: Duration::ZERO,
-            },
-        );
-        sink.fail_next();
-        service.type_text(client(1), "ab".to_string()).await;
-
-        let notice = receive_notice(&mut notices).await;
-        assert_eq!(
-            notice,
-            TextInputNotice::Error {
-                client_id: client(1),
-                error: InputError::RolloverLimitExceeded.to_string(),
-            }
-        );
-        // 首个批次失败后立即停止：剩余文本不再键入，且已 release_all。
-        assert!(sink.key_batches().is_empty());
-        assert_eq!(sink.release_count(), 1);
-        // 服务仍存活但不再产生通知。
-        assert!(
-            tokio::time::timeout(Duration::from_millis(50), notices.recv())
-                .await
-                .is_err(),
-            "no further notices after an error"
-        );
+        assert_eq!(batches, vec![vec![down(0x04)], vec![up(0x04)]]);
     }
 
     #[tokio::test]
     async fn text_input_cancel_interrupts_in_flight_typing_and_releases_all() {
-        let sink = RecordingSink::default();
-        let (service, mut notices) = TextInputService::new(
-            sink.clone(),
-            TextInputConfig {
-                inter_char_delay: Duration::from_millis(20),
-            },
-        );
+        let (service, mut actions) = TextInputService::new(TextInputConfig {
+            inter_char_delay: Duration::from_millis(20),
+        });
         let _typing = tokio::spawn({
             let service = service.clone();
             async move { service.type_text(client(1), "abc".to_string()).await }
@@ -585,7 +564,16 @@ mod tests {
         service.cancel(client(1)).await;
 
         // 取消发生在第一个字符释放之前：0 个字符完整键入，剩余文本丢弃。
-        let notice = receive_notice(&mut notices).await;
+        expect_key_batch(&mut actions, client(1), vec![down(0x04)]).await;
+        assert!(matches!(
+            receive_action(&mut actions).await,
+            TextInputAction::ReleaseAll {
+                client_id: found
+            } if found == client(1)
+        ));
+        let TextInputAction::Notice(notice) = receive_action(&mut actions).await else {
+            panic!("expected typed notice");
+        };
         assert_eq!(
             notice,
             TextInputNotice::Typed {
@@ -594,51 +582,31 @@ mod tests {
                 chars_skipped: 0,
             }
         );
-        assert_eq!(sink.key_batches(), vec![vec![down(0x04)]]);
-        // 中止路径（匹配的 Cancel 在节流内被消费）release_all 一次。
-        assert_eq!(sink.release_count(), 1);
     }
 
     #[tokio::test(start_paused = true)]
     async fn text_input_inter_char_delay_gates_press_and_release() {
-        let sink = RecordingSink::default();
-        let (service, _notices) = TextInputService::new(
-            sink.clone(),
-            TextInputConfig {
-                inter_char_delay: Duration::from_millis(100),
-            },
-        );
+        let (service, mut actions) = TextInputService::new(TextInputConfig {
+            inter_char_delay: Duration::from_millis(100),
+        });
         let _typing = tokio::spawn({
             let service = service.clone();
             async move { service.type_text(client(1), "ab".to_string()).await }
         });
 
-        async fn wait_for_batches(sink: &RecordingSink, expected: Vec<Vec<KeyEvent>>) {
-            tokio::time::timeout(Duration::from_millis(500), async {
-                loop {
-                    if sink.key_batches() == expected {
-                        return;
-                    }
-                    tokio::time::advance(Duration::from_millis(5)).await;
-                    tokio::task::yield_now().await;
-                }
-            })
-            .await
-            .expect("batches reached within paused-clock deadline");
-        }
-
         // press(a) 在键入开始时立即发出。
-        wait_for_batches(&sink, vec![vec![down(0x04)]]).await;
+        expect_key_batch(&mut actions, client(1), vec![down(0x04)]).await;
         // 100ms 节流间隔未到：release 尚未发出。
         tokio::time::advance(Duration::from_millis(50)).await;
         tokio::task::yield_now().await;
-        assert_eq!(sink.key_batches(), vec![vec![down(0x04)]]);
+        assert!(
+            actions.try_recv().is_err(),
+            "release should wait for the full inter-char delay"
+        );
         // 越过 release 节流点后再越过下一个 press 节流点。
-        wait_for_batches(&sink, vec![vec![down(0x04)], vec![up(0x04)]]).await;
-        wait_for_batches(
-            &sink,
-            vec![vec![down(0x04)], vec![up(0x04)], vec![down(0x05)]],
-        )
-        .await;
+        tokio::time::advance(Duration::from_millis(50)).await;
+        expect_key_batch(&mut actions, client(1), vec![up(0x04)]).await;
+        tokio::time::advance(Duration::from_millis(100)).await;
+        expect_key_batch(&mut actions, client(1), vec![down(0x05)]).await;
     }
 }

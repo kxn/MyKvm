@@ -21,9 +21,12 @@
 
 `HeadlessWebService` 已把项目自有中文控制台页面、固定 noVNC 1.7.0 资源和现有 `/rfb` 组装为单一嵌入式 HTTP 服务。真实 Chrome 自动化已经证明模拟帧像素、桌面与窄视口等比缩放、键盘 HID、缩放后的绝对坐标、按钮顺序、断开释放和重连到达 `RfbInputPump` 后的 `InputSink`。资源来源、逐文件哈希、许可证和浏览器测试依赖也进入统一本机门禁。
 
-正式 `ipkvm-headless` 二进制已通过 CLI 组装真实视频与设备选择：`--camera <名称>` 按 id 或显示名打开 Windows Media Foundation 相机，`--list-cameras` 枚举设备后退出，`--assets <目录>` 使用 Y4M 文件伪设备（与 `--camera` 互斥），未指定视频参数时启动空会话，等待网页选择设备后再创建。`FrameSource` 暴露 `source_info` 元数据，`/api/status` 报告帧源与活动控制器状态，`/api/screenshot` 用 `jpeg-encoder` 把最新 BGRA8888 帧编码为 JPEG 快照，RFB `ClientCutText` 通过独立 `TextInputService` 转模拟键入。
+正式 `ipkvm-headless` 二进制已通过 CLI 组装真实视频与设备选择：`--camera <名称>` 按 id 或显示名打开 Windows Media Foundation 相机，`--list-cameras` 枚举设备后退出，`--assets <目录>` 使用 Y4M 文件伪设备（与 `--camera` 互斥），未指定视频参数时启动空会话，等待网页选择设备后再创建。`FrameSource` 暴露 `source_info` 元数据，`/api/status` 报告帧源与活动控制器状态，`/api/screenshot` 用 `jpeg-encoder` 把最新 BGRA8888 帧编码为 JPEG 快照，RFB `ClientCutText` 通过独立 `TextInputService` 调度为模拟键入动作，并由 `RfbInputPump` 串行提交到主 `InputSink`。
 
-上述实现仍不是可控制真实机器的完整无头产品：真实 CH9329 串口尚未实现，键鼠事件进入 `FakeCommandQueue` 后被丢弃；鉴权与 TLS 也未实现。以下设备会话和生产启动描述仍是目标形态，不能当作当前已交付能力。
+上述实现仍不是完整生产形态：`ipkvm-headless` 已能按配置组装真实 `SerialCommandQueue`
+或 `FakeCommandQueue`，但真实硬件路径仍缺少长期运行验证、鉴权与 TLS 也未实现。以下
+设备会话和生产启动描述中涉及安全、部署和生产硬化的内容仍是目标形态，不能当作当前已
+交付能力。
 
 当前不做完整安全子系统。鉴权、TLS、访问控制、审计、公网暴露、反向代理、VPN、会话权限等都视为后续可叠加层；但默认监听地址固定为 `127.0.0.1`，只有显式配置才允许监听其他地址。
 
@@ -220,7 +223,9 @@ InputSink
 - `set_mouse_mode(mode)` 是鼠标模式边界，只允许处理鼠标模式和旧模式鼠标按钮释放，不应释放键盘；输入泵在 sink 确认后重置 pointer mapper。
 - 所有输入方法返回 `Result`，队列关闭、不可映射按键、6KRO 溢出等错误必须能传回 UI 或 RFB 状态层。
 - `Result::Ok` 只表示有序命令批次已被本进程接受，不表示 CH9329 已执行。
-- 文本粘贴转模拟键入不放进物理 `InputSink`，阶段 2 由独立文本键入服务实现。
+- 文本粘贴转模拟键入由独立 `TextInputService` 负责映射和节流，但服务不持有
+  `InputSink`；它只向 `RfbInputPump` 产生按键批次、释放和结果通知，最终状态提交仍
+  由主 `InputSink` 完成。
 - 输入诊断日志由 `ipkvm-core::diag` 统一提供文件 logger，各入口只负责启用配置；日志按
   `input`、`pointer`、`keyboard`、`queue`、`serial`、`lifecycle` 分类过滤，默认不打开
   `keyboard` 详细类别，避免复现鼠标问题时记录不必要的按键信息。
@@ -453,6 +458,11 @@ WebSocket 兼容：
 - 不支持的 keysym 和 Shift 冲突产生可观测拒绝，事件泵继续处理后续输入和断线释放；sink 或生命周期错误则保留原事件并停止循环，调用方可以修复后重试。
 - 控制者断线或事件发送端关闭时调用 `release_all()`；只有释放成功后才清空控制者和两个 mapper，失败时保留完整软件状态。
 - 鼠标模式切换不调用 `release_all()`；切换成功后只重置 pointer mapper，键盘 mapper 保持当前键盘状态直到真实 key-up 或控制者释放。
+- `TextInputService` 只生成文本键入动作；pump 收到动作后在同一个事件循环中写入主
+  `InputSink`。文本失败或取消触发主 sink 的 `release_all()` 并重置键盘/指针 mapper，
+  避免旧按键或按钮状态在后续输入中复活。
+- RFB connection driver 向输入事件 channel 发送失败时返回 `EventChannelClosed`，不得
+  静默吞掉已解码输入事件。
 - 网页相对鼠标模式需要浏览器 Pointer Lock。若 noVNC 集成无法直接提供相对位移，则需要定制 noVNC 页面层；这项不假定 noVNC 原生完成。
 
 会话和并发：
@@ -569,7 +579,7 @@ WebSocket 兼容：
 - 完成正式 `ipkvm-headless` 后台进程：同时提供 RFB TCP（5900）和嵌入式 noVNC 网页 + RFB WebSocket（6080），共享单活动控制者连接闸门；硬件到货前使用 Y4M 循环播放模拟帧源和 `FakeCommandQueue`，`headless_process` 集成测试覆盖 TCP banner、WS 握手、静态资源、gate 互斥和干净关闭。
 - 完成视频源能力：`FrameSource::source_info` 元数据接口（类型、显示名、来源标识）覆盖模拟帧源、文件伪设备和相机源；Y4M 文件伪设备 `FileVideoSource` 按文件名排序循环播放并支持分辨率切换；Windows Media Foundation 相机后端（`mf` 功能）提供 `list_cameras` 枚举与 `CameraSource::open` 采集循环，`camera_probe` 示例自动化执行设计文档手工验证步骤（枚举、打开、帧输出、fps）。
 - 完成门闸控制器状态：连接闸门暴露活动 RFB 控制器标识与连接时间，供 `/api/status` 使用。
-- 完成独立文本键入服务 `TextInputService`：RFB `ClientCutText` 文本经键盘映射器转为模拟键入序列，与物理 `InputSink` 解耦；当前假设锁定键未按下，锁定键状态源为注入点，待硬件接入后实现 GetInfo 查询。
+- 完成文本键入调度器 `TextInputService`：RFB `ClientCutText` 文本经键盘映射器转为模拟键入动作，异步节流但不持有 `InputSink`；动作回到 `RfbInputPump` 后与普通键鼠输入串行提交到同一个主 sink。当前假设锁定键未按下，锁定键状态源为注入点，待硬件接入后实现 GetInfo 查询。
 - 完成 HTTP 状态与快照接口：`GET /api/status` 输出帧源、控制器与错误状态；`GET /api/screenshot` 输出最新帧 JPEG（质量 85）；`jpeg-encoder` 的 IJG 例外按许可证策略完整记录。headless CLI 提供 `--list-cameras`、`--camera <名称>`、`--assets <目录>`，未指定视频参数时启动空会话并由网页选择设备。
 
 待完成：

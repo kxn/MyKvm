@@ -167,6 +167,11 @@ pub trait InputSink {
         None
     }
 
+    /// 切换鼠标报告模式。
+    ///
+    /// 实现必须在旧模式下释放当前按住的鼠标按钮，再提交新模式；成功返回后，上层
+    /// 可以认为 sink 的鼠标按钮状态已清零并重置 pointer mapper。失败时不得提交新
+    /// 模式，也不得改变已提交的键盘或鼠标软件状态。
     fn set_mouse_mode(&mut self, mode: MouseMode) -> InputResult<()>;
 
     fn handle_key(&mut self, event: KeyEvent) -> InputResult<()> {

@@ -97,20 +97,21 @@ headless 只通过 `FrameSource` 方法消费，不看具体变体。
 
 ## 三、ClientCutText → 文本键入（`TextInputService`）
 
-放在 `ipkvm-headless/src/rfb_input/text.rs`，独立服务（按设计文档「文本键入由独立服务承担」，`type_text` 已从 `InputSink` 移除）。
+当前实现位于 `ipkvm-session/src/rfb_input/text.rs`。`TextInputService` 是独立异步调度器，但不是独立输入状态机：它不持有 `InputSink`，只负责文本映射、逐字符节流和生成文本输入动作，最终由 `RfbInputPump` 串行提交到主 `InputSink`。
 
 ### 结构与数据流
 
 - pump 收到 `RfbServerEvent::CutText` → 校验活动控制者 → 文本通过 mpsc channel 发给独立的 `TextInputService` task（不能阻塞 pump 事件循环，逐字符节流是异步慢操作）。
-- 服务逐字符：`字符 → keysym → 键盘映射器 → HID usage + shift 状态`（复用现有 en-US 键盘映射器）→ `press → 节流间隔 → release → 节流间隔`。
+- 服务逐字符：`字符 → keysym → 键盘映射器 → HID usage + shift 状态`（复用现有 en-US 键盘映射器）→ 生成 `KeyBatch` 动作 → 节流间隔 → 生成 release `KeyBatch` 动作 → 节流间隔。
+- pump 在同一个输入事件循环中消费文本动作；过期控制者的 key/release 动作被忽略，结果 notice 仍可上报，便于断开后看到部分键入结果。
 - **锁定键状态源**：设计为注入点（trait），当前返回「未锁定」假设（硬件未到、GetInfo 不可靠）；未来接 `Ch9329InputSink` 的 GetInfo 查询 LED。
 - **节流**：可配置参数，默认按 9600 波特留足余量（每字符约 30ms）；硬件到货后验证实际波特率再调。
 
 ### 错误处理
 
 - 不可映射字符（非 ASCII 等）→ 跳过并计入 `chars_skipped`（不是协议失败）。
-- 设备/队列错误 → 立即停止 + `release_all`，剩余文本丢弃并记录。
-- 控制者断开/释放时取消进行中的键入并 `release_all`（pump 在 Disconnected/ControllerReleased 时通知服务）。
+- pump 应用文本动作时遇到设备/队列错误 → 在主 sink 上 `release_all`、重置键盘/指针 mapper、丢弃剩余文本并记录 `TextInputFailed`。
+- 控制者断开/释放时取消进行中的键入；释放动作由 pump 在主 sink 上执行，TextInputService 不再对 sink 克隆做第二次释放。
 - 文本键入是「文本转模拟键入」，不是双向剪贴板同步；非 ASCII 文本输入暂不保证；锁定键状态可能竞争（查询后状态仍可能变化）的限制说明。
 
 ### 通知

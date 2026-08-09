@@ -97,9 +97,9 @@ pub struct SessionHandle;
 
 /// 控制台会话：帧源 + 输入 sink + 连接闸门 + 输入泵的组装。
 ///
-/// `S: Clone` 是 `RfbInputPump::new` 的要求（内部以 sink 克隆启动独立文本
-/// 键入服务）；会话保留一份 sink，调用方（如 SessionManager）保留另一份供
-/// 统计与后续复用。
+/// `S: Clone` 是会话装配层保留 sink 副本的要求：会话持有一份供泵任务使用，
+/// 调用方（如 SessionManager）保留另一份供统计与后续复用。文本键入服务不再
+/// 持有独立 sink 状态。
 pub struct ConsoleSession<S: InputSink + Clone + Send + 'static> {
     /// 帧源。帧 seq 检测（`observe_frame`）消费。
     frame_source: Arc<dyn FrameSource>,
@@ -333,8 +333,8 @@ mod tests {
     use crate::rfb_connection::{RfbClientId, RfbTransportKind};
     use crate::serial_stats::SerialStats;
 
-    /// 记录型输入 sink：内部共享 `Arc<Mutex<Recorded>>`，供测试观察泵（及
-    /// 其文本键入服务克隆）写入的批次与 release 行为。
+    /// 记录型输入 sink：内部共享 `Arc<Mutex<Recorded>>`，供测试观察泵写入的
+    /// 批次与 release 行为。
     #[derive(Clone, Debug, Default)]
     struct RecordingSink {
         recorded: Arc<Mutex<Recorded>>,
@@ -532,10 +532,10 @@ mod tests {
         drop(session.stop().unwrap());
         assert!(!session.is_running());
 
-        // 释放是异步完成的：pump 停止时释放一次，文本键入服务收到取消后
-        // 对 sink 克隆再释放一次；鼠标模式收敛不再借 release_all 释放键盘。
+        // 释放是异步完成的：pump 停止时在主 sink 上释放一次。TextInputService
+        // 不再持有 sink 克隆，因此不会有第二套状态机上的额外 release。
         assert!(
-            yield_until(|| sink.recorded.lock().unwrap().release_count == 2).await,
+            yield_until(|| sink.recorded.lock().unwrap().release_count == 1).await,
             "stop 后 release_all 未被执行（异步释放未完成）"
         );
         let _ = handle;

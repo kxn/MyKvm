@@ -636,6 +636,12 @@ let (status_tx, _) = watch::channel(None);
 
 ### Task 5: `TextInputService` 文本键入
 
+> 历史说明：本任务记录的是当时的实施计划，其中 `TextInputService<S: InputSink>`
+> 持有 sink 的接口已经在 #78 中废弃。当前事实以
+> `docs/superpowers/specs/2026-08-01-headless-phase2-api-and-input-design.md` 和
+> `docs/superpowers/specs/2026-08-09-input-state-machine-audit-design.md` 为准：
+> `TextInputService` 只生成文本动作，最终由 `RfbInputPump` 主 sink 串行提交。
+
 **Files:**
 - Create: `crates/ipkvm-headless/src/rfb_input/text.rs`
 - Modify: `crates/ipkvm-headless/src/rfb_input/mod.rs`
