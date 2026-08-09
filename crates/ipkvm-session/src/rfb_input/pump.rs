@@ -1607,6 +1607,86 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn real_ch9329_absolute_drag_carries_button_on_move_frames() {
+        let client_id = client(25);
+        let queue = FakeCommandQueue::new();
+        let sink = Ch9329InputSink::new(queue.clone(), 0, MouseMode::Absolute);
+        let mut pump = RfbInputPump::new(sink);
+        let size = RfbSize::new(100, 100).unwrap();
+        pump.handle_event(connected(client_id, peer(5925))).unwrap();
+
+        for (button_mask, x, y) in [(0, 10, 20), (1, 10, 20), (1, 20, 30), (0, 20, 30)] {
+            pump.handle_event(RfbServerEvent::Pointer {
+                client_id,
+                button_mask,
+                x,
+                y,
+                framebuffer_size: size,
+            })
+            .unwrap();
+        }
+
+        let batches = queue.accepted_batches();
+        assert_eq!(batches.len(), 4);
+        assert!(
+            batches
+                .iter()
+                .flat_map(|batch| batch.frames())
+                .all(|frame| frame.command() == 0x04),
+            "绝对拖拽路径不得混入 0x05 相对鼠标帧"
+        );
+        assert_eq!(batches[0].frames()[0].data()[1], 0);
+        assert_eq!(batches[1].frames()[1].data()[1], 1);
+        assert_eq!(
+            batches[2].frames()[0].data()[1],
+            1,
+            "按住移动的绝对帧必须继续携带按钮位"
+        );
+        assert_eq!(batches[3].frames()[1].data()[1], 0);
+    }
+
+    #[tokio::test]
+    async fn real_ch9329_absolute_wheel_stays_absolute_and_allows_later_moves() {
+        let client_id = client(26);
+        let queue = FakeCommandQueue::new();
+        let sink = Ch9329InputSink::new(queue.clone(), 0, MouseMode::Absolute);
+        let mut pump = RfbInputPump::new(sink);
+        let size = RfbSize::new(100, 100).unwrap();
+        pump.handle_event(connected(client_id, peer(5926))).unwrap();
+
+        for (button_mask, x, y) in [(0, 10, 20), (0x08, 10, 20), (0, 10, 20), (0, 20, 30)] {
+            pump.handle_event(RfbServerEvent::Pointer {
+                client_id,
+                button_mask,
+                x,
+                y,
+                framebuffer_size: size,
+            })
+            .unwrap();
+        }
+
+        let batches = queue.accepted_batches();
+        assert_eq!(batches.len(), 4);
+        assert!(
+            batches
+                .iter()
+                .flat_map(|batch| batch.frames())
+                .all(|frame| frame.command() == 0x04),
+            "RFB 绝对滚轮必须保持 0x04 绝对鼠标帧，不能切成 0x05 相对帧"
+        );
+        assert_eq!(
+            batches[1].frames()[1].data()[6] as i8,
+            1,
+            "RFB wheel-up 边沿必须进入绝对帧 wheel 字段"
+        );
+        assert_eq!(
+            batches[3].frames()[0].data()[1],
+            0,
+            "滚轮释放后后续移动仍应作为普通绝对移动发出"
+        );
+    }
+
+    #[tokio::test]
     async fn ch9329_relative_mode_ignores_absolute_pointer_transition() {
         let client_id = client(19);
         let queue = FakeCommandQueue::new();
