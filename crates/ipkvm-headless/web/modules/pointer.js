@@ -36,15 +36,17 @@ export class PointerController {
         true,
       );
     }
-    this.rfb = rfb;
-    if (rfb) {
-      if (typeof rfb.canvas?.addEventListener === "function") {
-        rfb.canvas.addEventListener("mousedown", this.onCanvasMouseDown, true);
-      }
-      rfb.setRelativeSensitivity(this.sensitivity);
-    } else {
+    if (!rfb) {
       this.exit();
+      this.rfb = null;
+      this.update();
+      return;
     }
+    this.rfb = rfb;
+    if (typeof rfb.canvas?.addEventListener === "function") {
+      rfb.canvas.addEventListener("mousedown", this.onCanvasMouseDown, true);
+    }
+    rfb.setRelativeSensitivity(this.sensitivity);
     this.update();
   }
 
@@ -108,6 +110,7 @@ export class PointerController {
   }
 
   exit() {
+    this.releaseRelativePointerState();
     if (document.pointerLockElement) {
       document.exitPointerLock?.();
     }
@@ -119,9 +122,17 @@ export class PointerController {
     this.update();
   }
 
+  releaseRelativePointerState() {
+    this.rfb?.sendRelativePointerRelease?.();
+  }
+
   onPointerLockChange = () => {
     const canvas = this.rfb?.canvas;
+    const wasLocked = this.locked;
     this.locked = canvas != null && document.pointerLockElement === canvas;
+    if (wasLocked && !this.locked) {
+      this.releaseRelativePointerState();
+    }
     this.rfb?.setRelativeMode(this.locked);
     if (this.rfb?.canvas) {
       this.rfb.canvas.style.cursor = this.locked ? "none" : "";
@@ -135,6 +146,7 @@ export class PointerController {
   };
 
   onPointerLockError = () => {
+    this.releaseRelativePointerState();
     this.locked = false;
     this.rfb?.setRelativeMode(false);
     if (this.rfb?.canvas) {

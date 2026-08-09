@@ -32,8 +32,8 @@ use crate::connect::{
 use crate::diag;
 use crate::frames::{FrameUpdate, frame_subscription};
 use crate::input::{
-    KeyAction, SpecialKey, is_mode_toggle_combo, is_remote_exit_combo, modifier_diff,
-    special_key_from_menu, special_key_sequence, wheel_steps,
+    KeyAction, SpecialKey, WheelStepAccumulator, is_mode_toggle_combo, is_remote_exit_combo,
+    modifier_diff, special_key_from_menu, special_key_sequence,
 };
 use crate::keymap::{key_event_to_keysym, physical_code_to_keysym};
 use crate::locale::AppLanguage;
@@ -61,6 +61,31 @@ const UI_TICK_INTERVAL: Duration = Duration::from_millis(33);
 const POINTER_MIN_INTERVAL: Duration = Duration::from_millis(8);
 const RFB_WHEEL_UP_MASK: u8 = 1 << 3;
 const RFB_WHEEL_DOWN_MASK: u8 = 1 << 4;
+
+fn drain_absolute_wheel_steps<E>(
+    pending: &mut i8,
+    release_pending: &mut bool,
+    mut send_press: impl FnMut(i8) -> Result<(), E>,
+    mut send_release: impl FnMut() -> Result<(), E>,
+) -> Result<(), E> {
+    if *release_pending {
+        send_release()?;
+        *release_pending = false;
+    }
+    while *pending != 0 {
+        let step = *pending;
+        send_press(step)?;
+        if *pending > 0 {
+            *pending = pending.saturating_sub(1);
+        } else {
+            *pending = pending.saturating_add(1);
+        }
+        *release_pending = true;
+        send_release()?;
+        *release_pending = false;
+    }
+    Ok(())
+}
 
 /// 项目主页（GitHub 公开仓库）。
 pub const PROJECT_URL: &str = "https://github.com/kxn/MyKvm";
@@ -327,6 +352,10 @@ where
     relative_rx: Option<DeltaReceiver>,
     relative_sampler: DeltaSampler,
     relative_wheel: i8,
+    absolute_wheel: i8,
+    absolute_wheel_release_pending: bool,
+    relative_wheel_accumulator: WheelStepAccumulator,
+    absolute_wheel_accumulator: WheelStepAccumulator,
     pointer_mask: u8,
     last_relative_mask: u8,
     video_bounds: std::rc::Rc<std::cell::RefCell<Option<iced::Rectangle>>>,
@@ -405,6 +434,10 @@ impl App<RecordingSink, MockFactory> {
             relative_rx: None,
             relative_sampler: DeltaSampler::new(Duration::from_millis(33)),
             relative_wheel: 0,
+            absolute_wheel: 0,
+            absolute_wheel_release_pending: false,
+            relative_wheel_accumulator: WheelStepAccumulator::default(),
+            absolute_wheel_accumulator: WheelStepAccumulator::default(),
             pointer_mask: 0,
             last_relative_mask: 0,
             video_bounds: std::rc::Rc::new(std::cell::RefCell::new(None)),
@@ -477,6 +510,10 @@ impl App<Ch9329InputSink<SerialCommandQueue>, ProductionSessionFactory> {
             relative_rx: None,
             relative_sampler: DeltaSampler::new(Duration::from_millis(33)),
             relative_wheel: 0,
+            absolute_wheel: 0,
+            absolute_wheel_release_pending: false,
+            relative_wheel_accumulator: WheelStepAccumulator::default(),
+            absolute_wheel_accumulator: WheelStepAccumulator::default(),
             pointer_mask: 0,
             last_relative_mask: 0,
             video_bounds: std::rc::Rc::new(std::cell::RefCell::new(None)),
@@ -1412,17 +1449,33 @@ where
                 if self.connection.mouse_mode == MouseMode::Relative {
                     self.poll_relative();
                     self.flush_relative_pending_with_mask(self.pointer_mask);
-                    self.relative_wheel = self.relative_wheel.saturating_add(wheel_steps(delta));
-                    let wheel = std::mem::take(&mut self.relative_wheel);
+                    self.relative_wheel = self
+                        .relative_wheel
+                        .saturating_add(self.relative_wheel_accumulator.steps(delta));
+                    let wheel = self.relative_wheel;
                     if wheel != 0 {
-                        let _ =
-                            self.controller
-                                .send_pointer_relative(self.pointer_mask, 0, 0, wheel);
+                        match self
+                            .controller
+                            .send_pointer_relative(self.pointer_mask, 0, 0, wheel)
+                        {
+                            Ok(()) => {
+                                self.relative_wheel = 0;
+                            }
+                            Err(error) => {
+                                self.status_message = Some(
+                                    t!("message.pointer_send_failed", error = error.to_string())
+                                        .to_string(),
+                                );
+                            }
+                        }
                     }
                 } else if self.connection.mouse_mode == MouseMode::Absolute
                     && let Some(cursor) = self.last_cursor
                 {
-                    self.send_absolute_wheel(cursor, wheel_steps(delta));
+                    self.absolute_wheel = self
+                        .absolute_wheel
+                        .saturating_add(self.absolute_wheel_accumulator.steps(delta));
+                    self.flush_absolute_wheel(cursor);
                 }
             }
             _ => {}
@@ -1549,6 +1602,10 @@ where
         self.last_pointer = None;
         self.last_relative_mask = 0;
         self.relative_wheel = 0;
+        self.absolute_wheel = 0;
+        self.absolute_wheel_release_pending = false;
+        self.relative_wheel_accumulator.reset();
+        self.absolute_wheel_accumulator.reset();
         // 复位去重/限频状态，避免重进同位置点击被节流吞掉。
         self.last_pointer_sent = None;
         self.last_pointer_sent_at = None;
@@ -1592,15 +1649,20 @@ where
                     ("mask_changed", mask_changed.to_string()),
                 ],
             );
-            if let Err(error) = self
+            match self
                 .controller
                 .send_pointer(self.pointer_mask, x, y, session_frame)
             {
-                self.status_message =
-                    Some(t!("message.pointer_send_failed", error = error.to_string()).to_string());
+                Ok(()) => {
+                    self.last_pointer_sent = Some((self.pointer_mask, x, y));
+                    self.last_pointer_sent_at = Some(now);
+                }
+                Err(error) => {
+                    self.status_message = Some(
+                        t!("message.pointer_send_failed", error = error.to_string()).to_string(),
+                    );
+                }
             }
-            self.last_pointer_sent = Some((self.pointer_mask, x, y));
-            self.last_pointer_sent_at = Some(now);
         } else {
             self.log_desktop_input(
                 ipkvm_core::diag::DiagLevel::Trace,
@@ -1614,6 +1676,7 @@ where
                 ],
             );
         }
+        self.flush_absolute_wheel(cursor);
     }
 
     fn map_absolute_cursor(
@@ -1638,17 +1701,13 @@ where
         ))
     }
 
-    fn send_absolute_wheel(&mut self, cursor: iced::Point, wheel: i8) {
-        if wheel == 0 {
+    fn flush_absolute_wheel(&mut self, cursor: iced::Point) {
+        let wheel = self.absolute_wheel;
+        if wheel == 0 && !self.absolute_wheel_release_pending {
             return;
         }
         let Some((x, y, session_frame)) = self.map_absolute_cursor(cursor) else {
             return;
-        };
-        let wheel_mask = if wheel > 0 {
-            RFB_WHEEL_UP_MASK
-        } else {
-            RFB_WHEEL_DOWN_MASK
         };
         let now = Instant::now();
         self.log_desktop_input(
@@ -1659,17 +1718,37 @@ where
                 ("x", x.to_string()),
                 ("y", y.to_string()),
                 ("wheel", wheel.to_string()),
+                (
+                    "release_pending",
+                    self.absolute_wheel_release_pending.to_string(),
+                ),
             ],
         );
-        for _ in 0..i16::from(wheel).unsigned_abs() {
-            for mask in [self.pointer_mask | wheel_mask, self.pointer_mask] {
-                if let Err(error) = self.controller.send_pointer(mask, x, y, session_frame) {
-                    self.status_message = Some(
-                        t!("message.pointer_send_failed", error = error.to_string()).to_string(),
-                    );
-                    return;
-                }
-            }
+        let mut pending = self.absolute_wheel;
+        let mut release_pending = self.absolute_wheel_release_pending;
+        let result: Result<(), DesktopSessionError> = drain_absolute_wheel_steps(
+            &mut pending,
+            &mut release_pending,
+            |step| {
+                let wheel_mask = if step > 0 {
+                    RFB_WHEEL_UP_MASK
+                } else {
+                    RFB_WHEEL_DOWN_MASK
+                };
+                self.controller
+                    .send_pointer(self.pointer_mask | wheel_mask, x, y, session_frame)
+            },
+            || {
+                self.controller
+                    .send_pointer(self.pointer_mask, x, y, session_frame)
+            },
+        );
+        self.absolute_wheel = pending;
+        self.absolute_wheel_release_pending = release_pending;
+        if let Err(error) = result {
+            self.status_message =
+                Some(t!("message.pointer_send_failed", error = error.to_string()).to_string());
+            return;
         }
         self.last_pointer = Some((x, y));
         self.last_pointer_sent = Some((self.pointer_mask, x, y));
@@ -1817,15 +1896,24 @@ where
         let (dx, dy) = sampled.unwrap_or((0, 0));
         let wheel = self.relative_wheel;
         if dx != 0 || dy != 0 || wheel != 0 || mask_changed {
-            if let Err(error) =
-                self.controller
-                    .send_pointer_relative(self.pointer_mask, dx, dy, wheel)
+            match self
+                .controller
+                .send_pointer_relative(self.pointer_mask, dx, dy, wheel)
             {
-                self.status_message =
-                    Some(t!("message.pointer_send_failed", error = error.to_string()).to_string());
+                Ok(()) => {
+                    self.relative_wheel = 0;
+                    self.last_relative_mask = self.pointer_mask;
+                }
+                Err(error) => {
+                    if dx != 0 || dy != 0 {
+                        self.relative_sampler
+                            .accumulate(f32::from(dx), f32::from(dy));
+                    }
+                    self.status_message = Some(
+                        t!("message.pointer_send_failed", error = error.to_string()).to_string(),
+                    );
+                }
             }
-            self.relative_wheel = 0;
-            self.last_relative_mask = self.pointer_mask;
         }
     }
 
@@ -1850,23 +1938,34 @@ where
         );
         self.relative_sampler.accumulate(sx, sy);
         if let Some((dx, dy)) = self.relative_sampler.flush(Instant::now()) {
-            if let Err(error) = self.controller.send_pointer_relative(mask, dx, dy, 0) {
-                self.status_message =
-                    Some(t!("message.pointer_send_failed", error = error.to_string()).to_string());
+            match self.controller.send_pointer_relative(mask, dx, dy, 0) {
+                Ok(()) => {
+                    self.last_relative_mask = mask;
+                }
+                Err(error) => {
+                    self.relative_sampler
+                        .accumulate(f32::from(dx), f32::from(dy));
+                    self.status_message = Some(
+                        t!("message.pointer_send_failed", error = error.to_string()).to_string(),
+                    );
+                }
             }
-            self.last_relative_mask = mask;
         }
     }
 
     fn send_relative_control(&mut self) {
-        if let Err(error) = self
+        match self
             .controller
             .send_pointer_relative(self.pointer_mask, 0, 0, 0)
         {
-            self.status_message =
-                Some(t!("message.pointer_send_failed", error = error.to_string()).to_string());
+            Ok(()) => {
+                self.last_relative_mask = self.pointer_mask;
+            }
+            Err(error) => {
+                self.status_message =
+                    Some(t!("message.pointer_send_failed", error = error.to_string()).to_string());
+            }
         }
-        self.last_relative_mask = self.pointer_mask;
     }
 
     fn toggle_mouse_mode(&mut self) {
@@ -4065,6 +4164,8 @@ mod tests {
         app.pointer_mask = 0b101;
         app.last_relative_mask = 0b101;
         app.relative_wheel = 2;
+        app.absolute_wheel = 2;
+        app.absolute_wheel_release_pending = true;
         app.last_modifiers = keyboard_modifiers(true);
         app.active_keysyms
             .insert(iced::keyboard::key::Code::KeyA, 0x04);
@@ -4078,6 +4179,8 @@ mod tests {
         assert_eq!(app.pointer_mask, 0);
         assert_eq!(app.last_relative_mask, 0);
         assert_eq!(app.relative_wheel, 0);
+        assert_eq!(app.absolute_wheel, 0);
+        assert!(!app.absolute_wheel_release_pending);
         assert_eq!(app.last_modifiers, iced::keyboard::Modifiers::empty());
         assert!(app.active_keysyms.is_empty());
         assert_eq!(app.last_pointer, None);
@@ -4092,6 +4195,8 @@ mod tests {
         app.pointer_mask = 0b111;
         app.last_relative_mask = 0b111;
         app.relative_wheel = -2;
+        app.absolute_wheel = -2;
+        app.absolute_wheel_release_pending = true;
         app.last_modifiers = keyboard_modifiers(true);
         app.active_keysyms
             .insert(iced::keyboard::key::Code::KeyA, 0x04);
@@ -4105,6 +4210,8 @@ mod tests {
         assert_eq!(app.pointer_mask, 0);
         assert_eq!(app.last_relative_mask, 0);
         assert_eq!(app.relative_wheel, 0);
+        assert_eq!(app.absolute_wheel, 0);
+        assert!(!app.absolute_wheel_release_pending);
         assert_eq!(app.last_modifiers, iced::keyboard::Modifiers::empty());
         assert!(app.active_keysyms.is_empty());
         assert_eq!(app.last_pointer, None);
@@ -4119,6 +4226,8 @@ mod tests {
         app.pointer_mask = 0b001;
         app.last_relative_mask = 0b001;
         app.relative_wheel = 1;
+        app.absolute_wheel = 1;
+        app.absolute_wheel_release_pending = true;
         app.last_modifiers = keyboard_modifiers(true);
         app.active_keysyms
             .insert(iced::keyboard::key::Code::KeyA, 0x04);
@@ -4132,6 +4241,8 @@ mod tests {
         assert_eq!(app.pointer_mask, 0);
         assert_eq!(app.last_relative_mask, 0);
         assert_eq!(app.relative_wheel, 0);
+        assert_eq!(app.absolute_wheel, 0);
+        assert!(!app.absolute_wheel_release_pending);
         assert_eq!(app.last_modifiers, iced::keyboard::Modifiers::empty());
         assert!(app.active_keysyms.is_empty());
         assert_eq!(app.last_pointer, None);
@@ -4164,6 +4275,8 @@ mod tests {
         app.pointer_mask = 0b001;
         app.last_relative_mask = 0b001;
         app.relative_wheel = 1;
+        app.absolute_wheel = 1;
+        app.absolute_wheel_release_pending = true;
         app.last_modifiers = keyboard_modifiers(true);
         app.active_keysyms
             .insert(iced::keyboard::key::Code::KeyA, 0x04);
@@ -4187,6 +4300,8 @@ mod tests {
         assert_eq!(app.pointer_mask, 0);
         assert_eq!(app.last_relative_mask, 0);
         assert_eq!(app.relative_wheel, 0);
+        assert_eq!(app.absolute_wheel, 0);
+        assert!(!app.absolute_wheel_release_pending);
         assert_eq!(app.last_modifiers, iced::keyboard::Modifiers::empty());
         assert!(app.active_keysyms.is_empty());
         assert_eq!(app.last_pointer, None);
@@ -4284,6 +4399,14 @@ mod tests {
         let _ = app.update(Message::IcedEvent(iced::Event::Mouse(
             iced::mouse::Event::WheelScrolled {
                 delta: iced::mouse::ScrollDelta::Lines { x: 0.0, y },
+            },
+        )));
+    }
+
+    fn scroll_pixels(app: &mut MockApp, y: f32) {
+        let _ = app.update(Message::IcedEvent(iced::Event::Mouse(
+            iced::mouse::Event::WheelScrolled {
+                delta: iced::mouse::ScrollDelta::Pixels { x: 0.0, y },
             },
         )));
     }
@@ -4405,6 +4528,318 @@ mod tests {
         std::thread::sleep(POINTER_MIN_INTERVAL + Duration::from_millis(2));
         move_cursor(&mut app, 100.0, 50.0);
         wait_absolute_move(&app, 100, 50, 1);
+    }
+
+    #[test]
+    fn absolute_pixel_wheel_accumulates_small_steps_before_sending() {
+        let mut app = absolute_video_app();
+        app.remote_input = true;
+
+        move_cursor(&mut app, 80.0, 45.0);
+        wait_absolute_event(&app, (0, 80, 45, 0));
+        scroll_pixels(&mut app, 20.0);
+        scroll_pixels(&mut app, 20.0);
+        assert_eq!(
+            app.recording_sink()
+                .unwrap()
+                .absolute_events
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|&&event| event == (0, 80, 45, 1))
+                .count(),
+            0,
+            "不足一步的 Pixel 滚轮不能提前发 wheel"
+        );
+
+        scroll_pixels(&mut app, 10.0);
+        wait_absolute_event(&app, (0, 80, 45, 1));
+    }
+
+    #[test]
+    fn absolute_send_failure_does_not_advance_last_sent_state() {
+        let mut app = absolute_video_app();
+        app.remote_input = true;
+        app.controller.stop().unwrap();
+
+        app.send_absolute(iced::Point::new(80.0, 45.0));
+
+        assert_eq!(
+            app.last_pointer_sent, None,
+            "同步发送失败后不得把未送达绝对事件标记为已发送"
+        );
+        assert!(
+            app.status_message.as_deref().is_some_and(|message| message
+                .starts_with(t!("message.pointer_send_failed", error = "").as_ref())),
+            "同步发送失败必须反馈到 UI 状态"
+        );
+    }
+
+    #[test]
+    fn absolute_wheel_send_failure_keeps_pending_step() {
+        let mut app = absolute_video_app();
+        app.remote_input = true;
+        app.absolute_wheel = 1;
+        app.controller.stop().unwrap();
+
+        app.flush_absolute_wheel(iced::Point::new(80.0, 45.0));
+
+        assert_eq!(
+            app.absolute_wheel, 1,
+            "同步发送失败后必须保留绝对滚轮待发步进"
+        );
+        assert_eq!(
+            app.last_pointer_sent, None,
+            "同步发送失败后不得把未送达绝对滚轮位置标记为已发送"
+        );
+    }
+
+    #[test]
+    fn absolute_wheel_drain_keeps_only_unsent_steps_after_partial_failure() {
+        let mut pending = 2;
+        let mut release_pending = false;
+        let mut attempts = 0;
+
+        let result = drain_absolute_wheel_steps(
+            &mut pending,
+            &mut release_pending,
+            |_| {
+                attempts += 1;
+                if attempts == 2 { Err("failed") } else { Ok(()) }
+            },
+            || Ok(()),
+        );
+
+        assert_eq!(result, Err("failed"));
+        assert_eq!(
+            pending, 1,
+            "第二个 wheel press 发送失败时，只能保留未开始的剩余 step"
+        );
+        assert!(!release_pending, "press 发送失败时没有新欠释放状态");
+        assert_eq!(attempts, 2);
+
+        let result = drain_absolute_wheel_steps(
+            &mut pending,
+            &mut release_pending,
+            |_| Ok::<_, &str>(()),
+            || Ok::<_, &str>(()),
+        );
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(pending, 0);
+        assert!(!release_pending);
+    }
+
+    #[test]
+    fn absolute_wheel_drain_keeps_release_pending_after_release_failure() {
+        let mut pending = 2;
+        let mut release_pending = false;
+        let mut attempts = 0;
+
+        let result = drain_absolute_wheel_steps(
+            &mut pending,
+            &mut release_pending,
+            |_| Ok(()),
+            || {
+                attempts += 1;
+                if attempts == 2 { Err("failed") } else { Ok(()) }
+            },
+        );
+
+        assert_eq!(result, Err("failed"));
+        assert_eq!(
+            pending, 0,
+            "wheel press 已成功后滚轮边沿已提交，不得再保留为待发 step"
+        );
+        assert!(
+            release_pending,
+            "释放发送失败后必须先保留欠释放状态，再继续后续 step"
+        );
+        assert_eq!(attempts, 2);
+
+        let result = drain_absolute_wheel_steps(
+            &mut pending,
+            &mut release_pending,
+            |_| Ok::<_, &str>(()),
+            || Ok::<_, &str>(()),
+        );
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(pending, 0);
+        assert!(!release_pending);
+    }
+
+    #[test]
+    fn absolute_wheel_drain_does_not_repeat_pressed_edge_after_release_failure() {
+        let mut pending = 2;
+        let mut release_pending = false;
+        let mut presses = 0;
+        let mut releases = 0;
+
+        let result = drain_absolute_wheel_steps(
+            &mut pending,
+            &mut release_pending,
+            |_| {
+                presses += 1;
+                Ok(())
+            },
+            || {
+                releases += 1;
+                if releases == 1 {
+                    Err("release failed")
+                } else {
+                    Ok(())
+                }
+            },
+        );
+
+        assert_eq!(result, Err("release failed"));
+        assert_eq!(pending, 1);
+        assert!(release_pending);
+        assert_eq!(presses, 1);
+        assert_eq!(releases, 1);
+
+        let result = drain_absolute_wheel_steps(
+            &mut pending,
+            &mut release_pending,
+            |_| {
+                presses += 1;
+                Ok::<_, &str>(())
+            },
+            || {
+                releases += 1;
+                Ok::<_, &str>(())
+            },
+        );
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(pending, 0);
+        assert!(!release_pending);
+        assert_eq!(
+            presses, 2,
+            "重试必须先补 release，再发送剩余 step，不能重复已成功的 wheel press"
+        );
+        assert_eq!(releases, 3);
+    }
+
+    #[test]
+    fn absolute_wheel_drain_decrements_negative_steps_toward_zero() {
+        let mut pending = -2;
+        let mut release_pending = false;
+        let mut attempts = 0;
+
+        let result = drain_absolute_wheel_steps(
+            &mut pending,
+            &mut release_pending,
+            |_| {
+                attempts += 1;
+                if attempts == 2 { Err("failed") } else { Ok(()) }
+            },
+            || Ok(()),
+        );
+
+        assert_eq!(result, Err("failed"));
+        assert_eq!(pending, -1);
+        assert!(!release_pending);
+        assert_eq!(attempts, 2);
+    }
+
+    #[test]
+    fn absolute_wheel_drain_keeps_negative_release_pending_after_release_failure() {
+        let mut pending = -2;
+        let mut release_pending = false;
+        let mut attempts = 0;
+
+        let result = drain_absolute_wheel_steps(
+            &mut pending,
+            &mut release_pending,
+            |_| Ok(()),
+            || {
+                attempts += 1;
+                if attempts == 2 { Err("failed") } else { Ok(()) }
+            },
+        );
+
+        assert_eq!(result, Err("failed"));
+        assert_eq!(pending, 0);
+        assert!(release_pending);
+        assert_eq!(attempts, 2);
+    }
+
+    #[test]
+    fn absolute_pending_wheel_retries_on_next_mapped_pointer() {
+        let mut app = absolute_video_app();
+        app.remote_input = true;
+        app.absolute_wheel = 1;
+
+        app.flush_absolute_wheel(iced::Point::new(500.0, 500.0));
+        assert_eq!(
+            app.absolute_wheel, 1,
+            "坐标不可映射时绝对滚轮必须先保留为 pending"
+        );
+        assert!(
+            app.recording_sink()
+                .unwrap()
+                .absolute_events
+                .lock()
+                .unwrap()
+                .is_empty(),
+            "不可映射坐标不得伪造绝对滚轮报告"
+        );
+
+        move_cursor(&mut app, 80.0, 45.0);
+
+        wait_absolute_event(&app, (0, 80, 45, 1));
+        assert_eq!(
+            app.absolute_wheel, 0,
+            "下一次有效绝对坐标必须重试并清掉 pending wheel"
+        );
+    }
+
+    #[test]
+    fn relative_pixel_wheel_accumulates_small_steps_with_current_mask() {
+        let (mut app, _) = MockApp::new_mock();
+        app.connection.mouse_mode = MouseMode::Relative;
+        app.remote_input = true;
+        app.pointer_mask = 0b001;
+
+        scroll_pixels(&mut app, 20.0);
+        scroll_pixels(&mut app, 20.0);
+        assert!(
+            app.recording_sink()
+                .unwrap()
+                .relative_events
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|event| event.3 == 0),
+            "不足一步的 Pixel 滚轮不能提前发相对 wheel"
+        );
+        scroll_pixels(&mut app, 10.0);
+
+        wait_relative_event(&app, (0b001, 0, 0, 1));
+    }
+
+    #[test]
+    fn relative_control_send_failure_does_not_advance_last_mask() {
+        let (mut app, _) = MockApp::new_mock();
+        app.connection.mouse_mode = MouseMode::Relative;
+        app.remote_input = true;
+        app.pointer_mask = 0b001;
+        app.last_relative_mask = 0;
+        app.controller.stop().unwrap();
+
+        app.send_relative_control();
+
+        assert_eq!(
+            app.last_relative_mask, 0,
+            "同步发送失败后不得把未送达按钮 mask 标记为已发送"
+        );
+        assert!(
+            app.status_message.as_deref().is_some_and(|message| message
+                .starts_with(t!("message.pointer_send_failed", error = "").as_ref())),
+            "同步发送失败必须反馈到 UI 状态"
+        );
     }
 
     #[test]
