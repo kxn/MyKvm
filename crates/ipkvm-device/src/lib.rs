@@ -293,6 +293,8 @@ mod tests {
     mod serial_inventory {
         use super::*;
 
+        // 仅 unix 过滤用例需要构造 UsbPort；Windows 用例不用，避免 dead_code。
+        #[cfg(unix)]
         fn usb_port(product: &str) -> serialport::SerialPortType {
             serialport::SerialPortType::UsbPort(serialport::UsbPortInfo {
                 vid: 0x1a86,
