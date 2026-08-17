@@ -4,6 +4,20 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>MyKvm 控制台</title>
+    <script>
+      // 首屏防闪烁：在样式表生效前同步确定主题；
+      // 决策逻辑必须与 /assets/modules/theme.js 保持一致。
+      (() => {
+        const stored = localStorage.getItem("my_ipkvm.theme");
+        const choice = stored === "dark" || stored === "light" ? stored : "system";
+        document.documentElement.dataset.theme =
+          choice === "system"
+            ? window.matchMedia("(prefers-color-scheme: light)").matches
+              ? "light"
+              : "dark"
+            : choice;
+      })();
+    </script>
     <link
       rel="icon"
       type="image/svg+xml"
@@ -50,12 +64,20 @@
               <button id="copy-screenshot" type="button" data-i18n="screenshot.copy">复制截图</button>
             </div>
           </div>
-          <label class="language-control">
+          <label class="select-control">
             <span data-i18n="toolbar.language">语言</span>
             <select id="language-select">
               <option value="browser" data-i18n="language.browser">跟随浏览器</option>
               <option value="zh-CN" data-i18n="language.zh">中文</option>
               <option value="en" data-i18n="language.en">English</option>
+            </select>
+          </label>
+          <label class="select-control">
+            <span data-i18n="toolbar.theme">主题</span>
+            <select id="theme-select">
+              <option value="system" data-i18n="theme.system">跟随系统</option>
+              <option value="dark" data-i18n="theme.dark">深色</option>
+              <option value="light" data-i18n="theme.light">浅色</option>
             </select>
           </label>
           <button id="status-panel-button" type="button" data-i18n="toolbar.status">状态</button>

@@ -220,11 +220,13 @@ async function openConsole(browser, url, options = {}) {
     permissions = ["clipboard-read", "clipboard-write"],
     beforeGoto,
     onConsoleError,
+    colorScheme,
   } = options;
   const context = await browser.newContext({
     viewport: { width: 1280, height: 800 },
     locale: "zh-CN",
     permissions,
+    ...(colorScheme ? { colorScheme } : {}),
   });
   const postedSettings = [];
   const settingsGets = { count: 0 };
@@ -1286,6 +1288,58 @@ async function run() {
     );
     await page.locator("#language-select").selectOption("zh-CN");
     assert.equal(await page.locator("html").getAttribute("lang"), "zh-CN");
+
+    // ---- 主题三态：切换即时生效、刷新保持、system 跟随 prefers-color-scheme ----
+    // 主 context 未指定 colorScheme，playwright 默认 light，system 应解析为浅色。
+    assert.equal(await page.locator("html").getAttribute("data-theme"), "light");
+    await page.locator("#theme-select").selectOption("dark");
+    assert.equal(
+      await page.locator("html").getAttribute("data-theme"),
+      "dark",
+      "manual theme switch must apply immediately",
+    );
+    assert.equal(
+      await page.evaluate(() => localStorage.getItem("my_ipkvm.theme")),
+      "dark",
+    );
+    // 手动选择优先于系统偏好：模拟系统切浅色后仍保持深色。
+    await page.emulateMedia({ colorScheme: "light" });
+    assert.equal(await page.locator("html").getAttribute("data-theme"), "dark");
+    // 刷新后保持手动选择。
+    await page.reload({ waitUntil: "domcontentloaded" });
+    assert.equal(await page.locator("html").getAttribute("data-theme"), "dark");
+    // 回到 system：清除手动选择并跟随 prefers-color-scheme 实时变化。
+    await page.locator("#theme-select").selectOption("system");
+    assert.equal(
+      await page.evaluate(() => localStorage.getItem("my_ipkvm.theme")),
+      null,
+      "system choice must clear the stored override",
+    );
+    // emulateMedia 的 matchMedia change 事件异步派发，轮询等待而非立即断言。
+    await page.emulateMedia({ colorScheme: "dark" });
+    await page.waitForFunction(
+      () => document.documentElement.dataset.theme === "dark",
+      undefined,
+      { timeout: DEADLINE_MS },
+    );
+    await page.emulateMedia({ colorScheme: "light" });
+    await page.waitForFunction(
+      () => document.documentElement.dataset.theme === "light",
+      undefined,
+      { timeout: DEADLINE_MS },
+    );
+
+    // ---- 系统偏好为深色的首次访问直接落深色 ----
+    // 注：现代 Chromium 的 no-preference 会解析为 light，无法模拟"无偏好信号"，
+    // theme.js 中"无信号落深色"仅作防御性回退，不可在真实浏览器中断言。
+    const darkSystem = await openConsole(browser, url, { colorScheme: "dark" });
+    contexts.push(darkSystem.context);
+    assert.equal(
+      await darkSystem.page.locator("html").getAttribute("data-theme"),
+      "dark",
+      "dark system preference must resolve to the dark theme on first visit",
+    );
+    await darkSystem.context.close();
 
     // ---- 缺失 /api/settings 的降级路径 ----
     const degraded = await openConsole(browser, url, { mockApi: false });
