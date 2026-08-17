@@ -2414,6 +2414,7 @@ name = "ipkvm-device"
 version = "0.1.0"
 dependencies = [
  "ipkvm-video",
+ "libc",
  "serialport",
  "thiserror 2.0.19",
 ]

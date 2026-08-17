@@ -179,7 +179,7 @@ cargo run -p ipkvm-headless-app --bin ipkvm-headless \
 
 管理 API 与页面、WebSocket 一样受 token/本机来源鉴权保护：
 
-- `GET /api/devices`：返回视频设备和串口设备列表。
+- `GET /api/devices`：返回视频设备和串口设备列表。串口清单只包含可直接使用的端口（#93）：类 Unix 系统上仅列出真实 USB 串口适配器（CH340/CP210x/FTDI/CDC-ACM 等，板载 `ttyS*` 与蓝牙口被过滤），且当前进程用户对其有读写权限；Windows 上保留全部 COM 口。清单按路径自然排序（`ttyUSB2` 排在 `ttyUSB10` 前），第一项即网页默认选项。`--serial` 显式指定任意路径不受该过滤限制。
 - `POST /api/session`：`{"action":"restart","video":"<设备 id>","serial":"COM9"}` 按请求设备重启会话；缺省字段沿用上一成功会话选择，初始选择来自启动配置，`serial` 为空字符串表示使用模拟队列。`create` 仅用于无会话首启，`stop` 停止当前输入泵。
 - `GET /api/status`：返回服务、当前视频源、最近帧、控制连接和会话统计。
 - `GET /api/screenshot`：返回当前帧源的 JPEG 快照。
