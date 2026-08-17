@@ -27,9 +27,11 @@ pub const USAGE: &str = "\
   --http <端口>    HTTP/noVNC 监听端口，默认 80
   --fps <帧率>     播放帧率；未指定时取运行时设置（初始 30）
   --config <路径>  读取 TOML 配置文件；CLI 参数覆盖文件字段（CLI > 文件 > 默认）
-  --token <token>  [auth] HTTP/WS 鉴权 token（非空，仅含字母数字与 - _ . ~）；未配置时仅允许本机访问
+  --token <token>  [auth] HTTP/WS 鉴权 token（非空，仅含字母数字与 - _ . ~）；
+                   未配置时不启用鉴权，任意来源可直接访问
   --vnc-password <密码>
-                   [auth] RFB VNC 密码（1-8 个 ASCII 字符）；未配置时 TCP 仅允许本机连接
+                   [auth] RFB VNC 密码（1-8 个 ASCII 字符）；
+                   未配置时不启用密码挑战，任意来源可直接连接
   --encoding <模式> RFB 编码：raw（无压缩）/ tight（Tight+JPEG）/ auto（默认，客户端支持则 Tight）
   --jpeg-quality <N> Tight+JPEG 质量 1-100，默认 85（仅 --encoding tight/auto 时生效）
   --log-file <路径> 输入诊断日志文件；指定后启用文件日志

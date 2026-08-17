@@ -776,8 +776,8 @@ async fn run(
         settings: Arc::clone(&settings),
     });
 
-    // 鉴权注入：VNC 密码（若有）同时作用于 TCP 与 WS 两条 RFB 传输，
-    // 未配置时保持 RfbSecurity::None（连接闸门侧按本机回环限制来源）。
+    // 鉴权注入：VNC 密码（若有）同时作用于 TCP 与 WS 两条 RFB 传输；
+    // 未配置时保持 RfbSecurity::None，任意来源匿名连接（#95：默认不鉴权）。
     let security = config::vnc_security(options.vnc_password.as_deref());
     let preferred_encoding = config::parse_encoding(options.encoding.as_deref());
     let jpeg_quality = options.jpeg_quality.unwrap_or(85);
@@ -831,12 +831,12 @@ async fn run(
     if options.token.is_some() {
         println!("HTTP 鉴权：已启用（Bearer/cookie/query token）");
     } else {
-        println!("HTTP 鉴权：未配置 token，仅允许本机来源访问");
+        println!("HTTP 鉴权：未启用（未配置 token，任意来源可直接访问）");
     }
     if options.vnc_password.is_some() {
         println!("RFB 鉴权：已启用（VNC 密码挑战）");
     } else {
-        println!("RFB 鉴权：未配置 VNC 密码，TCP 仅允许本机来源连接");
+        println!("RFB 鉴权：未启用（未配置 VNC 密码，任意来源可直接连接）");
     }
 
     println!(

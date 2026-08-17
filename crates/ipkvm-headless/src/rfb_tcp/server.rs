@@ -73,7 +73,7 @@ impl<S: FrameSource + ?Sized + 'static> RfbTcpServer<S> {
                 }
             };
             if !tcp_peer_allowed(peer_addr, &self.config.connection.security) {
-                // 未配置密码：非回环来源直接关闭，不进入握手。
+                // 理论不可达：默认不鉴权，配置密码后由密码挑战拦截。
                 continue;
             }
             // 每个连接前读取当前活动事件出口；无控制出口时仍允许只读视频连接。
@@ -166,13 +166,11 @@ impl From<RfbConnectionFinalizeError> for RfbTcpServerError {
     }
 }
 
-/// 未配置密码时，TCP 入口只允许回环来源（防默认暴露）；配置了 VNC 密码
-/// 则来源不再限制，完全交给密码挑战校验。
-fn tcp_peer_allowed(peer: SocketAddr, security: &RfbSecurity) -> bool {
-    match security {
-        RfbSecurity::None => peer.ip().is_loopback(),
-        RfbSecurity::Vnc { .. } => true,
-    }
+/// #95：默认不鉴权——TCP 入口不按来源过滤。未配置密码时任意来源匿名放行
+/// （security type 1）；配置 VNC 密码后同样放行来源，由密码挑战负责校验。
+/// 保留具名判定点与测试，未来若按来源细分策略在此收敛。
+fn tcp_peer_allowed(_peer: SocketAddr, _security: &RfbSecurity) -> bool {
+    true
 }
 
 fn shutdown_is_requested(shutdown: &watch::Receiver<bool>) -> bool {
@@ -504,12 +502,13 @@ mod tests {
     }
 
     #[test]
-    fn tcp_peer_allowed_rejects_remote_without_password() {
+    fn tcp_peer_allowed_accepts_remote_without_password() {
         let loopback: SocketAddr = "127.0.0.1:5900".parse().unwrap();
         let remote: SocketAddr = "192.168.1.5:5900".parse().unwrap();
+        // #95：默认不鉴权，未配置密码时远程来源也放行（匿名 security type 1）。
         assert!(tcp_peer_allowed(loopback, &RfbSecurity::None));
-        assert!(!tcp_peer_allowed(remote, &RfbSecurity::None));
-        // 配置密码后来源不再限制，完全交给密码校验。
+        assert!(tcp_peer_allowed(remote, &RfbSecurity::None));
+        // 配置密码后同样放行，交给密码挑战校验。
         assert!(tcp_peer_allowed(
             remote,
             &RfbSecurity::Vnc { password: [0; 8] }
