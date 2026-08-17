@@ -105,7 +105,8 @@ pub enum HeadlessWebServiceError {
 }
 
 impl<I: InputSink + Clone + Send + 'static> HeadlessWebService<I> {
-    /// `auth` 为 `[auth] token`（HTTP/WS 鉴权）；`None` 表示仅允许本机来源。
+    /// `auth` 为 `[auth] token`（HTTP/WS 鉴权）；`None` 表示不启用鉴权，
+    /// 任意来源匿名放行（#95）。
     ///
     /// `event_publisher` 来自 `SessionSupervisor::event_publisher()`，传输层据此
     /// 在会话重启后拿到新事件发送端。

@@ -240,7 +240,7 @@ async fn run() -> Result<(), FixtureError> {
         RfbWebSocketConfig::default(),
         shutdown_rx,
         gate,
-        None, // auth：本机回环 fixture，未配置 token 即放行
+        None, // auth：fixture 未配置 token，不启用鉴权
         settings,
         None,
     )?;

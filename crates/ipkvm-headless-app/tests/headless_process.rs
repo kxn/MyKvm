@@ -99,7 +99,7 @@ impl HeadlessAssembly {
             RfbWebSocketConfig::default(),
             shutdown_rx.clone(),
             gate,
-            None, // auth：未配置 token，仅放行本机来源（本测试不覆盖鉴权）
+            None, // auth：未配置 token，不启用鉴权（本测试不覆盖鉴权）
             settings,
             Some(SessionSelection::default()),
         )

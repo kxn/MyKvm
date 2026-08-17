@@ -4,7 +4,8 @@
 //!   `Cookie: ipkvm_token=<token>` 或 query 参数 `?token=<token>` 之一；
 //!   后两者放行时附带 Set-Cookie（query token 只在静态页首访时用，换来
 //!   cookie 后后续请求自动带）。
-//! - 未配置 token：仅放行回环来源（防默认暴露），其余 403。
+//! - 未配置 token：不启用鉴权，任意来源匿名放行（#95：鉴权只在显式配置
+//!   token 时启用，默认面向可信内网/直连场景开放访问）。
 //!
 //! 判定逻辑抽成纯函数 `authorize`，不依赖 HTTP 运行时，便于单元测试。
 
@@ -26,18 +27,19 @@ pub struct AuthState {
     pub token: Option<String>,
 }
 
-/// 纯判定函数（不依赖运行时）：`None` 表示未配置 token。
+/// 纯判定函数（不依赖运行时）：`None` 表示未配置 token（不启用鉴权）。
 ///
-/// 返回 `true` 放行；`false` 拒绝（401/403 由调用方按配置与否选择）。
+/// 返回 `true` 放行；`false` 拒绝（401，仅在配置了 token 时可能出现）。
+/// `_peer_ip` 保留在签名里：调用方恒有对端地址，未来策略可按来源细分。
 pub fn authorize(
-    peer_ip: IpAddr,
+    _peer_ip: IpAddr,
     bearer: Option<&str>,
     cookie: Option<&str>,
     query_token: Option<&str>,
     configured: Option<&str>,
 ) -> bool {
     let Some(configured) = configured else {
-        return peer_ip.is_loopback();
+        return true; // #95：默认不鉴权，匿名放行任意来源。
     };
     bearer == Some(configured) || cookie == Some(configured) || query_token == Some(configured)
 }
@@ -81,15 +83,12 @@ pub async fn require_auth(
     let via_query = query.is_some_and(|value| Some(value) == configured);
 
     if !authorize(peer.ip(), bearer, cookie, query, configured) {
-        return if configured.is_some() {
-            let mut response = StatusCode::UNAUTHORIZED.into_response();
-            response
-                .headers_mut()
-                .insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
-            response
-        } else {
-            StatusCode::FORBIDDEN.into_response()
-        };
+        // 只有配置了 token 才可能走到这里（未配置恒放行），统一 401。
+        let mut response = StatusCode::UNAUTHORIZED.into_response();
+        response
+            .headers_mut()
+            .insert(header::WWW_AUTHENTICATE, HeaderValue::from_static("Bearer"));
+        return response;
     }
 
     let mut response = next.run(request).await;
@@ -108,11 +107,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn without_token_only_loopback_is_allowed() {
+    fn without_token_all_peers_are_allowed() {
         let loopback = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
         let remote = std::net::IpAddr::V4([192, 168, 1, 5].into());
+        // #95：默认不鉴权，未配置 token 时任意来源匿名放行。
         assert!(authorize(loopback, None, None, None, None));
-        assert!(!authorize(remote, None, None, None, None));
+        assert!(authorize(remote, None, None, None, None));
     }
 
     #[test]

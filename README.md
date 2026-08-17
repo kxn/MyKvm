@@ -6,7 +6,7 @@ my_ipkvm 是一个软件 IPKVM 项目：主控机通过 USB HDMI 采集卡读取
 
 `ipkvm-headless` 已提供可供生产组装复用的嵌入式 Web 服务。它内置项目中文控制台页面和固定到 noVNC 1.7.0 提交 `63107bd06d9e1f6136ff21aeda8cd62cbf0d433e` 的完整 npm 发布资源，并通过同源 `/rfb` 建立连接。真实 Chrome 自动化已经证明模拟帧像素、桌面与窄视口等比缩放、键盘 HID、缩放后的绝对指针坐标、按键顺序、断开释放和重连全部穿过 noVNC、RFB 服务与 `RfbInputPump` 到达记录型 `InputSink`。
 
-当前正式 `ipkvm-headless` 二进制已能作为可运行后台进程提供完整的 RFB TCP（5900）+ noVNC 网页（6080）双传输服务。CLI/TOML 配置提供启动设备：`--camera` 打开 Windows 相机（按 id 或显示名，DirectShow 后端，含 OBS 虚拟摄像头）、`--assets` 使用 Y4M 文件伪设备；未指定视频参数时启动空会话，由网页连接页选择设备后再创建，`--list-cameras` 只枚举设备并退出。HTTP 管理 API 已支持运行时枚举设备和按 `video`/`serial` 重启会话；内部采用“停旧并释放旧帧源/串口、组装新帧源/串口、启动新输入泵”的会话级切换模型，不承诺旧 RFB 连接无缝迁移。键鼠注入可通过 `--serial <路径>` 打开真实 CH9329 串口（默认 9600 8N1，`--baud <速率>` 可调），未指定时键鼠事件进入模拟串口队列后被丢弃。最小鉴权已实现：`--token` 管 HTTP/WS 凭证、`--vnc-password` 管 RFB VNC 密码挑战，未配置对应凭证时默认仅本机可访问（见「运行无头后台进程」）。TLS 尚未实现。
+当前正式 `ipkvm-headless` 二进制已能作为可运行后台进程提供完整的 RFB TCP（5900）+ noVNC 网页（6080）双传输服务。CLI/TOML 配置提供启动设备：`--camera` 打开 Windows 相机（按 id 或显示名，DirectShow 后端，含 OBS 虚拟摄像头）、`--assets` 使用 Y4M 文件伪设备；未指定视频参数时启动空会话，由网页连接页选择设备后再创建，`--list-cameras` 只枚举设备并退出。HTTP 管理 API 已支持运行时枚举设备和按 `video`/`serial` 重启会话；内部采用“停旧并释放旧帧源/串口、组装新帧源/串口、启动新输入泵”的会话级切换模型，不承诺旧 RFB 连接无缝迁移。键鼠注入可通过 `--serial <路径>` 打开真实 CH9329 串口（默认 9600 8N1，`--baud <速率>` 可调），未指定时键鼠事件进入模拟串口队列后被丢弃。鉴权为显式启用：`--token` 管 HTTP/WS 凭证、`--vnc-password` 管 RFB VNC 密码挑战，未配置对应凭证时不鉴权、任意来源可直接访问（见「运行无头后台进程」）。TLS 尚未实现。
 
 ## 当前模块
 
@@ -177,7 +177,7 @@ cargo run -p ipkvm-headless-app --bin ipkvm-headless \
 
 ### HTTP 管理 API
 
-管理 API 与页面、WebSocket 一样受 token/本机来源鉴权保护：
+管理 API 与页面、WebSocket 一样走同一套鉴权（配置 `--token` 时要求凭证，未配置时匿名放行）：
 
 - `GET /api/devices`：返回视频设备和串口设备列表。串口清单只包含可直接使用的端口（#93）：类 Unix 系统上仅列出真实 USB 串口适配器（CH340/CP210x/FTDI/CDC-ACM 等，板载 `ttyS*` 与蓝牙口被过滤），且当前进程用户对其有读写权限；Windows 上保留全部 COM 口。清单按路径自然排序（`ttyUSB2` 排在 `ttyUSB10` 前），第一项即网页默认选项。`--serial` 显式指定任意路径不受该过滤限制。
 - `POST /api/session`：`{"action":"restart","video":"<设备 id>","serial":"COM9"}` 按请求设备重启会话；缺省字段沿用上一成功会话选择，初始选择来自启动配置，`serial` 为空字符串表示使用模拟队列。`create` 仅用于无会话首启，`stop` 停止当前输入泵。
@@ -205,7 +205,7 @@ serial = "COM9"
 baud = 9600
 
 [auth]
-token = "..."                    # 可选；HTTP/WS 鉴权 token（非空，仅含字母数字与 - _ . ~）
+token = "..."                    # 可选；HTTP/WS 鉴权 token；未配置即不启用鉴权
 vnc_password = "abc12345"        # 可选；RFB VNC 密码（1-8 个 ASCII 字符）
 
 [logging]
@@ -220,13 +220,13 @@ categories = "input,pointer,queue,serial,lifecycle"
 
 默认诊断类别为 `input,pointer,queue,serial,lifecycle`，覆盖桌面入口、RFB 指针映射、pending 队列、CH9329 报告和串口收发。`keyboard` 类别会记录更细的按键路径，默认不启用；需要排查键盘映射时再显式加入。
 
-### 鉴权（最小）
+### 鉴权（显式启用）
 
 `token` 与 `vnc_password` 独立，分别管两个入口：
 
 - `--token` / `[auth] token`：HTTP 与 WebSocket（含 `/rfb` 升级）凭证，必须为非空、仅含 RFC 3986 无保留字符（字母数字、`- _ . ~`）的字符串。启用后所有请求（含本机）必须带 `Authorization: Bearer <token>`、cookie `ipkvm_token=<token>` 或 query 参数 `?token=<token>` 之一。浏览器首次访问 `http://host:6080/?token=xxx` 即可：页面自动把 query token 拼到 WebSocket 地址，并在放行后换得 cookie。
 - `--vnc-password` / `[auth] vnc_password`：RFB TCP 入口的 VNC 密码挑战，长度 1-8 个 ASCII 字符（RFC 6143 密码上限 8 字节）。标准 VNC 客户端（含 vncdotool）用该密码连接。
-- 未配置 token 时 HTTP/WS 仅放行本机来源（防默认暴露）；未配置 vnc_password 时 RFB TCP 仅允许本机连接。两个入口都支持通过 `--bind` 扩大监听范围，但鉴权凭证是独立维度。
+- 未配置 token 时 HTTP/WS 不启用鉴权，任意来源可直接访问；未配置 vnc_password 时 RFB TCP 不启用密码挑战，任意来源可直接连接（#95：鉴权为显式启用，默认面向可信内网/直连场景；无凭证开放意味着同网段任何主机都能查看画面并注入键鼠，公网环境务必配置凭证）。两个入口都支持通过 `--bind` 调整监听范围，鉴权凭证是独立维度。
 
 ## 演示：Y4M 视频源
 

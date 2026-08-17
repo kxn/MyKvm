@@ -584,7 +584,7 @@ impl TestWebServer {
             RfbWebSocketConfig::default(),
             shutdown_rx,
             gate,
-            auth, // HTTP 鉴权 token；None 表示仅放行本机来源
+            auth, // HTTP 鉴权 token；None 表示不启用鉴权（#95）
             Arc::clone(&settings),
             Some(SessionSelection::default()),
         )
