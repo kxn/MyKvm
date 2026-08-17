@@ -12,6 +12,7 @@ import { SETTINGS_DEFAULTS, SettingsController, modeForProfile } from "./setting
 import { SpecialKeysController } from "./special-keys.js";
 import { REASON, StatusController, VIEW } from "./status.js";
 import { StatusPanel } from "./status-panel.js";
+import { initTheme } from "./theme.js";
 
 export function initApp(root) {
   const el = {
@@ -26,6 +27,7 @@ export function initApp(root) {
     saveScreenshot: root.querySelector("#save-screenshot"),
     copyScreenshot: root.querySelector("#copy-screenshot"),
     languageSelect: root.querySelector("#language-select"),
+    themeSelect: root.querySelector("#theme-select"),
     connectionView: root.querySelector("#connection-view"),
     videoView: root.querySelector("#video-view"),
     screen: root.querySelector("#screen"),
@@ -543,6 +545,7 @@ export function initApp(root) {
   });
 
   applyUiLanguage();
+  initTheme(el.themeSelect);
   statusController.start();
   connection.refreshAll();
   settingsController.loadInitial();
