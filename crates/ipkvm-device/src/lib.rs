@@ -334,10 +334,8 @@ mod tests {
                 port("COM9", serialport::SerialPortType::Unknown),
                 port("COM2", serialport::SerialPortType::Unknown),
             ];
-            let paths: Vec<&str> = serial_devices_from_ports(ports)
-                .iter()
-                .map(|d| d.path.as_str())
-                .collect();
+            let devices = serial_devices_from_ports(ports);
+            let paths: Vec<&str> = devices.iter().map(|d| d.path.as_str()).collect();
             assert_eq!(paths, ["COM2", "COM9", "COM10"]);
         }
 
