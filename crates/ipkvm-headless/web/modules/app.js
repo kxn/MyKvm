@@ -1,9 +1,10 @@
-// 装配入口：工具栏、视图状态机、RFB 生命周期与各功能模块接线。
+// 装配入口：悬浮控制条、视图状态机、RFB 生命周期与各功能模块接线。
 
 import RFB from "/vendor/novnc/core/rfb.js";
 import { errorText, postJson } from "./api.js";
 import { pasteFromClipboard } from "./clipboard.js";
 import { ConnectionController } from "./connection.js";
+import { ControlBar } from "./controlbar.js";
 import { applyLanguage, getStoredLanguage, setLanguage, t } from "./i18n.js";
 import { installKeyboardInterceptor } from "./keyboard.js";
 import { PointerController } from "./pointer.js";
@@ -14,10 +15,37 @@ import { REASON, StatusController, VIEW } from "./status.js";
 import { StatusPanel } from "./status-panel.js";
 import { initTheme } from "./theme.js";
 
+const SCALE_CYCLE = ["fit_window", "original", "follow_window"];
+const SCALE_I18N_KEYS = {
+  fit_window: "settings.fitWindow",
+  original: "settings.original",
+  follow_window: "settings.followWindow",
+};
+const PROFILE_I18N_KEYS = {
+  windows: "settings.profileWindows",
+  linux: "settings.profileLinux",
+  bios: "settings.profileBios",
+  android: "settings.profileAndroid",
+  macos: "settings.profileMacos",
+  raw_absolute: "settings.profileRawAbsolute",
+  raw_relative: "settings.profileRawRelative",
+};
+
+const profileLabel = (profile) =>
+  PROFILE_I18N_KEYS[profile] ? t(PROFILE_I18N_KEYS[profile]) : (profile ?? "");
+
 export function initApp(root) {
   const el = {
     console: root,
     connectionStatus: root.querySelector("#connection-status"),
+    controlBar: root.querySelector("#control-bar"),
+    sessionMenuButton: root.querySelector("#session-menu-button"),
+    sessionMenu: root.querySelector("#session-menu"),
+    controlTarget: root.querySelector("#control-target"),
+    barReconnect: root.querySelector("#bar-reconnect"),
+    barPin: root.querySelector("#bar-pin"),
+    moreButton: root.querySelector("#more-button"),
+    moreMenu: root.querySelector("#more-menu"),
     toolbarDisconnect: root.querySelector("#toolbar-disconnect"),
     openSettings: root.querySelector("#open-settings"),
     specialKeysButton: root.querySelector("#special-keys-button"),
@@ -26,10 +54,17 @@ export function initApp(root) {
     screenshotMenu: root.querySelector("#screenshot-menu"),
     saveScreenshot: root.querySelector("#save-screenshot"),
     copyScreenshot: root.querySelector("#copy-screenshot"),
+    scaleModeButton: root.querySelector("#scale-mode-button"),
+    scaleModeLabel: root.querySelector("#scale-mode-label"),
+    fullscreenButton: root.querySelector("#fullscreen-button"),
+    sensitivitySlider: root.querySelector("#relative-sensitivity-slider"),
+    sensitivityValue: root.querySelector("#sensitivity-value"),
     languageSelect: root.querySelector("#language-select"),
     themeSelect: root.querySelector("#theme-select"),
     connectionView: root.querySelector("#connection-view"),
     videoView: root.querySelector("#video-view"),
+    degradedBanner: root.querySelector("#degraded-banner"),
+    degradedBannerText: root.querySelector("#degraded-banner-text"),
     screen: root.querySelector("#screen"),
     connectButton: root.querySelector("#connect-button"),
     videoSelect: root.querySelector("#video-select"),
@@ -43,10 +78,8 @@ export function initApp(root) {
     connectionMessage: root.querySelector("#connection-message"),
     settingsSummary: root.querySelector("#connection-settings-summary"),
     videoResolution: root.querySelector("#video-resolution"),
-    videoDevice: root.querySelector("#video-device"),
-    sessionState: root.querySelector("#session-state"),
-    serialStats: root.querySelector("#serial-stats"),
-    inputStats: root.querySelector("#input-stats"),
+    videoFps: root.querySelector("#video-fps"),
+    statusProfile: root.querySelector("#status-profile"),
     videoMouseProfile: root.querySelector("#video-mouse-profile"),
     videoMessage: root.querySelector("#video-message"),
     pasteButton: root.querySelector("#paste-button"),
@@ -74,6 +107,8 @@ export function initApp(root) {
   let currentReason = null;
   let profileChangePending = false;
   let rfbNeedsInputReconnect = false;
+  let lastFrameInfo = null;
+  let fpsHistory = [];
 
   const setConnectionState = (state, text) => {
     root.dataset.connectionState = state;
@@ -120,6 +155,35 @@ export function initApp(root) {
     rfb.resizeSession = mode === "follow_window";
   };
 
+  /// degraded 横幅：视频/输入链路异常或会话恢复中时在画面内顶部提示，
+  /// 不切换视图；手动停止仍由视图状态机切回连接页。
+  const updateBanner = () => {
+    let text = null;
+    if (!el.videoView.hidden) {
+      if (rfbState === "busy") {
+        text = t("video.controllerBusy");
+      } else if (rfbState === "failed") {
+        text = t("banner.videoRecovering");
+      } else {
+        const session = lastStatus?.session;
+        const control = session?.control;
+        if (session && session.state !== "running") {
+          text = t("banner.sessionRecovering");
+        } else if (control && !["ready", "idle"].includes(control.state)) {
+          text = t("banner.inputOffline", {
+            state: t(`video.runtime.${control.state}`),
+            reason: control.reason ?? "-",
+          });
+        }
+      }
+    }
+    el.degradedBanner.hidden = text === null;
+    root.dataset.degraded = text === null ? "false" : "true";
+    if (text !== null) {
+      el.degradedBannerText.textContent = text;
+    }
+  };
+
   const cleanupRfbDom = () => {
     if (rfbDom) {
       rfbDom.remove();
@@ -155,6 +219,7 @@ export function initApp(root) {
         rfbState = "busy";
         cleanupRfbDom();
         message(t("video.controllerBusy"), "error");
+        updateBanner();
       }
       return;
     }
@@ -197,6 +262,7 @@ export function initApp(root) {
     cleanupRfbDom();
     rfbState = "connecting";
     setConnectionState("connecting", t("status.connecting"));
+    updateBanner();
     try {
       const next = new RFB(el.screen, websocketUrl(), { shared: true });
       rfb = next;
@@ -218,6 +284,7 @@ export function initApp(root) {
         setConnectionState("connected", t("status.connected"));
         message(t("video.rfbConnected"), "ok");
         specialKeys.updateEnabled();
+        updateBanner();
       });
 
       next.addEventListener("disconnect", (event) => {
@@ -244,6 +311,7 @@ export function initApp(root) {
         } else {
           setConnectionState("failed", t("status.connectionFailed"));
         }
+        updateBanner();
       });
 
       next.addEventListener("securityfailure", () => {
@@ -263,6 +331,7 @@ export function initApp(root) {
       cleanupRfbDom();
       pointer.setRfb(null);
       message(`${t("video.rfbFailed")}：${errorText(error)}`, "error");
+      updateBanner();
     }
   };
 
@@ -280,6 +349,7 @@ export function initApp(root) {
     rfbState = "idle";
     rfbNextRetryAt = 0;
     rfbBackoffMs = 2000;
+    updateBanner();
   };
 
   const showConnectionReason = (reason) => {
@@ -312,6 +382,11 @@ export function initApp(root) {
     el.connectionView.hidden = view !== VIEW.CONNECTION;
     el.videoView.hidden = view !== VIEW.VIDEO;
     root.dataset.view = view;
+    controlBar.setView(view);
+    if (view !== VIEW.VIDEO) {
+      lastFrameInfo = null;
+      fpsHistory = [];
+    }
     if (view === VIEW.VIDEO) {
       syncRfbWithStatus(lastStatus);
       connection.updateConnectState();
@@ -326,6 +401,7 @@ export function initApp(root) {
       // 切换到连接页时自动刷新设备列表
       connection.refreshAll();
     }
+    updateBanner();
   };
 
   const updateToolbar = (status) => {
@@ -343,41 +419,40 @@ export function initApp(root) {
     el.toolbarDisconnect.disabled = state !== "running";
   };
 
+  /// 极简状态行：分辨率 · 帧率 · 当前目标系统；诊断数据移入状态浮层。
   const updateVideoBar = (status) => {
     const frame = status?.video?.frame;
     el.videoResolution.textContent = frame
-      ? t("video.resolution", { w: frame.width, h: frame.height })
+      ? t("video.resolutionShort", { w: frame.width, h: frame.height })
       : t("video.noFrame");
-    el.videoDevice.textContent = t("video.device", {
-      name: status?.video?.source?.device_name ?? "-",
-    });
-    el.sessionState.textContent = t("video.session", {
-      state: status?.session?.state ?? "-",
-    });
-    const serial = status?.session?.serial;
-    el.serialStats.textContent = serial
-      ? t("video.serial", {
-          batches: serial.batches_accepted ?? 0,
-          frames: serial.frames_accepted ?? 0,
-        })
-      : "";
-    const control = status?.session?.control;
-    if (
-      control &&
-      !["ready", "idle"].includes(control.state) &&
-      control.reason
-    ) {
-      el.inputStats.textContent = t("video.inputOffline", {
-        state: t(`video.runtime.${control.state}`),
-        reason: control.reason,
-      });
-    } else {
-      el.inputStats.textContent = t("video.input", {
-        events: status?.session?.input_events ?? 0,
-      });
+    if (frame && lastFrameInfo && frame.capture_ns > lastFrameInfo.captureNs) {
+      const fps =
+        (frame.seq - lastFrameInfo.seq) /
+        ((frame.capture_ns - lastFrameInfo.captureNs) / 1e9);
+      if (Number.isFinite(fps) && fps >= 0) {
+        fpsHistory.push(fps);
+        if (fpsHistory.length > 3) {
+          fpsHistory.shift();
+        }
+      }
     }
-    if (status?.session?.mouse_profile && !profileChangePending) {
-      el.videoMouseProfile.value = status.session.mouse_profile;
+    if (frame) {
+      lastFrameInfo = { seq: frame.seq, captureNs: frame.capture_ns };
+    }
+    el.videoFps.textContent =
+      fpsHistory.length > 0
+        ? t("video.fps", {
+            fps: (
+              fpsHistory.reduce((sum, value) => sum + value, 0) / fpsHistory.length
+            ).toFixed(1),
+          })
+        : "";
+    el.controlTarget.textContent =
+      status?.video?.source?.device_name ?? "MyKvm";
+    const profile = status?.session?.mouse_profile;
+    el.statusProfile.textContent = profile ? profileLabel(profile) : "";
+    if (profile && !profileChangePending) {
+      el.videoMouseProfile.value = profile;
     }
     el.videoMouseProfile.disabled = status?.session?.state !== "running";
   };
@@ -399,6 +474,39 @@ export function initApp(root) {
     },
   });
 
+  const syncSensitivitySlider = () => {
+    const value = Number(settings.relative_sensitivity);
+    if (Number.isFinite(value)) {
+      el.sensitivitySlider.value = String(value);
+      el.sensitivityValue.textContent = value.toFixed(1);
+    }
+  };
+
+  const refreshScaleButton = () => {
+    el.scaleModeLabel.textContent = t(
+      SCALE_I18N_KEYS[settings.scale_mode] ?? "settings.fitWindow",
+    );
+  };
+
+  const applySettingsChange = (saved) => {
+    settings = saved;
+    applyScaleMode();
+    pointer.applySettings(saved);
+    connection.updateSettingsSummary(saved);
+    syncSensitivitySlider();
+    refreshScaleButton();
+  };
+
+  /// 控制条快捷控件（缩放循环、灵敏度滑杆）直接持久化到 /api/settings。
+  const persistSettings = async (updated) => {
+    try {
+      const saved = await postJson("/api/settings", updated);
+      applySettingsChange(saved);
+    } catch (error) {
+      message(t("settings.saveFailed", { detail: errorText(error) }), "error");
+    }
+  };
+
   const settingsController = new SettingsController({
     modal: el.settingsModal,
     message: el.settingsMessage,
@@ -407,12 +515,7 @@ export function initApp(root) {
     cancelButton: root.querySelector("#settings-cancel"),
     saveButton: root.querySelector("#settings-save"),
     resetButton: root.querySelector("#settings-reset"),
-    onChanged: (saved) => {
-      settings = saved;
-      applyScaleMode();
-      pointer.applySettings(saved);
-      connection.updateSettingsSummary(saved);
-    },
+    onChanged: applySettingsChange,
   });
 
   const pointer = new PointerController({
@@ -474,6 +577,20 @@ export function initApp(root) {
     message,
   });
 
+  // degraded 横幅点击查看诊断（状态浮层）。
+  el.degradedBanner.addEventListener("click", () => statusPanel.show());
+
+  const controlBar = new ControlBar({
+    consoleRoot: root,
+    bar: el.controlBar,
+    videoView: el.videoView,
+    pinButton: el.barPin,
+    sessionMenuButton: el.sessionMenuButton,
+    sessionMenu: el.sessionMenu,
+    moreButton: el.moreButton,
+    moreMenu: el.moreMenu,
+  });
+
   const statusController = new StatusController({
     onStatus: (status) => {
       lastStatus = status;
@@ -487,6 +604,7 @@ export function initApp(root) {
       }
       updateToolbar(status);
       updateVideoBar(status);
+      updateBanner();
       connection.applyStatus(status);
       screenshot.setFrameAvailable(Boolean(status.video?.frame));
       connection.updateConnectState();
@@ -502,12 +620,20 @@ export function initApp(root) {
 
   el.toolbarDisconnect.addEventListener("click", async () => {
     el.toolbarDisconnect.disabled = true;
+    controlBar.closeMenus();
     try {
       await postJson("/api/session", { action: "stop" });
     } catch (error) {
       message(`${t("toolbar.disconnect")}：${errorText(error)}`, "error");
       el.toolbarDisconnect.disabled = lastStatus?.session?.state === "running";
     }
+  });
+
+  // 重新连接：仅重建本页的 RFB 客户端连接，不重启服务端会话。
+  el.barReconnect.addEventListener("click", () => {
+    controlBar.closeMenus();
+    disconnectRfb();
+    syncRfbWithStatus(lastStatus);
   });
 
   el.pasteButton.addEventListener("click", async () => {
@@ -522,17 +648,66 @@ export function initApp(root) {
     }
   });
 
+  // 缩放模式循环：适配窗口 → 原始大小 → 窗口跟随视频。
+  el.scaleModeButton.addEventListener("click", () => {
+    const index = SCALE_CYCLE.indexOf(settings.scale_mode);
+    const next = SCALE_CYCLE[(index + 1) % SCALE_CYCLE.length];
+    settings = { ...settings, scale_mode: next };
+    applyScaleMode();
+    refreshScaleButton();
+    void persistSettings(settings);
+  });
+
+  // 相对灵敏度滑杆：即时生效，停止操作后持久化。
+  let sensitivityPersistTimer = null;
+  el.sensitivitySlider.addEventListener("input", () => {
+    const value = Number(el.sensitivitySlider.value);
+    if (!Number.isFinite(value)) {
+      return;
+    }
+    el.sensitivityValue.textContent = value.toFixed(1);
+    settings = { ...settings, relative_sensitivity: value };
+    pointer.applySettings(settings);
+    if (sensitivityPersistTimer !== null) {
+      clearTimeout(sensitivityPersistTimer);
+    }
+    sensitivityPersistTimer = setTimeout(() => {
+      sensitivityPersistTimer = null;
+      void persistSettings(settings);
+    }, 400);
+  });
+
+  // 浏览器全屏（Fullscreen API，纯前端能力）。
+  el.fullscreenButton.addEventListener("click", async () => {
+    try {
+      if (document.fullscreenElement) {
+        await document.exitFullscreen();
+      } else {
+        await document.documentElement.requestFullscreen();
+      }
+    } catch (error) {
+      message(t("bar.fullscreenFailed", { detail: errorText(error) }), "error");
+    }
+  });
+  document.addEventListener("fullscreenchange", () => {
+    el.fullscreenButton.title = t(
+      document.fullscreenElement ? "bar.exitFullscreen" : "bar.fullscreen",
+    );
+  });
+
   const applyUiLanguage = () => {
     applyLanguage(document);
     el.languageSelect.value = getStoredLanguage();
     specialKeys.refresh();
     pointer.update();
     connection.updateSettingsSummary(settings);
+    refreshScaleButton();
     if (!el.videoView.hidden) {
       updateVideoBar(lastStatus);
     } else {
       showConnectionReason(currentReason ?? REASON.ABSENT);
     }
+    updateBanner();
   };
 
   el.languageSelect.addEventListener("change", () => {

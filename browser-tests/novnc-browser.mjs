@@ -194,6 +194,19 @@ async function waitForCondition(condition, label, milliseconds = DEADLINE_MS) {
   }
 }
 
+// 视频页悬浮控制条 3 秒无操作自动淡出；与条上控件交互前先唤出。
+async function revealControlBar(page) {
+  await page.mouse.move(640, 10);
+  await page.waitForFunction(
+    () => {
+      const bar = document.querySelector("#control-bar");
+      return bar && !bar.classList.contains("is-hidden");
+    },
+    undefined,
+    { timeout: DEADLINE_MS },
+  );
+}
+
 async function installApiMocks(context, postedSettings, settingsGets) {
   const storedSettings = { ...DEFAULT_SETTINGS };
   await context.route("**/api/devices", (route) => {
@@ -579,6 +592,9 @@ async function connectSession(page) {
 
 async function openSettingsModal(page, settingsGets) {
   const before = settingsGets.count;
+  // 设置入口收在 ⋯ 更多菜单里，先唤出控制条再展开菜单。
+  await revealControlBar(page);
+  await page.locator("#more-button").click();
   await page.locator("#open-settings").click();
   await page.locator("#settings-modal:not([hidden])").waitFor({ state: "attached" });
   await waitForCondition(
@@ -1077,11 +1093,12 @@ async function run() {
     await assertPointerReleaseOnDetach(page);
     await assertPointerReleaseOnLockLossEvents(page);
     await assertCanvasRelativeCapture(page);
-    assert.equal(await page.locator(".toolbar #paste-button").count(), 1);
+    assert.equal(await page.locator("#control-bar #paste-button").count(), 1);
     assert.equal(await page.locator("#video-status-bar #paste-button").count(), 0);
 
     // ---- 特殊键菜单 ----
     const specialKeyMarker = fixture.lines.mark();
+    await revealControlBar(page);
     await page.locator("#special-keys-button").click();
     await page.locator("#special-ctrl-alt-del").click();
     await fixture.lines.waitForSubsequence(
@@ -1178,6 +1195,7 @@ async function run() {
     );
 
     // ---- 截图下载 ----
+    await revealControlBar(page);
     await page.locator("#screenshot-button").click();
     const downloadPromise = page.waitForEvent("download");
     await page.locator("#save-screenshot").click();
@@ -1210,6 +1228,8 @@ async function run() {
       "second tab should not observe connection errors while guarded",
     );
     const releaseMarker = fixture.lines.mark();
+    await revealControlBar(second.page);
+    await second.page.locator("#session-menu-button").click();
     await second.page.locator("#toolbar-disconnect").click();
     await waitForConnectionView(second.page);
     await waitForConnectionView(page);
@@ -1276,6 +1296,10 @@ async function run() {
     await race.context.close();
 
     // ---- 语言切换 ----
+    // 语言/主题下拉收在 ⋯ 更多菜单里；先唤出控制条、按 Escape 归位菜单状态再展开。
+    await revealControlBar(page);
+    await page.keyboard.press("Escape");
+    await page.locator("#more-button").click();
     await page.locator("#language-select").selectOption("en");
     assert.equal(await page.locator("html").getAttribute("lang"), "en");
     assert.equal(
@@ -1292,6 +1316,9 @@ async function run() {
     // ---- 主题三态：切换即时生效、刷新保持、system 跟随 prefers-color-scheme ----
     // 主 context 未指定 colorScheme，playwright 默认 light，system 应解析为浅色。
     assert.equal(await page.locator("html").getAttribute("data-theme"), "light");
+    await revealControlBar(page);
+    await page.keyboard.press("Escape");
+    await page.locator("#more-button").click();
     await page.locator("#theme-select").selectOption("dark");
     assert.equal(
       await page.locator("html").getAttribute("data-theme"),
@@ -1309,6 +1336,9 @@ async function run() {
     await page.reload({ waitUntil: "domcontentloaded" });
     assert.equal(await page.locator("html").getAttribute("data-theme"), "dark");
     // 回到 system：清除手动选择并跟随 prefers-color-scheme 实时变化。
+    // 刷新后菜单已复位，唤出控制条并重新展开 ⋯ 菜单。
+    await revealControlBar(page);
+    await page.locator("#more-button").click();
     await page.locator("#theme-select").selectOption("system");
     assert.equal(
       await page.evaluate(() => localStorage.getItem("my_ipkvm.theme")),
@@ -1341,6 +1371,79 @@ async function run() {
     );
     await darkSystem.context.close();
 
+    // ---- 控制条：悬浮自动隐藏 / 顶部唤出 / 固定持久化 / 缩放循环 / 全屏 ----
+    // 主页此前已重连并处于视频页（主题段 reload 后自动回到视频页）。
+    await waitForVideoView(page);
+    // 上一节操作后 ⋯ 菜单仍展开且焦点在条内（视为仍在操作，不会自动隐藏）：
+    // 先收菜单、把焦点和鼠标移到画面中央。
+    await page.keyboard.press("Escape");
+    await page.mouse.click(640, 400);
+    // 悬浮模式：3 秒无操作自动淡出。
+    await page.waitForFunction(
+      () => document.querySelector("#control-bar")?.classList.contains("is-hidden"),
+      undefined,
+      { timeout: 6000 },
+    );
+    // 鼠标移至视口顶部唤出。
+    await page.mouse.move(640, 10);
+    await page.waitForFunction(
+      () => !document.querySelector("#control-bar")?.classList.contains("is-hidden"),
+      undefined,
+      { timeout: DEADLINE_MS },
+    );
+    // 固定后不再自动隐藏，固定状态持久化。
+    await page.locator("#bar-pin").click();
+    assert.equal(
+      await page.evaluate(() => localStorage.getItem("my_ipkvm.controlBarPinned")),
+      "1",
+    );
+    await page.waitForTimeout(3400);
+    assert.equal(
+      await page.locator("#control-bar.is-hidden").count(),
+      0,
+      "pinned control bar must not auto-hide",
+    );
+
+    // 会话菜单：展开可见连接状态与断开入口，Escape 收起。
+    await page.locator("#session-menu-button").click();
+    await page.locator("#session-menu:not([hidden])").waitFor({ state: "attached" });
+    await page.locator("#toolbar-disconnect").waitFor({ state: "visible" });
+    await page.keyboard.press("Escape");
+    await page.locator("#session-menu[hidden]").waitFor({ state: "attached" });
+
+    // 缩放模式循环：适配窗口 → 原始大小，标签更新并 POST 持久化。
+    assert.match(
+      await page.locator("#scale-mode-label").textContent(),
+      /适配窗口/,
+    );
+    const scalePosts = postedSettings.length;
+    await page.locator("#scale-mode-button").click();
+    await waitForCondition(
+      () => postedSettings.length > scalePosts,
+      "scale mode persist POST",
+    );
+    assert.match(
+      await page.locator("#scale-mode-label").textContent(),
+      /原始大小/,
+    );
+
+    // 浏览器全屏（Fullscreen API）。
+    await page.locator("#fullscreen-button").click();
+    await page.waitForFunction(() => Boolean(document.fullscreenElement), undefined, {
+      timeout: DEADLINE_MS,
+    });
+    await page.locator("#fullscreen-button").click();
+    await page.waitForFunction(() => !document.fullscreenElement, undefined, {
+      timeout: DEADLINE_MS,
+    });
+
+    // 取消固定恢复悬浮。
+    await page.locator("#bar-pin").click();
+    assert.equal(
+      await page.evaluate(() => localStorage.getItem("my_ipkvm.controlBarPinned")),
+      "0",
+    );
+
     // ---- 缺失 /api/settings 的降级路径 ----
     const degraded = await openConsole(browser, url, { mockApi: false });
     contexts.push(degraded.context);
@@ -1352,6 +1455,8 @@ async function run() {
         body: JSON.stringify({ error: "not found" }),
       }),
     );
+    await revealControlBar(degraded.page);
+    await degraded.page.locator("#more-button").click();
     await degraded.page.locator("#open-settings").click();
     await degraded.page
       .locator("#settings-message", { hasText: "设置获取失败" })
