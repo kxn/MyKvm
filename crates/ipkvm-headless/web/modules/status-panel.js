@@ -1,5 +1,6 @@
-// 状态面板：显示连接状态、帧率、带宽、系统信息等。
-// 可拖动、可关闭，半透明毛玻璃样式。
+// 状态监控抽屉：右侧滑出，画面保持可见可交互。
+// 用户可读指标常态展示（帧率/分辨率/带宽/连接时长/CPU/内存），
+// 诊断指标（采集帧/掉帧/编码字节/输入事件等）折叠进「高级」。
 
 import { getJson } from "./api.js";
 import { t } from "./i18n.js";
@@ -8,18 +9,19 @@ export class StatusPanel {
   constructor({ button, message }) {
     this.button = button;
     this.message = message;
-    this.panel = null;
+    this.drawer = null;
     this.visible = false;
-    this.dragging = false;
-    this.dragOffset = { x: 0, y: 0 };
     this.timer = null;
     this.lastStatus = null;
     this.lastSystem = null;
-    this.lastEncodeBytes = 0;
-    this.lastEncodeTime = 0;
     this.frameRateHistory = [];
 
     this.button.addEventListener("click", () => this.toggle());
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && this.visible) {
+        this.hide();
+      }
+    });
   }
 
   toggle() {
@@ -31,124 +33,117 @@ export class StatusPanel {
   }
 
   show() {
-    if (this.panel) {
-      this.panel.hidden = false;
-      this.visible = true;
-      this.startPolling();
-      return;
+    if (!this.drawer) {
+      this.build();
     }
-
-    this.panel = document.createElement("div");
-    this.panel.className = "status-panel";
-    this.panel.innerHTML = `
-      <div class="status-panel-header">
-        <span class="status-panel-title">${t("statusPanel.title")}</span>
-        <button class="status-panel-close" aria-label="Close">&times;</button>
-      </div>
-      <div class="status-panel-body">
-        <div class="status-panel-section">
-          <div class="status-panel-section-title">📹 ${t("statusPanel.video")}</div>
-          <div class="status-panel-row">
-            <span>${t("statusPanel.fps")}</span>
-            <span id="sp-fps">-</span>
-          </div>
-          <div class="status-panel-row">
-            <span>${t("statusPanel.resolution")}</span>
-            <span id="sp-resolution">-</span>
-          </div>
-          <div class="status-panel-row">
-            <span>${t("statusPanel.format")}</span>
-            <span id="sp-format">-</span>
-          </div>
-          <div class="status-panel-row">
-            <span>${t("statusPanel.captured")}</span>
-            <span id="sp-captured">-</span>
-          </div>
-          <div class="status-panel-row">
-            <span>${t("statusPanel.dropped")}</span>
-            <span id="sp-dropped">-</span>
-          </div>
-        </div>
-        <div class="status-panel-section">
-          <div class="status-panel-section-title">🖥️ ${t("statusPanel.connection")}</div>
-          <div class="status-panel-row">
-            <span>${t("statusPanel.connected")}</span>
-            <span id="sp-connected">-</span>
-          </div>
-          <div class="status-panel-row">
-            <span>${t("statusPanel.inputEvents")}</span>
-            <span id="sp-input-events">-</span>
-          </div>
-        </div>
-        <div class="status-panel-section">
-          <div class="status-panel-section-title">💾 ${t("statusPanel.encoding")}</div>
-          <div class="status-panel-row">
-            <span>${t("statusPanel.encodeCount")}</span>
-            <span id="sp-encode-count">-</span>
-          </div>
-          <div class="status-panel-row">
-            <span>${t("statusPanel.encodedBytes")}</span>
-            <span id="sp-encoded-bytes">-</span>
-          </div>
-          <div class="status-panel-row">
-            <span>${t("statusPanel.bandwidth")}</span>
-            <span id="sp-bandwidth">-</span>
-          </div>
-          <div class="status-panel-row">
-            <span>${t("statusPanel.sessionDropped")}</span>
-            <span id="sp-session-dropped">-</span>
-          </div>
-        </div>
-        <div class="status-panel-section">
-          <div class="status-panel-section-title">📊 ${t("statusPanel.system")}</div>
-          <div class="status-panel-row">
-            <span>${t("statusPanel.cpu")}</span>
-            <span id="sp-cpu">-</span>
-          </div>
-          <div class="status-panel-row">
-            <span>${t("statusPanel.memory")}</span>
-            <span id="sp-memory">-</span>
-          </div>
-        </div>
-      </div>
-    `;
-
-    document.body.appendChild(this.panel);
-
-    // Close button
-    this.panel.querySelector(".status-panel-close").addEventListener("click", () => this.hide());
-
-    // Drag
-    const header = this.panel.querySelector(".status-panel-header");
-    header.addEventListener("mousedown", (e) => {
-      this.dragging = true;
-      this.dragOffset.x = e.clientX - this.panel.offsetLeft;
-      this.dragOffset.y = e.clientY - this.panel.offsetTop;
-      e.preventDefault();
-    });
-
-    document.addEventListener("mousemove", (e) => {
-      if (!this.dragging) return;
-      this.panel.style.left = (e.clientX - this.dragOffset.x) + "px";
-      this.panel.style.top = (e.clientY - this.dragOffset.y) + "px";
-      this.panel.style.right = "auto";
-      this.panel.style.bottom = "auto";
-    });
-
-    document.addEventListener("mouseup", () => {
-      this.dragging = false;
-    });
-
+    this.drawer.hidden = false;
+    // 强制 reflow 让滑入过渡生效。
+    void this.drawer.offsetWidth;
+    this.drawer.classList.add("open");
     this.visible = true;
     this.startPolling();
   }
 
   hide() {
-    if (this.panel) {
-      this.panel.hidden = true;
+    if (this.drawer) {
+      this.drawer.classList.remove("open");
+      // 过渡结束后隐藏，避免屏幕阅读器聚焦不可见内容。
+      this.drawer.hidden = true;
     }
     this.visible = false;
     this.stopPolling();
+  }
+
+  build() {
+    this.drawer = document.createElement("aside");
+    this.drawer.className = "status-drawer";
+    this.drawer.setAttribute("aria-label", t("statusPanel.title"));
+    this.drawer.innerHTML = `
+      <div class="status-drawer-header">
+        <span class="status-drawer-title">${t("statusPanel.title")}</span>
+        <button class="status-drawer-close" aria-label="${t("statusPanel.close")}">&times;</button>
+      </div>
+      <div class="status-drawer-body">
+        <div class="status-drawer-section">
+          <div class="status-drawer-section-title">${t("statusPanel.video")}</div>
+          <div class="status-drawer-row">
+            <span>${t("statusPanel.fps")}</span>
+            <span id="sp-fps">-</span>
+          </div>
+          <div class="status-drawer-row">
+            <span>${t("statusPanel.resolution")}</span>
+            <span id="sp-resolution">-</span>
+          </div>
+        </div>
+        <div class="status-drawer-section">
+          <div class="status-drawer-section-title">${t("statusPanel.connection")}</div>
+          <div class="status-drawer-row">
+            <span>${t("statusPanel.bandwidth")}</span>
+            <span id="sp-bandwidth">-</span>
+          </div>
+          <div class="status-drawer-row">
+            <span>${t("statusPanel.connected")}</span>
+            <span id="sp-connected">-</span>
+          </div>
+        </div>
+        <div class="status-drawer-section">
+          <div class="status-drawer-section-title">${t("statusPanel.system")}</div>
+          <div class="status-drawer-row">
+            <span>${t("statusPanel.cpu")}</span>
+            <span id="sp-cpu">-</span>
+          </div>
+          <div class="status-drawer-row">
+            <span>${t("statusPanel.memory")}</span>
+            <span id="sp-memory">-</span>
+          </div>
+        </div>
+        <details class="status-drawer-advanced">
+          <summary>${t("statusPanel.advanced")}</summary>
+          <div class="status-drawer-section">
+            <div class="status-drawer-section-title">${t("statusPanel.video")}</div>
+            <div class="status-drawer-row">
+              <span>${t("statusPanel.format")}</span>
+              <span id="sp-format">-</span>
+            </div>
+            <div class="status-drawer-row">
+              <span>${t("statusPanel.captured")}</span>
+              <span id="sp-captured">-</span>
+            </div>
+            <div class="status-drawer-row">
+              <span>${t("statusPanel.dropped")}</span>
+              <span id="sp-dropped">-</span>
+            </div>
+          </div>
+          <div class="status-drawer-section">
+            <div class="status-drawer-section-title">${t("statusPanel.connection")}</div>
+            <div class="status-drawer-row">
+              <span>${t("statusPanel.inputEvents")}</span>
+              <span id="sp-input-events">-</span>
+            </div>
+          </div>
+          <div class="status-drawer-section">
+            <div class="status-drawer-section-title">${t("statusPanel.encoding")}</div>
+            <div class="status-drawer-row">
+              <span>${t("statusPanel.encodeCount")}</span>
+              <span id="sp-encode-count">-</span>
+            </div>
+            <div class="status-drawer-row">
+              <span>${t("statusPanel.encodedBytes")}</span>
+              <span id="sp-encoded-bytes">-</span>
+            </div>
+            <div class="status-drawer-row">
+              <span>${t("statusPanel.sessionDropped")}</span>
+              <span id="sp-session-dropped">-</span>
+            </div>
+          </div>
+        </details>
+      </div>
+    `;
+
+    document.body.appendChild(this.drawer);
+    this.drawer
+      .querySelector(".status-drawer-close")
+      .addEventListener("click", () => this.hide());
   }
 
   startPolling() {
@@ -177,9 +172,9 @@ export class StatusPanel {
   }
 
   update(status, system) {
-    if (!this.visible || !this.panel) return;
+    if (!this.visible || !this.drawer) return;
 
-    const el = (id) => this.panel.querySelector(`#sp-${id}`);
+    const el = (id) => this.drawer.querySelector(`#sp-${id}`);
 
     // Video
     const frame = status?.video?.frame;
