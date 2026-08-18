@@ -1,14 +1,5 @@
-// 剪贴板：粘贴经 navigator.clipboard.readText → noVNC clipboardPasteFrom；
-// 复制截图先转 PNG 再经 ClipboardItem 写入（浏览器写剪贴板只支持 image/png）。
-
-export async function pasteFromClipboard(rfb) {
-  if (!rfb || typeof navigator.clipboard?.readText !== "function") {
-    throw new Error("clipboard-read unavailable");
-  }
-  const text = await navigator.clipboard.readText();
-  rfb.clipboardPasteFrom(text);
-  return text;
-}
+// 剪贴板：复制截图先转 PNG 再经 ClipboardItem 写入（浏览器写剪贴板只支持 image/png）。
+// 粘贴走 paste.js 对话框。
 
 export async function jpegToPngBlob(jpegBlob) {
   const bitmap = await createImageBitmap(jpegBlob);

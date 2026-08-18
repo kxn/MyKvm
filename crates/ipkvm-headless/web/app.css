@@ -460,6 +460,96 @@ select:disabled {
   gap: 2px;
 }
 
+/* 特殊键面板：常用区大按钮 + 分类折叠 + 自定义组合键 */
+#special-keys-menu {
+  min-width: 300px;
+}
+
+.special-key-quick {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-2);
+  padding: var(--space-1);
+}
+
+.special-key-quick button {
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  font-weight: 600;
+  text-align: center;
+}
+
+.special-key-quick button:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--surface-hover);
+}
+
+.special-key-details {
+  border-top: 1px solid var(--border);
+}
+
+.special-key-details summary {
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: var(--font-size-md);
+  list-style-position: inside;
+  transition: background-color var(--duration-fast) var(--ease-standard);
+}
+
+.special-key-details summary:hover {
+  background: var(--surface-hover);
+}
+
+.special-key-details .special-key-group {
+  padding: 0 var(--space-1) var(--space-1) var(--space-4);
+}
+
+.special-key-custom {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-1) var(--space-1);
+  border-top: 1px solid var(--border);
+}
+
+.special-key-custom-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+}
+
+.special-key-modifier {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  color: var(--text);
+  font-size: var(--font-size-md);
+}
+
+.special-key-custom select {
+  height: 28px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text);
+  font-size: var(--font-size-md);
+}
+
+#special-custom-send {
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+  text-align: center;
+}
+
+#special-custom-send:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: var(--surface-hover);
+}
+
 /* ---- 视图 ---- */
 
 .view {
@@ -908,6 +998,54 @@ select:disabled {
   background: var(--accent-strong);
   color: var(--on-accent);
   font-weight: 600;
+}
+
+/* ---- 粘贴对话框 ---- */
+
+#paste-text {
+  width: 100%;
+  min-height: 140px;
+  padding: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-raised);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: var(--font-size-md);
+  resize: vertical;
+}
+
+#paste-text:focus-visible {
+  outline: 2px solid var(--accent-strong);
+  outline-offset: 1px;
+}
+
+.paste-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  min-height: 20px;
+  margin-top: var(--space-1);
+  color: var(--text-muted);
+  font-size: var(--font-size-sm);
+}
+
+.paste-warning {
+  color: var(--warning);
+}
+
+#paste-modal .modal-actions button.primary,
+.modal-actions button.primary {
+  border-color: var(--accent-strong);
+  background: var(--accent-strong);
+  color: var(--on-accent);
+  font-weight: 600;
+}
+
+.modal-actions button.primary:hover:not(:disabled) {
+  border-color: var(--accent-strong-hover);
+  background: var(--accent-strong-hover);
 }
 
 #settings-save:hover:not(:disabled) {

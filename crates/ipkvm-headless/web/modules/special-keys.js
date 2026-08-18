@@ -1,4 +1,4 @@
-// 全量特殊键菜单：桌面四键 + 浏览器保留组合，经 noVNC sendKey 序列发送。
+// 全量特殊键菜单：常用区直发 + 分类折叠 + 自定义组合键，经 noVNC sendKey 序列发送。
 // Full special keys menu with the desktop quartet and browser-reserved combos.
 
 import KeyTable from "/vendor/novnc/core/input/keysym.js";
@@ -14,6 +14,37 @@ const MODIFIER_KIND_BY_CODE = new Map([
   ["MetaLeft", "meta"],
   ["MetaRight", "meta"],
 ]);
+
+// 自定义组合键可选修饰键与普通键。
+const CUSTOM_MODIFIERS = [
+  { kind: "control", label: "Ctrl", keys: [["ControlLeft", KeyTable.XK_Control_L]] },
+  { kind: "alt", label: "Alt", keys: [["AltLeft", KeyTable.XK_Alt_L]] },
+  { kind: "shift", label: "Shift", keys: [["ShiftLeft", KeyTable.XK_Shift_L]] },
+  { kind: "meta", label: "Win", keys: [["MetaLeft", KeyTable.XK_Super_L]] },
+];
+
+const CUSTOM_KEYS = [
+  ["Enter", "Enter", KeyTable.XK_Return],
+  ["Escape", "Esc", KeyTable.XK_Escape],
+  ["Tab", "Tab", KeyTable.XK_Tab],
+  ["Space", "Space", KeyTable.XK_space],
+  ["Backspace", "Backspace", KeyTable.XK_BackSpace],
+  ["Delete", "Delete", KeyTable.XK_Delete],
+  ["Insert", "Insert", KeyTable.XK_Insert],
+  ["Home", "Home", KeyTable.XK_Home],
+  ["End", "End", KeyTable.XK_End],
+  ["PageUp", "PageUp", KeyTable.XK_Page_Up],
+  ["PageDown", "PageDown", KeyTable.XK_Page_Down],
+  ["ArrowUp", "↑", KeyTable.XK_Up],
+  ["ArrowDown", "↓", KeyTable.XK_Down],
+  ["ArrowLeft", "←", KeyTable.XK_Left],
+  ["ArrowRight", "→", KeyTable.XK_Right],
+  ...Array.from({ length: 12 }, (_, i) => [
+    `F${i + 1}`,
+    `F${i + 1}`,
+    KeyTable[`XK_F${i + 1}`],
+  ]),
+];
 
 const GROUPS = [
   {
@@ -303,23 +334,98 @@ export class SpecialKeysController {
 
   refresh() {
     this.menu.textContent = "";
-    for (const group of GROUPS) {
-      const heading = document.createElement("h3");
-      heading.textContent = t(group.key);
+    // 常用区：最高频桌面组合键直发（沿用原按钮 id，测试与习惯不变）。
+    const quickLabel = document.createElement("h3");
+    quickLabel.textContent = t("special.common");
+    const quick = document.createElement("div");
+    quick.className = "special-key-quick";
+    for (const item of GROUPS[0].items) {
+      quick.appendChild(this.buildItemButton(item));
+    }
+    this.menu.append(quickLabel, quick);
+    // 分类折叠：其余四组默认收起。
+    for (const group of GROUPS.slice(1)) {
+      const details = document.createElement("details");
+      details.className = "special-key-details";
+      const summary = document.createElement("summary");
+      summary.textContent = t(group.key);
       const list = document.createElement("div");
       list.className = "special-key-group";
       for (const item of group.items) {
-        const button = document.createElement("button");
-        button.type = "button";
-        button.id = item.id;
-        button.dataset.specialKey = item.key;
-        button.textContent = t(item.key);
-        button.addEventListener("click", () => this.send(item));
-        list.appendChild(button);
+        list.appendChild(this.buildItemButton(item));
       }
-      this.menu.append(heading, list);
+      details.append(summary, list);
+      this.menu.appendChild(details);
     }
+    this.menu.appendChild(this.buildCustom());
     this.updateEnabled();
+  }
+
+  buildItemButton(item) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.id = item.id;
+    button.dataset.specialKey = item.key;
+    button.textContent = t(item.key);
+    button.addEventListener("click", () => this.send(item));
+    return button;
+  }
+
+  /// 自定义组合键：修饰键复选 + 普通键下拉 + 发送，覆盖长尾组合。
+  buildCustom() {
+    const wrap = document.createElement("div");
+    wrap.className = "special-key-custom";
+    const title = document.createElement("h3");
+    title.textContent = t("special.custom");
+    const row = document.createElement("div");
+    row.className = "special-key-custom-row";
+    this.customModifiers = [];
+    for (const modifier of CUSTOM_MODIFIERS) {
+      const label = document.createElement("label");
+      label.className = "special-key-modifier";
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.value = modifier.kind;
+      label.append(checkbox, modifier.label);
+      row.appendChild(label);
+      this.customModifiers.push({ checkbox, modifier });
+    }
+    this.customKey = document.createElement("select");
+    this.customKey.id = "special-custom-key";
+    this.customKey.setAttribute("aria-label", t("special.customKey"));
+    for (const [code, label] of CUSTOM_KEYS) {
+      const option = document.createElement("option");
+      option.value = code;
+      option.textContent = label;
+      this.customKey.appendChild(option);
+    }
+    const sendButton = document.createElement("button");
+    sendButton.type = "button";
+    sendButton.id = "special-custom-send";
+    sendButton.textContent = t("special.send");
+    sendButton.addEventListener("click", () => this.sendCustom());
+    wrap.append(title, row, this.customKey, sendButton);
+    return wrap;
+  }
+
+  sendCustom() {
+    const keys = [];
+    const labels = [];
+    for (const { checkbox, modifier } of this.customModifiers) {
+      if (checkbox.checked) {
+        keys.push(...modifier.keys);
+        labels.push(modifier.label);
+      }
+    }
+    const selected = CUSTOM_KEYS.find(
+      ([code]) => code === this.customKey.value,
+    );
+    if (!selected) {
+      return;
+    }
+    keys.push([selected[0], selected[2]]);
+    labels.push(selected[1]);
+    this.send({ label: labels.join("+"), keys });
   }
 
   updateEnabled() {

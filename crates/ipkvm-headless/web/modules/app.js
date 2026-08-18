@@ -2,12 +2,12 @@
 
 import RFB from "/vendor/novnc/core/rfb.js";
 import { errorText, postJson } from "./api.js";
-import { pasteFromClipboard } from "./clipboard.js";
 import { ConnectionController } from "./connection.js";
 import { ControlBar } from "./controlbar.js";
 import { applyLanguage, getStoredLanguage, setLanguage, t } from "./i18n.js";
 import { installKeyboardInterceptor } from "./keyboard.js";
 import { PointerController } from "./pointer.js";
+import { PasteDialog } from "./paste.js";
 import { ScreenshotController } from "./screenshot.js";
 import { SETTINGS_DEFAULTS, SettingsController, modeForProfile } from "./settings.js";
 import { SpecialKeysController } from "./special-keys.js";
@@ -636,17 +636,18 @@ export function initApp(root) {
     syncRfbWithStatus(lastStatus);
   });
 
-  el.pasteButton.addEventListener("click", async () => {
-    if (!rfb) {
-      return;
-    }
-    try {
-      await pasteFromClipboard(rfb);
-      message(t("clipboard.pasteOk"), "ok");
-    } catch (error) {
-      message(t("clipboard.pasteFail", { detail: errorText(error) }), "error");
-    }
+  const pasteDialog = new PasteDialog({
+    modal: root.querySelector("#paste-modal"),
+    text: root.querySelector("#paste-text"),
+    count: root.querySelector("#paste-count"),
+    hint: root.querySelector("#paste-hint"),
+    warning: root.querySelector("#paste-warning"),
+    sendButton: root.querySelector("#paste-send"),
+    cancelButton: root.querySelector("#paste-cancel"),
+    message,
+    getRfb: () => rfb,
   });
+  el.pasteButton.addEventListener("click", () => pasteDialog.open());
 
   // 缩放模式循环：适配窗口 → 原始大小 → 窗口跟随视频。
   el.scaleModeButton.addEventListener("click", () => {
