@@ -1115,6 +1115,65 @@ async function run() {
       specialKeyMarker,
     );
 
+    // ---- 特殊键：分类折叠默认收起，展开后可发组内按键 ----
+    await page.locator("#special-keys-button").click();
+    const keyGroups = page.locator("#special-keys-menu details");
+    assert.equal(await keyGroups.count(), 4, "非桌面四组应收进折叠分类");
+    assert.equal(
+      await page.locator("#special-keys-menu details[open]").count(),
+      0,
+      "折叠分类默认收起",
+    );
+    const f5Marker = fixture.lines.mark();
+    await page.locator("#special-keys-menu details", { hasText: "F5" }).locator("summary").click();
+    await page.locator("#special-f5").click();
+    await fixture.lines.waitForSubsequence(
+      (line) => line.startsWith("KEY\t"),
+      ["KEY\tDOWN\t62", "KEY\tUP\t62"],
+      "collapsed group sends F5",
+      f5Marker,
+    );
+
+    // ---- 特殊键：自定义组合键（Ctrl+Enter）----
+    await page.locator("#special-keys-button").click();
+    const customMarker = fixture.lines.mark();
+    await page.locator(".special-key-modifier", { hasText: "Ctrl" }).locator("input").check();
+    await page.locator("#special-custom-key").selectOption("Enter");
+    await page.locator("#special-custom-send").click();
+    await fixture.lines.waitForSubsequence(
+      (line) => line.startsWith("KEY\t"),
+      ["KEY\tDOWN\t224", "KEY\tDOWN\t40", "KEY\tUP\t40", "KEY\tUP\t224"],
+      "custom combo sends Ctrl+Enter",
+      customMarker,
+    );
+
+    // ---- 粘贴对话框：预填剪贴板、可编辑、发送逐键注入 ----
+    await page.evaluate(() => navigator.clipboard.writeText("ab"));
+    await revealControlBar(page);
+    const pasteMarker = fixture.lines.mark();
+    await page.locator("#paste-button").click();
+    await page.locator("#paste-modal:not([hidden])").waitFor({ state: "attached" });
+    assert.equal(await page.locator("#paste-text").inputValue(), "ab", "对话框应预填剪贴板");
+    assert.match(await page.locator("#paste-count").textContent(), /2 字符|2 characters/);
+    assert.equal(await page.locator("#paste-warning").isVisible(), false);
+    await page.locator("#paste-send").click();
+    await fixture.lines.waitForSubsequence(
+      (line) => line.startsWith("KEY\t"),
+      ["KEY\tDOWN\t4", "KEY\tUP\t4", "KEY\tDOWN\t5", "KEY\tUP\t5"],
+      "paste dialog injects text as keys",
+      pasteMarker,
+    );
+    await page.locator("#paste-modal[hidden]").waitFor({ state: "attached" });
+
+    // ---- 粘贴对话框：超长文本警告与取消 ----
+    await revealControlBar(page);
+    await page.locator("#paste-button").click();
+    await page.locator("#paste-modal:not([hidden])").waitFor({ state: "attached" });
+    await page.locator("#paste-text").fill("x".repeat(2500));
+    await page.locator("#paste-warning:not([hidden])").waitFor({ state: "attached" });
+    await page.locator("#paste-cancel").click();
+    await page.locator("#paste-modal[hidden]").waitFor({ state: "attached" });
+
     // ---- 设置读写 ----
     await openSettingsModal(page, settingsGets);
     assert.equal(

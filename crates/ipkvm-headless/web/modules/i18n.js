@@ -92,6 +92,13 @@ const MESSAGES = {
     "video.rfbDisconnected": "远程画面已断开",
     "video.rfbFailed": "远程画面连接失败",
     "clipboard.paste": "粘贴",
+    "clipboard.title": "粘贴文本",
+    "clipboard.placeholder": "输入或确认要发送到远程主机的文本",
+    "clipboard.prefillFailed": "无法读取剪贴板，请手动输入或检查浏览器授权",
+    "clipboard.charCount": "{count} 字符",
+    "clipboard.tooLong": "文本较长（{count} 字符），逐键注入可能需要较长时间",
+    "clipboard.send": "发送",
+    "clipboard.sentOk": "已发送 {count} 字符",
     "clipboard.pasteOk": "已粘贴剪贴板内容",
     "clipboard.pasteFail": "读取剪贴板失败：{detail}",
     "settings.title": "设置",
@@ -154,6 +161,10 @@ const MESSAGES = {
     "statusPanel.system": "系统",
     "statusPanel.cpu": "CPU",
     "statusPanel.memory": "内存",
+    "special.common": "常用",
+    "special.custom": "自定义组合键",
+    "special.customKey": "普通键",
+    "special.send": "发送",
     "special.desktop": "桌面",
     "special.tabs": "标签页 / 窗口",
     "special.refresh": "刷新 / 导航",
@@ -280,6 +291,13 @@ const MESSAGES = {
     "video.rfbDisconnected": "Remote display disconnected",
     "video.rfbFailed": "Remote display connection failed",
     "clipboard.paste": "Paste",
+    "clipboard.title": "Paste text",
+    "clipboard.placeholder": "Type or confirm the text to send to the remote host",
+    "clipboard.prefillFailed": "Cannot read the clipboard; type manually or check browser permission",
+    "clipboard.charCount": "{count} characters",
+    "clipboard.tooLong": "Long text ({count} characters); key-by-key injection may take a while",
+    "clipboard.send": "Send",
+    "clipboard.sentOk": "Sent {count} characters",
     "clipboard.pasteOk": "Clipboard content pasted",
     "clipboard.pasteFail": "Failed to read clipboard: {detail}",
     "settings.title": "Settings",
@@ -343,6 +361,10 @@ const MESSAGES = {
     "statusPanel.system": "System",
     "statusPanel.cpu": "CPU",
     "statusPanel.memory": "Memory",
+    "special.common": "Common",
+    "special.custom": "Custom combo",
+    "special.customKey": "Key",
+    "special.send": "Send",
     "special.desktop": "Desktop",
     "special.tabs": "Tabs / windows",
     "special.refresh": "Refresh / navigation",
@@ -433,6 +455,12 @@ export function applyLanguage(root = document) {
     const text = t(element.dataset.i18nTitle);
     if (text !== element.dataset.i18nTitle) {
       element.title = text;
+    }
+  }
+  for (const element of root.querySelectorAll("[data-i18n-placeholder]")) {
+    const text = t(element.dataset.i18nPlaceholder);
+    if (text !== element.dataset.i18nPlaceholder) {
+      element.placeholder = text;
     }
   }
 }

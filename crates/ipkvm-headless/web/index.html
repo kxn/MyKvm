@@ -368,6 +368,31 @@
           </div>
         </div>
       </div>
+
+      <div id="paste-modal" class="modal" hidden>
+        <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="paste-title">
+          <h2 id="paste-title" data-i18n="clipboard.title">粘贴文本</h2>
+          <p id="paste-hint" class="message" role="status" aria-live="polite"></p>
+          <textarea
+            id="paste-text"
+            rows="8"
+            spellcheck="false"
+            data-i18n-placeholder="clipboard.placeholder"
+            placeholder="输入或确认要发送到远程主机的文本"
+          ></textarea>
+          <div class="paste-meta">
+            <span id="paste-count"></span>
+            <span id="paste-warning" class="paste-warning" hidden></span>
+          </div>
+          <div class="modal-actions">
+            <span class="spacer"></span>
+            <button id="paste-cancel" type="button" data-i18n="settings.cancel">取消</button>
+            <button id="paste-send" type="button" class="primary" data-i18n="clipboard.send">
+              发送
+            </button>
+          </div>
+        </div>
+      </div>
     </main>
     <script type="module" src="/assets/app.js"></script>
   </body>
