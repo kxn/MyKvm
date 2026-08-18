@@ -1503,6 +1503,42 @@ async function run() {
       "0",
     );
 
+    // ---- 状态监控抽屉：⋯ 菜单打开、指标渲染、高级默认折叠、Escape 关闭 ----
+    await revealControlBar(page);
+    await page.keyboard.press("Escape");
+    await page.locator("#more-button").click();
+    await page.locator("#status-panel-button").click();
+    await page.locator(".status-drawer.open").waitFor({ state: "attached" });
+    // 打开即触发一次轮询，分辨率应被真实数据填充。
+    await page.waitForFunction(
+      () => {
+        const el = document.querySelector("#sp-resolution");
+        return el && el.textContent !== "-";
+      },
+      undefined,
+      { timeout: DEADLINE_MS },
+    );
+    assert.equal(
+      await page.locator(".status-drawer-advanced[open]").count(),
+      0,
+      "advanced diagnostics must stay collapsed by default",
+    );
+    // 抽屉展开时画面仍可交互（不遮挡整个视口）。
+    assert.equal(
+      await page.locator(".status-drawer").evaluate((el) => {
+        const rect = el.getBoundingClientRect();
+        return rect.left > 0 && rect.width < window.innerWidth;
+      }),
+      true,
+      "drawer must dock to the right edge without covering the video",
+    );
+    await page.keyboard.press("Escape");
+    await page.waitForFunction(
+      () => !document.querySelector(".status-drawer.open"),
+      undefined,
+      { timeout: DEADLINE_MS },
+    );
+
     // ---- 缺失 /api/settings 的降级路径 ----
     const degraded = await openConsole(browser, url, { mockApi: false });
     contexts.push(degraded.context);

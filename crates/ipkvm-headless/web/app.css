@@ -811,42 +811,47 @@ select:disabled {
   }
 }
 
-/* ---- 状态面板 ---- */
+/* ---- 状态监控抽屉 ---- */
 
-.status-panel {
+.status-drawer {
   position: fixed;
-  bottom: 80px;
-  right: var(--space-5);
+  top: 0;
+  right: 0;
+  bottom: 0;
   width: 320px;
-  z-index: 200;
-  background: var(--panel-glass);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-xl);
+  max-width: 90vw;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  border-left: 1px solid var(--border);
+  background: var(--surface);
   box-shadow: var(--shadow-lg);
   color: var(--text);
   font-size: var(--font-size-md);
-  overflow: hidden;
-  user-select: none;
+  transform: translateX(100%);
+  transition: transform var(--duration-normal) var(--ease-standard);
 }
 
-.status-panel-header {
+.status-drawer.open {
+  transform: none;
+}
+
+.status-drawer-header {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex: 0 0 auto;
   padding: 10px 14px;
-  background: var(--surface-hover);
   border-bottom: 1px solid var(--border);
-  cursor: move;
+  background: var(--surface-raised);
 }
 
-.status-panel-title {
+.status-drawer-title {
   font-weight: 600;
   font-size: var(--font-size-lg);
 }
 
-.status-panel-close {
+.status-drawer-close {
   background: none;
   border: none;
   color: var(--text-muted);
@@ -857,25 +862,21 @@ select:disabled {
   transition: color var(--duration-fast) var(--ease-standard);
 }
 
-.status-panel-close:hover {
+.status-drawer-close:hover {
   color: var(--text);
 }
 
-.status-panel-body {
-  padding: var(--space-2) 14px 14px;
-  max-height: 500px;
+.status-drawer-body {
+  flex: 1 1 auto;
+  padding: var(--space-3) 14px 14px;
   overflow-y: auto;
 }
 
-.status-panel-section {
+.status-drawer-section {
   margin-bottom: var(--space-3);
 }
 
-.status-panel-section:last-child {
-  margin-bottom: 0;
-}
-
-.status-panel-section-title {
+.status-drawer-section-title {
   font-size: var(--font-size-sm);
   font-weight: 600;
   color: var(--text-muted);
@@ -886,21 +887,40 @@ select:disabled {
   border-bottom: 1px solid var(--border);
 }
 
-.status-panel-row {
+.status-drawer-row {
   display: flex;
   justify-content: space-between;
   align-items: center;
   padding: 3px 0;
 }
 
-.status-panel-row span:first-child {
+.status-drawer-row span:first-child {
   color: var(--text-muted);
 }
 
-.status-panel-row span:last-child {
+.status-drawer-row span:last-child {
   font-family: var(--font-mono);
   font-size: var(--font-size-sm);
   color: var(--success);
+}
+
+/* 诊断指标折叠区 */
+.status-drawer-advanced {
+  margin-top: var(--space-4);
+  border-top: 1px solid var(--border);
+  padding-top: var(--space-2);
+}
+
+.status-drawer-advanced summary {
+  padding: 6px 0;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: var(--font-size-md);
+  border-radius: var(--radius-sm);
+}
+
+.status-drawer-advanced summary:hover {
+  color: var(--text);
 }
 
 /* ---- 设置弹层 ---- */
