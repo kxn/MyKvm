@@ -50,7 +50,10 @@ modal:
   about_title: "关于"
   save_title: "保存 profile"
   name_label: "名称："
+  name_placeholder: "输入 profile 名称"
   save: "保存"
+  section_connection: "连接"
+  section_display: "显示"
 
 device:
   title: "选择设备"
