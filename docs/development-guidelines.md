@@ -99,7 +99,7 @@ PR 描述必须说明是否修改文档。如果不修改文档，应写明原�
 
 1. 单元测试：协议帧、状态机、坐标换算、配置选择、错误处理。
 2. 集成测试：mock 视频源、fake serial、RFB 协议样例、headless 闭环。
-3. 命令级验证：通过 cargo-make 统一入口运行 `cargo make quick`（快速门禁，提交前）或 `cargo make full`（全量门禁，合并前），平台脚本自动选择。快速门禁检查文本编码、锁定依赖图许可证与来源、web 资产、crate 依赖边界、Rust 格式；全量门禁另含全工作区测试、Clippy 和 Rust 文档。粒度命令（`cargo make fmt`/`test`/`clippy`/`doc`）可单独运行。
+3. 命令级验证：通过 cargo-make 统一入口运行 `cargo make quick`（快速门禁，提交前）或 `cargo make full`（全量门禁，合并前），平台脚本自动选择。快速门禁检查文本编码、锁定依赖图许可证与来源、web 资产、Web UI 设计 token 使用（`check-web-ui-tokens.py`）、crate 依赖边界、Rust 格式；全量门禁另含全工作区测试、Clippy 和 Rust 文档。粒度命令（`cargo make fmt`/`test`/`clippy`/`doc`）可单独运行。
 4. 人工验证：真实采集卡、真实 CH9329/CH340 线、BIOS 行为、操作系统全局快捷键、真实 VNC 客户端兼容性。
 
 人工验证只有在满足以下条件时才允许作为主要证据：
