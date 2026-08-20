@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::time::Duration;
 
 use ipkvm_rfb::{
     FramebufferUpdateOutcome, FramebufferUpdateRequest, RfbConfigError, RfbConnectionConfig,
@@ -130,10 +131,15 @@ async fn drive_connection<T: RfbTransport>(
         return Ok(ConnectionEnd::ServerShutdown);
     }
 
-    let initial_frame = frame_rx
-        .borrow()
-        .clone()
-        .ok_or(RfbFrameError::FrameUnavailable)?;
+    // 视频恢复/重启窗口内帧源会短暂无帧（FrameHub 清空后等待新源首帧）。
+    // 立即失败会把刷新/重连恰好落入该窗口的客户端无故踢掉（#110）；
+    // 改为在握手超时预算内等待首帧。
+    let mut frame_rx = frame_rx;
+    let current_frame = frame_rx.borrow().clone();
+    let initial_frame = match current_frame {
+        Some(frame) => frame,
+        None => wait_for_initial_frame(&mut frame_rx, settings.handshake_timeout).await?,
+    };
     // MJPEG 透传：握手时只需要尺寸，不需要 BGRA 像素数据。
     // 直接从帧元数据获取尺寸，避免 MJPEG 帧被 frame_view 拒绝。
     let initial_width = u16::try_from(initial_frame.width)
@@ -200,6 +206,28 @@ async fn drive_connection<T: RfbTransport>(
                 return Err(RfbConnectionError::HandshakeTimeout);
             }
         }
+    }
+}
+
+/// 等待首帧到来：帧源 channel 关闭视为 FrameUnavailable，超时按 HandshakeTimeout 上报。
+async fn wait_for_initial_frame(
+    frame_rx: &mut FrameReceiver,
+    timeout: Duration,
+) -> Result<SharedVideoFrame, RfbConnectionError> {
+    let wait = async {
+        loop {
+            if frame_rx.changed().await.is_err() {
+                return None;
+            }
+            if let Some(frame) = frame_rx.borrow().clone() {
+                return Some(frame);
+            }
+        }
+    };
+    match time::timeout(timeout, wait).await {
+        Ok(Some(frame)) => Ok(frame),
+        Ok(None) => Err(RfbFrameError::FrameUnavailable.into()),
+        Err(_) => Err(RfbConnectionError::HandshakeTimeout),
     }
 }
 
@@ -657,6 +685,73 @@ mod tests {
         )));
         let result = run_test_connection(transport).await;
         assert_eq!(result.end.reason(), Some(RfbDisconnectReason::WebSocket));
+    }
+
+    /// 回归 #110：视频恢复/重启窗口内帧源短暂无帧时，新连接必须在握手超时
+    /// 预算内等待首帧，而不是立即以 FrameUnavailable 失败（否则刷新页面的
+    /// 自动重连会被无故踢掉）。
+    #[tokio::test]
+    async fn connection_waits_for_initial_frame_during_video_restart_window() {
+        let transport = FakeTransport::from_reads([
+            FakeRead::Data(b"RFB 003.008\n".to_vec()),
+            FakeRead::Closed,
+        ]);
+        let sent = Arc::clone(&transport.sent);
+        let frame_source = Arc::new(MockFrameSource::new()); // 无首帧：模拟 hub 清空后的窗口
+        let (event_tx, _event_rx) = mpsc::channel(1);
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let publisher = tokio::spawn({
+            let frame_source = Arc::clone(&frame_source);
+            async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                frame_source.publish_frame(shared_bgra_frame(1, 1, 1, &[0; 3]));
+            }
+        });
+        let end = run_connection(
+            RfbClientId::for_test(1),
+            "127.0.0.1:5900".parse().unwrap(),
+            transport,
+            frame_source.subscribe(),
+            Some(event_tx),
+            RfbConnectionSettings::default(),
+            shutdown_rx,
+        )
+        .await;
+        publisher.await.unwrap();
+        assert!(
+            matches!(end, ConnectionEnd::ClientClosed),
+            "connection must survive the empty-frame window and complete normally: {end:?}"
+        );
+        assert!(
+            !sent.lock().unwrap().is_empty(),
+            "server must proceed with the handshake once the first frame arrives"
+        );
+    }
+
+    /// 首帧一直不来时按握手超时收尾，而不是无限等待。
+    #[tokio::test]
+    async fn connection_times_out_when_no_frame_arrives() {
+        let transport = FakeTransport::from_reads([FakeRead::Closed]);
+        let frame_source = MockFrameSource::new();
+        let (event_tx, _event_rx) = mpsc::channel(1);
+        let (_shutdown_tx, shutdown_rx) = watch::channel(false);
+        let end = run_connection(
+            RfbClientId::for_test(1),
+            "127.0.0.1:5900".parse().unwrap(),
+            transport,
+            frame_source.subscribe(),
+            Some(event_tx),
+            RfbConnectionSettings {
+                handshake_timeout: Duration::from_millis(30),
+                ..RfbConnectionSettings::default()
+            },
+            shutdown_rx,
+        )
+        .await;
+        assert!(matches!(
+            end,
+            ConnectionEnd::Failed(RfbConnectionError::HandshakeTimeout)
+        ));
     }
 
     fn shared_bgra_frame(seq: u64, width: u32, height: u32, data: &[u8]) -> Arc<VideoFrame> {

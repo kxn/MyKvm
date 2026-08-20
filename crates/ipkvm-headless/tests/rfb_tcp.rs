@@ -4,8 +4,7 @@ use std::{io, sync::Arc};
 
 use ipkvm_headless::{
     rfb_connection::{
-        RfbClientId, RfbConnectionGate, RfbConnectionSettings, RfbDisconnectReason, RfbFrameError,
-        RfbServerEvent,
+        RfbClientId, RfbConnectionGate, RfbConnectionSettings, RfbDisconnectReason, RfbServerEvent,
     },
     rfb_tcp::{RfbTcpConfig, RfbTcpServer, RfbTcpServerError},
 };
@@ -255,25 +254,18 @@ async fn bounded_event_channel_preserves_input_order() {
 }
 
 #[tokio::test]
-async fn missing_initial_frame_disconnects_then_valid_frame_reconnects() {
+async fn missing_initial_frame_waits_and_completes_when_frame_arrives() {
+    // #110：视频恢复/重启窗口内首帧暂时缺失时，服务器必须在握手超时预算内
+    // 等待首帧而不是立即断开——刷新页面的自动重连恰好落入该窗口时不应被踢掉。
     let mut fixture = ServerFixture::start(16, None).await;
-    let mut first = TestRfbClient::connect(fixture.address).await;
-    assert_eq!(
-        first.read_banner().await.unwrap_err().kind(),
-        io::ErrorKind::UnexpectedEof
-    );
-    let reason = match fixture.events.recv().await.unwrap() {
-        RfbServerEvent::Disconnected { reason, .. } => reason,
-        event => panic!("expected disconnected event, got {event:?}"),
-    };
-    assert_eq!(
-        reason,
-        RfbDisconnectReason::Frame(RfbFrameError::FrameUnavailable)
-    );
-
-    fixture.source.publish_frame(default_frame());
-    let mut second = TestRfbClient::connect(fixture.address).await;
-    assert_eq!(second.handshake(true).await.width, 2);
+    let mut client = TestRfbClient::connect(fixture.address).await;
+    let source = fixture.source.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        source.publish_frame(default_frame());
+    });
+    let init = client.handshake(true).await;
+    assert_eq!(init.width, 2);
     fixture.expect_connected().await;
     fixture.stop().await.unwrap();
 }
