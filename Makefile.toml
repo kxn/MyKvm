@@ -39,7 +39,19 @@ dependencies = ["quick-checkers", "fmt", "diff-check"]
 # 均为只读 Cargo 元数据操作，互不冲突；文件类检查无共享状态。
 [tasks.quick-checkers]
 description = "并行执行无依赖的快速检查"
-run_task = { name = ["text-encoding", "web-assets-policy", "web-assets-lock", "licenses", "crate-boundaries"], parallel = true }
+run_task = { name = ["text-encoding", "web-assets-policy", "web-assets-lock", "web-ui-tokens", "licenses", "crate-boundaries"], parallel = true }
+
+[tasks.web-ui-tokens]
+description = "检查 headless Web UI 样式不绕过设计 token（#104）"
+script = '''
+#!@duckscript
+# Windows 用 py 启动器，其余平台用 python3（与既有脚本的解析模式一致）
+if is_windows
+    exec py ${SCRIPTS_DIR}/check-web-ui-tokens.py
+else
+    exec python3 ${SCRIPTS_DIR}/check-web-ui-tokens.py
+end
+'''
 
 [tasks.text-encoding]
 description = "检查跟踪文本文件均为无 BOM 的合法 UTF-8"
