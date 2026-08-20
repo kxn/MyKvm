@@ -1174,21 +1174,43 @@ async function run() {
     await page.locator("#paste-cancel").click();
     await page.locator("#paste-modal[hidden]").waitFor({ state: "attached" });
 
-    // ---- 设置读写 ----
+    // ---- 设置读写（分区对话框）----
     await openSettingsModal(page, settingsGets);
+    // 默认落在「常规」分区，设备字段不在视图中。
+    await page
+      .locator('.settings-section[data-section="general"]:not([hidden])')
+      .waitFor({ state: "attached" });
+    assert.equal(await page.locator("#setting-baud-rate").isVisible(), false);
+    // 每项设置都有生效时机标注。
+    assert.ok(
+      (await page.locator(".settings-section .field-hint").count()) > 0,
+      "each settings field should carry a timing hint",
+    );
+    // 切到「设备」分区读写波特率。
+    await page.locator('.settings-nav-item[data-section="device"]').click();
     assert.equal(
       await page.locator("#setting-baud-rate").inputValue(),
       "115200",
     );
     await page.locator("#setting-baud-rate").fill("9600");
     await page.locator("#settings-save").click();
-    await page.locator("#settings-modal[hidden]").waitFor({ state: "attached" });
+    // 已连接时改设备参数：弹层不关闭，提示重连后生效并给出一键重连。
+    await page
+      .locator("#settings-message", { hasText: "重新连接后生效" })
+      .waitFor({ state: "attached" });
+    await page
+      .locator("#settings-reconnect:not([hidden])")
+      .waitFor({ state: "attached" });
     assert.equal(postedSettings.length, 1);
     assert.equal(postedSettings[0].baud_rate, 9600);
     assert.equal(postedSettings[0].preview_fps, 30);
+    // 不点重连，取消关闭（当前值已保存为 9600，cancel 还原的正是它）。
+    await page.locator("#settings-cancel").click();
+    await page.locator("#settings-modal[hidden]").waitFor({ state: "attached" });
 
     // ---- 设置：恢复默认值只改表单，取消还原旧值 ----
     await openSettingsModal(page, settingsGets);
+    await page.locator('.settings-nav-item[data-section="device"]').click();
     await page.locator("#setting-baud-rate").fill("12345");
     await page.locator("#settings-reset").click();
     assert.equal(
@@ -1200,6 +1222,7 @@ async function run() {
     await page.locator("#settings-cancel").click();
     await page.locator("#settings-modal[hidden]").waitFor({ state: "attached" });
     await openSettingsModal(page, settingsGets);
+    await page.locator('.settings-nav-item[data-section="device"]').click();
     assert.equal(
       await page.locator("#setting-baud-rate").inputValue(),
       "9600",
@@ -1207,6 +1230,7 @@ async function run() {
     );
 
     // ---- 设置：mouse_mode 与 relative_sensitivity 接入实际输入路径 ----
+    await page.locator('.settings-nav-item[data-section="input"]').click();
     await page.locator("#setting-mouse-mode").selectOption("relative");
     await page.locator("#setting-relative-sensitivity").fill("2.0");
     await page.locator("#settings-save").click();
@@ -1236,6 +1260,7 @@ async function run() {
       .waitFor({ state: "attached" });
 
     await openSettingsModal(page, settingsGets);
+    await page.locator('.settings-nav-item[data-section="input"]').click();
     await page.locator("#setting-mouse-mode").selectOption("absolute");
     await page.locator("#settings-save").click();
     await page.locator("#settings-modal[hidden]").waitFor({ state: "attached" });
@@ -1243,6 +1268,56 @@ async function run() {
     await page
       .locator('#relative-mode[data-state="off"]')
       .waitFor({ state: "attached" });
+
+    // ---- 设置：状态行显隐（localStorage 纯前端偏好，即时生效）----
+    await openSettingsModal(page, settingsGets);
+    await page.locator('.settings-nav-item[data-section="video"]').click();
+    assert.equal(await page.locator("#video-status-bar").isVisible(), true);
+    await page.locator("#setting-status-line").uncheck();
+    assert.equal(
+      await page.evaluate(() => localStorage.getItem("my_ipkvm.statusLine")),
+      "0",
+    );
+    await page.locator("#video-status-bar[hidden]").waitFor({ state: "attached" });
+    await page.locator("#setting-status-line").check();
+    assert.equal(
+      await page.evaluate(() => localStorage.getItem("my_ipkvm.statusLine")),
+      "1",
+    );
+    await page
+      .locator("#video-status-bar:not([hidden])")
+      .waitFor({ state: "attached" });
+
+    // ---- 设置：常规分区语言/主题与 ⋯ 菜单同步 ----
+    await page.locator('.settings-nav-item[data-section="general"]').click();
+    await page.locator("#setting-theme").selectOption("dark");
+    assert.equal(await page.locator("html").getAttribute("data-theme"), "dark");
+    assert.equal(await page.locator("#theme-select").inputValue(), "dark");
+    await page.locator("#setting-theme").selectOption("system");
+    assert.equal(
+      await page.evaluate(() => localStorage.getItem("my_ipkvm.theme")),
+      null,
+    );
+    await page.locator("#setting-language").selectOption("en");
+    assert.equal(await page.locator("html").getAttribute("lang"), "en");
+    assert.equal(await page.locator("#language-select").inputValue(), "en");
+    await page.locator("#setting-language").selectOption("zh-CN");
+    assert.equal(await page.locator("html").getAttribute("lang"), "zh-CN");
+
+    // ---- 设置：关于分区显示版本与链接 ----
+    await page.locator('.settings-nav-item[data-section="about"]').click();
+    const aboutVersion = await page.locator("#settings-version").textContent();
+    assert.ok(
+      aboutVersion && aboutVersion !== "-" && aboutVersion.length > 0,
+      "about section should show the service version",
+    );
+    assert.equal(
+      await page.locator('.settings-section[data-section="about"] a').count(),
+      2,
+      "about section links to licenses and GitHub",
+    );
+    await page.locator("#settings-cancel").click();
+    await page.locator("#settings-modal[hidden]").waitFor({ state: "attached" });
 
     // ---- 相对指针：协议层消息构造（端到端待 #141b 合入后验证）----
     await assertRelativePointerMessageConstruction(page);

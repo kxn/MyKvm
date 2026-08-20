@@ -291,78 +291,142 @@
       </section>
 
       <div id="settings-modal" class="modal" hidden>
-        <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+        <div class="modal-panel settings-panel" role="dialog" aria-modal="true" aria-labelledby="settings-title">
           <h2 id="settings-title" data-i18n="settings.title">设置</h2>
           <p id="settings-message" class="message" role="status" aria-live="polite"></p>
-          <form id="settings-form">
-            <label class="field">
-              <span data-i18n="settings.baudRate">波特率</span>
-              <input
-                id="setting-baud-rate"
-                type="number"
-                min="1200"
-                max="115200"
-                step="1"
-                required
-              >
-            </label>
-            <label class="field field-check">
-              <input id="setting-auto-baud" type="checkbox">
-              <span data-i18n="settings.autoBaud">自动波特率</span>
-            </label>
-            <label class="field">
-              <span data-i18n="settings.previewFps">预览帧率</span>
-              <input
-                id="setting-preview-fps"
-                type="number"
-                min="1"
-                max="60"
-                step="1"
-                required
-              >
-            </label>
-            <label class="field">
-              <span data-i18n="settings.mouseMode">默认鼠标模式</span>
-              <select id="setting-mouse-mode">
-                <option value="absolute" data-i18n="settings.absolute">绝对</option>
-                <option value="relative" data-i18n="settings.relative">相对</option>
-              </select>
-            </label>
-            <label class="field">
-              <span data-i18n="settings.mouseProfile">目标端兼容 profile</span>
-              <select id="setting-mouse-profile">
-                <option value="windows" data-i18n="settings.profileWindows">Windows</option>
-                <option value="linux" data-i18n="settings.profileLinux">Linux</option>
-                <option value="bios" data-i18n="settings.profileBios">BIOS</option>
-                <option value="android" data-i18n="settings.profileAndroid">Android</option>
-                <option value="macos" data-i18n="settings.profileMacos">macOS</option>
-                <option value="raw_absolute" selected data-i18n="settings.profileRawAbsolute">原始绝对坐标</option>
-                <option value="raw_relative" data-i18n="settings.profileRawRelative">原始相对坐标</option>
-              </select>
-            </label>
-            <label class="field">
-              <span data-i18n="settings.relativeSensitivity">相对灵敏度</span>
-              <input
-                id="setting-relative-sensitivity"
-                type="number"
-                min="0.1"
-                max="5.0"
-                step="0.1"
-                required
-              >
-            </label>
-            <label class="field">
-              <span data-i18n="settings.scaleMode">缩放模式</span>
-              <select id="setting-scale-mode">
-                <option value="fit_window" data-i18n="settings.fitWindow">适配窗口</option>
-                <option value="original" data-i18n="settings.original">原始大小</option>
-                <option value="follow_window" data-i18n="settings.followWindow">窗口跟随视频</option>
-              </select>
-            </label>
-          </form>
+          <div class="settings-layout">
+            <nav class="settings-nav">
+              <button type="button" class="settings-nav-item active" data-section="general" data-i18n="settings.navGeneral">常规</button>
+              <button type="button" class="settings-nav-item" data-section="video" data-i18n="settings.navVideo">画面</button>
+              <button type="button" class="settings-nav-item" data-section="input" data-i18n="settings.navInput">输入</button>
+              <button type="button" class="settings-nav-item" data-section="device" data-i18n="settings.navDevice">设备</button>
+              <button type="button" class="settings-nav-item" data-section="about" data-i18n="settings.navAbout">关于</button>
+            </nav>
+            <div class="settings-sections">
+              <form id="settings-form">
+                <fieldset class="settings-section" data-section="general">
+                  <label class="field">
+                    <span data-i18n="toolbar.language">语言</span>
+                    <select id="setting-language">
+                      <option value="browser" data-i18n="language.browser">跟随浏览器</option>
+                      <option value="zh-CN" data-i18n="language.zh">中文</option>
+                      <option value="en" data-i18n="language.en">English</option>
+                    </select>
+                    <small class="field-hint" data-i18n="settings.hintImmediate">即时生效</small>
+                  </label>
+                  <label class="field">
+                    <span data-i18n="toolbar.theme">主题</span>
+                    <select id="setting-theme">
+                      <option value="system" data-i18n="theme.system">跟随系统</option>
+                      <option value="dark" data-i18n="theme.dark">深色</option>
+                      <option value="light" data-i18n="theme.light">浅色</option>
+                    </select>
+                    <small class="field-hint" data-i18n="settings.hintImmediate">即时生效</small>
+                  </label>
+                </fieldset>
+                <fieldset class="settings-section" data-section="video" hidden>
+                  <label class="field">
+                    <span data-i18n="settings.scaleMode">缩放模式</span>
+                    <select id="setting-scale-mode">
+                      <option value="fit_window" data-i18n="settings.fitWindow">适配窗口</option>
+                      <option value="original" data-i18n="settings.original">原始大小</option>
+                      <option value="follow_window" data-i18n="settings.followWindow">窗口跟随视频</option>
+                    </select>
+                    <small class="field-hint" data-i18n="settings.hintImmediate">即时生效</small>
+                  </label>
+                  <label class="field">
+                    <span data-i18n="settings.previewFps">预览帧率</span>
+                    <input
+                      id="setting-preview-fps"
+                      type="number"
+                      min="1"
+                      max="60"
+                      step="1"
+                      required
+                    >
+                    <small class="field-hint" data-i18n="settings.hintReconnect">重连后生效</small>
+                  </label>
+                  <label class="field field-check">
+                    <input id="setting-status-line" type="checkbox" checked>
+                    <span data-i18n="settings.statusLine">显示状态行</span>
+                    <small class="field-hint" data-i18n="settings.hintImmediate">即时生效</small>
+                  </label>
+                </fieldset>
+                <fieldset class="settings-section" data-section="input" hidden>
+                  <label class="field">
+                    <span data-i18n="settings.mouseMode">默认鼠标模式</span>
+                    <select id="setting-mouse-mode">
+                      <option value="absolute" data-i18n="settings.absolute">绝对</option>
+                      <option value="relative" data-i18n="settings.relative">相对</option>
+                    </select>
+                    <small class="field-hint" data-i18n="settings.hintImmediate">即时生效</small>
+                  </label>
+                  <label class="field">
+                    <span data-i18n="settings.mouseProfile">目标端兼容 profile</span>
+                    <select id="setting-mouse-profile">
+                      <option value="windows" data-i18n="settings.profileWindows">Windows</option>
+                      <option value="linux" data-i18n="settings.profileLinux">Linux</option>
+                      <option value="bios" data-i18n="settings.profileBios">BIOS</option>
+                      <option value="android" data-i18n="settings.profileAndroid">Android</option>
+                      <option value="macos" data-i18n="settings.profileMacos">macOS</option>
+                      <option value="raw_absolute" selected data-i18n="settings.profileRawAbsolute">原始绝对坐标</option>
+                      <option value="raw_relative" data-i18n="settings.profileRawRelative">原始相对坐标</option>
+                    </select>
+                    <small class="field-hint" data-i18n="settings.hintReconnect">重连后生效</small>
+                  </label>
+                  <label class="field">
+                    <span data-i18n="settings.relativeSensitivity">相对灵敏度</span>
+                    <input
+                      id="setting-relative-sensitivity"
+                      type="number"
+                      min="0.1"
+                      max="5.0"
+                      step="0.1"
+                      required
+                    >
+                    <small class="field-hint" data-i18n="settings.hintImmediate">即时生效</small>
+                  </label>
+                </fieldset>
+                <fieldset class="settings-section" data-section="device" hidden>
+                  <label class="field">
+                    <span data-i18n="settings.baudRate">波特率</span>
+                    <input
+                      id="setting-baud-rate"
+                      type="number"
+                      min="1200"
+                      max="115200"
+                      step="1"
+                      required
+                    >
+                    <small class="field-hint" data-i18n="settings.hintReconnect">重连后生效</small>
+                  </label>
+                  <label class="field field-check">
+                    <input id="setting-auto-baud" type="checkbox">
+                    <span data-i18n="settings.autoBaud">自动波特率</span>
+                    <small class="field-hint" data-i18n="settings.hintReconnect">重连后生效</small>
+                  </label>
+                </fieldset>
+                <div class="settings-section" data-section="about" hidden>
+                  <div class="settings-about-row">
+                    <span data-i18n="settings.version">版本</span>
+                    <span id="settings-version">-</span>
+                  </div>
+                  <div class="settings-about-row">
+                    <span data-i18n="toolbar.licenses">许可证</span>
+                    <a href="/licenses/" target="_blank" rel="noreferrer" data-i18n="settings.licensesLink">第三方组件与许可证</a>
+                  </div>
+                  <div class="settings-about-row">
+                    <span>GitHub</span>
+                    <a href="https://github.com/kxn/MyKvm" target="_blank" rel="noreferrer">github.com/kxn/MyKvm</a>
+                  </div>
+                </div>
+              </form>
+            </div>
+          </div>
           <div class="modal-actions">
             <button id="settings-reset" type="button" data-i18n="settings.reset">恢复默认值</button>
             <span class="spacer"></span>
+            <button id="settings-reconnect" type="button" hidden data-i18n="settings.reconnectNow">立即重连</button>
             <button id="settings-cancel" type="button" data-i18n="settings.cancel">取消</button>
             <button id="settings-save" type="button" data-i18n="settings.save">保存</button>
           </div>
