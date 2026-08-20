@@ -767,6 +767,10 @@ select:disabled {
   display: none;
 }
 
+.status-line[hidden] {
+  display: none;
+}
+
 .status-line span + span::before {
   content: "·";
   margin-right: var(--space-2);
@@ -1073,6 +1077,99 @@ select:disabled {
   background: var(--accent-strong-hover);
 }
 
+/* ---- 设置分区布局 ---- */
+
+.settings-panel {
+  width: min(680px, 94vw);
+}
+
+.settings-layout {
+  display: flex;
+  gap: var(--space-4);
+  margin: var(--space-3) 0;
+  min-height: 260px;
+}
+
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 120px;
+  border-right: 1px solid var(--border);
+  padding-right: var(--space-2);
+}
+
+.settings-nav-item {
+  padding: 7px var(--space-3);
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-muted);
+  font-size: var(--font-size-md);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    background-color var(--duration-fast) var(--ease-standard),
+    color var(--duration-fast) var(--ease-standard);
+}
+
+.settings-nav-item:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.settings-nav-item.active {
+  background: var(--surface-raised);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.settings-sections {
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-section {
+  display: grid;
+  gap: var(--space-3);
+  margin: 0;
+  padding: 0;
+  border: none;
+}
+
+.settings-section[hidden] {
+  display: none;
+}
+
+.field-hint {
+  grid-column: 1 / -1;
+  margin-top: -6px;
+  color: var(--text-faint);
+  font-size: var(--font-size-sm);
+}
+
+.field-check .field-hint {
+  margin-left: calc(1em + var(--space-2));
+}
+
+.settings-about-row {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: var(--font-size-md);
+}
+
+.settings-about-row:last-child {
+  border-bottom: none;
+}
+
+.settings-about-row a {
+  color: var(--accent);
+}
+
 /* ---- 响应式 ---- */
 
 @media (max-width: 720px) {
@@ -1108,6 +1205,25 @@ select:disabled {
   .field {
     grid-template-columns: 1fr;
     gap: var(--space-1);
+  }
+
+  .settings-layout {
+    flex-direction: column;
+    min-height: 0;
+  }
+
+  .settings-nav {
+    flex-direction: row;
+    overflow-x: auto;
+    min-width: 0;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+    padding-right: 0;
+    padding-bottom: var(--space-2);
+  }
+
+  .settings-nav-item {
+    white-space: nowrap;
   }
 }
 

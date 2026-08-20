@@ -21,8 +21,24 @@ export const MOUSE_PROFILES = new Set([
 const SCALE_MODES = new Set(["fit_window", "original", "follow_window"]);
 
 export class SettingsController {
-  constructor({ modal, message, fields, openButton, cancelButton, saveButton, resetButton, onChanged }) {
+  constructor({
+    modal,
+    message,
+    fields,
+    openButton,
+    cancelButton,
+    saveButton,
+    resetButton,
+    reconnectButton,
+    nav,
+    isConnected,
+    onReconnect,
+    onChanged,
+  }) {
     this.el = { modal, message, fields };
+    this.reconnectButton = reconnectButton ?? null;
+    this.isConnected = isConnected ?? (() => false);
+    this.onReconnect = onReconnect ?? null;
     this.onChanged = onChanged;
     this.current = { ...SETTINGS_DEFAULTS };
 
@@ -30,6 +46,16 @@ export class SettingsController {
     cancelButton.addEventListener("click", () => this.cancel());
     saveButton.addEventListener("click", () => this.save());
     resetButton.addEventListener("click", () => this.reset());
+    reconnectButton?.addEventListener("click", () => {
+      this.close();
+      this.onReconnect?.();
+    });
+    nav?.addEventListener("click", (event) => {
+      const item = event.target.closest(".settings-nav-item");
+      if (item) {
+        this.switchSection(item.dataset.section);
+      }
+    });
     this.el.fields.mouseProfile.addEventListener("change", () => {
       this.el.fields.mouseMode.value = modeForProfile(this.el.fields.mouseProfile.value);
     });
@@ -43,9 +69,23 @@ export class SettingsController {
     });
   }
 
+  /// 左侧分区导航：切换右侧显示的分区，高亮当前项。
+  switchSection(name) {
+    for (const item of this.el.modal.querySelectorAll(".settings-nav-item")) {
+      item.classList.toggle("active", item.dataset.section === name);
+    }
+    for (const section of this.el.modal.querySelectorAll(".settings-section")) {
+      section.hidden = section.dataset.section !== name;
+    }
+  }
+
   async open() {
     this.el.modal.hidden = false;
     this.setMessage("");
+    this.switchSection("general");
+    if (this.reconnectButton) {
+      this.reconnectButton.hidden = true;
+    }
     try {
       const fetched = normalizeSettings(await getJson("/api/settings"));
       this.fill(fetched);
@@ -131,10 +171,20 @@ export class SettingsController {
     }
     try {
       const saved = normalizeSettings(await postJson("/api/settings", settings));
+      // 设备类参数（波特率）只在建立新连接时读取；已连接时改了要提示一键重连。
+      const deviceChanged =
+        saved.baud_rate !== this.current.baud_rate ||
+        saved.auto_baud !== this.current.auto_baud;
       this.current = saved;
-      this.setMessage(t("settings.saved"), "ok");
       this.onChanged?.(saved);
-      this.close();
+      if (deviceChanged && this.isConnected() && this.reconnectButton) {
+        this.setMessage(t("settings.savedReconnect"), "ok");
+        this.reconnectButton.hidden = false;
+        this.switchSection("device");
+      } else {
+        this.setMessage(t("settings.saved"), "ok");
+        this.close();
+      }
     } catch (error) {
       this.setMessage(t("settings.saveFailed", { detail: errorText(error) }), "error");
     }

@@ -13,9 +13,10 @@ import { SETTINGS_DEFAULTS, SettingsController, modeForProfile } from "./setting
 import { SpecialKeysController } from "./special-keys.js";
 import { REASON, StatusController, VIEW } from "./status.js";
 import { StatusPanel } from "./status-panel.js";
-import { initTheme } from "./theme.js";
+import { getStoredTheme, initTheme, setTheme } from "./theme.js";
 
 const SCALE_CYCLE = ["fit_window", "original", "follow_window"];
+const STATUS_LINE_KEY = "my_ipkvm.statusLine";
 const SCALE_I18N_KEYS = {
   fit_window: "settings.fitWindow",
   original: "settings.original",
@@ -33,6 +34,11 @@ const PROFILE_I18N_KEYS = {
 
 const profileLabel = (profile) =>
   PROFILE_I18N_KEYS[profile] ? t(PROFILE_I18N_KEYS[profile]) : (profile ?? "");
+
+/// 状态行显隐偏好：默认显示，仅 "0" 视为隐藏。
+function getStoredStatusLine() {
+  return localStorage.getItem(STATUS_LINE_KEY) !== "0";
+}
 
 export function initApp(root) {
   const el = {
@@ -86,6 +92,13 @@ export function initApp(root) {
     relativeMode: root.querySelector("#relative-mode"),
     settingsModal: root.querySelector("#settings-modal"),
     settingsMessage: root.querySelector("#settings-message"),
+    settingsNav: root.querySelector(".settings-nav"),
+    settingsReconnect: root.querySelector("#settings-reconnect"),
+    settingsVersion: root.querySelector("#settings-version"),
+    settingsLanguage: root.querySelector("#setting-language"),
+    settingsTheme: root.querySelector("#setting-theme"),
+    statusLineToggle: root.querySelector("#setting-status-line"),
+    statusLineBar: root.querySelector("#video-status-bar"),
     settingsFields: {
       baudRate: root.querySelector("#setting-baud-rate"),
       autoBaud: root.querySelector("#setting-auto-baud"),
@@ -515,6 +528,10 @@ export function initApp(root) {
     cancelButton: root.querySelector("#settings-cancel"),
     saveButton: root.querySelector("#settings-save"),
     resetButton: root.querySelector("#settings-reset"),
+    reconnectButton: el.settingsReconnect,
+    nav: el.settingsNav,
+    isConnected: () => lastStatus?.session?.state === "running",
+    onReconnect: () => el.barReconnect.click(),
     onChanged: applySettingsChange,
   });
 
@@ -526,6 +543,13 @@ export function initApp(root) {
 
   const keyboard = installKeyboardInterceptor({ getRfb: () => rfb });
   el.openSettings.addEventListener("click", () => keyboard.releaseRemoteState(), true);
+  // 打开设置时同步纯前端偏好控件（语言/主题/状态行）与关于区版本。
+  el.openSettings.addEventListener("click", () => {
+    el.settingsLanguage.value = getStoredLanguage();
+    el.settingsTheme.value = getStoredTheme();
+    el.statusLineToggle.checked = getStoredStatusLine();
+    el.settingsVersion.textContent = lastStatus?.service?.version ?? "-";
+  });
 
   const applySessionProfile = async () => {
     const profile = el.videoMouseProfile.value;
@@ -699,6 +723,7 @@ export function initApp(root) {
   const applyUiLanguage = () => {
     applyLanguage(document);
     el.languageSelect.value = getStoredLanguage();
+    el.settingsLanguage.value = getStoredLanguage();
     specialKeys.refresh();
     pointer.update();
     connection.updateSettingsSummary(settings);
@@ -715,6 +740,28 @@ export function initApp(root) {
     setLanguage(el.languageSelect.value);
     applyUiLanguage();
   });
+  // 设置「常规」分区里的语言/主题与 ⋯ 菜单快捷下拉写同一份偏好，双向同步。
+  el.settingsLanguage.addEventListener("change", () => {
+    setLanguage(el.settingsLanguage.value);
+    applyUiLanguage();
+  });
+  el.settingsTheme.addEventListener("change", () => {
+    setTheme(el.settingsTheme.value);
+    el.themeSelect.value = getStoredTheme();
+  });
+  el.themeSelect.addEventListener("change", () => {
+    el.settingsTheme.value = getStoredTheme();
+  });
+
+  // 状态行显隐：纯前端偏好，即时生效。
+  const applyStatusLine = () => {
+    el.statusLineBar.hidden = !getStoredStatusLine();
+  };
+  el.statusLineToggle.addEventListener("change", () => {
+    localStorage.setItem(STATUS_LINE_KEY, el.statusLineToggle.checked ? "1" : "0");
+    applyStatusLine();
+  });
+  applyStatusLine();
 
   window.addEventListener("beforeunload", () => {
     rfb?.disconnect();
