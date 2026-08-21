@@ -63,12 +63,18 @@ export class ControlBar {
     });
 
     // 唤出/保活：鼠标移至视口顶部、控制条内活动或聚焦。
-    this.videoView.addEventListener("mousemove", (event) => {
-      const rect = this.videoView.getBoundingClientRect();
-      if (event.clientY - rect.top < REVEAL_TOP_PX) {
-        this.poke();
-      }
-    });
+    // 必须用捕获阶段监听：noVNC 在画布上对鼠标事件 stopPropagation（rfb.js），
+    // 冒泡阶段收不到画面内容上方热区的 mousemove（#116）。
+    this.videoView.addEventListener(
+      "mousemove",
+      (event) => {
+        const rect = this.videoView.getBoundingClientRect();
+        if (event.clientY - rect.top < REVEAL_TOP_PX) {
+          this.poke();
+        }
+      },
+      true,
+    );
     for (const type of ["mousemove", "pointerdown", "focusin"]) {
       this.bar.addEventListener(type, () => this.poke());
     }
