@@ -1584,6 +1584,23 @@ async function run() {
       undefined,
       { timeout: DEADLINE_MS },
     );
+    // 回归 #116：光标在画面内容上（非黑边）时顶部热区同样必须唤出。
+    // noVNC 对画布鼠标事件 stopPropagation，热区若在冒泡阶段监听将收不到事件。
+    await page.waitForFunction(
+      () => document.querySelector("#control-bar")?.classList.contains("is-hidden"),
+      undefined,
+      { timeout: 6000 },
+    );
+    const canvasHotspot = await page.evaluate(() => {
+      const rect = document.querySelector("#video-view canvas").getBoundingClientRect();
+      return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + 8) };
+    });
+    await page.mouse.move(canvasHotspot.x, canvasHotspot.y);
+    await page.waitForFunction(
+      () => !document.querySelector("#control-bar")?.classList.contains("is-hidden"),
+      undefined,
+      { timeout: DEADLINE_MS },
+    );
     // 固定后不再自动隐藏，固定状态持久化。
     await page.locator("#bar-pin").click();
     assert.equal(
