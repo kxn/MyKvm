@@ -74,6 +74,8 @@ cargo run -p ipkvm-desktop-iced --all-features
 - `docs/superpowers/specs/2026-07-31-novnc-web-browser-design.md`
 - `docs/superpowers/specs/2026-07-31-ch9329-protocol-input-core-design.md`
 - `docs/superpowers/specs/2026-07-31-dependency-license-policy-design.md`
+- `docs/superpowers/specs/2026-08-04-headless-web-ui-design.md`
+- `docs/superpowers/specs/2026-08-17-headless-web-ui-redesign-design.md`
 - `docs/dependency-license-policy.md`
 - `docs/references/README.md`
 
@@ -107,7 +109,7 @@ cargo install --locked cargo-make
 | `cargo make browser` | 浏览器闭环（仅 Windows） | 分钟级 |
 | `cargo make desktop-release` | release 构建 + 启动冒烟（Windows/Linux） | 分钟级 |
 
-**快速门禁**检查文本 UTF-8 编码、noVNC 资产来源和逐文件哈希、浏览器依赖锁文件、锁定依赖图许可证与来源、crate 依赖边界、Rust 格式和 Git 差异。**全量门禁**在快速门禁基础上增加全工作区测试、Clippy 和 Rust 文档构建。
+**快速门禁**检查文本 UTF-8 编码、noVNC 资产来源和逐文件哈希、浏览器依赖锁文件、锁定依赖图许可证与来源、Web UI 设计 token 使用、crate 依赖边界、Rust 格式和 Git 差异。**全量门禁**在快速门禁基础上增加全工作区测试、Clippy 和 Rust 文档构建。
 
 真实浏览器闭环不包含在本地默认门禁内（需 Node 20+、Chrome/Edge、npm 联网），涉及 noVNC/前端改动时运行 `cargo make browser`（首次通过 `npm ci` 安装锁定的 `playwright-core`）；CI 的 `browser` job 为必需检查，失败会标红 workflow。release 发布物启动冒烟通过 `cargo make desktop-release` 一键完成构建和验证（Windows 走 `scripts/verify-desktop-release.ps1`，验证 release 进程持续存活并创建非零顶层窗口句柄；Linux 走 `scripts/verify-desktop-release.sh`，验证进程存活并创建标题为 `my_ipkvm iced` 的顶层窗口，均不读取 About 文本或 `GIT_COMMIT`）。Linux 冒烟依赖：窗口检测优先 `xdotool`（回退 `xwininfo`/`xlsclients`），无图形会话时自动经 `xvfb-run -a` 在虚拟显示上启动；三者全缺时降级为进程存活检查并输出警告。
 
