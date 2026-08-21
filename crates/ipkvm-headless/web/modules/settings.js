@@ -25,7 +25,6 @@ export class SettingsController {
     modal,
     message,
     fields,
-    openButton,
     cancelButton,
     saveButton,
     resetButton,
@@ -42,7 +41,6 @@ export class SettingsController {
     this.onChanged = onChanged;
     this.current = { ...SETTINGS_DEFAULTS };
 
-    openButton.addEventListener("click", () => this.open());
     cancelButton.addEventListener("click", () => this.cancel());
     saveButton.addEventListener("click", () => this.save());
     resetButton.addEventListener("click", () => this.reset());
@@ -79,10 +77,11 @@ export class SettingsController {
     }
   }
 
-  async open() {
+  /// 打开弹层并切到指定分区（默认常规）；连接页高级区会按参数跳转分区（#103）。
+  async open(section = "general") {
     this.el.modal.hidden = false;
     this.setMessage("");
-    this.switchSection("general");
+    this.switchSection(section);
     if (this.reconnectButton) {
       this.reconnectButton.hidden = true;
     }

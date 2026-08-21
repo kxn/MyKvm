@@ -572,8 +572,8 @@ select:disabled {
 }
 
 .connection-card {
-  width: min(560px, 100%);
-  padding: 28px;
+  width: min(460px, 100%);
+  padding: var(--space-6);
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   background: var(--surface);
@@ -612,10 +612,10 @@ select:disabled {
 
 .device-picker {
   display: grid;
-  grid-template-columns: 92px minmax(0, 1fr) auto;
+  grid-template-columns: 90px minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--space-2);
-  margin: 10px 0;
+  margin: var(--space-4) 0;
 }
 
 .device-picker label {
@@ -651,41 +651,89 @@ select:disabled {
   background: var(--surface-hover);
 }
 
-.profile-picker {
-  grid-template-columns: 160px minmax(0, 1fr);
-}
-
-.profile-picker select {
-  grid-column: 2;
-}
-
 .probe {
   grid-column: 2 / 4;
-  min-height: 1.4em;
   color: var(--text-muted);
   font-size: var(--font-size-sm);
+}
+
+/* 成功路径不展示技术细节：无内容时不占位（#103） */
+.probe:empty {
+  display: none;
 }
 
 .probe[data-state="failed"] {
   color: var(--danger);
 }
 
-.probe[data-state="ready"] {
-  color: var(--success);
+.probe[data-state="empty"] {
+  color: var(--warning);
 }
 
-.settings-summary {
-  margin: var(--space-3) 0 var(--space-1);
+/* ---- 连接向导高级折叠区（#103） ---- */
+
+.connection-advanced {
+  margin: 0;
+  padding-top: var(--space-3);
+  border-top: 1px solid var(--border);
+}
+
+.connection-advanced summary {
+  cursor: pointer;
+  user-select: none;
   color: var(--text-muted);
   font-size: var(--font-size-sm);
+  transition: color var(--duration-fast) var(--ease-standard);
+}
+
+.connection-advanced summary:hover {
+  color: var(--text);
+}
+
+.advanced-row {
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 0;
+  font-size: var(--font-size-md);
+}
+
+.advanced-row > span:first-child,
+.advanced-row label {
+  color: var(--text-muted);
+}
+
+.advanced-row select {
+  width: 100%;
+  height: 30px;
+  padding: 0 var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-raised);
+  color: var(--text);
+}
+
+.advanced-edit {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font-size: var(--font-size-sm);
+  white-space: nowrap;
+}
+
+.advanced-edit:hover {
+  text-decoration: underline;
 }
 
 #connect-button {
-  width: 100%;
+  display: block;
+  width: 160px;
   height: 38px;
-  margin-top: 14px;
+  margin: var(--space-4) auto 0;
   border: 0;
-  border-radius: 5px;
+  border-radius: var(--radius-sm);
   background: var(--accent-strong);
   color: var(--on-accent);
   font-size: var(--font-size-lg);

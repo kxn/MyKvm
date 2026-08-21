@@ -112,12 +112,12 @@
             >
             <span id="sensitivity-value">1.0</span>
           </label>
-          <label class="bar-select" data-i18n-title="settings.mouseProfile" title="目标端兼容 profile">
+          <label class="bar-select" data-i18n-title="settings.mouseProfile" title="目标系统">
             <svg class="icon" viewBox="0 0 16 16" aria-hidden="true">
               <rect x="1.5" y="2.5" width="13" height="8.5" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.4"/>
               <path d="M6 13.5h4M8 11v2.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/>
             </svg>
-            <select id="video-mouse-profile" aria-label="目标端兼容 profile">
+            <select id="video-mouse-profile" aria-label="目标系统">
               <option value="windows" data-i18n="settings.profileWindows">Windows</option>
               <option value="linux" data-i18n="settings.profileLinux">Linux</option>
               <option value="bios" data-i18n="settings.profileBios">BIOS</option>
@@ -252,19 +252,44 @@
             <button id="refresh-serial" type="button" data-i18n="connection.refresh">刷新</button>
             <span id="serial-probe" class="probe" role="status"></span>
           </div>
-          <div class="device-picker profile-picker">
-            <label for="connection-mouse-profile" data-i18n="settings.mouseProfile">目标端兼容 profile</label>
+          <div class="device-picker">
+            <label for="connection-mouse-profile" data-i18n="settings.mouseProfile">目标系统</label>
             <select id="connection-mouse-profile">
               <option value="windows" data-i18n="settings.profileWindows">Windows</option>
               <option value="linux" data-i18n="settings.profileLinux">Linux</option>
               <option value="bios" data-i18n="settings.profileBios">BIOS</option>
               <option value="android" data-i18n="settings.profileAndroid">Android</option>
               <option value="macos" data-i18n="settings.profileMacos">macOS</option>
-              <option value="raw_absolute" selected data-i18n="settings.profileRawAbsolute">原始绝对坐标</option>
-              <option value="raw_relative" data-i18n="settings.profileRawRelative">原始相对坐标</option>
             </select>
           </div>
-          <p id="connection-settings-summary" class="settings-summary"></p>
+          <details id="connection-advanced" class="connection-advanced">
+            <summary data-i18n="connection.advancedSummary">
+              高级（坐标模式 · 波特率 · 预览帧率 · 鼠标模式）
+            </summary>
+            <div class="advanced-row">
+              <label for="connection-coordinate-mode" data-i18n="connection.coordinateMode">坐标模式</label>
+              <select id="connection-coordinate-mode">
+                <option value="follow" selected data-i18n="connection.coordFollow">跟随目标系统</option>
+                <option value="raw_absolute" data-i18n="settings.profileRawAbsolute">原始绝对坐标</option>
+                <option value="raw_relative" data-i18n="settings.profileRawRelative">原始相对坐标</option>
+              </select>
+            </div>
+            <div class="advanced-row">
+              <span data-i18n="settings.baudRate">波特率</span>
+              <span id="advanced-baud" class="advanced-value">-</span>
+              <button type="button" class="advanced-edit" data-goto-section="device" data-i18n="connection.editInSettings">在设置中修改</button>
+            </div>
+            <div class="advanced-row">
+              <span data-i18n="settings.previewFps">预览帧率</span>
+              <span id="advanced-fps" class="advanced-value">-</span>
+              <button type="button" class="advanced-edit" data-goto-section="video" data-i18n="connection.editInSettings">在设置中修改</button>
+            </div>
+            <div class="advanced-row">
+              <span data-i18n="settings.mouseMode">默认鼠标模式</span>
+              <span id="advanced-mouse-mode" class="advanced-value">-</span>
+              <button type="button" class="advanced-edit" data-goto-section="input" data-i18n="connection.editInSettings">在设置中修改</button>
+            </div>
+          </details>
           <p id="connection-message" class="message" role="status" aria-live="polite"></p>
           <button id="connect-button" type="button" disabled data-i18n="connection.connect">
             连接
@@ -362,7 +387,7 @@
                     <small class="field-hint" data-i18n="settings.hintImmediate">即时生效</small>
                   </label>
                   <label class="field">
-                    <span data-i18n="settings.mouseProfile">目标端兼容 profile</span>
+                    <span data-i18n="settings.mouseProfile">目标系统</span>
                     <select id="setting-mouse-profile">
                       <option value="windows" data-i18n="settings.profileWindows">Windows</option>
                       <option value="linux" data-i18n="settings.profileLinux">Linux</option>

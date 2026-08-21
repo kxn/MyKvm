@@ -1,14 +1,18 @@
 // 连接页：设备枚举/选择/探测状态与 create/restart 连接。
+// 向导式布局：主路径只暴露设备与目标系统；坐标模式与设备参数收进高级折叠区，
+// 设备参数只读展示并引导到设置对应分区修改（#103）。
 
 import { errorText, getJson, postJson } from "./api.js";
 import { t } from "./i18n.js";
 
+const RAW_COORDINATE_MODES = new Set(["raw_absolute", "raw_relative"]);
+
 export class ConnectionController {
-  constructor({ elements, getStatus, onMessage, onSettingsSummary, onConnected }) {
+  constructor({ elements, getStatus, onMessage, onOpenSettings, onConnected }) {
     this.el = elements;
     this.getStatus = getStatus;
     this.onMessage = onMessage;
-    this.onSettingsSummary = onSettingsSummary;
+    this.onOpenSettings = onOpenSettings;
     this.onConnected = onConnected;
     this.devices = { video: [], serial: [] };
     this.profileDirty = false;
@@ -20,6 +24,16 @@ export class ConnectionController {
     this.el.serialSelect.addEventListener("change", () => this.updateConnectState());
     this.el.connectionMouseProfile.addEventListener("change", () => {
       this.profileDirty = true;
+    });
+    this.el.coordinateMode.addEventListener("change", () => {
+      this.profileDirty = true;
+      this.syncProfileControls();
+    });
+    this.el.advanced?.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-goto-section]");
+      if (button) {
+        this.onOpenSettings?.(button.dataset.gotoSection);
+      }
     });
   }
 
@@ -37,11 +51,14 @@ export class ConnectionController {
       const items = data?.[kind] ?? [];
       this.devices[kind] = items;
       fillSelect(select, items);
-      probe.dataset.state = items.length > 0 ? "ready" : "empty";
-      probe.textContent =
-        items.length > 0
-          ? t("connection.ready", { count: items.length })
-          : t("connection.empty");
+      // 成功路径不展示技术细节；只有未发现设备或失败才内联提示（#103）。
+      if (items.length > 0) {
+        probe.dataset.state = "ready";
+        probe.textContent = "";
+      } else {
+        probe.dataset.state = "empty";
+        probe.textContent = t("connection.empty");
+      }
     } catch (error) {
       probe.dataset.state = "failed";
       probe.textContent = `${t("connection.probeFailed")}：${errorText(error)}`;
@@ -63,6 +80,26 @@ export class ConnectionController {
     this.el.connectButton.disabled = !(videoOk && serialOk) && !fallbackToPrevious;
   }
 
+  /// 当前应提交的 mouse_profile：坐标模式为原始坐标时覆盖目标系统选择。
+  currentProfile() {
+    const mode = this.el.coordinateMode.value;
+    return mode === "follow" ? this.el.connectionMouseProfile.value : mode;
+  }
+
+  syncProfileControls() {
+    this.el.connectionMouseProfile.disabled = this.el.coordinateMode.value !== "follow";
+  }
+
+  applyProfile(profile) {
+    if (RAW_COORDINATE_MODES.has(profile)) {
+      this.el.coordinateMode.value = profile;
+    } else if (profile) {
+      this.el.coordinateMode.value = "follow";
+      this.el.connectionMouseProfile.value = profile;
+    }
+    this.syncProfileControls();
+  }
+
   async connect() {
     const status = this.getStatus();
     const state = status?.session?.state;
@@ -78,7 +115,7 @@ export class ConnectionController {
         action,
         video,
         serial,
-        mouse_profile: this.el.connectionMouseProfile.value || null,
+        mouse_profile: this.currentProfile() || null,
       });
       this.onConnected?.();
     } catch (error) {
@@ -87,22 +124,28 @@ export class ConnectionController {
     }
   }
 
-  updateSettingsSummary(settings) {
+  /// 应用服务端设置：高级折叠区展示设备参数当前值（只读），并同步 profile 到控件。
+  applySettings(settings) {
     if (!this.profileDirty && settings?.mouse_profile) {
-      this.el.connectionMouseProfile.value = settings.mouse_profile;
+      this.applyProfile(settings.mouse_profile);
     }
-    const text = t("connection.settingsSummary", {
-      baud: settings?.baud_rate ?? "-",
-      auto: settings?.auto_baud ? t("common.on") : t("common.off"),
-      fps: settings?.preview_fps ?? "-",
-      profile: settings?.mouse_profile ?? "raw_absolute",
-    });
-    this.onSettingsSummary?.(text);
+    if (this.el.advancedBaud) {
+      this.el.advancedBaud.textContent = settings?.baud_rate ?? "-";
+    }
+    if (this.el.advancedFps) {
+      this.el.advancedFps.textContent = settings?.preview_fps ?? "-";
+    }
+    if (this.el.advancedMouseMode) {
+      const mode = settings?.mouse_mode;
+      this.el.advancedMouseMode.textContent = mode
+        ? t(mode === "relative" ? "settings.relative" : "settings.absolute")
+        : "-";
+    }
   }
 
   applyStatus(status) {
     if (!this.profileDirty && status?.session?.mouse_profile) {
-      this.el.connectionMouseProfile.value = status.session.mouse_profile;
+      this.applyProfile(status.session.mouse_profile);
     }
   }
 }
