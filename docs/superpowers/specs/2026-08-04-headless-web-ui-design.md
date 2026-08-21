@@ -4,6 +4,13 @@
 > 前置调研：`crates/ipkvm-headless/src/web/service.rs`、`recovery.rs`、`config.rs`、
 > `browser-tests/`、`third_party/novnc/1.7.0/core/rfb.js`。
 
+> **取代声明（2026-08-21，#97/#104）**：本文第 4 节「页面与组件」及第 5.2 节的
+> UI 组织内容已被 `2026-08-17-headless-web-ui-redesign-design.md` 全面取代
+> （悬浮控制条、连接向导、设置分区、特殊键面板、状态抽屉、双主题与 UI 实施规范
+> 以新文档为准）。本文其余部分——API 契约（第 6 节）、输入设计（第 7 节）、
+> 设置持久化分层（第 8 节）、会话与自动连接策略（第 5 节）、错误恢复与测试策略——
+> 仍然有效。
+
 ## 1. 背景与目标
 
 headless 版目前只有极简页面：一条状态栏（连接状态/重连/断开/许可证）+ noVNC 画布，
