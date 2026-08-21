@@ -76,13 +76,17 @@ export function initApp(root) {
     videoSelect: root.querySelector("#video-select"),
     serialSelect: root.querySelector("#serial-select"),
     connectionMouseProfile: root.querySelector("#connection-mouse-profile"),
+    coordinateMode: root.querySelector("#connection-coordinate-mode"),
+    advanced: root.querySelector("#connection-advanced"),
+    advancedBaud: root.querySelector("#advanced-baud"),
+    advancedFps: root.querySelector("#advanced-fps"),
+    advancedMouseMode: root.querySelector("#advanced-mouse-mode"),
     refreshVideo: root.querySelector("#refresh-video"),
     refreshSerial: root.querySelector("#refresh-serial"),
     videoProbe: root.querySelector("#video-probe"),
     serialProbe: root.querySelector("#serial-probe"),
     connectionHint: root.querySelector("#connection-hint"),
     connectionMessage: root.querySelector("#connection-message"),
-    settingsSummary: root.querySelector("#connection-settings-summary"),
     videoResolution: root.querySelector("#video-resolution"),
     videoFps: root.querySelector("#video-fps"),
     statusProfile: root.querySelector("#status-profile"),
@@ -474,6 +478,7 @@ export function initApp(root) {
     elements: el,
     getStatus: () => lastStatus,
     onConnected: () => statusController.clearViewOverride(),
+    onOpenSettings: (section) => openSettings(section),
     onMessage: (text, level) => {
       el.connectionMessage.textContent = text;
       if (level) {
@@ -481,9 +486,6 @@ export function initApp(root) {
       } else {
         delete el.connectionMessage.dataset.level;
       }
-    },
-    onSettingsSummary: (text) => {
-      el.settingsSummary.textContent = text;
     },
   });
 
@@ -505,7 +507,7 @@ export function initApp(root) {
     settings = saved;
     applyScaleMode();
     pointer.applySettings(saved);
-    connection.updateSettingsSummary(saved);
+    connection.applySettings(saved);
     syncSensitivitySlider();
     refreshScaleButton();
   };
@@ -524,7 +526,6 @@ export function initApp(root) {
     modal: el.settingsModal,
     message: el.settingsMessage,
     fields: el.settingsFields,
-    openButton: el.openSettings,
     cancelButton: root.querySelector("#settings-cancel"),
     saveButton: root.querySelector("#settings-save"),
     resetButton: root.querySelector("#settings-reset"),
@@ -542,14 +543,18 @@ export function initApp(root) {
   });
 
   const keyboard = installKeyboardInterceptor({ getRfb: () => rfb });
-  el.openSettings.addEventListener("click", () => keyboard.releaseRemoteState(), true);
-  // 打开设置时同步纯前端偏好控件（语言/主题/状态行）与关于区版本。
-  el.openSettings.addEventListener("click", () => {
+
+  /// 统一打开设置的入口：释放远程按键、同步纯前端偏好控件与关于区版本，
+  /// 可指定目标分区（连接页高级区"在设置中修改"会跳到对应分区，#103）。
+  const openSettings = (section) => {
+    keyboard.releaseRemoteState();
     el.settingsLanguage.value = getStoredLanguage();
     el.settingsTheme.value = getStoredTheme();
     el.statusLineToggle.checked = getStoredStatusLine();
     el.settingsVersion.textContent = lastStatus?.service?.version ?? "-";
-  });
+    settingsController.open(section);
+  };
+  el.openSettings.addEventListener("click", () => openSettings());
 
   const applySessionProfile = async () => {
     const profile = el.videoMouseProfile.value;
@@ -726,7 +731,7 @@ export function initApp(root) {
     el.settingsLanguage.value = getStoredLanguage();
     specialKeys.refresh();
     pointer.update();
-    connection.updateSettingsSummary(settings);
+    connection.applySettings(settings);
     refreshScaleButton();
     if (!el.videoView.hidden) {
       updateVideoBar(lastStatus);

@@ -209,10 +209,18 @@ async function revealControlBar(page) {
 
 async function installApiMocks(context, postedSettings, settingsGets) {
   const storedSettings = { ...DEFAULT_SETTINGS };
+  const sessionPosts = [];
   await context.route("**/api/devices", (route) => {
     return route.fulfill({
       json: { video: VIDEO_DEVICES, serial: SERIAL_DEVICES },
     });
+  });
+  await context.route("**/api/session", (route) => {
+    const request = route.request();
+    if (request.method() === "POST") {
+      sessionPosts.push(request.postDataJSON());
+    }
+    return route.continue();
   });
   await context.route("**/api/settings", async (route) => {
     const request = route.request();
@@ -225,6 +233,7 @@ async function installApiMocks(context, postedSettings, settingsGets) {
     Object.assign(storedSettings, posted);
     return route.fulfill({ json: { ...storedSettings } });
   });
+  return sessionPosts;
 }
 
 async function openConsole(browser, url, options = {}) {
@@ -243,8 +252,9 @@ async function openConsole(browser, url, options = {}) {
   });
   const postedSettings = [];
   const settingsGets = { count: 0 };
+  let sessionPosts = [];
   if (mockApi) {
-    await installApiMocks(context, postedSettings, settingsGets);
+    sessionPosts = await installApiMocks(context, postedSettings, settingsGets);
   }
   if (beforeGoto) {
     await beforeGoto(context, postedSettings);
@@ -268,7 +278,7 @@ async function openConsole(browser, url, options = {}) {
   const response = await page.goto(url, { waitUntil: "domcontentloaded" });
   assert(response, "root navigation did not produce a response");
   assert.equal(response.status(), 200);
-  return { context, page, postedSettings, settingsGets, browserErrors };
+  return { context, page, postedSettings, settingsGets, sessionPosts, browserErrors };
 }
 
 async function waitForConnectionView(page) {
@@ -1061,10 +1071,8 @@ async function run() {
     process.stdout.write(`Browser: ${browserPath} (${await browser.version()})\n`);
 
     // ---- 初始页：fixture 可能已运行会话，也可能显示连接页 ----
-    const { context, page, postedSettings, settingsGets, browserErrors } = await openConsole(
-      browser,
-      url,
-    );
+    const { context, page, postedSettings, settingsGets, sessionPosts, browserErrors } =
+      await openConsole(browser, url);
     contexts.push(context);
     await waitForCondition(
       () => settingsGets.count >= 1,
@@ -1074,10 +1082,31 @@ async function run() {
     if ((await waitForInitialView(page)) === "connection") {
       assert.equal(await page.locator("#video-select option").count(), 1);
       assert.equal(await page.locator("#serial-select option").count(), 1);
-      assert.match(await page.locator("#video-probe").textContent(), /就绪|Ready/);
-      assert.match(await page.locator("#serial-probe").textContent(), /就绪|Ready/);
+      // 设备唯一时自动选中（#103）
+      assert.notEqual(await page.locator("#video-select").inputValue(), "");
+      assert.notEqual(await page.locator("#serial-select").inputValue(), "");
       assert.equal(await page.locator("#connect-button").isEnabled(), true);
+      // 成功路径不展示探测细节（#103）
+      assert.equal(await page.locator("#video-probe").isHidden(), true);
+      assert.equal(await page.locator("#serial-probe").isHidden(), true);
+      // 高级折叠区：坐标模式从设置同步，设备参数只读展示当前值（#103）
+      assert.equal(
+        await page.locator("#connection-coordinate-mode").inputValue(),
+        "raw_absolute",
+      );
+      assert.equal(await page.locator("#connection-mouse-profile").isDisabled(), true);
+      await page.locator("#connection-advanced summary").click();
+      assert.equal((await page.locator("#advanced-baud").textContent()).trim(), "115200");
+      assert.equal((await page.locator("#advanced-fps").textContent()).trim(), "30");
+      // 坐标模式联动：跟随目标系统时解锁目标系统下拉，切回后重新禁用（#103）
+      await page.locator("#connection-coordinate-mode").selectOption("follow");
+      assert.equal(await page.locator("#connection-mouse-profile").isEnabled(), true);
+      await page.locator("#connection-mouse-profile").selectOption("windows");
+      await page.locator("#connection-coordinate-mode").selectOption("raw_absolute");
+      assert.equal(await page.locator("#connection-mouse-profile").isDisabled(), true);
       await connectSession(page);
+      // 坐标模式为原始坐标时覆盖目标系统选择（#103）
+      assert.equal(sessionPosts.at(-1)?.mouse_profile, "raw_absolute");
     } else {
       await waitForVideoView(page);
       await assertFramePixels(page);
@@ -1373,6 +1402,36 @@ async function run() {
       "first tab should sync the stopped session",
     );
     await second.context.close();
+
+    // ---- 连接向导：枚举失败与未发现设备的内联错误（#103） ----
+    // 会话已停止时打开新页会落在连接页，正好验证失败态展示与回退语义。
+    const enumFail = await openConsole(browser, url, {
+      beforeGoto: async (ctx) => {
+        await ctx.route("**/api/devices", (route) =>
+          route.fulfill({ status: 500, body: "boom" }),
+        );
+      },
+    });
+    contexts.push(enumFail.context);
+    await enumFail.page
+      .locator('#video-probe[data-state="failed"]')
+      .waitFor({ state: "attached" });
+    assert.match(await enumFail.page.locator("#video-probe").textContent(), /枚举失败/);
+    assert.match(await enumFail.page.locator("#serial-probe").textContent(), /枚举失败/);
+    // 切换为空列表：内联提示"未发现设备"；无运行中会话时连接按钮不可用。
+    await enumFail.context.unroute("**/api/devices");
+    await enumFail.context.route("**/api/devices", (route) =>
+      route.fulfill({ json: { video: [], serial: [] } }),
+    );
+    await enumFail.page.locator("#refresh-video").click();
+    await enumFail.page.locator("#refresh-serial").click();
+    await enumFail.page
+      .locator('#video-probe[data-state="empty"]')
+      .waitFor({ state: "attached" });
+    assert.match(await enumFail.page.locator("#video-probe").textContent(), /未发现设备/);
+    assert.match(await enumFail.page.locator("#serial-probe").textContent(), /未发现设备/);
+    assert.equal(await enumFail.page.locator("#connect-button").isDisabled(), true);
+    await enumFail.context.close();
 
     // ---- 重新连接 ----
     await fixture.lines.waitForLine(
