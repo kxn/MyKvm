@@ -1675,7 +1675,6 @@ async function run() {
 
     // ---- 缺失 /api/settings 的降级路径 ----
     const degraded = await openConsole(browser, url, { mockApi: false });
-    contexts.push(degraded.context);
     // 后端已提供真实 /api/settings，此处显式路由成 404 以覆盖缺失降级。
     await degraded.page.route("**/api/settings*", (route) =>
       route.fulfill({
@@ -1690,6 +1689,106 @@ async function run() {
     await degraded.page
       .locator("#settings-message", { hasText: "设置获取失败" })
       .waitFor({ state: "attached" });
+    // 必须及时关闭：该页面 RFB 409 后处于退避重试状态，后续场景释放单控制器时
+    // 它会抢先重连并长期占用闸门，导致后续页面正确进入"另一处已连接"而卡死。
+    await degraded.context.close();
+
+    // ---- 独立控制器场景（#104 覆盖补齐）----
+    // 主页面断开后冻结其状态视图为手动停止，避免以下场景连接期间主页面
+    // 轮询看到会话 running 自动切回视频页抢走单控制器。
+    await revealControlBar(page);
+    await page.locator("#session-menu-button").click();
+    const mainRelease = fixture.lines.mark();
+    await page.locator("#toolbar-disconnect").click();
+    await waitForConnectionView(page);
+    // 控制器释放是异步的：409 后前端不会盲试重连，必须等 RELEASE 再让后续场景连接。
+    await fixture.lines.waitForLine(
+      (line) => line === "RELEASE",
+      "main page controller release after disconnect",
+      mainRelease,
+    );
+    await context.route("**/api/status", async (route) => {
+      const response = await route.fetch();
+      const body = await response.json();
+      if (body?.session) {
+        body.session = { ...body.session, state: "absent", manual_stop: true };
+      }
+      await route.fulfill({ response, json: body });
+    });
+
+    // 粘贴对话框：剪贴板权限被拒时仍可手动输入发送。
+    const noClip = await openConsole(browser, url, { permissions: [] });
+    contexts.push(noClip.context);
+    await connectSession(noClip.page);
+    await revealControlBar(noClip.page);
+    const noClipMarker = fixture.lines.mark();
+    await noClip.page.locator("#paste-button").click();
+    await noClip.page.locator("#paste-modal:not([hidden])").waitFor({ state: "attached" });
+    assert.match(
+      await noClip.page.locator("#paste-hint").textContent(),
+      /剪贴板|clipboard/i,
+    );
+    await noClip.page.locator("#paste-text").fill("ab");
+    await noClip.page.locator("#paste-send").click();
+    await fixture.lines.waitForSubsequence(
+      (line) => line.startsWith("KEY\t"),
+      ["KEY\tDOWN\t4", "KEY\tUP\t4", "KEY\tDOWN\t5", "KEY\tUP\t5"],
+      "paste dialog sends keys without clipboard permission",
+      noClipMarker,
+    );
+    await noClip.page.locator("#paste-modal[hidden]").waitFor({ state: "attached" });
+    const noClipRelease = fixture.lines.mark();
+    await noClip.context.close();
+    await fixture.lines.waitForLine(
+      (line) => line === "RELEASE",
+      "controller release after noClip close",
+      noClipRelease,
+    );
+
+    // degraded 画面内横幅：输入链路异常时不切视图只提示。
+    const bannerCase = await openConsole(browser, url, {
+      beforeGoto: async (ctx) => {
+        await ctx.route("**/api/status", async (route) => {
+          const response = await route.fetch();
+          const body = await response.json();
+          if (body?.session?.control) {
+            body.session.control = {
+              ...body.session.control,
+              state: "stalled",
+              reason: "probe",
+            };
+          }
+          await route.fulfill({ response, json: body });
+        });
+      },
+    });
+    contexts.push(bannerCase.context);
+    // noClip 关闭后会话仍 running：新页面走自动连接快路径直进画面。
+    await waitForVideoView(bannerCase.page);
+    await bannerCase.page
+      .locator("#degraded-banner:not([hidden])")
+      .waitFor({ state: "attached" });
+    assert.match(
+      await bannerCase.page.locator("#degraded-banner-text").textContent(),
+      /输入链路|Input link/,
+    );
+    // 横幅只提示不打断：视图保持视频页，画布仍在渲染。
+    assert.equal(
+      await bannerCase.page.locator("#console").getAttribute("data-view"),
+      "video",
+    );
+    await assertFramePixels(bannerCase.page);
+    const bannerRelease = fixture.lines.mark();
+    await bannerCase.context.close();
+    await fixture.lines.waitForLine(
+      (line) => line === "RELEASE",
+      "controller release after bannerCase close",
+      bannerRelease,
+    );
+
+    // 解冻主页面状态视图：看到真实 running 后自动回视频页重连。
+    await context.unroute("**/api/status");
+    await waitForVideoView(page);
 
     // ---- 静态资源与许可证 ----
     const missing = await page.request.get(`${url}/vendor/novnc/core/missing.js`);
