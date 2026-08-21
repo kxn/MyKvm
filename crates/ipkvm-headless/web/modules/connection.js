@@ -70,9 +70,9 @@ export class ConnectionController {
   updateConnectState() {
     const videoOk = this.el.videoSelect.value !== "";
     const serialOk = this.el.serialSelect.value !== "";
+    // 后端契约：session.state 只有 running/absent 两值（手动停止为 absent + manual_stop）。
     const session = this.getStatus()?.session;
-    const hasPreviousSession =
-      session != null && (session.state === "running" || session.state === "stopped");
+    const hasPreviousSession = session != null && session.state === "running";
     const fallbackToPrevious =
       hasPreviousSession &&
       this.devices.video.length === 0 &&

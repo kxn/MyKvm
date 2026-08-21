@@ -1242,14 +1242,6 @@ select:disabled {
     grid-template-columns: 78px minmax(0, 1fr) auto;
   }
 
-  .profile-picker {
-    grid-template-columns: 1fr;
-  }
-
-  .profile-picker select {
-    grid-column: 1;
-  }
-
   .field {
     grid-template-columns: 1fr;
     gap: var(--space-1);
