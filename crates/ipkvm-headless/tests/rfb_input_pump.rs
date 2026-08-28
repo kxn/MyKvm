@@ -205,9 +205,12 @@ async fn real_tcp_client_drives_ch9329_input_and_disconnect_release() {
     let release = queue.accepted_batches();
     // 第 3 个批次是 RFB pump 的断连释放。
     let release_frames = release[2].frames();
+    assert_eq!(release_frames.len(), 3);
     assert_eq!(release_frames[0].data(), &[0; 8]);
-    assert_eq!(release_frames[1].command(), 0x04);
-    assert_eq!(release_frames[1].data()[1], 0);
+    assert_eq!(release_frames[1].command(), 0x05);
+    assert_eq!(release_frames[1].data(), &[1, 0, 0, 0, 0]);
+    assert_eq!(release_frames[2].command(), 0x04);
+    assert_eq!(release_frames[2].data()[1], 0);
 }
 
 #[tokio::test]

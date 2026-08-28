@@ -110,19 +110,25 @@ impl MouseState {
         }
     }
 
-    fn release_command(&self) -> InputResult<Option<Ch9329Command>> {
+    fn release_commands(&self) -> InputResult<Vec<Ch9329Command>> {
         match self.mode {
             MouseMode::Absolute => {
                 let Some((x, y)) = self.last_absolute else {
-                    return Ok(None);
+                    return Ok(Vec::new());
                 };
-                Ok(Some(Ch9329Command::MouseAbsolute(
-                    AbsoluteMouseReport::new(0, x, y, 0)?,
-                )))
+                if self.buttons == 0 {
+                    return Ok(vec![Ch9329Command::MouseAbsolute(
+                        AbsoluteMouseReport::new(0, x, y, 0)?,
+                    )]);
+                }
+                Ok(vec![
+                    Ch9329Command::MouseRelative(RelativeMouseReport::new(0, 0, 0, 0)?),
+                    Ch9329Command::MouseAbsolute(AbsoluteMouseReport::new(0, x, y, 0)?),
+                ])
             }
-            MouseMode::Relative => Ok(Some(Ch9329Command::MouseRelative(
+            MouseMode::Relative => Ok(vec![Ch9329Command::MouseRelative(
                 RelativeMouseReport::new(0, 0, 0, 0)?,
-            ))),
+            )]),
         }
     }
 
@@ -203,6 +209,12 @@ impl MouseState {
                 let Some((x, y)) = self.last_absolute else {
                     return Err(InputError::PointerPositionUnknown);
                 };
+                commands.push(Ch9329Command::MouseRelative(RelativeMouseReport::new(
+                    self.buttons,
+                    0,
+                    0,
+                    0,
+                )?));
                 commands.push(Ch9329Command::MouseAbsolute(AbsoluteMouseReport::new(
                     self.buttons,
                     x,
@@ -229,17 +241,10 @@ impl MouseState {
         }
         match self.mode {
             MouseMode::Absolute => {
-                let Some((x, y)) = self.last_absolute else {
+                if self.last_absolute.is_none() {
                     return Err(InputError::PointerPositionUnknown);
-                };
-                for (_, _, wheel) in chunks {
-                    commands.push(Ch9329Command::MouseAbsolute(AbsoluteMouseReport::new(
-                        self.buttons,
-                        x,
-                        y,
-                        wheel,
-                    )?));
                 }
+                commands.extend(relative_commands(self.buttons, chunks)?);
             }
             MouseMode::Relative => {
                 commands.extend(relative_commands(self.buttons, chunks)?);
@@ -288,10 +293,11 @@ impl<Q: CommandQueue> Ch9329InputSink<Q> {
 
         let mut next = self.mouse;
         next.mode = mode;
-        if self.mouse.buttons != 0
-            && let Some(command) = self.mouse.release_command()?
-        {
-            self.enqueue_commands(vec![command])?;
+        if self.mouse.buttons != 0 {
+            let commands = self.mouse.release_commands()?;
+            if !commands.is_empty() {
+                self.enqueue_commands(commands)?;
+            }
             next.buttons = 0;
         }
         self.mouse = next;
@@ -332,9 +338,7 @@ impl<Q: CommandQueue> Ch9329InputSink<Q> {
     pub fn release_all(&mut self) -> InputResult<()> {
         self.sync_recovery_generation();
         let mut commands = vec![Ch9329Command::Keyboard(KeyboardState::default().report())];
-        if let Some(command) = self.mouse.release_command()? {
-            commands.push(command);
-        }
+        commands.extend(self.mouse.release_commands()?);
         if diag::is_enabled(DiagLevel::Warn, DiagCategory::LIFECYCLE) {
             diag::log(
                 DiagLevel::Warn,
@@ -762,6 +766,12 @@ mod tests {
                                 let Some((x, y)) = next.last_absolute else {
                                     return Err(());
                                 };
+                                frames.push(ExpectedPointerFrame::Relative {
+                                    buttons: next.buttons,
+                                    dx: 0,
+                                    dy: 0,
+                                    wheel: 0,
+                                });
                                 frames.push(ExpectedPointerFrame::Absolute {
                                     buttons: next.buttons,
                                     x,
@@ -786,14 +796,14 @@ mod tests {
                         }
                         match next.mode {
                             MouseMode::Absolute => {
-                                let Some((x, y)) = next.last_absolute else {
+                                if next.last_absolute.is_none() {
                                     return Err(());
-                                };
+                                }
                                 for (_, _, wheel) in chunks {
-                                    frames.push(ExpectedPointerFrame::Absolute {
+                                    frames.push(ExpectedPointerFrame::Relative {
                                         buttons: next.buttons,
-                                        x,
-                                        y,
+                                        dx: 0,
+                                        dy: 0,
                                         wheel,
                                     });
                                 }
@@ -1154,7 +1164,7 @@ mod tests {
     }
 
     #[test]
-    fn absolute_button_uses_absolute_report_at_last_position() {
+    fn absolute_button_uses_relative_and_absolute_reports_at_last_position() {
         let queue = FakeCommandQueue::new();
         let mut sink = Ch9329InputSink::new(queue.clone(), 0, MouseMode::Absolute);
         let size = FramebufferSize {
@@ -1176,9 +1186,12 @@ mod tests {
 
         let batches = queue.accepted_batches();
         assert_eq!(batches.len(), 2);
-        let frame = &batches[1].frames()[0];
-        assert_eq!(frame.command(), 0x04);
-        assert_eq!(frame.data()[1], 0x01);
+        let frames = batches[1].frames();
+        assert_eq!(frames.len(), 2);
+        assert_eq!(frames[0].command(), 0x05);
+        assert_eq!(frames[0].data(), &[1, 0x01, 0, 0, 0]);
+        assert_eq!(frames[1].command(), 0x04);
+        assert_eq!(frames[1].data()[1], 0x01);
     }
 
     #[test]
@@ -1206,17 +1219,19 @@ mod tests {
 
         let batches = queue.accepted_batches();
         assert_eq!(batches.len(), 1);
-        assert_eq!(batches[0].frames().len(), 3);
+        assert_eq!(batches[0].frames().len(), 4);
         // frame[0]: AbsoluteMove → 绝对命令 0x04，buttons=0。
         assert_eq!(batches[0].frames()[0].command(), 0x04);
         assert_eq!(batches[0].frames()[0].data()[1], 0);
-        // frame[1]: Button down → 绝对命令 0x04，buttons=1。
-        assert_eq!(batches[0].frames()[1].command(), 0x04);
-        assert_eq!(batches[0].frames()[1].data()[1], 1);
-        // frame[2]: Wheel → 绝对命令 0x04，buttons=1，wheel(data[6])=1。
+        // frame[1]: Button down 走 CH9329 相对 report id 1，目标 OS 才映射为 BTN_LEFT。
+        assert_eq!(batches[0].frames()[1].command(), 0x05);
+        assert_eq!(batches[0].frames()[1].data(), &[1, 1, 0, 0, 0]);
+        // frame[2]: Button down 同时保留绝对 report，兼容仍消费 absolute 按钮的系统。
         assert_eq!(batches[0].frames()[2].command(), 0x04);
         assert_eq!(batches[0].frames()[2].data()[1], 1);
-        assert_eq!(batches[0].frames()[2].data()[6], 1);
+        // frame[3]: Wheel 走相对 report，保留当前按钮状态。
+        assert_eq!(batches[0].frames()[3].command(), 0x05);
+        assert_eq!(batches[0].frames()[3].data(), &[1, 1, 0, 0, 1]);
     }
 
     #[test]
@@ -1277,9 +1292,12 @@ mod tests {
 
         let batches = queue.accepted_batches();
         assert_eq!(batches.len(), 1);
-        assert_eq!(batches[0].frames().len(), 2);
+        assert_eq!(batches[0].frames().len(), 3);
         assert_eq!(batches[0].frames()[0].data()[1], 0);
+        assert_eq!(batches[0].frames()[1].command(), 0x05);
         assert_eq!(batches[0].frames()[1].data()[1], 1);
+        assert_eq!(batches[0].frames()[2].command(), 0x04);
+        assert_eq!(batches[0].frames()[2].data()[1], 1);
     }
 
     #[test]
@@ -1394,6 +1412,7 @@ mod tests {
         assert!(body.contains("buttons_after=0x01"));
         assert!(body.contains("event=pointer_report"));
         assert!(body.contains("report=absolute"));
+        assert!(body.contains("report=relative"));
         assert!(body.contains("buttons=0x01"));
     }
 
@@ -1475,7 +1494,7 @@ mod tests {
     }
 
     #[test]
-    fn absolute_wheel_uses_absolute_command_split_by_delta() {
+    fn absolute_wheel_uses_relative_command_split_by_delta() {
         let queue = FakeCommandQueue::new();
         let mut sink = Ch9329InputSink::new(queue.clone(), 0, MouseMode::Absolute);
         sink.handle_pointer(PointerEvent::AbsoluteMove {
@@ -1493,10 +1512,10 @@ mod tests {
         // batches[0]=AbsoluteMove, batches[1]=Wheel（2 帧拆分）。
         let wheel_frames = batches.last().unwrap().frames();
         assert_eq!(wheel_frames.len(), 2);
-        assert_eq!(wheel_frames[0].command(), 0x04);
-        assert_eq!(wheel_frames[1].command(), 0x04);
-        assert_eq!(wheel_frames[0].data()[6], 127);
-        assert_eq!(wheel_frames[1].data()[6], 73);
+        assert_eq!(wheel_frames[0].command(), 0x05);
+        assert_eq!(wheel_frames[1].command(), 0x05);
+        assert_eq!(wheel_frames[0].data(), &[1, 0, 0, 0, 127]);
+        assert_eq!(wheel_frames[1].data(), &[1, 0, 0, 0, 73]);
     }
 
     #[test]
@@ -1575,7 +1594,7 @@ mod tests {
     }
 
     #[test]
-    fn release_all_uses_absolute_release_in_absolute_mode_with_known_position() {
+    fn release_all_uses_relative_and_absolute_release_when_absolute_button_is_down() {
         let queue = FakeCommandQueue::new();
         let mut sink = Ch9329InputSink::new(queue.clone(), 0, MouseMode::Absolute);
         sink.handle_pointer(PointerEvent::AbsoluteMove {
@@ -1595,9 +1614,14 @@ mod tests {
 
         sink.release_all().unwrap();
         let batches = queue.accepted_batches();
-        let release = &batches.last().unwrap().frames()[1];
-        assert_eq!(release.command(), 0x04);
-        assert_eq!(release.data()[1], 0);
+        let frames = batches.last().unwrap().frames();
+        assert_eq!(frames.len(), 3);
+        assert_eq!(frames[0].command(), 0x02);
+        assert_eq!(frames[0].data(), &[0; 8]);
+        assert_eq!(frames[1].command(), 0x05);
+        assert_eq!(frames[1].data(), &[1, 0, 0, 0, 0]);
+        assert_eq!(frames[2].command(), 0x04);
+        assert_eq!(frames[2].data()[1], 0);
     }
 
     #[test]
@@ -1786,7 +1810,9 @@ mod tests {
             expected_frame(0x02, &[0x02, 0x00, 0x04, 0, 0, 0, 0, 0]),
             expected_frame(0x02, &[0x02, 0x00, 0x00, 0, 0, 0, 0, 0]),
             expected_frame(0x04, &[0x02, 0x00, 0x40, 0x01, 0x38, 0x02, 0x00]),
+            expected_frame(0x05, &[0x01, 0x01, 0x00, 0x00, 0x00]),
             expected_frame(0x04, &[0x02, 0x01, 0x40, 0x01, 0x38, 0x02, 0x00]),
+            expected_frame(0x05, &[0x01, 0x00, 0x00, 0x00, 0x00]),
             expected_frame(0x04, &[0x02, 0x00, 0x40, 0x01, 0x38, 0x02, 0x00]),
             expected_frame(0x02, &[0x00, 0x00, 0x00, 0, 0, 0, 0, 0]),
             expected_frame(0x04, &[0x02, 0x00, 0x40, 0x01, 0x38, 0x02, 0x00]),
@@ -1794,7 +1820,7 @@ mod tests {
 
         assert_eq!(frames, expected);
         assert_eq!(queue.stats().batches_accepted, 7);
-        assert_eq!(queue.stats().frames_accepted, 8);
+        assert_eq!(queue.stats().frames_accepted, 10);
     }
 
     proptest! {

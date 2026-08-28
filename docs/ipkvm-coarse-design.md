@@ -220,6 +220,10 @@ InputSink
 - 滚轮值的语义是滚轮齿数；各平台的原始滚轮单位由入口适配层归一化。
 - 绝对模式滚轮在 RFB 层必须用 button 4/5 的瞬时边沿表示，即 `mask|0x08 -> mask` 或 `mask|0x10 -> mask`；不得通过 `PointerRelative` 发送，否则会触发输入泵切到相对模式。
 - 相对指针消息的按钮 mask 表示本次相对位移发生时的按钮状态，RFB 指针 mapper 必须按 `Button -> RelativeMove -> Wheel` 展开。
+- CH9329 输出层需要适配其固定 HID descriptor：绝对模式坐标使用 `MouseAbsolute`；
+  绝对模式按钮变化同时发送 `MouseRelative(dx=0,dy=0,wheel=0)` 和当前位置
+  `MouseAbsolute`；绝对模式滚轮使用 `MouseRelative(dx=0,dy=0,wheel=...)`。
+  该规则只属于 CH9329 HID report 生成层，不改变上游 RFB 绝对/相对模式契约。
 - 前端 pointer builder 必须把按钮和滚轮作为 barrier：边沿前先 flush 已累计移动；滚轮 Pixel 小步跨事件累计成标准 wheel step，绝对/相对模式各自持有独立累计状态，进入/退出远程输入和模式切换边界必须清零。
 - noVNC 相对模式必须先保留浮点移动余量再取整发送，滚轮使用持久 `_mouseButtonMask`，pointer lock 丢失、窗口 blur 或退出相对模式前必须发送零按钮相对包释放远端按钮状态。
 - `set_mouse_mode(mode)` 是鼠标模式边界，只允许处理鼠标模式和旧模式鼠标按钮释放，不应释放键盘；输入泵在 sink 确认后重置 pointer mapper。
