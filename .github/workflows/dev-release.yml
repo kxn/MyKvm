@@ -32,8 +32,9 @@ jobs:
             runner_os: Linux
             arch: x86_64
             python: python3
-          # 公开仓库免费原生 arm64 runner（#118）
-          - os: ubuntu-24.04-arm
+          # 公开仓库免费原生 arm64 runner；用 22.04（glibc 2.35）而非 24.04，
+          # 使产物兼容 Debian 12 bookworm（glibc 2.36）等常见 ARM SBC 系统（#118）
+          - os: ubuntu-22.04-arm
             runner_os: Linux
             arch: aarch64
             python: python3
