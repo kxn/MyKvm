@@ -3,6 +3,7 @@
 
 供 CI 发布 workflow（dev-release / release）调用，在构建完 release
 二进制后执行。产物命名：ipkvm-<version>-<os>-<arch>.zip|.tar.gz。
+架构默认按运行平台自动检测（x86_64/aarch64），可用 --arch 显式覆盖。
 
 用法：
     python build-release-package.py --os Windows --version dev --out dist
@@ -13,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import platform
 import shutil
 import subprocess
 import sys
@@ -22,6 +24,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# runner 平台 → 发布包架构标注（macos-latest 为 Apple Silicon，#118）
+ARCH_BY_MACHINE = {
+    "AMD64": "x86_64",
+    "x86_64": "x86_64",
+    "arm64": "aarch64",
+    "aarch64": "aarch64",
+}
 
 # 用户可用发布产物：(crate, bin 名)。browser-fixture 是测试工具，不发版。
 BINARIES = {
@@ -71,12 +81,22 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--os", required=True, choices=["Windows", "Linux", "macOS"])
     parser.add_argument("--version", required=True, help="dev 或 v0.2.0")
+    parser.add_argument(
+        "--arch",
+        choices=sorted(set(ARCH_BY_MACHINE.values())),
+        default=None,
+        help="目标架构；默认按当前平台自动检测",
+    )
     parser.add_argument("--out", default="dist", help="输出目录（默认 dist）")
     args = parser.parse_args()
 
     is_windows = args.os == "Windows"
     exe = ".exe" if is_windows else ""
-    arch = "x86_64"
+    machine = platform.machine()
+    arch = args.arch or ARCH_BY_MACHINE.get(machine)
+    if arch is None:
+        print(f"Error: cannot detect arch from platform.machine()={machine!r}; pass --arch", file=sys.stderr)
+        return 1
 
     release_dir = REPO_ROOT / "target" / "release"
     out_dir = Path(args.out)
