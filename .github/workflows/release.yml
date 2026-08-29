@@ -97,7 +97,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.89
+      # 默认 key 不含镜像版本（Linux 大类 + job-id），ubuntu-22.04-arm 会命中
+      # ubuntu-24.04-arm 的缓存导致跨镜像产物损坏（#118），按矩阵腿隔离。
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.os }}
       - name: Install Linux system deps (iced/winit runtime libs)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev
