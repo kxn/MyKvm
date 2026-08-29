@@ -77,12 +77,20 @@ jobs:
         include:
           - os: windows-latest
             runner_os: Windows
+            arch: x86_64
             python: python
           - os: ubuntu-latest
             runner_os: Linux
+            arch: x86_64
+            python: python3
+          # 公开仓库免费原生 arm64 runner（#118）
+          - os: ubuntu-24.04-arm
+            runner_os: Linux
+            arch: aarch64
             python: python3
           - os: macos-latest
             runner_os: macOS
+            arch: aarch64
             python: python3
     runs-on: ${{ matrix.os }}
     steps:
@@ -101,7 +109,7 @@ jobs:
         run: ${{ matrix.python }} scripts/build-release-package.py --os ${{ matrix.runner_os }} --version ${{ needs.resolve.outputs.tag }} --out dist
       - uses: actions/upload-artifact@v4
         with:
-          name: ipkvm-${{ needs.resolve.outputs.tag }}-${{ matrix.runner_os }}
+          name: ipkvm-${{ needs.resolve.outputs.tag }}-${{ matrix.runner_os }}-${{ matrix.arch }}
           path: dist/
           if-no-files-found: error
           retention-days: 7

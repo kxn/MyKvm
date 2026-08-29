@@ -129,8 +129,8 @@ py .\scripts\verify-web-assets.py
 
 main 分支 verify CI 全绿后，`dev-release` workflow 自动构建 Windows/Linux/macOS 产物并覆盖更新固定的 `dev` 预发布（GitHub Releases 页面），方便随时下载测试：
 
-- `ipkvm-dev-windows-x86_64.zip` / `ipkvm-dev-linux-x86_64.tar.gz` / `ipkvm-dev-macos-x86_64.tar.gz`
-- 每包内含 `ipkvm-headless`、`ipkvm-desktop-iced` 与 README、LICENSE、`THIRD_PARTY_LICENSES.txt`（由 `cargo metadata` 自动生成）；Release 页附 `SHA256SUMS.txt` 校验和。
+- 每个可执行文件单独打包，命名为 `ipkvm-<二进制名>-dev-<平台>-<架构>.(zip|tar.gz)`，如 `ipkvm-headless-dev-linux-aarch64.tar.gz`；平台为 windows/linux/macos，架构为 x86_64/aarch64（Windows 仅 x86_64，Linux 与 macOS 提供 x86_64 + aarch64 双架构）。
+- 每包内含对应单个二进制与 README、LICENSE、`THIRD_PARTY_LICENSES.txt`（由 `cargo metadata` 自动生成）；Release 页附 `SHA256SUMS.txt` 校验和。
 
 ### 正式发版
 
