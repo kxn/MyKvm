@@ -24,7 +24,7 @@ pub const USAGE: &str = "\
   --baud <波特率>  CH9329 串口波特率；未指定时取运行时设置（初始 9600）
   --bind <地址>    监听地址，默认 0.0.0.0（服务模式）
   --tcp <端口>     RFB TCP 监听端口，默认 5900
-  --http <端口>    HTTP/noVNC 监听端口，默认 80
+  --http <端口>    HTTP/noVNC 监听端口，默认 6080
   --fps <帧率>     播放帧率；未指定时取运行时设置（初始 30）
   --config <路径>  读取 TOML 配置文件；CLI 参数覆盖文件字段（CLI > 文件 > 默认）
   --token <token>  [auth] HTTP/WS 鉴权 token（非空，仅含字母数字与 - _ . ~）；
@@ -218,7 +218,7 @@ pub fn resolve(cli: CliOptions, file: Option<FileConfig>) -> Result<Options, Str
         bind_address: cli.bind_address.clone().unwrap_or_else(|| {
             server
                 .and_then(|s| s.bind.clone())
-                .unwrap_or_else(|| "127.0.0.1".to_string())
+                .unwrap_or_else(|| "0.0.0.0".to_string())
         }),
         tcp_port: cli
             .tcp_port
@@ -467,7 +467,7 @@ mod tests {
     #[test]
     fn defaults_apply_when_neither_cli_nor_file_specified() {
         let options = resolve(CliOptions::default(), None).unwrap();
-        assert_eq!(options.bind_address, "127.0.0.1");
+        assert_eq!(options.bind_address, "0.0.0.0");
         assert_eq!(options.tcp_port, 5900);
         assert_eq!(options.http_port, 6080);
         // 未指定时保留 None：组装层回退到运行时设置（CLI > 文件 > 运行时 > 默认）。
