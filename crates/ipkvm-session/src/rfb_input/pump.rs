@@ -1887,18 +1887,22 @@ mod tests {
         assert_eq!(batches.len(), 3);
         assert_eq!(batches[0].frames().len(), 1);
         assert_eq!(batches[0].frames()[0].command(), 0x02);
-        // Pointer batch：严格绝对模式下移动与左键按下都使用 0x04。
-        assert_eq!(batches[1].frames().len(), 2);
+        // Pointer batch：绝对移动使用 0x04；按钮边沿用 0x05 承载，再补当前位置 0x04。
+        assert_eq!(batches[1].frames().len(), 3);
         assert_eq!(batches[1].frames()[0].command(), 0x04);
         assert_eq!(batches[1].frames()[0].data()[1], 0);
-        assert_eq!(batches[1].frames()[1].command(), 0x04);
+        assert_eq!(batches[1].frames()[1].command(), 0x05);
         assert_eq!(batches[1].frames()[1].data()[1], 1);
-        // 最终释放 batch：键盘全 0 + 鼠标绝对 buttons=0。
+        assert_eq!(batches[1].frames()[2].command(), 0x04);
+        assert_eq!(batches[1].frames()[2].data()[1], 1);
+        // 最终释放 batch：键盘全 0 + relative 鼠标释放 + 当前位置 absolute buttons=0。
         let release = batches[2].frames();
-        assert_eq!(release.len(), 2);
+        assert_eq!(release.len(), 3);
         assert_eq!(release[0].data(), &[0; 8]);
-        assert_eq!(release[1].command(), 0x04);
+        assert_eq!(release[1].command(), 0x05);
         assert_eq!(release[1].data()[1], 0);
+        assert_eq!(release[2].command(), 0x04);
+        assert_eq!(release[2].data()[1], 0);
         assert_eq!(pump.active_client(), None);
     }
 
@@ -2000,25 +2004,33 @@ mod tests {
 
         let batches = queue.accepted_batches();
         assert_eq!(batches.len(), 4);
-        assert!(
+        assert_eq!(
             batches
                 .iter()
                 .flat_map(|batch| batch.frames())
-                .all(|frame| frame.command() == 0x04),
-            "绝对拖拽路径不得混入 0x05 相对鼠标帧"
+                .filter(|frame| frame.command() == 0x05)
+                .count(),
+            2,
+            "绝对拖拽只应在按钮 down/up 边沿混入 0x05 相对鼠标帧"
         );
         assert_eq!(batches[0].frames()[0].data()[1], 0);
+        assert_eq!(batches[1].frames()[1].command(), 0x05);
         assert_eq!(batches[1].frames()[1].data()[1], 1);
+        assert_eq!(batches[1].frames()[2].command(), 0x04);
+        assert_eq!(batches[1].frames()[2].data()[1], 1);
         assert_eq!(
             batches[2].frames()[0].data()[1],
             1,
             "按住移动的绝对帧必须继续携带按钮位"
         );
+        assert_eq!(batches[3].frames()[1].command(), 0x05);
         assert_eq!(batches[3].frames()[1].data()[1], 0);
+        assert_eq!(batches[3].frames()[2].command(), 0x04);
+        assert_eq!(batches[3].frames()[2].data()[1], 0);
     }
 
     #[tokio::test]
-    async fn real_ch9329_absolute_wheel_stays_absolute_and_allows_later_moves() {
+    async fn real_ch9329_absolute_wheel_uses_relative_report_and_allows_later_moves() {
         let client_id = client(26);
         let queue = FakeCommandQueue::new();
         let sink = Ch9329InputSink::new(queue.clone(), 0, MouseMode::Absolute);
@@ -2039,17 +2051,15 @@ mod tests {
 
         let batches = queue.accepted_batches();
         assert_eq!(batches.len(), 4);
-        assert!(
-            batches
-                .iter()
-                .flat_map(|batch| batch.frames())
-                .all(|frame| frame.command() == 0x04),
-            "RFB 绝对滚轮必须保持 0x04 绝对鼠标帧，不能切成 0x05 相对帧"
+        assert_eq!(
+            batches[1].frames()[1].command(),
+            0x05,
+            "RFB 绝对滚轮步进必须用 CH9329 relative report 承载"
         );
         assert_eq!(
-            batches[1].frames()[1].data()[6] as i8,
+            batches[1].frames()[1].data()[4] as i8,
             1,
-            "RFB wheel-up 边沿必须进入绝对帧 wheel 字段"
+            "RFB wheel-up 边沿必须进入 relative report wheel 字段"
         );
         assert_eq!(
             batches[3].frames()[0].data()[1],
@@ -2090,8 +2100,10 @@ mod tests {
 
         let batches = queue.accepted_batches();
         assert_eq!(batches.len(), 3);
-        assert_eq!(batches[0].frames()[1].command(), 0x04);
+        assert_eq!(batches[0].frames()[1].command(), 0x05);
         assert_eq!(batches[0].frames()[1].data()[1], 1);
+        assert_eq!(batches[0].frames()[2].command(), 0x04);
+        assert_eq!(batches[0].frames()[2].data()[1], 1);
         assert_eq!(
             batches[1].frames().last().unwrap().command(),
             0x04,

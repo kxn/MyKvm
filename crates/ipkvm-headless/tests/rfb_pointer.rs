@@ -90,13 +90,17 @@ fn first_button_message_is_one_atomic_command_batch() {
 
     let batches = queue.accepted_batches();
     assert_eq!(batches.len(), 1);
-    assert_eq!(batches[0].frames().len(), 2);
+    assert_eq!(batches[0].frames().len(), 3);
     // frame[0]: 绝对移动（0x04），buttons=0。
     assert_eq!(batches[0].frames()[0].command(), 0x04);
     assert_eq!(batches[0].frames()[0].data()[1], 0);
-    // frame[1]: 严格绝对模式下左键按下继续使用 0x04，buttons=1。
-    assert_eq!(batches[0].frames()[1].command(), 0x04);
+    // frame[1]: CH9329 absolute report descriptor 不暴露按钮，用 relative report 承载按钮边沿。
+    assert_eq!(batches[0].frames()[1].command(), 0x05);
     assert_eq!(batches[0].frames()[1].data()[1], 1);
+    assert_eq!(&batches[0].frames()[1].data()[2..5], &[0, 0, 0]);
+    // frame[2]: 随后补发当前位置的绝对 report，保持目标端定位状态。
+    assert_eq!(batches[0].frames()[2].command(), 0x04);
+    assert_eq!(batches[0].frames()[2].data()[1], 1);
 }
 
 #[test]
@@ -123,16 +127,20 @@ fn queue_failure_rolls_back_mapper_and_real_sink_together() {
 
     let batches = queue.accepted_batches();
     assert_eq!(batches.len(), 2);
-    // batches[0]：严格绝对模式下移动、左键down、中键down 都使用 0x04。
+    // batches[0]：绝对移动使用 0x04；按钮边沿用 0x05 承载，再补当前位置 0x04。
     // 注意：RFB 按钮掩码位序（bit0=左 bit1=中 bit2=右）经 PointerButton 转换后，
     // CH9329 帧里中键落在 bit2，所以左+中 = 0x05（而非 0x03）。
-    assert_eq!(batches[0].frames().len(), 3);
+    assert_eq!(batches[0].frames().len(), 5);
     assert_eq!(batches[0].frames()[0].command(), 0x04);
     assert_eq!(batches[0].frames()[0].data()[1], 0);
-    assert_eq!(batches[0].frames()[1].command(), 0x04);
+    assert_eq!(batches[0].frames()[1].command(), 0x05);
     assert_eq!(batches[0].frames()[1].data()[1], 1);
     assert_eq!(batches[0].frames()[2].command(), 0x04);
-    assert_eq!(batches[0].frames()[2].data()[1], 0x05);
+    assert_eq!(batches[0].frames()[2].data()[1], 1);
+    assert_eq!(batches[0].frames()[3].command(), 0x05);
+    assert_eq!(batches[0].frames()[3].data()[1], 0x05);
+    assert_eq!(batches[0].frames()[4].command(), 0x04);
+    assert_eq!(batches[0].frames()[4].data()[1], 0x05);
     // batches[1]：仅移动（button_mask 未变，buttons=0x05 持续）。
     assert_eq!(batches[1].frames().len(), 1);
     assert_eq!(batches[1].frames()[0].command(), 0x04);
@@ -159,8 +167,11 @@ fn out_of_bounds_message_does_not_commit_button_mask() {
         .unwrap();
     let batches = queue.accepted_batches();
     assert_eq!(batches.len(), 1);
-    assert_eq!(batches[0].frames().len(), 2);
+    assert_eq!(batches[0].frames().len(), 3);
+    assert_eq!(batches[0].frames()[1].command(), 0x05);
     assert_eq!(batches[0].frames()[1].data()[1], 1);
+    assert_eq!(batches[0].frames()[2].command(), 0x04);
+    assert_eq!(batches[0].frames()[2].data()[1], 1);
 }
 
 #[test]
@@ -198,10 +209,10 @@ fn wheel_release_does_not_generate_another_step() {
 
     let batches = queue.accepted_batches();
     assert_eq!(batches.len(), 2);
-    // batches[0]：严格绝对模式下移动与滚轮都使用 0x04。
+    // batches[0]：绝对移动使用 0x04；滚轮步进用 relative report 承载。
     assert_eq!(batches[0].frames().len(), 2);
-    assert_eq!(batches[0].frames()[1].command(), 0x04);
-    assert_eq!(batches[0].frames()[1].data()[6], 1);
+    assert_eq!(batches[0].frames()[1].command(), 0x05);
+    assert_eq!(batches[0].frames()[1].data()[4], 1);
     // batches[1]：滚轮释放（mask 0x00 → 无 pressed edge）→ 只产生移动帧(0x04)。
     // wheel 释放不产生帧，测试名即「不生成额外步进」。
     assert_eq!(batches[1].frames().len(), 1);

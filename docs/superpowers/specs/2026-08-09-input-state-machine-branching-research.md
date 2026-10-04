@@ -42,6 +42,16 @@
 - 同一段日志中没有 `pointer_ignored`、`mouse_mode` 漂移、通道 pending 堵塞或串口 ACK 完全停滞的证据。
 - 这说明“软件是否持续发送左键按住移动报告”在该场景下不是唯一根因；还需要验证 CH9329 绝对报告在 macOS 目标端的拖拽语义、目标控件拖拽阈值、坐标映射边界和真实 HID 描述符兼容性。
 - 第一份日志存在大量 `absolute_map_failed reason=outside_or_unready`，说明 UI 坐标映射、视频区域边界和进入远程输入状态仍应作为调试维度保留。
+- 2026-08-09 的 Linux 目标端硬件取证进一步确认：MyKvm `core.serial frame_tx`
+  与 CH9329 HID raw report 逐条一致；CH9329 absolute report id 2 在 Linux
+  evdev 中只产生 `ABS_X/ABS_Y`，不产生 `BTN_LEFT`，而 relative report id 1
+  的按钮、移动和滚轮完整映射为 `BTN_*`、`REL_*`。该结果说明 CH9329 的双
+  mouse report descriptor 是目标端解释差异的重要来源。
+- 因 macOS 目标端相对模式仍观察到“能移动但点击无效”，`#91` 采用保守适配：
+  绝对模式坐标继续使用 absolute report；绝对模式按钮变化同时发送 relative
+  button report 和 absolute position/button report；绝对模式滚轮使用 relative
+  wheel report。这样覆盖 Linux 可识别路径，同时保留 macOS 当前可能仍消费的
+  absolute 按钮路径。
 
 结论：拖拽问题不能只归因于限流，也不能只靠源码看按钮位。后续必须把“日志回放 + CH9329 最终帧 + macOS 实机验证”列为验收。
 
