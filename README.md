@@ -175,7 +175,7 @@ cargo run -p ipkvm-headless-app --bin ipkvm-headless \
     --log-categories input,pointer,queue,serial,lifecycle
 ```
 
-启动后用浏览器打开 `http://127.0.0.1:6080`，或用标准 VNC 客户端连接 `127.0.0.1:5900`。素材按文件名排序循环播放，切换分辨率时已连接客户端收到 `DesktopSize` 更新。`--bind` 可指定监听地址（默认 `127.0.0.1`）。`--camera` 与 `--assets` 互斥；相机未就绪时可用 `--assets` 的 Y4M 模拟帧源验证画面与键鼠链路。
+启动后用浏览器打开 `http://127.0.0.1:6080`，或用标准 VNC 客户端连接 `127.0.0.1:5900`。素材按文件名排序循环播放，切换分辨率时已连接客户端收到 `DesktopSize` 更新。`--bind` 可指定监听地址（默认 `0.0.0.0`，即所有网卡；如需仅本机访问用 `--bind 127.0.0.1` 收紧）。`--camera` 与 `--assets` 互斥；相机未就绪时可用 `--assets` 的 Y4M 模拟帧源验证画面与键鼠链路。
 
 ### HTTP 管理 API
 
@@ -190,11 +190,11 @@ cargo run -p ipkvm-headless-app --bin ipkvm-headless \
 
 ### 配置：TOML 文件 + CLI 覆盖
 
-默认值：`--bind` 默认 `127.0.0.1`、`--tcp` 默认 `5900`、`--http` 默认 `6080`、`--fps` 默认 `10`、`--baud` 默认 `9600`。`--config <路径>` 读取 TOML 配置文件，CLI 参数覆盖文件字段，优先级为 **CLI > 文件 > 默认**；配置文件错误会打印含文件路径的确定性中文报错。示例 `config.toml`（与设计文档一致）：
+默认值：`--bind` 默认 `0.0.0.0`、`--tcp` 默认 `5900`、`--http` 默认 `6080`、`--fps` 默认 `10`、`--baud` 默认 `9600`。`--config <路径>` 读取 TOML 配置文件，CLI 参数覆盖文件字段，优先级为 **CLI > 文件 > 默认**；配置文件错误会打印含文件路径的确定性中文报错。示例 `config.toml`（与设计文档一致）：
 
 ```toml
 [server]
-bind = "127.0.0.1"
+bind = "0.0.0.0"
 tcp_port = 5900
 http_port = 6080
 
