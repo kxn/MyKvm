@@ -840,7 +840,8 @@ async fn run(
     }
 
     println!(
-        "ipkvm-headless 已启动：RFB TCP 监听 {tcp_local}，noVNC 网页 http://{http_local}（Ctrl+C 退出）"
+        "ipkvm-headless 已启动：RFB TCP 监听 {tcp_local}，noVNC 网页 http://{}（Ctrl+C 退出）",
+        http_url_host(http_local)
     );
 
     let early_tcp;
@@ -903,5 +904,39 @@ fn report_early(early_tcp: Option<TaskResult<()>>, early_http: Option<TaskResult
     }
     if let Some(Err(error)) = early_http {
         eprintln!("HTTP 服务提前停止：{error}");
+    }
+}
+
+/// 把 HTTP 监听地址转成可直接点击的 URL 主机部分。
+///
+/// 绑定通配地址（`0.0.0.0`/`::`）时映射为 `127.0.0.1`：Windows 上连接
+/// `0.0.0.0` 报 `WSAEADDRNOTAVAIL`（#123 CI），浏览器也不保证可点开；
+/// 「监听」字段仍如实打印通配地址，这里只负责给人点的 URL。
+fn http_url_host(local: std::net::SocketAddr) -> String {
+    if local.ip().is_unspecified() {
+        format!("127.0.0.1:{}", local.port())
+    } else {
+        local.to_string()
+    }
+}
+
+#[cfg(test)]
+mod http_url_host_tests {
+    use super::*;
+
+    #[test]
+    fn unspecified_bind_maps_to_loopback_and_explicit_bind_is_kept() {
+        assert_eq!(
+            http_url_host("0.0.0.0:6080".parse().unwrap()),
+            "127.0.0.1:6080"
+        );
+        assert_eq!(
+            http_url_host("127.0.0.1:6080".parse().unwrap()),
+            "127.0.0.1:6080"
+        );
+        assert_eq!(
+            http_url_host("192.168.1.10:6080".parse().unwrap()),
+            "192.168.1.10:6080"
+        );
     }
 }
