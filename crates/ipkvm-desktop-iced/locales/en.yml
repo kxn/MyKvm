@@ -50,7 +50,10 @@ modal:
   about_title: "About"
   save_title: "Save profile"
   name_label: "Name:"
+  name_placeholder: "Enter profile name"
   save: "Save"
+  section_connection: "Connection"
+  section_display: "Display"
 
 device:
   title: "Select device"

@@ -2,13 +2,14 @@
 
 use iced::Color;
 use iced::theme::{Palette, Theme};
-use iced::widget::button;
+use iced::widget::{button, pick_list, text_input};
 use iced::{Background, Border, Shadow, Vector};
 
-pub const PANEL_MAX_WIDTH: f32 = 460.0;
-pub const PANEL_RADIUS: f32 = 8.0;
+/// 模态卡片固定宽度（不再横向填充，居中显示）。
+pub const PANEL_WIDTH: f32 = 440.0;
+pub const PANEL_RADIUS: f32 = 12.0;
 pub const CONTROL_HEIGHT: f32 = 34.0;
-pub const CONTROL_RADIUS: f32 = 4.0;
+pub const CONTROL_RADIUS: f32 = 6.0;
 
 /// 亮色主题（默认，沿用迁移前桌面端跟随系统的浅色观感，#95 确认）。
 pub const LIGHT: Palette = Palette {
@@ -99,6 +100,122 @@ pub fn secondary_button(theme: &Theme, status: button::Status) -> button::Style 
     button_style(theme, status, false)
 }
 
+/// 危险操作按钮（覆盖保存确认）：danger 底 + 白字。
+pub fn danger_button(theme: &Theme, status: button::Status) -> button::Style {
+    let palette = theme.palette();
+    let background = match status {
+        button::Status::Hovered => {
+            Color::from_rgba(palette.danger.r, palette.danger.g, palette.danger.b, 0.88)
+        }
+        button::Status::Pressed => {
+            Color::from_rgba(palette.danger.r, palette.danger.g, palette.danger.b, 0.72)
+        }
+        button::Status::Disabled => {
+            Color::from_rgba(palette.danger.r, palette.danger.g, palette.danger.b, 0.45)
+        }
+        button::Status::Active => palette.danger,
+    };
+    button::Style {
+        background: Some(Background::Color(background)),
+        text_color: Color::WHITE,
+        border: Border::default()
+            .rounded(CONTROL_RADIUS)
+            .width(1.0)
+            .color(palette.danger),
+        shadow: Shadow {
+            color: Color::from_rgba(0.0, 0.0, 0.0, 0.10),
+            offset: Vector::new(0.0, 1.0),
+            blur_radius: 2.0,
+        },
+        snap: false,
+    }
+}
+
+/// 模态标题栏关闭按钮：无底透明，悬停文本变 danger 红。
+pub fn close_button_style(theme: &Theme, status: button::Status) -> button::Style {
+    let palette = theme.palette();
+    let text_color = match status {
+        button::Status::Hovered | button::Status::Pressed => palette.danger,
+        button::Status::Disabled => {
+            Color::from_rgba(palette.text.r, palette.text.g, palette.text.b, 0.35)
+        }
+        button::Status::Active => palette.text,
+    };
+    let background = match status {
+        button::Status::Hovered => {
+            Color::from_rgba(palette.danger.r, palette.danger.g, palette.danger.b, 0.10)
+        }
+        _ => Color::TRANSPARENT,
+    };
+    button::Style {
+        background: Some(Background::Color(background)),
+        text_color,
+        border: Border::default().rounded(CONTROL_RADIUS),
+        shadow: Shadow::default(),
+        snap: false,
+    }
+}
+
+/// 文本输入框：内凹表面、圆角边框、聚焦时主色高亮。
+pub fn text_input_style(theme: &Theme, status: text_input::Status) -> text_input::Style {
+    let palette = theme.palette();
+    let focused = matches!(status, text_input::Status::Focused { .. });
+    let border_color = if focused {
+        palette.primary
+    } else {
+        match status {
+            text_input::Status::Hovered => {
+                Color::from_rgba(palette.text.r, palette.text.g, palette.text.b, 0.35)
+            }
+            _ => border_color(palette),
+        }
+    };
+    text_input::Style {
+        background: Background::Color(palette.background),
+        border: Border {
+            radius: CONTROL_RADIUS.into(),
+            width: if focused { 1.5 } else { 1.0 },
+            color: border_color,
+        },
+        icon: Color::from_rgba(palette.text.r, palette.text.g, palette.text.b, 0.5),
+        placeholder: Color::from_rgba(palette.text.r, palette.text.g, palette.text.b, 0.40),
+        value: palette.text,
+        selection: Color::from_rgba(
+            palette.primary.r,
+            palette.primary.g,
+            palette.primary.b,
+            0.30,
+        ),
+    }
+}
+
+/// 下拉选择框：与文本输入框同款表面/边框/聚焦高亮。
+pub fn pick_list_style(theme: &Theme, status: pick_list::Status) -> pick_list::Style {
+    let palette = theme.palette();
+    let focused = matches!(status, pick_list::Status::Opened { .. });
+    let border_color = if focused {
+        palette.primary
+    } else {
+        match status {
+            pick_list::Status::Hovered => {
+                Color::from_rgba(palette.text.r, palette.text.g, palette.text.b, 0.35)
+            }
+            _ => border_color(palette),
+        }
+    };
+    pick_list::Style {
+        text_color: palette.text,
+        placeholder_color: Color::from_rgba(palette.text.r, palette.text.g, palette.text.b, 0.40),
+        handle_color: Color::from_rgba(palette.text.r, palette.text.g, palette.text.b, 0.55),
+        background: Background::Color(palette.background),
+        border: Border {
+            radius: CONTROL_RADIUS.into(),
+            width: if focused { 1.5 } else { 1.0 },
+            color: border_color,
+        },
+    }
+}
+
 fn mix(a: Color, b: Color, t: f32) -> Color {
     Color::from_rgb(
         a.r + (b.r - a.r) * t,
@@ -165,12 +282,12 @@ mod tests {
 
     #[test]
     fn visual_tokens_keep_panels_and_controls_compact() {
-        let panel_width = PANEL_MAX_WIDTH;
+        let panel_width = PANEL_WIDTH;
         let control_height = CONTROL_HEIGHT;
         let panel_radius = PANEL_RADIUS;
         let control_radius = CONTROL_RADIUS;
-        assert!(panel_width <= 480.0);
+        assert!((400.0..=480.0).contains(&panel_width));
         assert!((30.0..=38.0).contains(&control_height));
-        assert!(panel_radius <= 10.0 && control_radius <= 6.0);
+        assert!(panel_radius <= 14.0 && control_radius <= 8.0);
     }
 }

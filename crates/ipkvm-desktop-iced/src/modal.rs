@@ -117,13 +117,13 @@ impl ModalState {
     /// overlay 拦截背景事件由调用方在 iced overlay 层处理；这里只产生内容。
     pub fn view(&self) -> Option<Element<'_, ModalAction>> {
         let kind = self.open?;
-        let content = match kind {
+        let (content, footer) = match kind {
             ModalKind::Settings => self.settings_content(),
             ModalKind::Connection => self.connection_content(),
             ModalKind::SaveProfile => self.save_profile_content(),
             ModalKind::About => self.about_content(),
         };
-        Some(modal_card(title_for(kind), content))
+        Some(modal_card(title_for(kind), content, footer))
     }
 
     /// 模态 overlay：遮罩（点击关闭）+ 居中卡片（点击卡片不关闭）+ Esc 关闭。
@@ -137,8 +137,8 @@ impl ModalState {
         Some(overlay(content))
     }
 
-    fn settings_content(&self) -> Element<'_, ModalAction> {
-        use iced::widget::{PickList, column};
+    fn settings_content(&self) -> (Element<'_, ModalAction>, Element<'_, ModalAction>) {
+        use iced::widget::PickList;
 
         let scale_labels = vec![
             t!("scale_mode.fit_window").to_string(),
@@ -160,75 +160,95 @@ impl ModalState {
             } else {
                 crate::scale::ScaleMode::ResizeWindowToVideo
             })
-        });
+        })
+        .width(Length::Fill)
+        .style(crate::theme::pick_list_style);
 
-        let scale_field = iced::widget::row![
-            label(t!("settings.scale_mode")).width(Length::Fixed(150.0)),
-            scale.width(Length::Fixed(240.0)),
-        ]
-        .spacing(12)
-        .align_y(iced::alignment::Vertical::Center);
-        column![self.connection_fields(), scale_field, close_button()]
-            .spacing(8)
-            .into()
-    }
-
-    fn connection_content(&self) -> Element<'_, ModalAction> {
-        use iced::widget::{button, column};
-        column![
+        let body = column![
+            section_title(t!("modal.section_connection")),
             self.connection_fields(),
-            button(label(t!("profile.restore_defaults")))
+            section_title(t!("modal.section_display")),
+            field_row(t!("settings.scale_mode"), scale),
+        ]
+        .spacing(12);
+        (body.into(), footer_row(vec![close_button().into()]))
+    }
+
+    fn connection_content(&self) -> (Element<'_, ModalAction>, Element<'_, ModalAction>) {
+        use iced::widget::{button, column};
+        let body = column![
+            section_title(t!("modal.section_connection")),
+            self.connection_fields(),
+        ]
+        .spacing(12);
+        let footer = footer_row(vec![
+            button(button_text(t!("profile.restore_defaults")))
                 .on_press(ModalAction::RestoreDefaults)
-                .style(crate::theme::secondary_button),
-            close_button(),
-        ]
-        .spacing(8)
-        .into()
+                .style(crate::theme::secondary_button)
+                .into(),
+            close_button().into(),
+        ]);
+        (body.into(), footer)
     }
 
-    fn save_profile_content(&self) -> Element<'_, ModalAction> {
+    fn save_profile_content(&self) -> (Element<'_, ModalAction>, Element<'_, ModalAction>) {
         use iced::widget::{button, text_input};
-        let input = text_input("name", &self.save_name).on_input(ModalAction::SaveNameChanged);
+        let input = text_input(t!("modal.name_placeholder").as_ref(), &self.save_name)
+            .on_input(ModalAction::SaveNameChanged)
+            .width(Length::Fill)
+            .style(crate::theme::text_input_style);
         let name_ok = !self.save_name.trim().is_empty();
-        let save_button = if name_ok {
-            button(label(t!("modal.save")))
-                .on_press(ModalAction::Save)
-                .style(crate::theme::primary_button)
+
+        let body = if self.confirm_overwrite {
+            column![
+                field_row(t!("modal.name_label"), input),
+                overwrite_warning(t!("profile.overwrite_body", name = self.save_name.trim())),
+            ]
+            .spacing(12)
         } else {
-            button(label(t!("modal.save"))).style(crate::theme::primary_button)
+            column![field_row(t!("modal.name_label"), input)].spacing(12)
         };
-        let mut content = iced::widget::Column::new().spacing(8);
-        content = content.push(input);
-        if self.confirm_overwrite {
-            content = content.push(label(t!(
-                "profile.overwrite_body",
-                name = self.save_name.trim()
-            )));
-            content = content.push(
-                button(label(t!("profile.overwrite_confirm")))
+
+        let footer = if self.confirm_overwrite {
+            footer_row(vec![
+                // 覆盖确认态的取消回到正常态（不改名不关闭），与旧行为一致。
+                button(button_text(t!("common.cancel")))
+                    .on_press(ModalAction::CancelOverwrite)
+                    .style(crate::theme::secondary_button)
+                    .into(),
+                button(button_text(t!("profile.overwrite_confirm")))
                     .on_press(ModalAction::Save)
-                    .style(crate::theme::primary_button),
-            );
-            content = content
-                .push(button(label(t!("common.cancel"))).on_press(ModalAction::CancelOverwrite));
+                    .style(crate::theme::danger_button)
+                    .into(),
+            ])
         } else {
-            content = content.push(save_button);
-            content = content.push(close_button());
-        }
-        content.into()
+            footer_row(vec![
+                cancel_button().into(),
+                if name_ok {
+                    button(button_text(t!("modal.save")))
+                        .on_press(ModalAction::Save)
+                        .style(crate::theme::primary_button)
+                } else {
+                    button(button_text(t!("modal.save"))).style(crate::theme::primary_button)
+                }
+                .into(),
+            ])
+        };
+        (body.into(), footer)
     }
 
-    fn about_content(&self) -> Element<'_, ModalAction> {
+    fn about_content(&self) -> (Element<'_, ModalAction>, Element<'_, ModalAction>) {
         use iced::widget::column;
-        column![
-            label(t!("about.title")),
-            label(t!("about.version", commit = env!("GIT_COMMIT"))),
-            label(t!("about.license")),
-            label(t!("about.project_url", url = crate::app::PROJECT_URL)),
-            close_button(),
+        let body = column![
+            text(t!("about.title"))
+                .size(16)
+                .font(crate::fonts::ui_font()),
+            info_line(t!("about.version", commit = env!("GIT_COMMIT"))),
+            info_line(t!("about.license")),
+            info_line(t!("about.project_url", url = crate::app::PROJECT_URL)),
         ]
-        .spacing(8)
-        .into()
+        .spacing(8);
+        (body.into(), footer_row(vec![close_button().into()]))
     }
 
     /// 连接参数表单（设置默认值对话框与连接设置对话框共用，
@@ -241,16 +261,20 @@ impl ModalState {
 
         let baud = text_input("1200..115200", &self.baud_text)
             .on_input(ModalAction::BaudRateTextChanged)
-            .width(Length::Fixed(240.0));
+            .width(Length::Fill)
+            .style(crate::theme::text_input_style);
         let fps = text_input("1..60", &self.fps_text)
             .on_input(ModalAction::PreviewFpsTextChanged)
-            .width(Length::Fixed(240.0));
+            .width(Length::Fill)
+            .style(crate::theme::text_input_style);
         let sensitivity = text_input("0.1..5.0", &self.sensitivity_text)
             .on_input(ModalAction::RelativeSensitivityTextChanged)
-            .width(Length::Fixed(240.0));
+            .width(Length::Fill)
+            .style(crate::theme::text_input_style);
         let auto_baud = Checkbox::new(self.auto_baud)
             .label(t!("settings.auto_baud"))
-            .on_toggle(ModalAction::SetAutoBaud);
+            .on_toggle(ModalAction::SetAutoBaud)
+            .text_size(13.0);
 
         let mouse_labels = vec![
             t!("mouse_mode.absolute").to_string(),
@@ -267,49 +291,29 @@ impl ModalState {
             } else {
                 MouseMode::Relative
             })
-        });
+        })
+        .width(Length::Fill)
+        .style(crate::theme::pick_list_style);
 
         let profile_labels: Vec<String> =
             MouseProfile::ALL.into_iter().map(profile_label).collect();
         let selected_profile = profile_label(self.mouse_profile);
         let profile = PickList::new(profile_labels, Some(selected_profile), |label: String| {
             ModalAction::SetMouseProfile(profile_from_label(&label))
-        });
+        })
+        .width(Length::Fill)
+        .style(crate::theme::pick_list_style);
 
         column![
-            row![
-                label(t!("settings.baud_rate")).width(Length::Fixed(150.0)),
-                baud
-            ]
-            .spacing(12)
-            .align_y(iced::alignment::Vertical::Center),
-            row![label("").width(Length::Fixed(150.0)), auto_baud]
+            field_row(t!("settings.baud_rate"), baud),
+            row![container(space()).width(Length::Fixed(150.0)), auto_baud,]
                 .spacing(12)
+                .padding([3, 0])
                 .align_y(iced::alignment::Vertical::Center),
-            row![
-                label(t!("settings.preview_fps")).width(Length::Fixed(150.0)),
-                fps
-            ]
-            .spacing(12)
-            .align_y(iced::alignment::Vertical::Center),
-            row![
-                label(t!("settings.mouse_mode")).width(Length::Fixed(150.0)),
-                mouse
-            ]
-            .spacing(12)
-            .align_y(iced::alignment::Vertical::Center),
-            row![
-                label(t!("settings.mouse_profile")).width(Length::Fixed(150.0)),
-                profile
-            ]
-            .spacing(12)
-            .align_y(iced::alignment::Vertical::Center),
-            row![
-                label(t!("settings.relative_sensitivity")).width(Length::Fixed(150.0)),
-                sensitivity
-            ]
-            .spacing(12)
-            .align_y(iced::alignment::Vertical::Center),
+            field_row(t!("settings.preview_fps"), fps),
+            field_row(t!("settings.mouse_mode"), mouse),
+            field_row(t!("settings.mouse_profile"), profile),
+            field_row(t!("settings.relative_sensitivity"), sensitivity),
         ]
         .spacing(10)
     }
@@ -335,9 +339,109 @@ fn profile_from_label(label: &str) -> MouseProfile {
 }
 
 fn close_button<'a>() -> iced::widget::Button<'a, ModalAction> {
-    button(label(t!("modal.close").to_string()))
+    button(button_text(t!("modal.close")))
         .on_press(ModalAction::Close)
         .style(crate::theme::secondary_button)
+}
+
+/// footer 取消按钮：关闭模态。
+fn cancel_button<'a>() -> iced::widget::Button<'a, ModalAction> {
+    button(button_text(t!("common.cancel")))
+        .on_press(ModalAction::Close)
+        .style(crate::theme::secondary_button)
+}
+
+/// 标题栏右上角 × 关闭按钮：透明底，悬停变红。
+fn close_x_button<'a>() -> iced::widget::Button<'a, ModalAction> {
+    button(text("\u{00d7}").size(16).font(crate::fonts::ui_font()))
+        .on_press(ModalAction::Close)
+        .style(crate::theme::close_button_style)
+        .padding(3)
+}
+
+/// 按钮内文本：13px 统一字号。
+fn button_text<'a>(s: impl Into<String>) -> iced::widget::Text<'a> {
+    text(s.into()).size(13).font(crate::fonts::ui_font())
+}
+
+/// 表单字段标签：13px。
+fn field_label<'a>(s: impl Into<String>) -> iced::widget::Text<'a> {
+    text(s.into()).size(13).font(crate::fonts::ui_font())
+}
+
+/// 表单行：固定 150px 标签列 + 控件（控件 Fill 撑满剩余宽度）。
+fn field_row<'a>(
+    label_text: impl Into<String>,
+    control: impl Into<Element<'a, ModalAction>>,
+) -> Element<'a, ModalAction> {
+    let mut row = iced::widget::Row::new()
+        .spacing(12)
+        .align_y(iced::alignment::Vertical::Center);
+    row = row.push(
+        container(field_label(label_text))
+            .width(Length::Fixed(150.0))
+            .align_y(iced::alignment::Vertical::Center),
+    );
+    row = row.push(control);
+    row.into()
+}
+
+/// 节标题：主色竖条 + 小字，用于表单分组。
+fn section_title<'a>(s: impl Into<String>) -> Element<'a, ModalAction> {
+    row![
+        container(space())
+            .width(Length::Fixed(3.0))
+            .height(Length::Fixed(13.0))
+            .style(|theme: &iced::Theme| container::Style {
+                background: Some(theme.palette().primary.into()),
+                ..Default::default()
+            }),
+        text(s.into()).size(12).font(crate::fonts::ui_font()),
+    ]
+    .spacing(6)
+    .align_y(iced::alignment::Vertical::Center)
+    .into()
+}
+
+/// footer 按钮行：右侧对齐。
+fn footer_row<'a>(buttons: Vec<Element<'a, ModalAction>>) -> Element<'a, ModalAction> {
+    let mut row = iced::widget::Row::new()
+        .spacing(8)
+        .align_y(iced::alignment::Vertical::Center);
+    row = row.push(space().width(Length::Fill));
+    for button in buttons {
+        row = row.push(button);
+    }
+    row.into()
+}
+
+/// 覆盖保存警示条：danger 弱底 + 边框。
+fn overwrite_warning<'a>(message: impl Into<String>) -> Element<'a, ModalAction> {
+    container(
+        text(message.into())
+            .size(13)
+            .font(crate::fonts::ui_font())
+            .width(Length::Fill),
+    )
+    .padding([10, 12])
+    .width(Length::Fill)
+    .style(|theme: &iced::Theme| {
+        let danger = theme.palette().danger;
+        container::Style {
+            background: Some(Color::from_rgba(danger.r, danger.g, danger.b, 0.10).into()),
+            border: Border::default()
+                .rounded(crate::theme::CONTROL_RADIUS)
+                .width(1.0)
+                .color(Color::from_rgba(danger.r, danger.g, danger.b, 0.35)),
+            ..Default::default()
+        }
+    })
+    .into()
+}
+
+/// 关于信息行：弱色前缀 + 值。
+fn info_line<'a>(s: impl Into<String>) -> Element<'a, ModalAction> {
+    text(s.into()).size(13).font(crate::fonts::ui_font()).into()
 }
 
 fn title_for(kind: ModalKind) -> String {
@@ -379,14 +483,41 @@ fn transparent_button(theme: &iced::Theme, status: Status) -> button::Style {
     style
 }
 
-/// 模态卡片：标题 + 内容，居中白色背景。
-fn modal_card<'a>(title: String, content: Element<'a, ModalAction>) -> Element<'a, ModalAction> {
-    let card = column![label(title).size(20), content]
-        .spacing(12)
-        .padding(20);
-    container(card)
+/// 模态卡片：标题栏（标题 + × 关闭）+ 分隔线 + 内容 + footer 按钮行。
+/// 固定宽度居中（不再横向填充），圆角加大、阴影加深。
+fn modal_card<'a>(
+    title: String,
+    content: Element<'a, ModalAction>,
+    footer: Element<'a, ModalAction>,
+) -> Element<'a, ModalAction> {
+    let header = row![
+        label(title).size(16),
+        space().width(Length::Fill),
+        close_x_button(),
+    ]
+    .align_y(iced::alignment::Vertical::Center);
+    let divider = container(space())
         .width(Length::Fill)
-        .max_width(crate::theme::PANEL_MAX_WIDTH)
+        .height(Length::Fixed(1.0))
+        .style(|theme: &iced::Theme| {
+            // 分隔线比普通边框略深，保证标题区与内容区界限清晰。
+            let text = theme.palette().text;
+            container::Style {
+                background: Some(Color::from_rgba(text.r, text.g, text.b, 0.22).into()),
+                ..Default::default()
+            }
+        });
+    let card = column![
+        header,
+        divider,
+        content,
+        space().height(Length::Fixed(4.0)),
+        footer
+    ]
+    .spacing(12)
+    .padding(20);
+    container(card)
+        .width(Length::Fixed(crate::theme::PANEL_WIDTH))
         .style(|theme| container::Style {
             background: Some(crate::theme::surface(theme.palette()).into()),
             border: Border::default()
